@@ -140,22 +140,27 @@ function auditionStep(t: number) {
   return true;
 }
 
+/** How a drag on the timeline ended. */
+export interface ScrubRelease { marked?: boolean }
+
 /**
  * A press on the timeline pauses while the pointer is down, then carries on as it was. A listen or passage that
  * played to its end and stopped there was still being played: the editor didn't pause it, so it plays from the
  * point they pick. A listen plays on from that point until the editor pauses it, past its own end.
  */
 export function pauseForScrub(gesture: AbortSignal) {
-  const resume = usePlayerStore.getState().playing || (!!audition && finished) || (!!passage && ranOut);
+  const playing = usePlayerStore.getState().playing;
+  const resume = playing || (!!audition && finished) || (!!passage && ranOut);
   if (audition) through = true;
   usePlayerStore.setState({ scrubGesture: gesture });
   gesture.addEventListener("abort", () => {
     if (usePlayerStore.getState().scrubGesture === gesture) usePlayerStore.setState({ scrubGesture: undefined });
   }, { once: true });
   player.pause();
-  return () => {
+  // Marking a range picks a stretch to talk about, not a point to play from: it plays on only if the video was playing.
+  return (release?: ScrubRelease) => {
     stream?.finishSeek?.();
-    if (resume) player.play();
+    if (release?.marked ? playing : resume) player.play();
   };
 }
 
