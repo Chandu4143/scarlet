@@ -3745,6 +3745,29 @@ it("lists the queue in the order it will run while one call is revised, and says
   expect(line()).toEqual(held);
 });
 
+it("doesn't say a queued request waits for the calls once they're all made and Scarlet rechecks one", async () => {
+  finishedPass();
+  idle();
+  const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+  // Every call is made. Applying found the first cut's footage changed, so Scarlet rechecks it, and the pass goes in
+  // after (2026-11-14: the tray said "Waits for your calls" with nothing left to call).
+  const recheck = callRequest("task_recheck", 0, { kind: "revise" as const, state: "running" as const, createdAt: at(0), startedAt: at(0),
+    createdBy: { type: "scarlet" as const, name: "Scarlet" }, cutConflict: { version: "v_head", approved: true as const } });
+  const base = data.tasks.find(t => t.id === "task_done")!;
+  const next = { ...base, id: "task_next", kind: "edit" as const, state: "queued" as const, instruction: "/frame-screen", changeIds: [], summary: null,
+    context: { threadId: "task_next", message: "/frame-screen" }, createdAt: at(1000), startedAt: undefined, finishedAt: undefined };
+  data = { ...data, tasks: [...data.tasks, recheck, next], changes: data.changes.map(c => c.id === "chg_ready" ? { ...c, state: "revising" as const,
+    cutChoices: [{ index: 1, start: STAGED[1]!.start, end: STAGED[1]!.end, choice: "cut" as const }, { index: 2, start: STAGED[2]!.start, end: STAGED[2]!.end, choice: "keep" as const }] } : c) };
+  useProjectStore.setState({ current: data });
+  await show();
+  await act(async () => {});
+  const tray = container.querySelector<HTMLElement>('[aria-label="Queued requests"]')!;
+  expect(tray.textContent).not.toContain("Waits for your calls");
+  expect(tray.getAttribute("title")).toBe("Starts when Scarlet finishes what it’s on");
+  // Nothing of the editor's holds it, so it has no mark to start it before the calls.
+  expect(tray.querySelector('[aria-label="Start now, before your calls"], [title="Start now, before your calls"]')).toBeNull();
+});
+
 /**
  * A pass that finished and waits on its three calls. After staging them it proposed one more change of its own, a
  * reframing, and left it as a suggestion. Two requests wait behind the calls, and nothing else runs in the project.
@@ -6963,6 +6986,43 @@ it("heads each request with the editor's words alone, and tags a request about o
   expect(dots()).toEqual([["1", "check"], ["2", "check"]]);
 });
 
+it("says an applied edit no request made once, in the sentence with its link", async () => {
+  const base = data.changes.find(c => c.id === "chg_approved_1")!;
+  const WORDS = "Put the camera in the bottom-right corner over the screen.";
+  const cam = { ...base, id: "chg_cam", intent: "requested" as const, description: WORDS, threadId: "chg_cam",
+    author: { type: "human" as const, id: "usr_1", name: "Editor" }, decidedBy: { type: "human" as const, id: "usr_1", name: "Editor" },
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  data = { ...data, changes: [...data.changes, cam] };
+  useProjectStore.setState({ current: data });
+  await show();
+  await act(async () => {});
+  const turn = [...container.querySelectorAll<HTMLElement>(".simple-turn")].find(t => t.textContent?.includes("bottom-right"))!;
+  expect(turn.textContent!.split(WORDS).length - 1).toBe(1);
+  expect(turn.querySelector(".simple-made")?.textContent).toBe(WORDS);
+});
+
+it("shows Scarlet's recheck of an approved cut under that call, with why and none of the earlier replies", async () => {
+  finishedPass();
+  data = { ...data, changes: data.changes.map(c => c.id === "chg_ready" ? { ...c, cutReasons: STAGED.map(r => ({ start: r.start, end: r.end, reason: r.reason })) } : c) };
+  useProjectStore.setState({ current: data });
+  await show();
+  await act(async () => {});
+  const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+  // The editor asked to keep the third cut, and that saved the pass again. Then their approval found the first cut's
+  // footage changed, so Scarlet sent that one back to itself (2026-11-14: it chained under "keep" with every reply).
+  const keep = callRequest("task_keep", 2, { kind: "revise" as const, state: "done" as const, createdAt: at(-60_000), startedAt: at(-60_000), finishedAt: at(-30_000),
+    changeIds: ["chg_ready"], instruction: "keep", reply: "Kept the original delivery.", context: { ...callRequest("x", 2, {}).context, message: "keep" } });
+  const recheck = callRequest("task_recheck", 0, { kind: "revise" as const, state: "running" as const, createdAt: at(0), startedAt: at(0),
+    createdBy: { type: "scarlet" as const, name: "Scarlet" }, cutConflict: { version: "v_head", approved: true as const },
+    instruction: "The editor approved this cut. The passage changed before it could apply.", context: { ...callRequest("x", 0, {}).context, message: "Recheck this cut" } });
+  await event(d => ({ ...d, tasks: [...d.tasks, keep, recheck] }));
+  const under = container.querySelector<HTMLElement>('.subunit[data-run="task_recheck"]');
+  expect(under).not.toBeNull();
+  expect(under!.closest(".unit")?.getAttribute("data-run")).not.toBe("task_keep");
+  expect(under!.textContent).toContain("The footage here changed after you approved it. Rechecking the cut.");
+  expect(under!.textContent).not.toMatch(/keep|Kept the original delivery|The video changed|Recheck this cut/);
+});
+
 it("keeps a request about one cut in the conversation while it's stopped early, and takes it out once it's done", async () => {
   finishedPass();
   // The pass saves why it proposed each cut, which is how a request about one of them finds it again.
@@ -8223,6 +8283,34 @@ it("lists a pass staged again by its calls, with none of them open, after the pa
   expect(pass()!.querySelector(".simple-pass-need")?.textContent).toBe("2 need you");
   expect([pass()!.querySelector(".simple-pass-list")?.getAttribute("aria-label"), pass()!.querySelectorAll(".simple-pass-list > li").length,
     pass()!.querySelector('.simple-pass-list [aria-current="true"]')]).toEqual(["Calls that need you", 2, null]);
+});
+
+it("marks the fixes a pass's final check applies as New in its list while the check runs", async () => {
+  const ready = { ...data.changes.find(c => c.id === "chg_ready")!, intent: "suggestion" as const, taskId: "task_done",
+    cutAssessments: [{ index: 0, start: 0, end: 220, verdict: "cut" as const, reason: "A clean retake." }] };
+  const started = new Date().toISOString();
+  const before = new Date(Date.parse(started) - 600_000).toISOString(), after = new Date(Date.parse(started) + 5_000).toISOString();
+  const cut = { ...ready, id: "chg_part", fromVersion: "ver_2", toVersion: data.project.head!, intent: "requested" as const, state: "approved" as const, cutAssessments: undefined,
+    cutReasons: [{ start: 4, end: 5, reason: "An um." }], createdAt: before };
+  const fix = { ...cut, id: "chg_fix", cutReasons: [{ start: 8, end: 9, reason: "A repeated line." }], createdAt: after };
+  data = { ...data, changes: data.changes.flatMap(c => c.id === "chg_ready" ? [cut, fix, ready] : [c]),
+    tasks: data.tasks.map(t => t.id === "task_done" ? { ...t, state: "running" as const, finishedAt: undefined, summary: null, startedAt: started,
+      repeatAudit: { version: data.project.head!, returns: 1 }, instruction: "/dialogue-pass", context: { message: "/dialogue-pass" }, changeIds: [cut.id, fix.id, ...t.changeIds] } : t) };
+  useProjectStore.setState({ current: data });
+  vi.spyOn(api, "cutReview").mockResolvedValue({ review: { cuts: [{ at: 0, removed: { start: 0, end: 1 }, beforeClip: 0 }], original: data.timeline!, proposed: data.timeline!, firstCut: false } });
+  vi.spyOn(api, "timeline").mockImplementation(async (_, version = "head") => ({ timeline: { ...data.timeline!, version } }));
+  const passThread = threadWith("chg_ready").id;
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!, edits: threadId === passThread
+    ? data.changes.filter(c => c.taskId === "task_done" && c.state === "approved").flatMap(c => (c.cutReasons ?? []).map(({ start, end, reason }, spot) => ({
+      changeId: c.id, spot, label: reason, at: start, range: { start, end }, beforeCut: { version: c.fromVersion, removed: { start, end } }, previous: [],
+    }))) : [] }));
+  await show();
+  await act(async () => {});
+  const pass = () => container.querySelector<HTMLElement>('[aria-label="Dialogue pass"]')!;
+  await click(pass().querySelector<HTMLButtonElement>(".simple-pass-toggle")!);
+  await act(async () => {});
+  expect([...pass().querySelectorAll(".simple-pass-list > li")].map(li => [li.querySelector(".simple-pass-words")?.textContent, li.querySelector(".is-new")?.textContent ?? null]))
+    .toEqual([["An um.", null], ["A repeated line.", "New"]]);
 });
 
 it("opens the edits so far and keeps the selected cut open when a running pass saves another part", async () => {

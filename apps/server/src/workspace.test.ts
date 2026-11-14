@@ -5893,6 +5893,32 @@ it("shortens a staged cut revision when a frame inside its requested extension h
   expect(clips).toMatchObject([{ sourceIn: 0, sourceOut: expect.closeTo(12 - 2 * frame) }, { sourceIn: 14, sourceOut: 20 }]);
 });
 
+it("rechecks an approved call as soon as it is made when its footage changed, not when the last call applies the pass", async () => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit } = dialoguePassInParts();
+  const { review } = await submit(base, [staged(2, 3), staged(12, 14)]);
+  await checkPassAudio(task.id);
+  await api("POST", `/tasks/${task.id}/complete`, { state: "done" });
+  ctx.repos.projects.putMedia(project.id, { id: "pickup", name: "Pickup", path: "pickup.wav", kind: "audio", duration: 1, hasAudio: true }, "ready");
+  const replaced = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", autoApprove: true, description: "Use the pickup.",
+    ops: [{ op: "splitClip", clipId: "raw", at: 12.5, newClipId: "middle" },
+      { op: "splitClip", clipId: "middle", at: 13.5, newClipId: "tail" },
+      { op: "updateClip", clipId: "middle", patch: { mediaId: "pickup", sourceIn: 0, sourceOut: 1 } }] }).change;
+  const choose = async (choices: object[]) => (await (await api("PUT", `/changes/${review.id}/cut-choices`,
+    { fromVersion: review.fromVersion, toVersion: review.toVersion, choices })).json()).change as Change;
+  // The first cut's footage is as it was: approving it only saves the call.
+  const first = await choose([{ index: 0, choice: "cut" }]);
+  expect(first.state).toBe("ready");
+  // The second cut's take was replaced since the pass staged it. Approved, it goes back to Scarlet at once, and the
+  // first call stands.
+  const second = await choose([{ index: 0, choice: "cut" }, { index: 1, choice: "cut" }]);
+  expect(second.state).toBe("revising");
+  expect(second.cutChoices).toMatchObject([{ index: 0, choice: "cut" }]);
+  const recheck = ctx.repos.tasks.get(second.revisionFrom!.taskId)!;
+  expect(recheck).toMatchObject({ state: "queued", createdBy: { type: "scarlet" }, context: { changeId: review.id, cutIndex: 1, message: "Recheck this cut" },
+    cutConflict: { version: replaced.toVersion, approved: true } });
+});
+
 it.each(["trim", "keep"])("rechecks a replaced take on approval and uses the editor's answer to %s it", async decision => {
   const { ctx } = workspace;
   const { task, base, staged, submit } = dialoguePassInParts();

@@ -800,6 +800,11 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   // One sent back for revision waits on Scarlet, and keeps its row in the list of what needs the editor until it is back.
   const sentBack = useMemo(() => edits.filter(e => e.check && !reviewed(e) && revising(e)).length, [edits, reviewed, revising]);
   const totalRows = edits.length + (pass?.calls.length ?? 0);
+  // While the pass makes its final check of the finished cut, the fixes it applies are marked New in the list: nothing
+  // else tells them from the cuts that went in before (2026-11-14).
+  const rerun = working ? thread.tasks.find(t => !!t.repeatAudit?.returns && !!t.startedAt && (t.state === "running" || t.state === "claimed")) : undefined;
+  const fresh = useMemo(() => new Set(rerun ? thread.changes.filter(c => c.taskId === rerun.id && (c.createdAt ?? "") >= rerun.startedAt!).map(c => c.id) : []),
+    [rerun, thread.changes]);
   const single = !working && !pass?.running && totalRows === 1 ? edits[0] : undefined;
   // A single preview follows the open card. An explicitly opened list keeps the timeline on the whole pass.
   const fullList = open === "all" && edits.length > 0;
@@ -852,7 +857,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
         // Ticked once the editor has kept it: a flagged edit they reviewed, or any edit they pressed Keep on.
         decided: (!!e.check && seen) || kept.has(key),
         version: e.previous.length ? e.previous.length + 1 : 0, title: revised ? undefined : e.check,
-        on: !!showing && matchesEdit(showing, e), open: () => actions.openEdit(thread, e) }];
+        on: !!showing && matchesEdit(showing, e), open: () => actions.openEdit(thread, e), fresh: fresh.has(e.changeId) }];
     }),
     // A call goes by its number, as on its card and on the timeline.
     ...(pass?.calls ?? []).map(c => ({ key: callRowKey(c), at: c.start, mark: c.at, hover: { threadId: thread.id, call: c.index }, label: c.reason, n: c.n, num: c.n as number | undefined, needs: c.state === "open", sentBack: c.state === "revising",
@@ -861,7 +866,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       value: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : undefined,
       busy: c.state === "revising" && isWorking(c.run?.state),
       version: c.version > 1 ? c.version : 0, title: c.earlier && `v${c.version - 1}: ${c.earlier.reason ?? "Scarlet’s earlier version."}\nYou: “${c.earlier.note}”`,
-      on: listening?.changeId === pass!.change.id && listening.index === c.index, word: undefined, revised: false,
+      on: listening?.changeId === pass!.change.id && listening.index === c.index, word: undefined, revised: false, fresh: false,
       open: c.state === "revising" ? undefined : () => pass!.openCall(c.index) })),
   ].sort((a, b) => a.at - b.at);
   // While the pass waits on the editor, its calls are listed: every one of them, so a call keeps its place once it is
@@ -904,7 +909,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       {filter === "calls" && row.num ? <EditBadge n={row.num} check={row.needs} />
         : <span className={row.needs ? "simple-pass-time is-need" : "simple-pass-time"}>{clockLabel(row.at)}{row.needs && <span>, needs you</span>}</span>}
       <span className="simple-pass-label">{filter === "calls" ? row.label : <>{row.decided && !row.needs && <span className="simple-pass-tick" aria-label="Decided"><Icon name="check" size={10} /></span>}<span className="simple-pass-words">{row.label}</span>
-        {row.version > 0 && <EditVersion n={row.version} />}</>}</span>
+        {row.version > 0 && <EditVersion n={row.version} />}{row.fresh && <small className="edit-version is-new">New</small>}</>}</span>
       {filter === "calls" ? row.state && <span className={row.busy ? "simple-pass-value working-text" : "simple-pass-value"}>{row.state}</span>
         : row.value && <span className={row.busy && !row.word ? "simple-pass-value working-text" : "simple-pass-value"}>{row.value}</span>}
       {/* An applied edit sent back, or come back revised, says so after its amount, as a row of any other request's
@@ -1440,6 +1445,9 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     }
     // A closing reply is drawn with the request it answers.
     if (closingReply(item) && runOf.has(item.replyTo!)) return [];
+    // An applied edit no request made is said once, by the sentence that lists it below, with its link (2026-11-14:
+    // "Put the camera in the bottom-right corner" read twice).
+    if (!owner && hasRows && item.kind === "change" && item.change.state === "approved") return [];
     // What a queued request says is in the tray.
     return item.taskId ? [] : [loose(item, i)];
   });
@@ -3319,9 +3327,17 @@ export function SimpleWorkspace() {
     // A message that came back with its aim names it from the aim itself: a cut by where it is, an edit by its name.
     : aimedAtItem ? `Revising ${aimed!.cutIndex !== undefined ? `the cut at ${clockLabel(aimed!.time)}` : aimed!.label ? `“${aimed!.label}”` : "this edit"}`
     : `${replyThread.question ? "Answering" : "Replying to"} “${replyThread.title}”`;
-  /** What a queued request is waiting for. */
-  const waitHint = (task: Task) => {
+  /**
+   * What a queued request is waiting for. Held by the pass whose calls are all made, it waits on Scarlet and not the
+   * editor: the pass goes in once Scarlet's revisions or rechecks of its cuts are done.
+   */
+  const waitFor = (task: Task) => {
     const wait = queueWait(task, tasks, changes);
+    const called = wait?.kind === "review" && actions.pass?.change.id === wait.change.id && !actions.pass.calls.some(c => c.state === "open");
+    return called ? { kind: "run" as const } : wait;
+  };
+  const waitHint = (task: Task) => {
+    const wait = waitFor(task);
     return !wait ? undefined : wait.kind === "review" ? "Starts once you’ve made your calls on the dialogue pass"
       : wait.kind === "question" ? "Starts once you’ve answered Scarlet" : "Starts when Scarlet finishes what it’s on";
   };
@@ -3331,7 +3347,7 @@ export function SimpleWorkspace() {
    * doesn't start until they act, whatever Scarlet is on meanwhile.
    */
   const waitsOnEditor = (task: Task) => {
-    const wait = queueWait(task, tasks, changes);
+    const wait = waitFor(task);
     return wait?.kind === "review" ? "Waits for your calls" : wait?.kind === "question" ? "Waits for your answer" : undefined;
   };
 
@@ -3480,7 +3496,7 @@ export function SimpleWorkspace() {
     tray={queuedItems.length > 0 ? <QueueTray items={queuedItems} hint={queueHint} waits={queued[0] && waitsOnEditor(queued[0])} rewording={rewordingItem?.id} opened={trayOpen}
       onRemove={id => void queueAction(cancelTask(id)).catch(() => {})}
       // The editor's calls are theirs to put off: the request they hold back can start without them.
-      onStart={queued[0] && queueWait(queued[0], tasks, changes)?.kind === "review" ? id => void queueAction(startBeforeCalls(id)).catch(() => {}) : undefined}
+      onStart={queued[0] && waitFor(queued[0])?.kind === "review" ? id => void queueAction(startBeforeCalls(id)).catch(() => {}) : undefined}
       // The pencil of the request whose words are in the box puts them back as they were.
       onReword={id => {
         // A message being spoken is the box's until it is out: it would be saved over this request's words.
