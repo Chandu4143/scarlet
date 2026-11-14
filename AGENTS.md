@@ -2,6 +2,8 @@
 
 Scarlet is a desktop-only video editor for macOS, Windows and Linux. Open projects, demonstrate features, take screenshots, and verify interface changes in the native Scarlet application window. Do not open or publish a browser version, including a localhost demo or an in-app browser preview.
 
+When the maintainer asks to land a PR, run the checks for the change and submit the approved head to GitHub. Use `gh pr checks --required` to find the checks that govern merging. If GitHub reports no required checks, proceed with the merge. Follow it through any conflict or required check and verify the PR reached `main`. CI and installer builds run after the merge on `main`. If the request includes a deployment or a packaged build, verify that outcome too. A request to drain the maintainer’s queue covers only their own PRs that they explicitly queued for merge.
+
 Starting a chat does not require opening Scarlet. Keep code work and automated tests headless until the task needs the native interface. For work on the installed release, reuse the regular Scarlet window.
 
 Silence only the Scarlet instance under test. Leave system volume, output devices, and other apps’ audio unchanged. For screenshots, use a muted native background preview and capture only the requested window or panel. On Windows, use a separate, noninteractive desktop and a disposable WebView2 profile. Launch with `--mute-audio` and verify the flag on that instance’s running WebView2 process before testing or capturing. On Linux, run native UI tests on a private Xvfb display with isolated audio. Leave the user’s desktop, window focus, mouse, and keyboard untouched throughout.

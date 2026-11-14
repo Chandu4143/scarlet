@@ -17,15 +17,20 @@ class DesktopPermissionsTest < Minitest::Test
     # Psych versions using YAML 1.1 read the key 'on' as true.
     trigger = @entry["on"] || @entry.fetch(true)
     assert_equal({"branches" => ["main"]}, trigger.fetch("push"))
-    # A branch-wide lock can cancel a pending release. Only a pull request's runs share a group, and a newer push to it
-    # cancels the older ones; a push to main and a manual run each have a group of their own.
-    assert_equal({ "group" => "desktop-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}", "cancel-in-progress" => true },
-      @entry.fetch("concurrency"), "A branch-wide lock can cancel a pending release")
     assert_equal %w[aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc],
       @build.dig("strategy", "matrix", "include").map { |target| target.fetch("triple") }.sort
     assert_equal false, @build.dig("strategy", "fail-fast")
     assert_equal "${{ needs.version.outputs.version }}", @jobs.dig("build", "with", "version")
     assert_equal "${{ needs.version.outputs.version }}", @jobs.fetch("publish").fetch("steps").last.dig("env", "RELEASE_VERSION")
+  end
+
+  def test_pull_requests_do_not_start_workflows
+    Dir[File.expand_path("../workflows/*.yml", __dir__)].each do |path|
+      workflow = YAML.safe_load(File.read(path))
+      events = workflow["on"] || workflow.fetch(true)
+      refute_includes events, "pull_request", File.basename(path)
+      refute_includes events, "pull_request_target", File.basename(path)
+    end
   end
 
   def test_checks_and_native_builds_have_read_only_repository_access

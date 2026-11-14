@@ -4,22 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-  pull_request:
-    paths:
-      - ".github/workflows/linux-desktop.yml"
-      - "apps/**"
-      - "packages/**"
-      - "skills/**"
-      - "integrations/**"
-      - "package.json"
-      - "pnpm-*.yaml"
 
 permissions:
   contents: read
-
-concurrency:
-  group: linux-desktop-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   ubuntu:
