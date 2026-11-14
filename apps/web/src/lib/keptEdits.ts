@@ -15,10 +15,14 @@ const cache = new Map<string, { raw: string | null; value: ReadonlySet<string>; 
 
 export const editKey = (ref: EditRef) => `${ref.changeId}/${ref.spot}`;
 /**
- * What a Keep records. A doubt a later request raised about an edit already in the video (`recheck`, when it was
- * raised) is a new one, so a Keep before it doesn't settle it.
+ * What a Keep records. An edit that a later save gave a new reason to look is kept under that save's edit, and a doubt
+ * a later request raised about an edit already in the video (`recheck`, when it was raised) is a new one, so a Keep
+ * before it doesn't settle it.
  */
-export const reviewKey = (ref: EditRef & { recheck?: string }) => ref.recheck ? `${editKey(ref)}@${ref.recheck}` : editKey(ref);
+export const reviewKey = (ref: EditRef & { recheck?: string; reviewRef?: EditRef }) => {
+  const key = editKey(ref.reviewRef ?? ref);
+  return ref.recheck ? `${key}@${ref.recheck}` : key;
+};
 const storageKey = (projectId: string, threadId: string) => `${PREFIX}/${projectId}/${threadId}`;
 
 function stored(key: string) {
@@ -39,7 +43,7 @@ function read(key: string): ReadonlySet<string> {
   return value;
 }
 
-export function keepEdits(projectId: string, threadId: string, refs: Array<EditRef & { recheck?: string }>) {
+export function keepEdits(projectId: string, threadId: string, refs: Array<EditRef & { recheck?: string; reviewRef?: EditRef }>) {
   const key = storageKey(projectId, threadId);
   const before = read(key);
   const next = new Set(before);

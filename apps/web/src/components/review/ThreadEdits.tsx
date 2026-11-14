@@ -119,8 +119,10 @@ export function useReviewed(projectId: string, thread: Thread | undefined) {
   const kept = useKeptEdits(projectId, thread?.id);
   return useMemo(() => {
     const decided = new Set(thread?.changes.filter(c => c.state === "approved" && (c.appliedReview || c.approvedSpots)).map(c => c.id));
-    // A pass decided cut by cut was reviewed as it was applied, but not a doubt raised about one of its edits since.
-    return (edit: EditRef & { recheck?: string }) => kept.has(reviewKey(edit)) || (!edit.recheck && decided.has(edit.changeId));
+    // A pass decided cut by cut was reviewed as it was applied, not a doubt raised about one of its edits since,
+    // nor what a later save asks of a cut it moved.
+    return (edit: EditRef & { recheck?: string; reviewRef?: EditRef }) =>
+      kept.has(reviewKey(edit)) || (!edit.recheck && !edit.reviewRef && decided.has(edit.changeId));
   }, [kept, thread]);
 }
 
