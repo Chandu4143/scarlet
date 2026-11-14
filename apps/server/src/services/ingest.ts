@@ -685,16 +685,17 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     // for these speakers just the same.
     const passReading = () => ctx.repos.projects.listMedia(projectId).some(m => audioLane(ctx).focusedOn(m.id));
     const speakersFirst = () => ctx.speakers.beside && passReading() ? ctx.speakers.awaitedByPass(projectId) : undefined;
-    // Local Whisper can skip a remark after a long wait. Once the words are placed, the recording shows where: sound at
-    // speaking level with no word on it. Those stretches are read again, and the transcript is saved with what they held.
-    // A read that fails leaves the transcript as it was aligned.
+    // Once the words are placed, the recording shows what their times still miss. A word the aligner couldn't place
+    // keeps the provider's time, which can run over a wait, so it is brought in to its sound. Local Whisper can also
+    // skip a remark after a long wait: sound at speaking level with no word on it. Those stretches are read again, and
+    // the transcript is saved with what they held. A read that fails leaves the transcript as it was aligned.
     const withoutHoles = async (segments: TranscriptSegment[]) => {
-      if (!alignable || provider.name !== "whispercpp") return segments;
+      if (!alignable) return segments;
       const full = wav ?? join(ctx.paths.tmp, newId("recording") + ".wav");
       try {
         if (!wav) await extractWav(src, full, { signal });
         return await fillTranscriptHoles({ wav: full, segments, tmpDir: ctx.paths.tmp, signal, log: message => ctx.log(`${message} (${asset.id})`),
-          read: async laid => (await lane.run(work, signal, () => provider.transcribe({ path: laid, dialogueWindow: {}, tmpDir: ctx.paths.tmp, signal, language: result.language }))).segments,
+          read: provider.name !== "whispercpp" ? undefined : async laid => (await lane.run(work, signal, () => provider.transcribe({ path: laid, dialogueWindow: {}, tmpDir: ctx.paths.tmp, signal, language: result.language }))).segments,
           align: async found => alignTranscript(ctx, { source: src, wav: full, language: result.language, segments: found, signal,
             emissions: await emissionStore(ctx, projectId, src), work: { mediaId: asset.id, kind: "alignment" } }) });
       } catch (error) {
