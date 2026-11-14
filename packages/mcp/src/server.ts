@@ -630,7 +630,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   };
   /** Note the list a tool showed the model word indices from. */
   const showWords = (mediaId: string, words: readonly TranscriptWord[] | null | undefined) => {
-    if (words) wordsRead.set(mediaId, { print: wordsPrint(words), count: words.length });
+    if (!words) return;
+    const print = wordsPrint(words);
+    // Words found since moved the indices on: which input each index was heard on is read again.
+    if (wordsRead.get(mediaId)?.print !== print) inputLabels.delete(mediaId);
+    wordsRead.set(mediaId, { print, count: words.length });
   };
   function sameWordsAsRead(mediaId: string, words: readonly TranscriptWord[]) {
     const read = wordsRead.get(mediaId);
