@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 import type { TimeRange } from "@scarlet/timeline";
 import { clockRange, lengthLabel, playbackClock } from "../../lib/format";
+import type { ScrubRelease } from "../../lib/player";
 
 /** How near, in pixels, a dragged end comes to the edge of a cut or an edit before it lands on it. */
 export const RANGE_SNAP_PX = 7;
@@ -58,6 +59,8 @@ interface Gesture {
   /** The close-up: the time and pointer position it opened at. */
   precise?: { time: number; x: number };
   paint?: number;
+  /** It let go having marked a range, not pressed a point. */
+  marked?: boolean;
   stop(): void;
 }
 
@@ -72,7 +75,7 @@ interface RangeSelect {
   range?: TimeRange;
   onRange(range: TimeRange | undefined): void;
   onSeek(time: number): void;
-  onScrubStart?(gesture: AbortSignal): (() => void) | undefined;
+  onScrubStart?(gesture: AbortSignal): ((release?: ScrubRelease) => void) | undefined;
   /** A press on the ruler that never became a range. */
   onPress(time: number): void;
   beforeGesture(): void;
@@ -142,6 +145,7 @@ export function useRangeSelect({ slider, drag, from, span, start, end, fps, edge
       if (!cancelled) g.x = event.clientX;
       const drawn = !cancelled && (g.moved || !!g.precise);
       if (drawn) place(g);
+      g.marked = drawn;
       g.stop();
       setLive(undefined);
       if (drawn && g.last) now.current.onRange(g.last);
@@ -159,7 +163,7 @@ export function useRangeSelect({ slider, drag, from, span, start, end, fps, edge
       document.removeEventListener("pointercancel", up, true);
       if (drag.current === held) drag.current = null;
       lifetime.abort();
-      finish?.();
+      finish?.({ marked: !!g.marked });
     };
     // The scrubber's own drag slot says a pointer is held, so the zoom waits and the markers don't light.
     const held = { id: -1, start: from, span, x: e.clientX, lifetime, finish: undefined };
