@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dialogueShortcut, EDITING_TOOL_GROUPS } from "@scarlet/shared";
+import { dialogueShortcut, EDITING_TOOL_GROUPS, skillCommands } from "@scarlet/shared";
 import { describe, expect, it } from "vitest";
 import { parseFrontmatter } from "./skills.js";
 
@@ -13,14 +13,16 @@ const skillsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../
 const shipped = readdirSync(skillsDir, { withFileTypes: true }).filter(d => d.isDirectory())
   .map(d => ({ folder: d.name, content: readFileSync(join(skillsDir, d.name, "SKILL.md"), "utf8") }));
 const tools = new Set<string>(EDITING_TOOL_GROUPS.flatMap(g => [...g.tools]));
-const commands = new Set(shipped.map(s => parseFrontmatter(s.content).name ?? s.folder));
+const commands = new Set(shipped.map(s => (parseFrontmatter(s.content).name ?? s.folder).toLowerCase()));
 
 /** The tool and command names in a guide that Scarlet doesn't have. */
 function unknownNames(text: string): string[] {
   const named = Array.from(text.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g), m => m[1]!).filter(name => !tools.has(name));
-  // Every `/…` in code is a command, in the only form the composer reads (skillCommands).
+  // Every `/…` in code is a command. The composer's own parser has to read the whole token as one command, and the
+  // name it gives, in the case it normalizes to, has to be a shipped guide or a product shortcut.
   const typed = Array.from(text.matchAll(/`(\/[^`\s]*)`/g), m => m[1]!).filter(command => {
-    const name = /^\/([a-z0-9][a-z0-9-]*)$/.exec(command)?.[1];
+    const read = skillCommands(command);
+    const name = read.length === 1 && read[0]!.start === 0 && read[0]!.end === command.length ? read[0]!.name : "";
     return !name || (!commands.has(name) && !dialogueShortcut(name, []));
   });
   return [...named, ...typed];
@@ -39,5 +41,10 @@ describe("the skills Scarlet ships", () => {
     expect(unknownNames("Save the cuts with `dialogue_apply_cuts`, or type `/tighten-pauses-here`.")).toEqual([]);
     expect(unknownNames("Save the cuts with `dialogue_aply_cuts`, or type `/tighten_pauses_here`."))
       .toEqual(["dialogue_aply_cuts", "/tighten_pauses_here"]);
+  });
+
+  it("accept a command in any case, as the composer reads it", () => {
+    expect(unknownNames("Type `/Dialogue-Pass` or `/TIGHTEN-PAUSES-HERE`.")).toEqual([]);
+    expect(unknownNames("Type `/Dialogue-Pas`.")).toEqual(["/Dialogue-Pas"]);
   });
 });
