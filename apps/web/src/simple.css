@@ -482,6 +482,7 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 /* Stop is the heading's last word while Scarlet has the request, where its ring was. "N need you" sits before it. */
 .unit-stop { flex: none; align-self: center; font-size: 12.5px; line-height: 19px; }
 .unit-state:not(:empty) + .unit-stop { margin-left: -2px; }
+.unit-tokens { flex: none; align-self: baseline; font-size: 12.5px; line-height: 19px; white-space: nowrap; }
 .unit:has(> .unit-msg > .unit-stop) .simple-pass-need { right: 42px; }
 .unit:has(.simple-pass-need):has(> .unit-msg > .unit-stop) > .unit-msg { padding-right: var(--chat-gutter, 18px); }
 .unit:has(.simple-pass-need) > .unit-msg > .unit-stop { margin-left: 96px; }
