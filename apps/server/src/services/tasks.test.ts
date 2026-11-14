@@ -159,6 +159,37 @@ it("tells a learning check where in the video the request was about, on the play
   expect(about(4503)).toBe("They said it about the moment at 1:15:03 in the video.");
 });
 
+it("shows a learning check the editor's recent corrections across videos, each with the skill that made what it was about", () => {
+  const editor = { type: "human" as const, name: "Editor" };
+  const skill = app.ctx.repos.skills.select("1=1", [], "name ASC").find(s => s.enabled)!;
+  const other = app.ctx.repos.projects.insert(createProject("Another video"));
+  const passIn = (projectId: string) => {
+    const pass = createTask(app.ctx, { projectId, kind: "edit", agent: "claude", instruction: `/${skill.name}`, context: { skillIds: [skill.id] }, createdBy: editor });
+    const ts = new Date().toISOString();
+    const change = { id: `chg_${pass.id}`, projectId, fromVersion: "v1", toVersion: "v2", description: "Dialogue pass", author: { type: "agent" as const, name: "Claude" },
+      noteIds: [], timelineEdits: [], ranges: [], state: "ready" as const, renders: [], taskId: pass.id, createdAt: ts, updatedAt: ts };
+    app.ctx.repos.changes.put(change as never);
+    return change.id;
+  };
+  const revise = (projectId: string, changeId: string, message: string) => createTask(app.ctx, { projectId, kind: "revise", agent: "claude",
+    instruction: `${message}\n\nThis feedback is about one staged cut only.`, context: { changeId, cutIndex: 0, time: 30, message }, createdBy: editor });
+  revise(other.id, passIn(other.id), "cut tail frames");
+  const changeId = passIn(project.id);
+  revise(project.id, changeId, "take more off the beginning");
+  const asked = revise(project.id, changeId, "still too much pause before the cut");
+  const check = createTask(app.ctx, { projectId: project.id, kind: "learning_check", agent: "claude", instruction: "still too much pause before the cut",
+    context: { checksTaskId: asked.id }, createdBy: editor });
+  const seen = learningCheckContext(app.ctx, check);
+  // The revision names no skill of its own: the cut's is the pass's, and it is said with what the request was about.
+  expect(seen.usedSkills).toEqual([]);
+  expect(seen.about).toBe(`They said it about one cut Scarlet made with ${skill.name} at 0:30.`);
+  // A bare skill name says nothing; the corrections before it are listed from any video, oldest first.
+  expect(seen.earlier).toEqual([
+    { said: "cut tail frames", about: `a cut ${skill.name} made`, elsewhere: true },
+    { said: "take more off the beginning", about: `a cut ${skill.name} made` },
+  ]);
+});
+
 it("pairs questions with the answers that followed", () => {
   expect(pairQuestionsAndAnswers([
     { type: "log", text: "x" }, { type: "question", text: "q1" }, { type: "answer", text: "a1" }, { type: "question", text: "q2" },

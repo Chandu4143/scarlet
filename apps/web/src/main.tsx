@@ -7,6 +7,7 @@ import { startUiLog } from "./lib/uiLog";
 import { BootSplash } from "./components/shell/BootSplash";
 import { StartupRecovery } from "./components/shell/StartupRecovery";
 import { UpdateButton } from "./components/shell/UpdateButton";
+import { ReleaseUpdateNotice } from "./components/shell/ReleaseUpdateNotice";
 import { enableUpdateStatus } from "./lib/updateStatus";
 import "./index.css";
 import "./workspace.css";
@@ -34,7 +35,7 @@ async function launch() {
     }
     // Loading the router and stores starts the editor. Wait for the native
     // handshake first, including when using the interview fixture.
-    if (localUpdates) {
+    if (localUpdates && !__SCARLET_RELEASE_CHANNEL__) {
       restoreUpdatePlace();
       enableUpdateStatus();
     }
@@ -44,7 +45,10 @@ async function launch() {
       customOpenaiModels?.length || customClaudeModels?.length ? import("./stores/hosts") : undefined,
     ]);
     hosts?.useHostsStore.setState({ customOpenaiModels: customOpenaiModels ?? [], customClaudeModels: customClaudeModels ?? [] });
-    view.render(<StrictMode>{localUpdates && <UpdateButton />}<App platform={platform} /></StrictMode>);
+    view.render(<StrictMode>
+      {__SCARLET_RELEASE_CHANNEL__ ? <ReleaseUpdateNotice channel={__SCARLET_RELEASE_CHANNEL__} /> : localUpdates && <UpdateButton />}
+      <App platform={platform} />
+    </StrictMode>);
   } catch (error) {
     const view = await opening;
     view.render(<StartupRecovery title="Scarlet couldn’t start"

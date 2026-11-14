@@ -2368,6 +2368,10 @@ it("measures the recording beside a staged cut's new edges with no scan read, an
     expect(saved.at(-1)).toMatchObject({ start: 1.9, end: 2.4 });
     expect(quiet.audio).toBeUndefined();
     expect(quiet.next).toBeUndefined();
+    // The result reads the words either side of the saved join, so nothing needs reading again to judge it.
+    const words = (side: { words: Array<[number, number, string]> }[]) => side.flatMap(s => s.words.map(w => w[2]));
+    expect(words(quiet.nearbyWords.start)).toContain("back.");
+    expect(words(quiet.nearbyWords.end)).toContain("Um,");
     // A start 40 ms inside “back.” goes onto the silence after the word, where dialogue_check_join puts it.
     const snapped = await move(1.76, 2.28);
     expect(saved.at(-1)!.start).toBeCloseTo(58 / 30);

@@ -1096,6 +1096,58 @@ describe("scarlet server", () => {
     for (const open of [asked.id, check.id]) await api("POST", `/tasks/${open}/cancel`);
   });
 
+  it("keeps a rule saved when its save is stopped or fails after it saved the skill", async () => {
+    const skill = (await api<{ skill: Skill }>("POST", "/skills", { body: { name: "kept-style", description: "House rules", content: "---\nname: kept-style\ndescription: House rules\n---\n\nKeep the cold open.\n" } })).json.skill;
+    for (const queued of scarlet.ctx.repos.tasks.select("project_id = ? AND state = 'queued'", [project.id])) await api("POST", `/tasks/${queued.id}/cancel`);
+    const asked = (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { body: { agent: "claude", instruction: "Keep the breath and the laughter." } })).json.task;
+    const check = scarlet.ctx.repos.tasks.select("kind = 'learning_check' AND json_extract(json, '$.context.checksTaskId') = ?", [asked.id])[0]!;
+    await api("POST", `/hosts/${host.id}/claim`, { body: { taskId: check.id } });
+    const approve = async (id: string) => (await api<{ learning: Learning }>("POST", `/projects/${project.id}/learnings/${id}/approve`, { body: {} })).json.learning;
+    const rules: Learning[] = [];
+    for (const rule of ["Leave the breath before a punchline.", "Never cut laughter.", "Keep the room tone.", "Hold the last look."]) {
+      rules.push(await approve((await api<{ learning: Learning }>("POST", `/projects/${project.id}/tasks/${check.id}/learnings`, { body: { rule, skill: skill.id } })).json.learning.id));
+    }
+    const learning = (id: string) => scarlet.ctx.repos.learnings.get(id)!;
+    const editOf = async (rule: Learning) => {
+      const id = learning(rule.id).editTaskId!;
+      await api("POST", `/hosts/${host.id}/claim`, { body: { taskId: id } });
+      return id;
+    };
+    const stop = (id: string) => api("POST", `/tasks/${id}/cancel`);
+    const fail = (id: string) => api("POST", `/tasks/${id}/complete`, { body: { state: "failed", error: "claude exited with code 1" } });
+    const stall = (id: string) => api("POST", `/tasks/${id}/complete`, { body: { state: "failed", interrupted: true, error: "Stopped with no progress." } });
+    let instructions = "Keep the cold open.";
+
+    // Stopped, failed or stopped by its host once the skill holds the rule, the rule is saved, and the skill's next rule starts.
+    for (const [i, end] of [stop, fail, stall].entries()) {
+      const id = await editOf(rules[i]!);
+      instructions += `\n\n${rules[i]!.rule}`;
+      const draft = { skillId: skill.id, hostId: host.id, description: "House rules", instructions };
+      expect((await api<{ skill: Skill }>("POST", `/projects/${project.id}/tasks/${id}/skill-edit`, { body: draft })).json.skill.version).toBe(i + 2);
+      await end(id);
+      expect(learning(rules[i]!.id)).toMatchObject({ state: "saved" });
+      expect(learning(rules[i]!.id).error).toBeUndefined();
+      expect(scarlet.ctx.repos.skills.get(skill.id)!.version).toBe(i + 2);
+      // There is nothing to carry on, and Stop pressed again changes nothing.
+      expect((await api<{ error: { code: string } }>("POST", `/tasks/${id}/retry`, { body: {} })).json.error.code).toBe("not_retryable");
+      const ended = scarlet.ctx.repos.tasks.get(id)!;
+      await stop(id);
+      expect(scarlet.ctx.repos.tasks.get(id)).toEqual(ended);
+      expect(learning(rules[i]!.id)).toMatchObject({ state: "saved" });
+      expect(scarlet.ctx.repos.tasks.get(learning(rules[i + 1]!.id).editTaskId!)).toMatchObject({ kind: "skill_edit", state: "queued" });
+    }
+
+    // Stopped or failed before it saved anything, the rule goes back to the editor with why.
+    const last = rules[3]!;
+    await stop(await editOf(last));
+    expect(learning(last.id)).toMatchObject({ state: "suggested", error: "Saving was stopped." });
+    await approve(last.id);
+    await fail(await editOf(last));
+    expect(learning(last.id)).toMatchObject({ state: "suggested", error: "claude exited with code 1" });
+    expect(scarlet.ctx.repos.skills.get(skill.id)!.version).toBe(4);
+    for (const open of [asked.id, check.id]) await api("POST", `/tasks/${open}/cancel`);
+  });
+
   it("stops the skill edits waiting in a project when it goes to the trash, so they don't hold their skills", async () => {
     const skill = async (name: string) => (await api<{ skill: Skill }>("POST", "/skills", { body: { name, content: `# ${name}` } })).json.skill;
     const asked = await skill("trashed-asked"), learned = await skill("trashed-learned"), unsure = await skill("trashed-unsure");
