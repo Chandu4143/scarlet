@@ -42,7 +42,7 @@ pnpm desktop:dev
 
 3. **Review it in context.** Open an edit from the conversation or timeline. On a cut, open the transcript to see the words Scarlet marked for removal. Press `\` to hear the removed footage and press it again to hear the join. When a dialogue pass asks about a cut, approve it, skip it or ask for a revision. You can also revise or undo an applied edit. Earlier versions stay in the project history.
 
-4. **Export the cut.** Click **Export** in the project header to save the whole video or a selected range as an MP4. To keep editing in DaVinci Resolve, export the timeline as an OpenTimelineIO (`.otio`) file.
+4. **Export the cut.** Click **Export** in the project header to save the whole video or a selected range as an MP4, captions as SubRip (`.srt`) or WebVTT (`.vtt`), or the timeline as an OpenTimelineIO (`.otio`) file for DaVinci Resolve.
 
    <img src="assets/export-formats.png" width="600" alt="Scarlet’s Export dialog shows the whole edit selected, with Video (.mp4) and Resolve timeline (.otio) in the format menu.">
 

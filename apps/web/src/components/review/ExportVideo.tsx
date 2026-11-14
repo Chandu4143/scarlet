@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { fullRenderContext, type RenderRequest } from "@scarlet/shared";
-import { snapToFrame, timelineDuration } from "@scarlet/timeline";
+import { captionExportHasCues, NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, snapToFrame, timelineDuration } from "@scarlet/timeline";
 import { errorMessage, IS_MOCK } from "../../lib/client";
 import { desktop } from "../../lib/desktop";
 import { exportCounting, exportFailureSeen, exportFile, PICTURE_DONE, useExports, type ExportFile } from "../../lib/exportJobs";
@@ -43,6 +43,12 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   // The file the last export saved, while the video is still the one it was made from.
   const exported = job?.phase === "done" && job.context === context ? job : undefined;
   const [format, setFormat] = useState<ExportFile["format"]>(previous?.format ?? "mp4");
+  const captions = format === "srt" || format === "vtt";
+  const captionTracks = useMemo(() => (current.timeline?.tracks ?? []).filter(t => t.kind === "caption" && !t.hidden), [current.timeline]);
+  const [trackId, setTrackId] = useState(() => previous?.trackId && captionTracks.some(t => t.id === previous.trackId) ? previous.trackId : captionTracks[0]?.id ?? "");
+  useEffect(() => {
+    if (!captionTracks.some(t => t.id === trackId)) setTrackId(captionTracks[0]?.id ?? "");
+  }, [captionTracks, trackId]);
   const [customRange, setCustomRange] = useState(!!previous?.video.range);
   const [start, setStart] = useState(() => playbackClock(previous?.video.range?.start ?? 0));
   const [end, setEnd] = useState(() => playbackClock(previous?.video.range?.end ?? duration));
@@ -60,12 +66,19 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   // An export that stopped is explained here, so the menu's mark for it goes once this is open.
   const failed = job?.phase === "failed";
   useEffect(() => { if (failed) exportFailureSeen(current.id); }, [failed, current.id]);
-  const range = format === "mp4" && customRange ? { start: snapToFrame(parseClock(start), fps), end: snapToFrame(parseClock(end), fps) } : undefined;
+  const range = format !== "otio" && customRange ? { start: snapToFrame(parseClock(start), fps), end: snapToFrame(parseClock(end), fps) } : undefined;
   const invalidRange = range && !(range.start >= 0 && range.end > range.start && range.end <= duration);
   const custom = format === "mp4" && (!!range || !!targetHeight || quality !== "delivery");
   const level = QUALITY[quality];
   const sampleOnly = IS_MOCK && custom;
-  const invalid = !hasCut || !duration || invalidRange || sampleOnly;
+  const noCaptionTrack = captions && captionTracks.length === 0;
+  // The picker can still hold a trackId after that track is gone; the effect below
+  // clears it, but this render must not throw track_not_found first.
+  const exportTrackId = captionTracks.some(t => t.id === trackId) ? trackId : undefined;
+  const noCaptionsInRange = captions && !noCaptionTrack && !invalidRange && current.timeline
+    ? !captionExportHasCues(current.timeline, { trackId: exportTrackId, range })
+    : false;
+  const invalid = !hasCut || !duration || invalidRange || sampleOnly || noCaptionTrack || noCaptionsInRange;
   const size = targetHeight ? `${Math.round(width * targetHeight / height / 2) * 2} × ${targetHeight}` : "Project size";
   const submit = () => {
     if (busy || invalid) return;
@@ -78,7 +91,7 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
     // The file is named once, in the system's Save dialog, which also picks its folder and asks before replacing a
     // file. It opens on the project's name.
     const name = `${project.name.replace(/[\\/:*?"<>|]+/g, " ").trim() || "Scarlet"}.${format}`;
-    void exportFile(current, { format, name, video });
+    void exportFile(current, { format, name, video, ...(captions && exportTrackId ? { trackId: exportTrackId } : {}) });
   };
   return <Modal open title="Export" width={600} onClose={onClose} footer={running ? <>
     {busy.phase === "rendering" && <button type="button" className="btn-quiet" onClick={busy.cancel}>Cancel export</button>}
@@ -94,16 +107,25 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
         <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
           <Field label="Format" htmlFor="export-format">
             <PreferenceSelect id="export-format" value={format} onChange={setFormat}
-              options={[{ value: "mp4", label: "Video (.mp4)" }, { value: "otio", label: "Resolve timeline (.otio)" }]} />
+              options={[
+                { value: "mp4", label: "Video (.mp4)" },
+                { value: "srt", label: "Captions (.srt)" },
+                { value: "vtt", label: "Captions (.vtt)" },
+                { value: "otio", label: "Resolve timeline (.otio)" },
+              ]} />
           </Field>
           <Field label="Range" htmlFor="export-range">
-            <PreferenceSelect id="export-range" disabled={format === "otio"} value={format === "mp4" && customRange ? "custom" : "whole"}
+            <PreferenceSelect id="export-range" disabled={format === "otio"} value={format !== "otio" && customRange ? "custom" : "whole"}
               onChange={value => setCustomRange(value === "custom")} options={[{ value: "whole", label: "Whole video" }, { value: "custom", label: "Custom range" }]} />
           </Field>
           {range && <>
             <Field label="From" htmlFor="export-start"><input className="field tnum" id="export-start" value={start} onChange={e => setStart(e.target.value)} /></Field>
             <Field label="To" htmlFor="export-end"><input className="field tnum" id="export-end" value={end} onChange={e => setEnd(e.target.value)} /></Field>
           </>}
+          {captions && captionTracks.length > 1 && <Field label="Track" htmlFor="export-track">
+            <PreferenceSelect id="export-track" value={trackId} onChange={setTrackId}
+              options={captionTracks.map(track => ({ value: track.id, label: track.name }))} />
+          </Field>}
         </div>
         {format === "mp4" ? <details className="border-t border-line pt-3">
           <summary className="cursor-pointer text-xs"><strong>Video options</strong><span className="ml-2 text-muted">{size} · {Number(fps.toFixed(3))} fps · {level.label}</span></summary>
@@ -119,10 +141,12 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
                 options={(Object.keys(QUALITY) as ExportQuality[]).map(value => ({ value, label: QUALITY[value].label }))} />
             </Field>
           </div>
-        </details> : <p className="text-xs text-muted">The timeline links to the original media. The receiving editor needs access to those files.</p>}
+        </details> : format === "otio" ? <p className="text-xs text-muted">The timeline links to the original media. The receiving editor needs access to those files.</p> : null}
       </fieldset>
     </form>
     {!running && <InlineError>{!hasCut ? "There’s no video to export yet." :
+      noCaptionTrack ? NO_CAPTION_TRACK :
+      noCaptionsInRange ? NO_CAPTIONS_IN_RANGE :
       invalidRange ? `Enter a range between 0:00 and ${playbackClock(duration)}, at least one frame long.` : sampleOnly ? "The isolated demo saves its included MP4. Custom video settings are available in library projects." : ""}</InlineError>}
     {busy && <div className="mt-3">
       {busy.phase === "choosing" ? <p className="text-xs text-muted" role="status">Choose a location…</p> :

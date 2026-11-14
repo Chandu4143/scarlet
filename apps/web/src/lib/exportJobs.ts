@@ -51,8 +51,10 @@ export function exportFailureSeen(projectId: string) {
 export interface ExportFile {
   /** The name the native Save dialog opens on. Once the editor has picked a file there, that file's name. */
   name: string;
-  format: "mp4" | "otio";
+  format: "mp4" | "otio" | "srt" | "vtt";
   video: Pick<RenderRequest, "kind" | "quality" | "range" | "exportOptions">;
+  /** Caption track to write. Omitted for video and timeline files. */
+  trackId?: string;
 }
 
 /** What the app says of a save when the engine stopped answering or sending: not there, or cut off part-way. */
@@ -149,6 +151,12 @@ async function run(projectId: string, file: ExportFile, context: string, version
     let engineBack = async () => {};
     if (file.format === "otio") {
       url = () => api.otioUrl(projectId, version);
+    } else if (file.format === "srt" || file.format === "vtt") {
+      const captions = {
+        ...(file.trackId ? { trackId: file.trackId } : {}),
+        ...(file.video.range ? { start: file.video.range.start, end: file.video.range.end } : {}),
+      };
+      url = () => file.format === "srt" ? api.srtUrl(projectId, version, captions) : api.vttUrl(projectId, version, captions);
     } else {
       update({ phase: "rendering", waiting: true });
       let render = resumed;

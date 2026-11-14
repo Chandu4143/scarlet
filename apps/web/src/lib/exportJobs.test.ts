@@ -94,6 +94,21 @@ it("saves a timeline file straight from the engine, with no render", async () =>
   expect(useUiStore.getState().exportStarNotice).toBe("unseen");
 });
 
+it("saves caption files from the caption URL, with the range, and does not start a video render", async () => {
+  vi.mocked(desktop.chooseVideoExport).mockResolvedValue({ ticket: 13, path: "/Users/me/cut.srt" });
+  await exportFile(project, { name: "cut.srt", format: "srt", trackId: "c1", video: { kind: "export", quality: "delivery", range: { start: 1, end: 6 } } });
+  expect(asked.request).not.toHaveBeenCalled();
+  expect(asked.save).toHaveBeenCalledExactlyOnceWith(13, api.srtUrl(PRJ, project.project.head!, { trackId: "c1", start: 1, end: 6 }));
+  expect(job()).toMatchObject({ phase: "done" });
+  expect(useUiStore.getState().exportStarNotice).toBe("unseen");
+
+  useExports.setState({ jobs: {} });
+  vi.mocked(desktop.chooseVideoExport).mockResolvedValue({ ticket: 14, path: "/Users/me/cut.vtt" });
+  await exportFile(project, { name: "cut.vtt", format: "vtt", video: { kind: "full", quality: "delivery" } });
+  expect(asked.request).not.toHaveBeenCalled();
+  expect(asked.save).toHaveBeenLastCalledWith(14, api.vttUrl(PRJ, project.project.head!));
+});
+
 it.each([
   ["failed", "ffmpeg ran out of disk", "ffmpeg ran out of disk"],
   ["failed", undefined, "The render stopped."],

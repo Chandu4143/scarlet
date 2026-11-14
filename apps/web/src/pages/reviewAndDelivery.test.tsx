@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
-import { selectOption } from "../../test/selectOption";
+import { openOptions, selectOption } from "../../test/selectOption";
 import { act, StrictMode, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Link, MemoryRouter, Outlet } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { fullRenderContext, type Render } from "@scarlet/shared";
-import { timelineDuration } from "@scarlet/timeline";
+import { NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, snapToFrame, timelineDuration } from "@scarlet/timeline";
 import { MonitorPlayback } from "../components/player/MonitorPlayback";
 import { usePictureWait } from "../components/player/usePictureWait";
 import { TimelineScrubber } from "../components/review/TimelineScrubber";
@@ -1218,6 +1218,86 @@ it("asks for the file's name once, in the system's Save dialog, which opens on t
   await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /\.otio/);
   await click(exportButton()!);
   expect(choose).toHaveBeenLastCalledWith(`${data.project.name}.otio`);
+});
+
+it("exports captions as a sidecar, keeps the range, and does not start a video render", async () => {
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 21, path: "/chosen/Interview.srt" });
+  const request = vi.spyOn(api, "requestRender");
+  const save = vi.spyOn(desktop, "finishVideoExport").mockResolvedValue("/chosen/Interview.srt");
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  const formats = await openOptions(container.querySelector<HTMLButtonElement>("#export-format")!);
+  expect(formats.map(o => o.textContent)).toEqual(expect.arrayContaining(["Captions (.srt)", "Captions (.vtt)"]));
+  await act(() => formats.find(o => o.textContent?.includes("Captions (.srt)"))!.click());
+  expect(container.querySelector("#export-range")!.hasAttribute("disabled") || container.querySelector("#export-range")!.getAttribute("aria-disabled")).toBeFalsy();
+  expect(container.querySelector("#export-resolution")).toBeNull();
+  expect(container.textContent).not.toContain("The timeline links to the original media");
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-range")!, "Custom range");
+  await click(exportButton()!);
+  expect(choose).toHaveBeenCalledWith(`${data.project.name}.srt`);
+  expect(request).not.toHaveBeenCalled();
+  const duration = snapToFrame(timelineDuration(data.timeline!), data.project.settings.fps);
+  expect(save).toHaveBeenCalledWith(21, api.srtUrl(PRJ, data.project.head!, { trackId: "c1", start: 0, end: duration }));
+});
+
+it("disables caption export when the video has no caption track", async () => {
+  const timeline = { ...data.timeline!, tracks: data.timeline!.tracks.filter(t => t.kind !== "caption") };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTION_TRACK);
+});
+
+it("disables caption export when the range has no cues", async () => {
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-range")!, "Custom range");
+  await act(() => {
+    const set = (id: string, value: string) => {
+      const field = container.querySelector<HTMLInputElement>(id)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    set("#export-start", "0:12.000");
+    set("#export-end", "0:15.000");
+  });
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTIONS_IN_RANGE);
+});
+
+it("does not throw when the chosen caption track is removed while Export is open", async () => {
+  const extra = { id: "c2", kind: "caption" as const, name: "Titles", muted: false, hidden: false, clips: [
+    { id: "t1", kind: "caption" as const, timelineIn: 0.5, timelineOut: 1.5, text: "Title", enabled: true },
+  ] };
+  const timeline = { ...data.timeline!, tracks: [...data.timeline!.tracks, extra] };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-track")!, "Titles");
+  const withoutTitles = { ...data.timeline!, tracks: data.timeline!.tracks };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline: withoutTitles } }));
+  expect(container.querySelector("#export-track")).toBeNull();
+  expect(exportButton()!.disabled).toBe(false);
+});
+
+it("offers a caption track picker only when more than one caption track is visible", async () => {
+  const extra = { id: "c2", kind: "caption" as const, name: "Titles", muted: false, hidden: false, clips: [] };
+  const timeline = { ...data.timeline!, tracks: [...data.timeline!.tracks, extra] };
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 22, path: "/chosen/Interview.vtt" });
+  const save = vi.spyOn(desktop, "finishVideoExport").mockResolvedValue("/chosen/Interview.vtt");
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.vtt\)/);
+  expect(container.querySelector("#export-track")!.textContent).toBe("Captions");
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-track")!, "Titles");
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTIONS_IN_RANGE);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-track")!, "Captions");
+  await click(exportButton()!);
+  expect(choose).toHaveBeenCalledWith(`${data.project.name}.vtt`);
+  expect(save).toHaveBeenCalledWith(22, api.vttUrl(PRJ, data.project.head!, { trackId: "c1" }));
 });
 
 it("says an export is waiting to start or finishing, with no percent that would sit still", async () => {

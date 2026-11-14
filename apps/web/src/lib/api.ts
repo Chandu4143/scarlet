@@ -33,6 +33,8 @@ export type ScarletApi = Pick<
   | "versions"
   | "historyEdit"
   | "otioUrl"
+  | "srtUrl"
+  | "vttUrl"
   | "changes"
   | "change"
   | "approveChange"

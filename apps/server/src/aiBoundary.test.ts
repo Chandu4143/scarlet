@@ -319,6 +319,8 @@ it("accepts edits only from the current claim before, during and after an editor
     expect((await api("POST", path + "/renders", { version: base, kind: "segment", range: { start: 0, end: 1 }, quality: "preview" }, task)).status).toBe(409);
     expect((await api("POST", path + "/media", undefined, task)).status).toBe(409);
     expect((await api("GET", path + `/versions/${base}/export.otio`, undefined, task)).status).toBe(409);
+    expect((await api("GET", path + `/versions/${base}/export.srt`, undefined, task)).status).toBe(409);
+    expect((await api("GET", path + `/versions/${base}/export.vtt`, undefined, task)).status).toBe(409);
     expect(ctx.repos.changes.select("project_id = ?", [project.id])).toHaveLength(count);
     expect(ctx.repos.projects.header(project.id)?.head).toBe(base);
     expect(ctx.repos.changes.get(staged.id)?.cutAssessments).toBeUndefined();
