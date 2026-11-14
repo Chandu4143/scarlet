@@ -6508,3 +6508,25 @@ it("puts a doubt a later request found about an earlier request's edit in front 
   expect(await listed(framing.id)).toEqual([expect.objectContaining({ changeId: made.id, spot: 1, check: "Black gap and overlapping lines", elsewhere: true, recheck: raised[0]!.at })]);
   expect((await listed(cutting.id)).map(e => e.check)).toEqual([undefined, undefined]);
 });
+
+it("revises an edit another request made from the request that flagged it, and from no other", async () => {
+  const { ctx } = workspace;
+  ctx.repos.projects.putMedia(project.id, { id: "camera", name: "Interview", kind: "video", path: "camera.mov" }, "ready");
+  const base = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 120 }]), { parent: null });
+  ctx.repos.projects.update(project.id, { head: base.version });
+  const by = { type: "human" as const, name: "Editor" };
+  const maker = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "Dim the opening", createdBy: by });
+  const flagger = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "Check the music", createdBy: by });
+  const propose = (taskId: string, opacity: number, timelineEdits: object[]) => api("POST", projectsPath() + "/changes?summary=true", { taskId, intent: "requested",
+    description: "Dim the opening", timelineEdits, skipRender: true, ops: [{ op: "updateClip", clipId: base.tracks[0]!.clips[0]!.id, patch: { opacity } }] });
+  const made = (await (await propose(maker.id, 0.8, [{ label: "opening", range: { start: 0, end: 10 } }])).json()).change;
+  const revise = () => propose(flagger.id, 0.6, [{ label: "opening", range: { start: 0, end: 10 }, replaces: { changeId: made.id, spot: 0 } }]);
+  // Another request can't name it until it has flagged it.
+  const refused = await revise();
+  expect(refused.status).toBe(400);
+  expect((await refused.json()).error.code).toBe("invalid_replacement");
+  ctx.repos.changes.put({ ...ctx.repos.changes.get(made.id)!, flags: [{ spot: 0, check: "The fade clips the music.", taskId: flagger.id, at: new Date().toISOString() }] });
+  const revised = await revise();
+  expect(revised.status).toBe(201);
+  expect(await revised.json()).toMatchObject({ change: { state: "approved", timelineEdits: [{ replaces: { changeId: made.id, spot: 0 } }] } });
+});

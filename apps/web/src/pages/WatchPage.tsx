@@ -172,7 +172,7 @@ interface PreviewProps {
     /** Timeline navigation offers the point to the composer. N attaches it explicitly. */
     onPick?(point: AgentContext, action: "offer" | "attach"): void;
     /** A stretch marked on the timeline's ruler for the message being written, or none once it is taken off there. */
-    onRange?(range: MarkedRange | undefined): void;
+    onRange?(range: MarkedRange | undefined, byKey?: boolean): void;
     /** The chosen edit is about to play on another version: don't start its passage on this one meanwhile. */
     holdPassage?: boolean;
     /** A revision was requested from the open card. Its message box is outside the player. */
@@ -438,10 +438,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const rangeVersion = draftVersion ?? current.timeline?.version ?? current.project.head ?? undefined;
   const shownRange = useMemo(() => markedRange && markedRange.version === rangeVersion && markedRange.mediaId === source?.id
     ? { start: markedRange.start, end: markedRange.end } : undefined, [markedRange, rangeVersion, source?.id]);
-  const markRange = (range: TimeRange | undefined) => {
+  const markRange = (range: TimeRange | undefined, byKey?: boolean) => {
     if (!range) return simple.onRange?.(undefined);
     const point = editTargetAt(range.start, rangeVersion, displayedTimeline, source?.id);
-    simple.onRange?.({ start: range.start, end: range.end, version: rangeVersion, mediaId: source?.id, clipIds: point.clipIds });
+    simple.onRange?.({ start: range.start, end: range.end, version: rangeVersion, mediaId: source?.id, clipIds: point.clipIds }, byKey);
   };
 
   useEffect(() => { if (!active) player.pause(); }, [active]);
