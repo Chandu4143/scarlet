@@ -148,11 +148,11 @@ export function inspectionPictures(ctx: Ctx) {
       const raw = indices.every(i => tiles.has(i));
       // The stills a sheet lacks render together, as many at a time as the stills cache and the picture lane allow.
       // Once one fails the sheet does too, so its other stills stop.
-      const failed = new AbortController();
+      const failed = new AbortController(), stop = AbortSignal.any([signal, failed.signal]);
       const frames = raw ? indices.map(i => tiles.get(i)!) : await Promise.all(indices.map(i =>
         stills.get(JSON.stringify([identity, i]), demand => ctx.track(read(demand, (options, active) =>
           renderTimelineFrame(project, timeline, { start: i / fps, end: (i + 1) / fps }, mediaRoot, active, 320, options))),
-        { signal: AbortSignal.any([signal, failed.signal]) }))).catch(error => { failed.abort(error); throw error; });
+        { signal: stop }))).catch(error => { failed.abort(error); throw error; });
       const sheet = await packSheet(frames, indices.map(i => i / fps), raw, signal);
       return { ...sheet, changedFrames: activity ? changes.size : undefined };
     })()), { signal: subscriber });
