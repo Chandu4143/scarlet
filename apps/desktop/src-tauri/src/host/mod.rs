@@ -826,6 +826,8 @@ impl HostRuntime {
         if let Err(e) = self.api.post_task_event(&task.id, task.started_at.as_deref(), &start).await {
             return self.complete(&task, "failed", None, Some(e.to_string())).await;
         }
+        // Tokens so far, sent to the engine while the agent works, for the count beside Stop.
+        let live = LiveUsage::start(self.api.clone(), task.id.clone(), task.started_at.clone());
         let options = |p: Prepared| RunOptions {
             agent: task.agent.clone(),
             model: model.clone(),
@@ -838,6 +840,7 @@ impl HostRuntime {
             cwd: p.cwd,
             mcp: p.mcp,
             on_event: sink.clone(),
+            on_usage: Some(live.sink()),
             cancel: cancel.clone(),
             timeout: self.timeout,
             stall: self.stall,
@@ -854,12 +857,14 @@ impl HostRuntime {
             log::info!("task {}: could not resume the CLI session ({}); starting a fresh run", task.id, result.error.as_deref().unwrap_or("unknown"));
             match self.prepare(&task, true).await {
                 Ok(p) => {
+                    live.set_base(usage.clone());
                     result = run_agent(options(p)).await;
                     log::info!("task {}: {} ended (exit code {:?})", task.id, task.agent, result.exit_code);
                 }
                 Err(e) => {
                     drop(sink);
                     drain_events(&task.id, consumer).await;
+                    live.stop().await;
                     self.record_usage(&task, usage.as_ref()).await;
                     self.post_event(&task, "error", format!("Could not prepare task: {e}"), None).await;
                     return self.complete(&task, "failed", None, Some(e.to_string())).await;
@@ -870,6 +875,8 @@ impl HostRuntime {
         // Completion waits for the forwarded events.
         drop(sink);
         drain_events(&task.id, consumer).await;
+        // The final report comes after the last live one, so it is the one the engine keeps.
+        live.stop().await;
         // Record tokens for every outcome, including a cancel or a pause for a question.
         self.record_usage(&task, usage.as_ref()).await;
 
@@ -2042,5 +2049,65 @@ mod tests {
         assert_eq!(cfg["mcpServers"]["scarlet"]["env"]["SCARLET_PROJECT"], json!("p"));
         let gem: Value = serde_json::from_str(&runner_gemini::gemini_settings_json(&spec)).unwrap();
         assert_eq!(gem["mcpServers"]["scarlet"]["args"], json!(spec.args));
+    }
+}
+
+/// A run's token count so far, sent to the engine at most every two seconds while the agent works. Each report
+/// replaces the last for the same claim, as the final one does.
+struct LiveUsage {
+    base: Arc<StdMutex<Option<usage::AgentUsage>>>,
+    latest: Arc<StdMutex<Option<usage::AgentUsage>>>,
+    changed: Arc<tokio::sync::Notify>,
+    done: CancellationToken,
+    sender: StdMutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl LiveUsage {
+    fn start(api: api::Api, task_id: String, started_at: Option<String>) -> Self {
+        let latest: Arc<StdMutex<Option<usage::AgentUsage>>> = Arc::default();
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let done = CancellationToken::new();
+        let sender = {
+            let (latest, changed, done) = (latest.clone(), changed.clone(), done.clone());
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = changed.notified() => {}
+                        _ = done.cancelled() => break,
+                    }
+                    let Some(now) = latest.lock().unwrap().take() else { continue };
+                    if let Err(e) = api.post_task_usage(&task_id, started_at.as_deref(), &now).await {
+                        log::debug!("task {task_id}: live usage report failed: {e}");
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = done.cancelled() => break,
+                    }
+                }
+            })
+        };
+        LiveUsage { base: Arc::default(), latest, changed, done, sender: StdMutex::new(Some(sender)) }
+    }
+
+    /// What the runner reports, added to the tokens of an earlier attempt in the same claim.
+    fn sink(&self) -> runner::UsageSink {
+        let (base, latest, changed) = (self.base.clone(), self.latest.clone(), self.changed.clone());
+        Arc::new(move |u| {
+            *latest.lock().unwrap() = usage::add_usage(base.lock().unwrap().clone(), Some(u));
+            changed.notify_one();
+        })
+    }
+
+    fn set_base(&self, base: Option<usage::AgentUsage>) {
+        *self.base.lock().unwrap() = base;
+    }
+
+    /// Waits for a report in flight, so none lands after the final one.
+    async fn stop(&self) {
+        self.done.cancel();
+        let sender = self.sender.lock().unwrap().take();
+        if let Some(sender) = sender {
+            let _ = sender.await;
+        }
     }
 }

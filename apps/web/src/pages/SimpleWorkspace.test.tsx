@@ -8607,6 +8607,12 @@ it("says in a suggestion's request why the video moved on from it, queues the re
   expect(units().filter(u => u.dataset.run === "task_redo")).toEqual([]);
   expect([unit().querySelector(".unit-msg > p")?.textContent, unit().querySelector(".unit-stop")?.textContent]).toEqual([requestTextFor("task_done"), "Stop"]);
   expect(said().at(-1)).toBe(REDOING);
+  // With tokens shown, what it has used so far sits in the heading before Stop, and climbs as the host reports it.
+  useUiStore.getState().setShowRunTokens(true);
+  await act(async () => useProjectStore.setState(st => ({ current: { ...st.current!, taskUsage: { task_redo: { runs: 1, inputTokens: 2_000, outputTokens: 10_000,
+    cacheReadTokens: 200_000, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 212_000, firstAt: null, lastAt: null } } } })));
+  expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens", "Stop"]);
+  useUiStore.getState().setShowRunTokens(false);
   // The suggestion comes back made again: the line gives way to it, and it plays from the same block.
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_redo" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString(), changeIds: ["chg_redone"],
       summary: "Trimmed the pause where it sits now." } : t),
