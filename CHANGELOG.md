@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 14, 2026
 
+- When Claude Code can't reach Scarlet's editing tools, the request now ends as Couldn't finish with Retry instead of looking finished.
 - Settings › About lists what changed in each update, and hovering the update button says what the new build brings.
 - Media says why an import won't be transcribed, and links straight to the fix.
 - The transcript marks words and sounds picked up by a microphone the dialogue isn't on.
