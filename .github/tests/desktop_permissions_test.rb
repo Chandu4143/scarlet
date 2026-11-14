@@ -13,7 +13,7 @@ class DesktopPermissionsTest < Minitest::Test
     @build = YAML.safe_load(File.read(File.join(workflows, "desktop-build.yml"))).fetch("jobs").fetch("build")
   end
 
-  def test_every_main_push_builds_all_installers
+  def test_main_builds_all_installers
     # Psych versions using YAML 1.1 read the key 'on' as true.
     trigger = @entry["on"] || @entry.fetch(true)
     assert_equal({"branches" => ["main"]}, trigger.fetch("push"))
@@ -31,6 +31,17 @@ class DesktopPermissionsTest < Minitest::Test
       refute_includes events, "pull_request", File.basename(path)
       refute_includes events, "pull_request_target", File.basename(path)
     end
+  end
+
+  def test_only_automatic_test_builds_share_runners_with_newer_main_pushes
+    linux = YAML.safe_load(File.read(File.expand_path("../workflows/linux-desktop.yml", __dir__)))
+    [@entry, linux].each do |workflow|
+      condition = "github.event_name == 'push' && github.run_attempt == '1' && vars.SCARLET_STABLE_RELEASES != 'true'"
+      assert_equal "${{ github.workflow }}-${{ #{condition} && github.ref || github.run_id }}",
+        workflow.fetch("concurrency").fetch("group")
+      assert_equal true, workflow.fetch("concurrency").fetch("cancel-in-progress")
+    end
+    refute_equal @entry.fetch("name"), linux.fetch("name")
   end
 
   def test_checks_and_native_builds_have_read_only_repository_access
