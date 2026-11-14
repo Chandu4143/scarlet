@@ -40,6 +40,10 @@ Use “model” in the interface for what the editor picks to run their requests
 
 Apply requested edits to the working timeline. Keep review and follow-up replies in their edit thread. “File this thread” files the entire thread. Each timeline marker and inline chat link previews an individual edit on the full project timeline.
 
+## Changelog
+
+`CHANGELOG.md` is what the editor reads in Settings › About and in the update button's hover. When a change alters what the editor sees or can do, add one plain sentence for it at the top of today's date section (`## November 14, 2026`), in the editor's words, with no file names or internals. Leave out tests, builds and tooling. Keep a line's words once written: the hover finds what an update brings by the lines this build doesn't have.
+
 ## AI editing agents
 
 Read `docs/AI-AGENTS.md` before changing the prompt, skills, MCP tools, perception, agent hosts or editor preferences. Use [the skill and tool ownership guide](docs/skills-and-tools.md) to decide where new behavior belongs and how to test it.
