@@ -94,6 +94,9 @@ const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_questio
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
 const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
+/** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
+const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this footage after fromVersion. Read that passage on currentVersion and make the edit again there.";
+
 /** Source seconds read without saving a part before dialogue_scan reminds the agent that the editor is waiting. */
 export const SAVE_REMINDER_SECONDS = 300;
 /** The latest staged pass of a run, and how many of its cuts still have no recommendation. */
@@ -927,9 +930,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       author: ctx.author,
       ...(ctx.taskId ? { taskId: ctx.taskId } : {}),
     };
-    const { change, timeline, diffDescription, duration, onWholeFrames: placed } = await client.proposeChangeSummary(ctx.projectId, req);
+    const { change, timeline, diffDescription, duration, onWholeFrames: placed, notApplied } = await client.proposeChangeSummary(ctx.projectId, req);
     if (placed?.length) onWholeFrames.push(...placed);
-    if (change.state === "approved") lastTimeline = undefined;
+    // The video moved on, with this edit or under it: the next read is of the video as it is now.
+    if (change.state === "approved" || notApplied) lastTimeline = undefined;
     const action = change.state === "approved" ? "Applied" : "Proposed";
     const lines = diffDescription ?? (before && timeline ? describeDiff(diffTimelines(before, timeline), undefined, clipById) : []);
     await postEvent({
@@ -947,6 +951,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       duration: duration ?? (timeline ? timelineDuration(timeline) : undefined),
       diff: lines,
       ...(onWholeFrames.length && { onWholeFrames }),
+      ...(notApplied && { notApplied: { ...notApplied, next: NOT_APPLIED_NEXT } }),
     };
     return json(result);
   }
@@ -2454,7 +2459,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {

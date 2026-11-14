@@ -453,3 +453,43 @@ it("finds a run's attempts among its own project's tasks, not by reading every p
     .some(({ detail }) => /^SCAN tasks\b/.test(detail)));
   expect(scans).toEqual([]);
 });
+
+it("starts requests about different cuts or edits together, and every other request in turn", async () => {
+  const send = async (instruction: string, context?: Record<string, unknown>) =>
+    (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { kind: "edit", agent: "claude", instruction, ...(context && { context }) })).body.task;
+  const { body: { host } } = await api<{ host: { id: string } }>("POST", "/hosts/register", { name: "test", platform: "test", agents: [{ id: "claude", installed: true }] });
+  const claim = async () => {
+    for (;;) {
+      const { task } = (await api<{ task: Task | null }>("POST", `/hosts/${host.id}/claim`, {})).body;
+      if (task?.kind !== "learning_check") return task?.id ?? null;
+    }
+  };
+  const finish = (id: string) => api("POST", `/tasks/${id}/complete`, { state: "done" });
+  const edit = { threadId: "tsk_thread", changeId: "chg_edits" };
+  const first = await send("Hold the zoom longer", { ...edit, editIndex: 0 });
+  const same = await send("And ease out of it", { ...edit, editIndex: 0 });
+  const other = await send("Move the title up", { ...edit, editIndex: 1 });
+  const whole = await send("Add captions");
+  const late = await send("Make the wrap shorter", { ...edit, editIndex: 2 });
+
+  // Two agents start at once on two edits. The second request about the first edit waits for the first.
+  expect(await claim()).toBe(first.id);
+  expect(await claim()).toBe(other.id);
+  expect(await claim()).toBeNull();
+  // A question about one edit holds only what is about that edit.
+  expect((await api<{ waiting: boolean }>("POST", `/tasks/${other.id}/question`,
+    { text: "Above the lower third?", startedAt: app.ctx.repos.tasks.get(other.id)!.startedAt })).body.waiting).toBe(true);
+  await finish(first.id);
+  expect(await claim()).toBe(same.id);
+  // A request about the whole video runs alone: it waits for both, and the revision asked after it waits for it.
+  expect(await claim()).toBeNull();
+  await finish(same.id);
+  expect(await claim()).toBeNull();
+  await api("POST", `/tasks/${other.id}/answer`, { text: "Yes" });
+  expect(await claim()).toBe(other.id);
+  await finish(other.id);
+  expect(await claim()).toBe(whole.id);
+  expect(await claim()).toBeNull();
+  await finish(whole.id);
+  expect(await claim()).toBe(late.id);
+});

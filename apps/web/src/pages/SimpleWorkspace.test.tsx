@@ -3721,7 +3721,8 @@ it("lists the queue in the order it will run while one call is revised, and says
   const tray = () => container.querySelector<HTMLElement>('[aria-label="Queued requests"]')!;
   // The note on the call runs next, though the new edit was asked first: a new edit waits until the calls are made.
   expect(tray().querySelector(".queue-head")?.textContent).toBe("NextCut 2Keep the breath.2 queued");
-  expect(tray().getAttribute("title")).toBe("Starts when Scarlet finishes what it’s on");
+  // It is about another call than the one Scarlet is on, so it waits for nothing: it is here only until Scarlet picks it up.
+  expect(tray().getAttribute("title")).toBeNull();
   // Opened, the rows read in that order. Every row starts at the same place: only the first carries a word, and the
   // new edit says what holds it once it is next.
   await click(tray().querySelector(".queue-head")!);
@@ -3947,6 +3948,43 @@ it("keeps a second call Revising… when the first revised cut comes back, and d
   await press("a");
   await act(async () => {});
   expect(approve).not.toHaveBeenCalled();
+});
+
+it("shows Scarlet on two calls at once: each row at work with its own Stop, the count in the pass's heading, nothing queued", async () => {
+  finishedPass();
+  const cancelTask = vi.fn().mockResolvedValue(undefined);
+  useProjectStore.setState({ cancelTask });
+  await show();
+  await act(async () => {});
+  const block = () => passCard().closest<HTMLElement>(".unit")!;
+  const started = () => ({ state: "running" as const, startedAt: new Date().toISOString() });
+  // The editor sends back the first cut and then the aside. They are different cuts, so Scarlet starts on both.
+  await event(d => ({ ...d, tasks: [...d.tasks, callRequest("task_revise", 0, { kind: "revise" as const, ...started() })] }));
+  await event(d => ({ ...d, changes: d.changes.map(c => c.id === "chg_ready" ? { ...c, state: "revising" as const } : c) }));
+  // One at work says nothing of doing several.
+  expect(block().querySelector(".unit-msg .unit-word")).toBeNull();
+  await event(d => ({ ...d, tasks: [...d.tasks, callRequest("task_aside", 2, { kind: "edit" as const, instruction: "Keep the aside.", ...started() })] }));
+  await act(async () => {});
+  // Nothing waits its turn: there is no tray.
+  expect(document.querySelector(".queue-tray")).toBeNull();
+  // The pass's heading says how many Scarlet is on, beside what still needs the editor.
+  const word = block().querySelector(".unit-msg .unit-word")!;
+  expect(word.textContent).toBe("Working on 2 at once");
+  expect(word.getAttribute("title")).toBe("Scarlet is working on 2 cuts or edits at the same time. Each has its own Stop.");
+  expect(passCard().querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
+  // Each call's row is at work, and each request sits under its own row with its own Stop.
+  const working = [...passCard().querySelectorAll(".simple-pass-value.working-text")];
+  expect(working.map(el => el.textContent)).toEqual(["Revising…", "Revising…"]);
+  const under = [...passCard().querySelectorAll<HTMLElement>(".subunit")];
+  expect(under.map(el => el.dataset.run)).toEqual(["task_revise", "task_aside"]);
+  expect(under.map(el => el.querySelector(".unit-stop")?.textContent)).toEqual(["Stop", "Stop"]);
+  // Stopping one stops only that one.
+  await click(under[1]!.querySelector(".unit-stop")!);
+  expect(cancelTask.mock.calls).toEqual([["task_aside"]]);
+  // With one left at work the heading says nothing more than the row does.
+  await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_aside" ? { ...t, state: "cancelled" as const, finishedAt: new Date().toISOString() } : t) }));
+  await act(async () => {});
+  expect([...block().querySelectorAll(".unit-msg .unit-word")].map(el => el.textContent)).not.toContain("Working on 2 at once");
 });
 
 it("keeps a call Revising… when it comes back revised while a second note on it still waits", async () => {

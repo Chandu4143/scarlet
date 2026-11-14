@@ -7,7 +7,7 @@ import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, canStartCutReview, cutSummary, isPublishedCall, mapStagedCut, makeTimeMap, rebaseOp, RebaseConflict, reviewReasons, timelineDuration, type Change, type CutAssessment, type CutReview, type TimeMap, type TimeRange, type Timeline } from "@scarlet/timeline";
-import { taskRunKind, fullRenderContext, matchesEdit, queueOrder, queueWait, REVISED_CHECK, threadEditList, type EditRef, type Task, type ThreadEdit } from "@scarlet/shared";
+import { isAsideTask, taskRunKind, fullRenderContext, matchesEdit, queueOrder, queueWait, REVISED_CHECK, threadEditList, type EditRef, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { needNumbers } from "../lib/needNumbers";
@@ -389,6 +389,8 @@ interface OpenPass {
 type HoveredReviewRow = { threadId: string; editKey?: string; call?: number };
 
 interface ChatActions {
+  /** How many requests about one cut or edit Scarlet is working on at this moment. It works on several at once when each is about its own. */
+  atOnce?: number;
   showing?: ThreadEdit;
   /** The request whose own row opened the edit that's showing. Opened from a list or the timeline, there is none. */
   showingFrom?: string;
@@ -1342,8 +1344,14 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     // left a suggestion. A finished request has nothing there. What needs the editor ("N need you") takes this place
     // when there is any. While Scarlet has the request, Stop follows as the heading's last word.
     const ended = runEnded(task);
-    const standing = runIsActive(task) ? task.state === "waiting_for_user" ? <span className="unit-dot" aria-hidden /> : null
+    const stands = runIsActive(task) ? task.state === "waiting_for_user" ? <span className="unit-dot" aria-hidden /> : null
       : ended ? <span className="unit-word">{ended.replace(/ · .*$/, "")}</span> : proposing ? <span className="unit-word">Suggestion</span> : null;
+    // Scarlet works on several cuts or edits at once, an agent on each. The block that holds one of them says how many
+    // there are, in the heading's place for where a request stands: each has its own row, and some may be out of view.
+    const atOnce = actions.atOnce ?? 0;
+    const among = !inside && atOnce > 1 && [run, ...(run === owner ? runs.filter(r => nested.has(r.root)) : [])]
+      .some(r => single(r) && isWorking(r.task.state));
+    const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time. Each has its own Stop.`}>Working on {atOnce} at once</span> : null);
     // One way to stop each request: Stop in its heading once Scarlet has it, the tray's × while it still waits there.
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
     const stopLink = stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>;
@@ -2159,6 +2167,8 @@ export function SimpleWorkspace() {
   // when the editor opens it again. A card that only reloads under them, as when a new working cut lands, keeps both.
   const startVisit = () => { setCutSide(undefined); setScriptFor(undefined); };
   const actions: ChatActions = {
+    atOnce: tasks.filter(t => isWorking(t.state) && t.kind !== "transcribe" && !isAsideTask(t)
+      && !!t.context.changeId && (t.context.cutIndex !== undefined || t.context.editIndex !== undefined)).length,
     pass: undefined,
     showing,
     showingFrom: openedFrom && showing && matchesEdit(showing, openedFrom.ref) ? openedFrom.run : undefined,
