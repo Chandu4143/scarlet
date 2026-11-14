@@ -1601,7 +1601,51 @@ export function saveCutChoices(ctx: Ctx, user: User, change: Change, body: {
   const applyWhenDone = body.applyWhenDone === undefined ? change.applyWhenDone
     : body.applyWhenDone ? change.applyWhenDone ?? { userId: user.id, at: now() } : undefined;
   const saved = saveChange(ctx, { ...change, cutChoices: [...byIndex.values()].sort((a, b) => a.index - b.index), applyWhenDone, error: undefined });
-  return applyChoicesWhenDone(ctx, saved) ?? saved;
+  return recheckMovedCalls(ctx, saved, change, review) ?? applyChoicesWhenDone(ctx, saved) ?? saved;
+}
+
+/**
+ * Send one cut the editor approved back to Scarlet: its footage changed on the working cut, so it can't go in as it
+ * was staged. The other calls keep their decisions (`choices`); this one asks again until the recheck lands.
+ */
+function recheckApprovedCut(ctx: Ctx, project: Project, change: Change, review: CutReview,
+  at: { index: number; range?: TimeRange; reason: string }, head: string, choices: CutChoice[]) {
+  const { index, range, reason } = at;
+  const removed = review.cuts[index]!.removed;
+  const former = change.cutAssessments?.find(a => a.index === index);
+  const assessments = [...(change.cutAssessments ?? []).filter(a => a.index !== index), {
+    index, ...removed, verdict: "ask" as const, ...(former?.revised && { revised: true }), ...(former?.askOrder && { askOrder: former.askOrder }),
+    reason: former?.reason ?? change.cutReasons?.find(c => c.start >= removed.start - 1e-6 && c.start < removed.end)?.reason ?? "Check this passage." }];
+  const checked = { ...change, cutChoices: choices.filter(c => c.index !== index), cutAssessments: assessments.sort((a, b) => a.index - b.index) };
+  const prior = change.taskId ? ctx.repos.tasks.get(change.taskId) : undefined;
+  const task = createTask(ctx, { projectId: project.id, kind: "revise", agent: prior?.agent ?? ctx.settings().defaultAgent,
+    model: prior?.model, effort: prior?.effort, serviceTier: prior?.serviceTier, createdBy: { type: "scarlet", name: "Scarlet" },
+    context: { changeId: change.id, threadId: threadOfChange(ctx, change), cutIndex: index, version: head, time: range?.start, end: range?.end,
+      noteIds: change.noteIds, message: "Recheck this cut" }, cutConflict: { version: head, range, approved: true },
+    instruction: `The editor approved this cut. The passage changed before it could apply. Recheck the current footage and preserve the intended edit. ${reason}` +
+      cutRevisionReference(change, { cutIndex: index, time: removed.start, end: removed.end, clipIds: [] }) });
+  return { change: saveChange(ctx, beginRevision(checked, task)), task };
+}
+
+/**
+ * A call the editor just approved whose footage changed on the working cut since the pass staged it goes back to
+ * Scarlet now, while the editor makes the other calls, instead of when the last call applies the pass (2026-11-14:
+ * every such recheck waited for the last call, one after another). One recheck at a time: while the pass is being
+ * revised, applying it finds the rest.
+ */
+function recheckMovedCalls(ctx: Ctx, saved: Change, before: Change, review: CutReview): Change | undefined {
+  if (saved.state !== "ready" || review.firstCut) return;
+  const project = ctx.repos.projects.get(saved.projectId);
+  const head = project?.head;
+  if (!project || !head || head === saved.fromVersion) return;
+  const was = new Map(before.cutChoices?.map(c => [c.index, c.choice]));
+  const approved = (saved.cutChoices ?? []).filter(c => c.choice === "cut" && was.get(c.index) !== "cut");
+  if (!approved.length) return;
+  const place = currentCutRanges(ctx, project, saved, review, resolveTimeline(ctx, project, head));
+  for (const { index } of approved) {
+    const at = place(index);
+    if (at.kind === "conflict") return recheckApprovedCut(ctx, project, saved, review, { index, range: at.range, reason: at.reason }, head, saved.cutChoices ?? []).change;
+  }
 }
 
 /** The task now doing a run's work: a run interrupted when Scarlet quit carries on under a new task. */
@@ -1753,19 +1797,8 @@ export function approveChange(ctx: Ctx, user: User, change: Change, opts: { spot
           if (i === index) savedChoices.delete(i);
           else savedChoices.set(i, { index: i, ...cut.removed, choice: restored.has(i) ? "keep" : "cut" });
         }
-        const former = change.cutAssessments?.find(a => a.index === index);
-        const assessments = [...(change.cutAssessments ?? []).filter(a => a.index !== index), {
-          index, ...review.cuts[index]!.removed, verdict: "ask" as const, ...(former?.revised && { revised: true }), ...(former?.askOrder && { askOrder: former.askOrder }),
-          reason: former?.reason ?? change.cutReasons?.find(c => c.start >= review.cuts[index]!.removed.start - 1e-6 && c.start < review.cuts[index]!.removed.end)?.reason ?? "Check this passage." }];
-        const checked = { ...change, cutChoices: [...savedChoices.values()], cutAssessments: assessments.sort((a, b) => a.index - b.index), applyWhenDone: undefined };
-        const prior = change.taskId ? ctx.repos.tasks.get(change.taskId) : undefined;
-        const task = createTask(ctx, { projectId: project.id, kind: "revise", agent: prior?.agent ?? ctx.settings().defaultAgent,
-          model: prior?.model, effort: prior?.effort, serviceTier: prior?.serviceTier, createdBy: { type: "scarlet", name: "Scarlet" },
-          context: { changeId: change.id, threadId: threadOfChange(ctx, change), cutIndex: index, version: head, time: range?.start, end: range?.end,
-            noteIds: change.noteIds, message: "Recheck this cut" }, cutConflict: { version: head, range, approved: true },
-          instruction: `The editor approved this cut. The passage changed before it could apply. Recheck the current footage and preserve the intended edit. ${reason}` +
-            cutRevisionReference(change, { cutIndex: index, time: review.cuts[index]!.removed.start, end: review.cuts[index]!.removed.end, clipIds: [] }) });
-        const pending = saveChange(ctx, beginRevision(checked, task));
+        const { change: pending, task } = recheckApprovedCut(ctx, project, { ...change, applyWhenDone: undefined }, review, { index, range, reason }, head,
+          [...savedChoices.values()]);
         return { change: pending, project, task, reason, outcome: "sent_back" };
       }
       appliedReview = placed.applied;
