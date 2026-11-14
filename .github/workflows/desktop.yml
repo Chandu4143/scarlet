@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes test builds. Releases, manual builds and retries get their own group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_attempt == '1' && vars.SCARLET_STABLE_RELEASES != 'true' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
