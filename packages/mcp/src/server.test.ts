@@ -528,6 +528,13 @@ describe("timeline_propose", () => {
       const moved = await propose("moved", captions(), [{ op: "updateTrack", trackId: "cap", patch: { kind: "video" } }, { op: "moveClip", clipId: "line", timelineIn: 0, trackId: "cap2" }]);
       expect(moved.r.isError, textOf(moved.r)).toBeFalsy();
       expect(moved.posted).toBe(true);
+      // A caption added to a video track that the same call makes a caption track is proposed in either order.
+      const add = { op: "addClip", trackId: "pic", clip: words("new", 0) }, convert = { op: "updateTrack", trackId: "pic", patch: { kind: "caption" } };
+      for (const ops of [[add, convert], [convert, add]]) {
+        const ordered = await propose("ordered", [makeTrack("video", "Picture", "pic")], ops);
+        expect(ordered.r.isError, textOf(ordered.r)).toBeFalsy();
+        expect(ordered.posted).toBe(true);
+      }
       // A version saved before this was refused holds two captions on video and audio tracks: one call takes both out.
       const misplaced = [{ ...makeTrack("video", "Picture", "pic"), clips: [words("one", 0)] }, { ...makeTrack("audio", "Sound", "snd"), clips: [words("two", 2)] }];
       const repaired = await propose("repaired", misplaced, [{ op: "removeClip", clipId: "one" }, { op: "removeClip", clipId: "two" }]);

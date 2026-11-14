@@ -302,10 +302,19 @@ export function duplicateClipId(tracks: Track[]): string | undefined {
 }
 
 /** A caption track holds only captions, and video and audio tracks hold none. The renderer skips a clip on the other kind. */
-export function clipFitsTrack(clip: Clip, track: Track): boolean {
+function clipFitsTrack(clip: Clip, track: Track): boolean {
   if (track.kind === "caption") return clip.kind === "caption";
   if (clip.kind === "caption") return false;
   return true;
+}
+
+/** The first clip on each track that the track's kind can't hold: a track of the wrong kind would otherwise name every clip it holds. */
+export function misplacedClips(tracks: Track[]) {
+  return tracks.flatMap((track, t) => {
+    const c = track.clips.findIndex((clip) => !clipFitsTrack(clip, track));
+    const clip = track.clips[c];
+    return clip ? [{ path: ["tracks", t, "clips", c], message: `clip ${clip.id} of kind ${clip.kind} cannot go on ${track.kind} track ${track.id}` }] : [];
+  });
 }
 
 /** Validate new writes while keeping historical versions readable. */
@@ -316,12 +325,7 @@ export const WritableTimeline = Timeline.superRefine((timeline, ctx) => {
   if (duplicate !== undefined) {
     ctx.addIssue({ code: "custom", path: ["tracks"], message: `duplicate clip id: ${duplicate}` });
   }
-  // The first one on each track: a track of the wrong kind would otherwise name every clip it holds.
-  timeline.tracks.forEach((track, t) => {
-    const c = track.clips.findIndex((clip) => !clipFitsTrack(clip, track));
-    const clip = track.clips[c];
-    if (clip) ctx.addIssue({ code: "custom", path: ["tracks", t, "clips", c], message: `clip ${clip.id} of kind ${clip.kind} cannot go on ${track.kind} track ${track.id}` });
-  });
+  for (const issue of misplacedClips(timeline.tracks)) ctx.addIssue({ code: "custom", ...issue });
 });
 
 // ---------------------------------------------------------------------------
