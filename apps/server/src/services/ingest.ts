@@ -68,6 +68,32 @@ export async function recoverIngest(ctx: Ctx, projectId?: string) {
   }
 }
 
+/**
+ * A recording is transcribed once it has been prepared, and that is two steps: a quit between them left it ready with
+ * no transcript and nothing to start one. At launch each recording added in the last days that was to be transcribed
+ * and never had a transcription begun gets one, while the service it was added under is still the one selected.
+ */
+export async function recoverImportTranscriptions(ctx: Ctx, since = Date.now() - 3 * 24 * 60 * 60 * 1000) {
+  const waiting = ctx.db.prepare(`SELECT m.id FROM media m JOIN projects p ON p.id = m.project_id
+    WHERE m.status = 'ready' AND m.created_at > ? AND p.deleted_at IS NULL AND NOT p.media_paused AND NOT p.archived
+      AND json_extract(m.json, '$.transcriptionOnImport') IS NOT NULL AND json_extract(m.json, '$.transcriptId') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.kind = 'transcribe' AND t.project_id = m.project_id AND json_extract(t.json, '$.context.mediaId') = m.id)
+      AND NOT EXISTS (SELECT 1 FROM transcripts s WHERE s.media_id = m.id)
+    ORDER BY m.created_at`).all(new Date(since).toISOString()) as Array<{ id: string }>;
+  for (const { id } of waiting) {
+    if (ctx.shutdown.aborted) return;
+    const media = ctx.repos.projects.getMedia(id);
+    if (!media || media.status !== "ready" || media.hasAudio === false || media.kind === "image") continue;
+    const policy = ctx.repos.settings.transcriptionPolicy();
+    if (media.transcriptionOnImport !== policy.settings.provider) continue;
+    const provider = await availableTranscriptionProvider(ctx, policy);
+    if (!provider || policy.signal.aborted) continue;
+    ctx.log(`[ingest] ${id} was ready with no transcription begun; starting it`);
+    const { projectId, status: _s, error: _e, ...asset } = media;
+    ctx.track(startWithProvider(ctx, projectId, asset, provider, provider.name, undefined, "interrupt", "missing").done.catch(() => undefined));
+  }
+}
+
 /** The same in the background. Nothing awaits it, so a failure is logged here. */
 export function recoverIngestInBackground(ctx: Ctx, projectId?: string): void {
   void ctx.track(recoverIngest(ctx, projectId).catch(error => {
@@ -887,11 +913,20 @@ export async function readWaveformCache(ctx: Ctx, projectId: string, mediaId: st
   // Sync and multi-mic timelines alternate between recordings. Share their
   // decoded arrays within one byte budget and invalidate on file replacement.
   const key = JSON.stringify([p, file.size, file.ino, file.ctimeMs, file.mtimeMs]);
-  return ctx.waveformReads.get(key, async () => {
-    if (p.endsWith(".waveform")) return decodeWaveformCache(await readFile(p));
-    const cache = JSON.parse(await readFile(p, "utf8")) as WaveformCache;
-    if (!Array.isArray(cache.peaks) || cache.peaks.length > MAX_WAVEFORM_POINTS ||
-        (cache.rms && (!Array.isArray(cache.rms) || cache.rms.length > MAX_WAVEFORM_POINTS))) throw new Error("Invalid waveform cache.");
-    return cache;
-  });
+  const path = p;
+  try {
+    return await ctx.waveformReads.get(key, async () => {
+      if (path.endsWith(".waveform")) return decodeWaveformCache(await readFile(path));
+      const cache = JSON.parse(await readFile(path, "utf8")) as WaveformCache;
+      if (!Array.isArray(cache.peaks) || cache.peaks.length > MAX_WAVEFORM_POINTS ||
+          (cache.rms && (!Array.isArray(cache.rms) || cache.rms.length > MAX_WAVEFORM_POINTS))) throw new Error("Invalid waveform cache.");
+      return cache;
+    });
+  } catch (err) {
+    // A waveform cut short as it was saved, by a power cut, can't be read. It is built again, not failed for good.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT" || !sourceForRebuild) throw err;
+    ctx.log(`[media] ${mediaId}: the saved waveform can’t be read and is built again: ${(err as Error).message}`);
+    await rm(path, { force: true });
+    return null;
+  }
 }

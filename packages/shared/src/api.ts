@@ -713,6 +713,8 @@ export const Task = z.object({
   }).optional(),
   /** The worker stopped before finishing, possibly after saving changes. */
   interrupted: z.boolean().optional(),
+  /** The run's worker went missing while Scarlet stayed open. A quit doesn't count: only these limit how often a run carries on by itself. */
+  lostWorker: z.boolean().optional(),
   /**
    * A finished run waited for these recordings' transcripts or dialogue analysis and ended before they were ready,
    * so it saved only what it could do without them. Scarlet measures this from the run's waits; it can be resumed.

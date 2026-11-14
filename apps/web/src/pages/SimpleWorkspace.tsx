@@ -126,6 +126,23 @@ export function cutOnWorkingCut(cut: TimeRange, onto: { map: TimeMap; timeline: 
 }
 
 type Panel = "media" | "history" | "export" | "learnings" | null;
+
+const REWORDING_KEY = "scarlet.rewording.v1";
+/** The queued request whose words were in the message box when the project was last on screen, with those words. */
+function savedRewording(projectId: string): { id: string; text: string } | undefined {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REWORDING_KEY) ?? "null") as { projectId?: unknown; id?: unknown; text?: unknown } | null;
+    return saved && saved.projectId === projectId && typeof saved.id === "string" && typeof saved.text === "string" ? { id: saved.id, text: saved.text } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function saveRewording(projectId: string, rewording: { id: string; text: string } | undefined) {
+  try {
+    if (rewording) localStorage.setItem(REWORDING_KEY, JSON.stringify({ projectId, ...rewording }));
+    else if (savedRewording(projectId)) localStorage.removeItem(REWORDING_KEY);
+  } catch { /* Without storage the words last for this session only. */ }
+}
 type CutChoice = "keep" | "cut";
 const savedChoices = (change: Change): Record<number, CutChoice> =>
   Object.fromEntries((change.cutChoices ?? []).map(c => [c.index, c.choice]));
@@ -1465,12 +1482,24 @@ export function SimpleWorkspace() {
   // ?panel=. It is read once and taken off the address, so a reload or the way back doesn't open the drawer again.
   const [search, setSearch] = useSearchParams();
   const [panel, setPanel] = useState<Panel>(() => { const asked = search.get("panel"); return asked === "media" || asked === "history" ? asked : null; });
+  // The cut, edit or call that was open when Scarlet last closed arrives the same way, as ?open=, and is read once too.
+  const [reopen, setReopen] = useState(() => search.get("open") ?? undefined);
   useEffect(() => {
-    if (!search.has("panel")) return;
+    if (!search.has("panel") && !search.has("open")) return;
     const rest = new URLSearchParams(search);
     rest.delete("panel");
+    rest.delete("open");
     setSearch(rest, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // What Scarlet opens again by itself at launch doesn't start playing: its card comes back with the video paused on
+  // it, as if the editor had paused there. Anything the editor then does opens and plays as ever.
+  const quietOpen = useRef(false);
+  useEffect(() => {
+    const byEditor = () => { quietOpen.current = false; };
+    window.addEventListener("pointerdown", byEditor, true);
+    window.addEventListener("keydown", byEditor, true);
+    return () => { window.removeEventListener("pointerdown", byEditor, true); window.removeEventListener("keydown", byEditor, true); };
+  }, []);
 
   const threads = useMemo(() => {
     // A retry taken out of line before it began still belongs to its request, which then says it stopped.
@@ -1872,7 +1901,8 @@ export function SimpleWorkspace() {
       startedListen.current = audition;
       const sample = conflict ?? cutOverride;
       const chosen = `${listening.key}/${listening.side}/${listening.take}` + (sample ? `/${sample.version}/${heard?.start}/${heard?.end}` : "");
-      const again = playedListen.current === chosen;
+      const again = quietOpen.current || playedListen.current === chosen;
+      quietOpen.current = false;
       playedListen.current = chosen;
       // The working cut changed under a listen already begun. A playhead inside that listen follows the footage it was
       // on, or keeps its place against the cut where that footage is gone. One the editor scrubbed elsewhere stays put,
@@ -2550,7 +2580,8 @@ export function SimpleWorkspace() {
     if (!appliedListen || !openPick || joinPending) return;
     return afterPlayerMount(() => {
       const chosen = `${appliedSide}/${shownSide?.take ?? 0}`;
-      const again = playedApplied.current ? playedApplied.current.chosen === chosen : !shownSide && heardPick.current === openPick;
+      const again = quietOpen.current || (playedApplied.current ? playedApplied.current.chosen === chosen : !shownSide && heardPick.current === openPick);
+      quietOpen.current = false;
       playedApplied.current = { pick: openPick, chosen };
       heardPick.current = openPick;
       return again ? player.audition(appliedListen, fps, true) : player.audition(appliedListen, fps);
@@ -2603,6 +2634,31 @@ export function SimpleWorkspace() {
   const placeOnCut = () => draftVersion ? undefined : chosenSource ? cutPlace.current : cutKey ? shownAt : usePlayerStore.getState().time;
   const placeNow = useRef(placeOnCut);
   placeNow.current = placeOnCut;
+  const openNow = useRef<() => string | undefined>(() => undefined);
+  openNow.current = () => openCall && pass ? `call:${pass.id}:${openCall.index}`
+    // Until it has been opened again, what is to be opened is still what was open.
+    : reviewingEdit && focusThread ? `edit:${focusThread.id}:${reviewingEdit.changeId}:${reviewingEdit.spot}` : reopen;
+  const panelNow = useRef(panel);
+  panelNow.current = panel === "media" || panel === "history" ? panel : null;
+  // Open again what was open at the last quit, once its request and its calls are here. One that is gone since, a call
+  // decided or a pass applied meanwhile, opens nothing.
+  const reviewRead = cutReview.review !== undefined || !!cutReview.error;
+  useEffect(() => {
+    // At launch the project's requests and edits are read a moment after the page is up: until they are, nothing is gone.
+    if (!reopen || current.reviewStatus === "loading") return;
+    const [kind, first, second, third] = reopen.split(":");
+    if (kind === "edit") {
+      const thread = threads.find(t => t.id === first);
+      const spot = Number(third);
+      if (thread && second && Number.isInteger(spot)) { quietOpen.current = true; actions.openEdit(thread, { changeId: second, spot }); }
+    } else if (kind === "call" && pass && pass.id === first) {
+      const call = allCalls.find(a => a.index === Number(second));
+      // Its calls are still being read: wait for them.
+      if (!call && !reviewRead) return;
+      if (call) { quietOpen.current = true; actions.listen(pass, call); }
+    }
+    setReopen(undefined);
+  }, [reopen, current.reviewStatus, pass?.id, allCalls.length, reviewRead]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const bookmark = (event: Event) => {
       const at = placeNow.current();
@@ -2611,6 +2667,10 @@ export function SimpleWorkspace() {
       place.set("t", String(at));
       const { rate } = usePlayerStore.getState();
       if (rate !== 1) place.set("speed", String(rate));
+      // What is open goes with the place: the drawer, and the call, cut or edit on its card.
+      const open = openNow.current();
+      if (open) place.set("open", open);
+      if (panelNow.current) place.set("panel", panelNow.current);
     };
     window.addEventListener("scarlet:bookmark-project", bookmark);
     return () => window.removeEventListener("scarlet:bookmark-project", bookmark);
@@ -3304,7 +3364,10 @@ export function SimpleWorkspace() {
   const queueHint = queued[0] && waitHint(queued[0]);
   // The queued request whose words are in the message box to change, and the words as they stand there. Scarlet
   // doesn't start it meanwhile. A message being written waits, and is in the box again once these words are done.
-  const [rewording, setRewording] = useState<{ id: string; text: string }>();
+  // They are kept as they are typed, as an unsent message is: after a quit the request is in the box again with the
+  // words as they stood, and held again, instead of starting a minute later with the words it was first given.
+  const [rewording, setRewording] = useState<{ id: string; text: string } | undefined>(() => savedRewording(current.id));
+  useEffect(() => saveRewording(current.id, rewording), [current.id, rewording]);
   // Whether the tray is open. Held here: the box it sits on is built again whenever it is aimed somewhere else.
   const trayOpen = useState(false);
   const rewordingItem = rewording && queuedItems.find(item => item.id === rewording.id);
@@ -3531,7 +3594,7 @@ export function SimpleWorkspace() {
                 ? { key: callPlaybackKey(listening.index, callTimeline.version), start: audition.start, side: listening.side,
                   beforeWindow: preparedCall?.before.window, afterWindow: preparedCall?.after.window,
                   beforeFile: preparedCall?.before.file, afterFile: preparedCall?.after.file } : undefined,
-            onGap: hearInBefore, onBand, onPick: pickPoint, onRange: markRange, holdPassage: cutWaits, writeRequest, heard: heardPick }} threadView={playerView}
+            onGap: hearInBefore, onBand, onPick: pickPoint, onRange: markRange, holdPassage: cutWaits, writeRequest, heard: heardPick, quiet: quietOpen }} threadView={playerView}
             workingCache={workingCache} draftVersion={previewVersion} draft={appliedCut ? beforeTimeline : pinnedCallVersion ? callTimeline : draft}
             openingJoin={openingJoin && !source && !appliedCut}
             draftFailed={openingJoin ? !!single.error || (!!single.preview && !listenJoined) : pinnedCallVersion ? !!savedBefore.error : !appliedCut && !!draftVersion && draftState?.version === draftVersion && !!draftState.failed}

@@ -296,6 +296,9 @@ pub struct HostRuntime {
     server: String,
     name: String,
     cancel: CancellationToken,
+    /// The host is stopping because its engine went away, not because Scarlet quits. A run it cuts short is then a
+    /// lost worker's, also when the engine is back in time to hear so from this host.
+    engine_lost: AtomicBool,
     agents: RwLock<Vec<AgentAvailability>>,
     running: RunningTasks,
     host_id: StdMutex<Option<String>>,
@@ -704,7 +707,7 @@ impl HostRuntime {
         let task_id = &task.id;
         let reason = error.clone();
         let interrupted = stopped || (state == "cancelled" && self.cancel.is_cancelled());
-        let body = CompleteTaskRequest { state: state.into(), if_started_at: task.started_at.clone(), summary, error, interrupted, engine_lost: false };
+        let body = CompleteTaskRequest { state: state.into(), if_started_at: task.started_at.clone(), summary, error, interrupted, engine_lost: interrupted && self.engine_lost.load(Ordering::SeqCst) };
         // A post the engine misses is tried again. Forgotten here, the task stays running there until the engine
         // calls it interrupted and runs the finished request a second time. A copy does no harm: the engine ignores
         // the completion of an attempt it has already ended.
@@ -1118,6 +1121,7 @@ impl HostManager {
             server: server.clone(),
             name: host_name(),
             cancel: CancellationToken::new(),
+            engine_lost: AtomicBool::new(false),
             agents: RwLock::new(Vec::new()),
             running: StdMutex::new(HashMap::new()),
             host_id: StdMutex::new(None),
@@ -1144,8 +1148,20 @@ impl HostManager {
     }
 
     pub async fn stop(&self) {
+        self.stop_as(false).await
+    }
+
+    /// Stop because the engine went away by itself. A run cut short by that counts as a lost worker: an engine back
+    /// before the run's CLI has stopped would otherwise take it for a quit, and a run whose own work brings the
+    /// engine down would carry on without end.
+    pub async fn stop_for_lost_engine(&self) {
+        self.stop_as(true).await
+    }
+
+    async fn stop_as(&self, engine_lost: bool) {
         let rt = self.runtime.lock().await.take();
         if let Some(rt) = rt {
+            rt.engine_lost.store(engine_lost, Ordering::SeqCst);
             rt.stop().await;
             let _ = self.app.emit("host://status", &HostStatus { mcp_command: Some(rt.mcp.describe()), ..Default::default() });
         }
@@ -1234,6 +1250,7 @@ mod tests {
             server: server.to_string(),
             name: "test (desktop)".into(),
             cancel: CancellationToken::new(),
+            engine_lost: AtomicBool::new(false),
             agents: RwLock::new(Vec::new()),
             running: StdMutex::new(HashMap::new()),
             host_id: StdMutex::new(Some("host_1".into())),

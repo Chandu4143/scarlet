@@ -4393,6 +4393,35 @@ it("keeps a queued request's new words when holding it fails for another reason,
   } finally { vi.useRealTimers(); }
 });
 
+it("puts a queued request's words back in the box as they stood when Scarlet quit while they were being changed", async () => {
+  runningPass();
+  data = { ...data, tasks: [...data.tasks, callRequest("task_queued_revision", 2, { kind: "edit" as const, instruction: "Keep the aside.",
+    context: { ...callRequest("task_queued_revision", 2, {}).context, message: "Keep the aside." } })] };
+  const holdForRewording = vi.fn().mockResolvedValue(undefined);
+  useProjectStore.setState({ current: data, holdForRewording, rewordTask: vi.fn() });
+  await show();
+  await act(async () => {});
+  await click(container.querySelector('[aria-label="Queued requests"] .queue-reword')!);
+  await act(async () => composer.props!.rewording!.onChange("Keep the aside, but trim the breath before it."));
+  // Scarlet quits. Opened again, the request is in the box with the new words, and held again so it can't start with the old ones.
+  holdForRewording.mockClear();
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toMatchObject({ id: "task_queued_revision", text: "Keep the aside, but trim the breath before it." });
+  expect(holdForRewording).toHaveBeenCalledWith("task_queued_revision", true);
+  // Left as they were with Esc, nothing is kept: the next launch has an empty box.
+  await act(async () => composer.props!.rewording!.onCancel());
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toBeUndefined();
+  // Words kept for a request Scarlet has started since are let go.
+  localStorage.setItem("scarlet.rewording.v1", JSON.stringify({ projectId: PRJ, id: "task_started_since", text: "Too late" }));
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toBeUndefined();
+  expect(localStorage.getItem("scarlet.rewording.v1")).toBeNull();
+});
+
 it("offers no way to fold the queue while one of several queued requests has its words in the box", async () => {
   runningPass();
   const queued = (id: string, index: number, words: string) => {
@@ -7567,7 +7596,8 @@ it("bookmarks a place in the video itself while a suggestion, an open cut or a c
   await act(async () => {});
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Keep the image test” · After");
   await act(async () => usePlayerStore.setState({ time: 11 }));
-  expect(place()).toBe(`/p/${PRJ}?t=6`);
+  // The cut that's open goes with the place, so a launch after a quit opens it again.
+  expect(place()).toBe(`/p/${PRJ}?t=6&open=${encodeURIComponent(`edit:${threadWith("chg_approved_2").id}:chg_approved_2:0`)}`);
   await press("Escape");
   expect(editPanel()).toBeNull();
   // Behind a clip from Media, it is where the video was left.
@@ -9994,6 +10024,76 @@ it("comes back from Settings or a restart to update at the speed the editor was 
   // A speed the picker doesn't offer is left alone.
   await reopen(`/p/${PRJ}?t=4&speed=9`);
   expect([usePlayerStore.getState().time, usePlayerStore.getState().rate]).toEqual([4, 1]);
+});
+
+it("opens again, after a quit, the call or the cut that was open, without playing it", async () => {
+  runningPass();
+  const listen = vi.spyOn(player, "audition");
+  await show();
+  await act(async () => {});
+  await openCall("Repeated aside.");
+  await act(async () => {});
+  const card = () => container.querySelector<HTMLElement>('[aria-label="Call"]');
+  const note = card()!.querySelector(".edit-note")?.textContent ?? card()!.textContent;
+  // The editor opened it, so it played.
+  expect(listen.mock.calls.length).toBeGreaterThan(0);
+  expect(listen.mock.calls.every(call => !call[2])).toBe(true);
+  // They were half-way through saying what to change about it.
+  await act(async () => useUiStore.getState().setAgentDraft("Leave the breath in"));
+  const aim = useUiStore.getState().draftOwner;
+  const place = bookmark();
+  expect(new URLSearchParams(place.split("?")[1]).get("open")).toMatch(/^call:[\w-]+:\d+$/);
+  // Scarlet quits and opens at that place: the call's card is back, and nothing plays until the editor says so.
+  listen.mockClear();
+  await act(async () => root.unmount());
+  // The project's page closing puts the message away under what it was aimed at.
+  await act(async () => useUiStore.getState().openDraft(null));
+  await reopen(place);
+  await act(async () => {});
+  expect(card()?.textContent).toContain(note);
+  // The message is in the box again, still aimed at that call.
+  expect([useUiStore.getState().agentDraft, useUiStore.getState().draftOwner]).toEqual(["Leave the breath in", aim]);
+  expect(listen.mock.calls.length).toBeGreaterThan(0);
+  expect(listen.mock.calls.every(call => call[2] === true)).toBe(true);
+  expect(usePlayerStore.getState().playing).toBe(false);
+  // What was open is read once, like the place.
+  expect(container.querySelector("#address")?.textContent).toBe(`/p/${PRJ}`);
+  // The editor's own press plays it as ever.
+  listen.mockClear();
+  await press("\\");
+  expect(listen.mock.calls.some(call => !call[2])).toBe(true);
+  // A call that is gone since opens nothing, and nothing is left waiting to open.
+  await reopen(`/p/${PRJ}?open=${encodeURIComponent("call:chg_gone:0")}`);
+  await act(async () => {});
+  expect(card()).toBeNull();
+  expect(bookmark()).not.toContain("open=");
+});
+
+it("opens again, after a quit, the applied cut that was open, on its card and paused", async () => {
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "Keep the image test", range: { start: 4, end: 8 }, at: 6,
+        beforeCut: { version: "v_before", removed: { start: 10, end: 12.4 } }, previous: [] }] }));
+  vi.spyOn(api, "timeline").mockImplementation(async (_, version = "head") => ({ timeline: { ...data.timeline!, version } }));
+  const listen = vi.spyOn(player, "audition");
+  await show();
+  await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
+  await act(async () => {});
+  expect(editPanel()).not.toBeNull();
+  const place = bookmark();
+  expect(place).toContain("open=edit");
+  listen.mockClear();
+  // At launch the page is up before the project's requests and edits have been read. The cut opens once they are.
+  const read = useProjectStore.getState().current!;
+  useProjectStore.setState({ current: { ...read, changes: [], tasks: [], reviewStatus: "loading" } });
+  await reopen(place);
+  await act(async () => {});
+  expect(editPanel()).toBeNull();
+  await act(async () => useProjectStore.setState({ current: read }));
+  await act(async () => {});
+  expect(editPanel()).not.toBeNull();
+  expect(listen.mock.calls.every(call => call[2] === true)).toBe(true);
+  expect(usePlayerStore.getState().playing).toBe(false);
 });
 
 it("keeps the conversation and the cut on screen when the edit moves on and its new timeline can't be read, and says so after them only if it keeps failing", async () => {
