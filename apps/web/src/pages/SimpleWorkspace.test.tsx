@@ -3,7 +3,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { fullRenderContext, REVISED_CHECK, ScarletApiError, type Learning, type Skill, type SourceCacheStatus } from "@scarlet/shared";
+import { fullRenderContext, REVISED_CHECK, ScarletApiError, Task, type Learning, type Skill, type SourceCacheStatus } from "@scarlet/shared";
 import { applyOps, makeMediaClip, makeTimeMap, makeTrack, planCutReview, timelineDuration, timelineFromKeepRanges, type MediaClip, type TimeMap } from "@scarlet/timeline";
 import { api } from "../lib/client";
 import { desktop } from "../lib/desktop";
@@ -304,6 +304,46 @@ it("sets the sentence on what a request made in the type of Scarlet's replies, n
   const rules = readFileSync(`${import.meta.dirname}/../simple.css`, "utf8").split("\n");
   const size = (selector: string) => rules.find(rule => rule.startsWith(`${selector} {`))?.match(/font-size: ([\d.]+px)/)?.[1];
   expect([size(".simple-made-line"), size(".req-say")]).toEqual(["13px", "13px"]);
+});
+
+it("counts an earlier request's edit this request found a doubt about as one that needs the editor, and not as one it made", async () => {
+  const flaggedAt = "2026-11-14T17:52:00.000Z";
+  const earlier = { changeId: "chg_approved_1", spot: 1, label: "Carry the quotation into the reaction", range: { start: 6, end: 9 }, previous: [],
+    summary: "Kept the complete quotation and carried it into the reaction", check: "Black gap and overlapping lines", recheck: flaggedAt, elsewhere: true as const };
+  // The run of the request that made the zooms, which found the doubt.
+  const raiser = data.tasks.find(t => t.changeIds.includes("chg_approved_2"))?.id ?? "task_framing";
+  data = { ...data, changes: data.changes.map(c => c.id === "chg_approved_1"
+    ? { ...c, flags: [{ spot: 1, check: earlier.check, taskId: raiser, at: flaggedAt }] } : c),
+  tasks: data.tasks.some(t => t.id === raiser) ? data.tasks : [...data.tasks, Task.parse({ id: raiser, projectId: PRJ, kind: "edit", agent: "claude",
+    instruction: "Frame the screen", state: "done", createdBy: { type: "human", name: "Editor" }, changeIds: ["chg_approved_2"],
+    createdAt: flaggedAt, finishedAt: flaggedAt })] };
+  useProjectStore.setState({ current: data });
+  // Kept before the doubt was raised: that Keep doesn't settle it.
+  localStorage.setItem(`scarlet.kept-edits.v1/${PRJ}/${threadWith("chg_approved_2").id}`, JSON.stringify(["chg_approved_1/1"]));
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      earlier,
+      { changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.2, end: 2.4 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [] },
+    ] }));
+  await showFolded();
+  await act(async () => {});
+  const turn = turnFor("chg_approved_2");
+  // What the request made leaves it out. What needs the editor counts it, and opens it.
+  expect(turn.querySelector(".simple-made")?.textContent).toBe("Made 3 edits: music bed, captions, wrap.");
+  const need = () => turn.querySelector<HTMLButtonElement>(".simple-pass-need");
+  expect(need()?.textContent).toBe("1 needs you");
+  await click(need()!);
+  await act(async () => {});
+  expect(openTitle()).toBe("Carry the quotation into the reaction");
+  // Its card says what it did, then the doubt.
+  expect(editPanel()?.textContent).toContain("Kept the complete quotation and carried it into the reaction. Black gap and overlapping lines.");
+  // Kept now, it needs nothing more.
+  await press("k");
+  await act(async () => {});
+  expect(need()).toBeNull();
+  localStorage.clear();
 });
 
 it("lists a thread's edits once, numbered, and opens one with its decisions under the player", async () => {

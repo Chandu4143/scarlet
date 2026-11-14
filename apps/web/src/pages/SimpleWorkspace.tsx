@@ -13,7 +13,7 @@ import { useKeptEdits } from "../lib/keptEdits";
 import { needNumbers } from "../lib/needNumbers";
 import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/chat/QueueTray";
 import { recordEditReview } from "../lib/editReviews";
-import { editKey, keepEdits } from "../lib/keptEdits";
+import { editKey, keepEdits, reviewKey } from "../lib/keptEdits";
 import { AgentChip, useAgentAvailability, useModelNeedsYou } from "../components/agent/AgentChip";
 import { Composer } from "../components/agent/Composer";
 import { useImportTranscription } from "../components/media/TranscriptionAction";
@@ -855,7 +855,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
         busy: isWorking(sent),
         needs: !!e.check && !seen && !sent, sentBack: !!e.check && !seen && !!sent,
         // Ticked once the editor has kept it: a flagged edit they reviewed, or any edit they pressed Keep on.
-        decided: (!!e.check && seen) || kept.has(key),
+        decided: (!!e.check && seen) || kept.has(reviewKey(e)),
         version: e.previous.length ? e.previous.length + 1 : 0, title: revised ? undefined : e.check,
         on: !!showing && matchesEdit(showing, e), open: () => actions.openEdit(thread, e), fresh: fresh.has(e.changeId) }];
     }),
@@ -994,7 +994,12 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
   if (!needing) listedNeed.current.clear();
   const only = needing ? (edit: Omit<ThreadEdit, "at">) => (!!edit.check && !reviewed(edit)) || listedNeed.current.has(editKey(edit)) : undefined;
   if (only) for (const edit of edits) if (only(edit)) listedNeed.current.add(editKey(edit));
-  const made = useMemo(() => working ? undefined : madeSentence(edits, lengthLabel), [working, edits]);
+  const made = useMemo(() => {
+    if (working) return undefined;
+    const said = madeSentence(edits, lengthLabel);
+    // A request that only flagged an edit another one made has made nothing to say.
+    return said.length ? said : undefined;
+  }, [working, edits]);
   const showsList = open === "all" || needing || (!!single && !!shownEdit && !allNeed);
   // An edit made in several places is one row, listed when any of its places is picked, and a request about any of
   // them sits under that row: every place of a row the list shows counts as listed, as the list itself picks its rows.
@@ -2489,7 +2494,8 @@ export function SimpleWorkspace() {
   const shownEdit = actions.showing;
   const shownAt = shownEdit && (shownEdit.at ?? shownEdit.range.start);
   // The applied edit on screen, so Revise is about it and not a proposal still waiting.
-  const shownChange = shownEdit && focusThread?.changes.find(c => belongsTo(shownEdit, c));
+  // An edit another request made is open here when this request flagged it (`Thread.flagged`).
+  const shownChange = shownEdit && [...focusThread?.changes ?? [], ...focusThread?.flagged ?? []].find(c => belongsTo(shownEdit, c));
   // Keep (K) records that the edit was reviewed and moves on to the next flagged edit that hasn't been; Revise (R) changes this one.
   const reviewingEdit = shownEdit && shownChange && focusThread ? shownEdit : undefined;
   const threadEdits = threadTimeline.edits;
@@ -2708,7 +2714,7 @@ export function SimpleWorkspace() {
     return { time: at, landed, title, summary: e.label,
       detail: e.beforeCut ? `Removed ${lengthLabel(e.beforeCut.removed.end - e.beforeCut.removed.start)}`
         : e.at !== undefined ? editKindWord(e) ?? "Cut" : [editKindWord(e), span(e.range)].filter(Boolean).join(" · "),
-      context: thread.changes.find(c => belongsTo(e, c))?.description,
+      context: [...thread.changes, ...thread.flagged ?? []].find(c => belongsTo(e, c))?.description,
       // A press on the edit's marker opens it, as its row in the chat does.
       open: () => actions.openEdit(thread, e) };
   };

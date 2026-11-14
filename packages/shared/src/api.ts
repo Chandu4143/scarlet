@@ -369,6 +369,18 @@ export const ReviseRequest = ModelTuning.extend({
   assignTo: z.string().optional(),
 });
 
+/** A doubt a run raises about an applied edit: named by its change and place, or found where `range` falls on the working cut. */
+export const FlagEditRequest = z.object({
+  check: z.string().trim().min(1).max(120),
+  range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().nonnegative() }).optional(),
+  changeId: Id.optional(),
+  spot: z.number().int().nonnegative().optional(),
+  taskId: Id.optional(),
+}).refine(b => (b.changeId !== undefined) === (b.spot !== undefined), "changeId and spot go together")
+  .refine(b => (b.changeId !== undefined) !== (b.range !== undefined), "Give either range or changeId with spot")
+  .refine(b => !b.range || b.range.end >= b.range.start, "range.end comes after range.start");
+export type FlagEditRequest = z.infer<typeof FlagEditRequest>;
+
 // ---------------------------------------------------------------------------
 // Notes
 // ---------------------------------------------------------------------------

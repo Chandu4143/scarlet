@@ -20,6 +20,13 @@ export interface ThreadEdit extends EditRef {
   summary?: string;
   /** What the edit did, so the timeline draws a cut, a sound fix or a zoom each for what it is. */
   kind?: EditKind;
+  /**
+   * When a later run raised `check` about this edit, already in the video. Keeping the edit before then doesn't
+   * settle that doubt.
+   */
+  recheck?: string;
+  /** Another request made this edit. It is listed here because this request found a doubt about it. */
+  elsewhere?: true;
 }
 
 /** Why a revision of a flagged edit asks for a look when Scarlet gave it no reason of its own. */
@@ -177,6 +184,25 @@ export function changeRemovals(change: Change): { removed: TimeRange[]; version:
 /** Project the conversation's changes into distinct edit identities before translating their times. */
 function savedEdits(thread: Thread, visible: (version: string) => boolean, read?: (version: string) => Timeline | undefined, fps = 30) {
   const edits: SavedEdit[] = [];
+  // The latest doubt this request's runs raised about an edit already in the video (`Change.flags`).
+  const runs = new Set(thread.tasks?.map(t => t.id));
+  const flagOn = (change: Change, spot: number) => change.flags?.findLast(f => f.spot === spot && runs.has(f.taskId));
+  const raise = (edit: SavedEdit, flag: NonNullable<Change["flags"]>[number] | undefined) => {
+    if (!flag) return;
+    edit.check = flag.check;
+    edit.recheck = flag.at;
+  };
+  // An edit another request made comes first, as it was in the video before this request's own: a revision this
+  // request then makes of it takes its place.
+  for (const change of thread.flagged ?? []) {
+    for (const edit of savedEdits({ changes: [change] } as Pick<Thread, "changes"> as Thread, visible, read, fps)) {
+      const flag = flagOn(change, edit.spot);
+      if (!flag) continue;
+      raise(edit, flag);
+      edit.elsewhere = true;
+      edits.push(edit);
+    }
+  }
   for (const change of thread.changes) {
     const appliedVersion = change.appliedVersion ?? change.toVersion;
     if (change.state !== "approved" || !visible(appliedVersion)) continue;
@@ -224,6 +250,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       if (check) edit.check = check;
       const summary = "summary" in item ? item.summary : undefined;
       if (summary) edit.summary = summary;
+      raise(edit, flagOn(change, spot));
       // Two things Scarlet named on the one join are one cut: its row says both, and the footage is counted once.
       const shared = built && !joined && kinds[spot] === "cut" && taken ? taken.find(cut => shown.has(cut) &&
         cut.range.start >= item.range.start - NAMED_SLACK && cut.range.start <= item.range.end + NAMED_SLACK) : undefined;
@@ -256,8 +283,10 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       let spot = entries.length;
       for (const cut of taken) {
         if (shown.has(cut)) continue;
-        edits.push({ changeId: change.id, spot: spot++, label: cut.label, range: cut.range, version: change.toVersion, previous: [],
-          beforeCut: { version: built.version, removed: cut.removed }, kind: "cut" });
+        const edit: SavedEdit = { changeId: change.id, spot: spot++, label: cut.label, range: cut.range, version: change.toVersion, previous: [],
+          beforeCut: { version: built.version, removed: cut.removed }, kind: "cut" };
+        raise(edit, flagOn(change, edit.spot));
+        edits.push(edit);
       }
     }
   }

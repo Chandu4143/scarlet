@@ -6,7 +6,7 @@ import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
 import { removedSeconds } from "../../lib/format";
 import { editKindWord } from "../../lib/editKind";
-import { editKey, keepEdits, useKeptEdits } from "../../lib/keptEdits";
+import { editKey, keepEdits, reviewKey, useKeptEdits } from "../../lib/keptEdits";
 import { useProjectStore } from "../../stores/project";
 import { Dropdown, MenuItem } from "../shell/WorkspaceNavigation";
 import { Icon } from "../ui/primitives";
@@ -87,7 +87,8 @@ type ListedEdit = Omit<ThreadEdit, "at">;
 export function useThreadEdits(projectId: string, thread: Thread | undefined): ListedEdit[] {
   const head = useProjectStore(s => s.current?.project.head ?? null);
   const saved = useMemo(() => thread ? threadEditList(thread) : [], [thread]);
-  const applied = !!thread?.changes.some(c => c.state === "approved");
+  // An edit another request made counts here once this request flagged it.
+  const applied = !!thread?.changes.some(c => c.state === "approved") || !!thread?.flagged?.length;
   const key = useThreadEditKey(projectId, head, thread);
   const [loaded, setLoaded] = useState<{ key: string; threadId: string; edits?: ThreadEdit[] }>();
   useEffect(() => {
@@ -118,7 +119,8 @@ export function useReviewed(projectId: string, thread: Thread | undefined) {
   const kept = useKeptEdits(projectId, thread?.id);
   return useMemo(() => {
     const decided = new Set(thread?.changes.filter(c => c.state === "approved" && (c.appliedReview || c.approvedSpots)).map(c => c.id));
-    return (edit: EditRef) => kept.has(editKey(edit)) || decided.has(edit.changeId);
+    // A pass decided cut by cut was reviewed as it was applied, but not a doubt raised about one of its edits since.
+    return (edit: EditRef & { recheck?: string }) => kept.has(reviewKey(edit)) || (!edit.recheck && decided.has(edit.changeId));
   }, [kept, thread]);
 }
 
