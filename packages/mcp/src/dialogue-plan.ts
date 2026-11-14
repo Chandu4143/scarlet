@@ -171,7 +171,7 @@ async function placeWordCut(tl: Timeline, words: TranscriptWord[], ref: { mediaI
   if (end <= start) throw new Error(`Words #${fromWord}–#${toWord} do not form one forward range on version ${tl.version}.`);
   // Where the words themselves play: the edges sit in the silence either side of them.
   const spoken = { start: Math.max(start, place(words[fromWord]!.start, "start", words[fromWord]!)), end: Math.min(end, place(words[toWord]!.end, "end", words[toWord]!)) };
-  return { start, end, words: cut.text, problems: cut.problems, dips: cut.dips, spoken, source: { start: round3(cut.start), end: Number.isFinite(cut.end) ? round3(cut.end) : null } };
+  return { start, end, words: cut.text, problems: cut.problems, dips: [...cut.dips, ...cut.retimed], spoken, source: { start: round3(cut.start), end: Number.isFinite(cut.end) ? round3(cut.end) : null } };
 }
 
 export class NoPauseToTrim extends Error {}
