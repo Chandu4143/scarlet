@@ -24,13 +24,20 @@ class DesktopPermissionsTest < Minitest::Test
     assert_equal "${{ needs.version.outputs.version }}", @jobs.fetch("publish").fetch("steps").last.dig("env", "RELEASE_VERSION")
   end
 
-  def test_pull_requests_do_not_start_workflows
-    Dir[File.expand_path("../workflows/*.yml", __dir__)].each do |path|
-      workflow = YAML.safe_load(File.read(path))
-      events = workflow["on"] || workflow.fetch(true)
-      refute_includes events, "pull_request", File.basename(path)
-      refute_includes events, "pull_request_target", File.basename(path)
-    end
+  def test_prs_report_a_fast_check_independent_of_full_platform_tests
+    workflow = YAML.safe_load(File.read(File.expand_path("../workflows/pr-checks.yml", __dir__)))
+    trigger = workflow["on"] || workflow.fetch(true)
+    assert_nil trigger.fetch("pull_request"), "Every PR needs a check result, including documentation changes"
+    assert_equal({"contents" => "read"}, workflow.fetch("permissions"))
+    assert_equal true, workflow.fetch("concurrency").fetch("cancel-in-progress")
+    fast = workflow.fetch("jobs").fetch("fast")
+    assert_equal "Build, type-check and smoke tests", fast.fetch("name")
+    assert_equal "ubuntu-latest", fast.fetch("runs-on")
+    refute fast.key?("if")
+    refute fast.key?("needs")
+    full = workflow.fetch("jobs").fetch("platforms")
+    assert_equal "./.github/workflows/ci.yml", full.fetch("uses")
+    refute full.key?("needs")
   end
 
   def test_only_automatic_test_builds_share_runners_with_newer_main_pushes

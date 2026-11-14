@@ -2,7 +2,7 @@
 
 Scarlet is a desktop-only video editor for macOS, Windows and Linux. Open projects, demonstrate features, take screenshots, and verify interface changes in the native Scarlet application window. Do not open or publish a browser version, including a localhost demo or an in-app browser preview.
 
-When the maintainer asks to land a PR, run the checks for the change and submit the approved head to GitHub. Use `gh pr checks --required` to find the checks that govern merging. If GitHub reports no required checks, proceed with the merge. Follow it through any conflict or required check and verify the PR reached `main`. CI and installer builds run after the merge on `main`. If the request includes a deployment or a packaged build, verify that outcome too. A request to drain the maintainer’s queue covers only their own PRs that they explicitly queued for merge.
+When the maintainer asks to land a PR, run the checks for the change and submit the approved head to GitHub. Follow `gh pr checks --required` through the fast Linux build, type-check and smoke tests. Full platform tests run in parallel. Resolve any conflict and verify the PR reached `main`. If the request includes a deployment or a packaged build, verify that outcome too. A request to drain the maintainer’s queue covers only their own PRs that they explicitly queued for merge.
 
 Starting a chat does not require opening Scarlet. Keep code work and automated tests headless until the task needs the native interface. For work on the installed release, reuse the regular Scarlet window.
 
