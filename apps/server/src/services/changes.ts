@@ -1253,7 +1253,10 @@ function persistProposal(ctx: Ctx, user: User, projectId: string, body: ProposeC
       (previous.timelineEdits?.length ? previous.timelineEdits.length + (previous.leftOut?.joins.length ?? 0) : undefined) ??
       previous.cutReasons?.length ?? previous.ranges.length);
     const key = JSON.stringify([replaces.changeId, replaces.spot]);
-    if (!previous || previous.projectId !== projectId || previous.state !== "approved" || threadOfChange(ctx, previous) !== threadId ||
+    // An edit another request made counts as this thread's while this thread flagged it: the editor revises it from here.
+    const ownOrFlagged = previous && (threadOfChange(ctx, previous) === threadId ||
+      (previous.flags ?? []).some(flag => { const raiser = ctx.repos.tasks.get(flag.taskId); return !!raiser && threadOf(raiser) === threadId; }));
+    if (!previous || previous.projectId !== projectId || previous.state !== "approved" || !ownOrFlagged ||
         replaces.spot >= (count ?? 0) || replacements.has(key)) {
       throw badRequest("invalid_replacement", "Choose an individual edit in this thread to revise.");
     }
