@@ -27,12 +27,13 @@ Run commands from the repository root. Corepack 0.33, which comes with Node.js 2
 | `pnpm test` | Runs workspace tests with Vitest |
 | `pnpm desktop:test` | Runs the desktop app’s Rust tests |
 
-The render and engine tests run `ffmpeg` and `ffprobe` from `PATH`, and some call them by those names. On macOS and Windows, CI tests with the pinned builds: it copies the files `pnpm desktop:ffmpeg` downloads to `apps/desktop/src-tauri/binaries` into a directory of their own as `ffmpeg` and `ffprobe`, and puts that directory first on `PATH`. To do the same on macOS:
+The render and engine tests run `ffmpeg` and `ffprobe` from `PATH`, and some call them by those names. On macOS and Windows, CI tests with the pinned builds: it copies the files `pnpm desktop:ffmpeg` downloads to `apps/desktop/src-tauri/binaries` into a directory of their own as `ffmpeg` and `ffprobe`, and puts that directory first on `PATH`. The downloaded files are named for their target, and a checkout used for cross-builds can hold both Mac targets, so these steps name this machine's. To do the same on macOS:
 
 ```sh
 pnpm desktop:ffmpeg
 mkdir -p ~/.scarlet-ffmpeg
-for t in ffmpeg ffprobe; do cp apps/desktop/src-tauri/binaries/$t-* ~/.scarlet-ffmpeg/$t; done
+target=$(node -p '({ arm64: "aarch64", x64: "x86_64" })[process.arch] + "-apple-darwin"')
+for t in ffmpeg ffprobe; do cp "apps/desktop/src-tauri/binaries/$t-$target" ~/.scarlet-ffmpeg/$t; done
 export PATH="$HOME/.scarlet-ffmpeg:$PATH"
 ```
 
@@ -41,7 +42,7 @@ On Windows, in PowerShell:
 ```powershell
 pnpm desktop:ffmpeg
 New-Item -ItemType Directory -Force ~/.scarlet-ffmpeg | Out-Null
-foreach ($t in 'ffmpeg', 'ffprobe') { Copy-Item apps/desktop/src-tauri/binaries/$t-*.exe ~/.scarlet-ffmpeg/$t.exe }
+foreach ($t in 'ffmpeg', 'ffprobe') { Copy-Item apps/desktop/src-tauri/binaries/$t-x86_64-pc-windows-msvc.exe ~/.scarlet-ffmpeg/$t.exe }
 $env:PATH = "$HOME\.scarlet-ffmpeg;$env:PATH"
 ```
 
