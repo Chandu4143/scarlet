@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 14, 2026
 
+- A spoken note still being cleaned up when its project goes to the Trash is no longer saved into that project.
 - Settings › About lists what changed in each update, and hovering the update button says what the new build brings.
 - Media says why an import won't be transcribed, and links straight to the fix.
 - The transcript marks words and sounds picked up by a microphone the dialogue isn't on.
