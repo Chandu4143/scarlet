@@ -88,6 +88,15 @@
  *
  *  Skills
  *   GET    /skills?projectId=&taskId=&view=              → { skills: Skill[] }
+ *
+ *  Graphic templates (library-wide, like skills; the editor picks one with $name in the message box)
+ *   GET    /templates                                    → { templates: GraphicTemplateSummary[] }
+ *   GET    /templates/:templateId/preview                → image/png (the template drawn with its sample fields, transparent)
+ *   DELETE /templates/:templateId                        → {}
+ *
+ *  Attachments (files the editor drops on the message box; they ride on the next request)
+ *   POST   /projects/:id/attachments  multipart (file)   → { attachment: TaskAttachment }
+ *
  *   POST   /skills                  UpsertSkillRequest   → { skill: Skill }
  *   GET    /skills/:skillId                              → { skill: Skill, versions: SkillVersion[], edits: Task[] }   (edits: the requests to revise it, in the order asked)
  *   PUT    /skills/:skillId         UpsertSkillRequest   → { skill: Skill }
@@ -637,6 +646,15 @@ export const TaskState = z.enum([
 ]);
 export type TaskState = z.infer<typeof TaskState>;
 
+/** A file the editor attached to a message, stored in the project's folder until the project is deleted. */
+export const TaskAttachment = z.object({
+  id: Id,
+  name: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  mime: z.string().max(200).optional(),
+});
+export type TaskAttachment = z.infer<typeof TaskAttachment>;
+
 export const Task = z.object({
   id: Id,
   projectId: Id,
@@ -694,6 +712,8 @@ export const Task = z.object({
        * worded for them, such as Undo edit, it is the request's name in the chat ("Undo").
        */
       message: z.string().optional(),
+      /** Files the editor attached to this message. The engine gives the agent their paths. */
+      attachments: z.array(TaskAttachment).max(20).optional(),
       /** What such a request asked of the agent, without the thread's history. Its name alone doesn't say which edit, so the thread's later requests are told this. */
       asked: z.string().optional(),
     })
@@ -1060,6 +1080,29 @@ export type UsageResponse = z.infer<typeof UsageResponse>;
 // ---------------------------------------------------------------------------
 // Skills
 // ---------------------------------------------------------------------------
+
+/** Template names are what the editor types after $, so they follow the same rule as skill names. */
+export const TemplateSlug = SkillSlug;
+
+/**
+ * A graphic the editor can reuse: an HTML/CSS page with named fields that Scarlet fills in and renders over the
+ * picture. Saved library-wide, like skills.
+ */
+export const GraphicTemplateSummary = z.object({
+  id: Id,
+  /** What follows $ in a message, e.g. "lower-third". */
+  name: TemplateSlug,
+  /** How the list names it, e.g. "Lower third". */
+  title: z.string().min(1).max(120),
+  description: z.string().max(2000).default(""),
+  /** The fields that change from use to use, in order, as the editor reads them ("Name", "Title"). */
+  fields: z.array(z.string().min(1).max(60)).max(20),
+  /** Changes whenever the preview is drawn again, so the renderer can cache the image by it. */
+  previewVersion: z.string(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type GraphicTemplateSummary = z.infer<typeof GraphicTemplateSummary>;
 
 export const Skill = z.object({
   id: Id,

@@ -327,6 +327,20 @@ export const ProjectSettings = z.object({
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
+/**
+ * The style guide the editor gave this project, one per project. Scarlet reads it as written and follows it for every
+ * graphic it makes here. `text` is what the editor pasted; `file` is a file they attached, under the project's folder.
+ */
+export const StyleGuide = z.object({
+  /** How the chat and the $ list name it: the file's name, or the guide's own title for pasted text. */
+  name: z.string().min(1).max(200),
+  text: z.string().max(200_000).optional(),
+  /** Path relative to the project's folder. */
+  file: z.string().max(1024).optional(),
+  savedAt: z.string().datetime(),
+});
+export type StyleGuide = z.infer<typeof StyleGuide>;
+
 export const Project = z.object({
   /** Last conversation revision filed by the editor, independently of the timeline head. */
   completedThreads: z.record(z.string()).optional(),
@@ -339,6 +353,7 @@ export const Project = z.object({
   media: z.array(MediaAsset).default([]),
   /** Version id of the current (head) timeline. */
   head: Id.nullable().default(null),
+  styleGuide: StyleGuide.optional(),
   createdAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional(),
 });
