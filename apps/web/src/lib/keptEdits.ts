@@ -14,6 +14,11 @@ const listeners = new Set<() => void>();
 const cache = new Map<string, { raw: string | null; value: ReadonlySet<string>; sessionOnly?: boolean }>();
 
 export const editKey = (ref: EditRef) => `${ref.changeId}/${ref.spot}`;
+/**
+ * What a Keep records. A doubt a later request raised about an edit already in the video (`recheck`, when it was
+ * raised) is a new one, so a Keep before it doesn't settle it.
+ */
+export const reviewKey = (ref: EditRef & { recheck?: string }) => ref.recheck ? `${editKey(ref)}@${ref.recheck}` : editKey(ref);
 const storageKey = (projectId: string, threadId: string) => `${PREFIX}/${projectId}/${threadId}`;
 
 function stored(key: string) {
@@ -34,11 +39,11 @@ function read(key: string): ReadonlySet<string> {
   return value;
 }
 
-export function keepEdits(projectId: string, threadId: string, refs: EditRef[]) {
+export function keepEdits(projectId: string, threadId: string, refs: Array<EditRef & { recheck?: string }>) {
   const key = storageKey(projectId, threadId);
   const before = read(key);
   const next = new Set(before);
-  for (const ref of refs) next.add(editKey(ref));
+  for (const ref of refs) next.add(reviewKey(ref));
   if (next.size === before.size) return false;
   const raw = JSON.stringify([...next]);
   try {

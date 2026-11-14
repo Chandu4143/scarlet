@@ -75,7 +75,7 @@ function api(method: string, path: string, body?: unknown) {
     headers.set("X-Scarlet-Task", repeatTask);
     if (startedAt) headers.set("X-Scarlet-Task-Started-At", startedAt);
   }
-  if (method === "POST" && /\/(?:changes|dialogue-cuts|staged-cuts\/\d+)(?:\?|$)/.test(path) && body && typeof body === "object" &&
+  if (method === "POST" && /\/(?:changes|dialogue-cuts|edit-flags|staged-cuts\/\d+)(?:\?|$)/.test(path) && body && typeof body === "object" &&
       "taskId" in body && typeof body.taskId === "string") {
     let task = workspace.ctx.repos.tasks.get(body.taskId);
     // Fixtures that call an editing tool directly stand in for its host's first claim.
@@ -6475,4 +6475,36 @@ it("puts two edits' revisions made at once onto the video, and tells the one tha
   expect(redone).toMatchObject({ change: { state: "approved" } });
   expect((await api("POST", `/tasks/${again.id}/complete`, { state: "done" })).status).toBe(200);
   expect(ctx.repos.changes.get(third.change.id)).toMatchObject({ state: "rejected", replacedBy: redone.change.id });
+});
+
+it("puts a doubt a later request found about an earlier request's edit in front of the editor, with the request that found it", async () => {
+  const { ctx } = workspace;
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "mic", path: "mic.wav", kind: "audio", duration: 20, hasAudio: true }, "ready");
+  const cutting = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "Assemble", createdBy: { type: "human", name: "Editor" } });
+  const made = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: cutting.id, description: "Assemble",
+    ops: [{ op: "addClip", trackId: "a1", clip: { id: "raw", kind: "media", mediaId: "mic", timelineIn: 0, sourceIn: 0, sourceOut: 20 } }],
+    timelineEdits: [{ label: "Open on the answer", range: { start: 0, end: 4 } }, { label: "Carry the quotation into the reaction", range: { start: 12, end: 16 } }] }).change;
+  expect(made.state).toBe("approved");
+  await api("POST", `/tasks/${cutting.id}/complete`, { state: "done" });
+  const framing = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/frame-screen", createdBy: { type: "human", name: "Editor" } });
+  const flag = (body: object) => api("POST", `${projectsPath()}/edit-flags`, { taskId: framing.id, ...body });
+
+  // Nothing there: the run is told so, and nothing is flagged.
+  const none = await flag({ range: { start: 8, end: 9 }, check: "Black gap" });
+  expect(none.status).toBe(400);
+  // Found where the problem is: the edit covering most of it.
+  const found = await flag({ range: { start: 12.5, end: 14 }, check: "Black gap and overlapping lines" });
+  expect(found.status).toBe(201);
+  expect((await found.json()).flagged).toMatchObject({ changeId: made.id, spot: 1, label: "Carry the quotation into the reaction" });
+  const raised = ctx.repos.changes.get(made.id)!.flags!;
+  expect(raised).toMatchObject([{ spot: 1, check: "Black gap and overlapping lines", taskId: framing.id }]);
+  // Flagged again in the same words, it is one flag.
+  expect((await flag({ changeId: made.id, spot: 1, check: "Black gap and overlapping lines" })).status).toBe(201);
+  expect(ctx.repos.changes.get(made.id)!.flags).toHaveLength(1);
+
+  type Listed = { changeId: string; spot: number; check?: string; elsewhere?: boolean; recheck?: string };
+  const listed = async (threadId: string) => ((await (await api("GET", `${projectsPath()}/threads/${threadId}/edits`)).json()) as { edits: Listed[] }).edits;
+  // The request that found it lists it as one that needs the editor. The one that made it is as it was.
+  expect(await listed(framing.id)).toEqual([expect.objectContaining({ changeId: made.id, spot: 1, check: "Black gap and overlapping lines", elsewhere: true, recheck: raised[0]!.at })]);
+  expect((await listed(cutting.id)).map(e => e.check)).toEqual([undefined, undefined]);
 });

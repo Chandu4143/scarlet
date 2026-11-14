@@ -2554,6 +2554,23 @@ ${OPS_DOC}`,
   );
 
   tool(
+    "edit_flag",
+    "Flag an edit already in the video, this request's or an earlier one's, for the editor: a doubt they must settle by looking or listening, such as a black gap, a line heard twice or a join that may clip a word. The request you are running lists that edit as needing them (\"N need you\") and opens it on the timeline, with check as its reason, until they keep, revise or undo it. Nothing about the edit changes. Name the edit by where the problem is, as range in seconds on the current version (start equal to end for one moment), or by changeId and spot as change_get lists its edits. When several edits are there, the one covering most of the range is flagged and alsoThere names the others: flag the right one by changeId and spot. For an edit you are saving now, give check in timeline_propose's timelineEdits instead. A problem no edit made has nothing to flag: say so in your reply.",
+    {
+      check: z.string().trim().min(1).max(120).describe("A few words naming the doubt the editor must settle, as the edit's card shows it"),
+      range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().nonnegative() }).optional()
+        .describe("Where the problem is, in seconds on the current version"),
+      changeId: z.string().optional().describe("The change that made the edit; give spot with it instead of range"),
+      spot: z.number().int().nonnegative().optional().describe("Zero-based index of the edit in that change"),
+    },
+    async ({ check, range, changeId, spot }) => {
+      if ((changeId === undefined) !== (spot === undefined)) throw new Error("Give changeId and spot together.");
+      if ((changeId === undefined) === (range === undefined)) throw new Error("Give either range, or changeId with spot.");
+      return json(await client.flagEdit(ctx.projectId, { check, range, changeId, spot, taskId: ctx.taskId }));
+    },
+  );
+
+  tool(
     "timeline_crossfade_audio",
     "Propose centered audio-only crossfades between touching dialogue clips on the same audible track. Pass the clip ids on either side of each join. The total overlap defaults to two project frames. Uses real source handles and preserves picture timing and manual fades. All joins form one proposal.",
     {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Change, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
 import { buildThreads } from "./threads.js";
+import { Task } from "./api.js";
 import { changeRemovals, matchesEdit, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
 
 const head = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 3468 }]), version: "v2" };
@@ -234,5 +235,47 @@ describe("listing a thread's edits in the chat", () => {
       summary: "Raised the narration 4 dB, which brings the room tone up with it" });
     // A revision's card says what the revision did, not what the edit it replaced did.
     expect(listed[1]!.summary).toBeUndefined();
+  });
+});
+
+describe("a doubt a later request raises about an edit already in the video", () => {
+  const run = (id: string, threadId: string) => Task.parse({ id, projectId: "project", kind: "edit", agent: "codex", instruction: id,
+    state: "done", createdBy: { type: "human", name: "Editor" }, createdAt: "2026-01-01T00:00:00Z", context: { threadId } });
+  const pass = { ...change, id: "pass", threadId: "dialogue", taskId: "cutting", timelineEdits: [
+    { label: "Keep the list cue", range: { start: 724, end: 724 } },
+    { label: "Carry the quotation into the reaction", range: { start: 724, end: 728 } }] };
+  const zooms = { ...change, id: "zooms", threadId: "framing", taskId: "framing-run", fromVersion: "v1", toVersion: "v2",
+    createdAt: "2026-01-02T00:00:00Z", timelineEdits: [{ label: "Frame the spreadsheet", range: { start: 623, end: 724 } }] };
+  const flags = [{ spot: 1, check: "Black gap and overlapping lines", taskId: "framing-run", at: "2026-01-02T00:05:00.000Z" }];
+
+  it("lists the edit with the request that raised it, as one that needs the editor, and leaves the one that made it as it was", () => {
+    const threads = buildThreads({ changes: [{ ...pass, flags }, zooms], notes: [], tasks: [run("cutting", "dialogue"), run("framing-run", "framing")] });
+    const framing = threads.find(t => t.id === "framing")!, dialogue = threads.find(t => t.id === "dialogue")!;
+    expect(framing.flagged?.map(c => c.id)).toEqual(["pass"]);
+    expect(dialogue.flagged).toBeUndefined();
+    const listed = threadTimeline(framing, head, links, () => earlier, 30);
+    expect(listed.map(e => [e.changeId, e.label, e.check, e.elsewhere, e.recheck])).toEqual([
+      ["zooms", "Frame the spreadsheet", undefined, undefined, undefined],
+      ["pass", "Carry the quotation into the reaction", "Black gap and overlapping lines", true, flags[0]!.at]]);
+    expect(threadTimeline(dialogue, head, links, () => earlier, 30).map(e => e.check)).toEqual([undefined, undefined]);
+  });
+
+  it("raises it on the request's own edit, as a new doubt a Keep before it doesn't settle", () => {
+    const own = { ...pass, flags: [{ ...flags[0]!, taskId: "cutting" }] };
+    const [dialogue] = buildThreads({ changes: [own], notes: [], tasks: [run("cutting", "dialogue")] });
+    expect(dialogue!.flagged).toBeUndefined();
+    expect(threadEditList(dialogue!).map(e => [e.spot, e.check, e.recheck, e.elsewhere])).toEqual([
+      [0, undefined, undefined, undefined], [1, "Black gap and overlapping lines", flags[0]!.at, undefined]]);
+  });
+
+  it("puts a revision the raising request made of it in its place", () => {
+    const revision = { ...zooms, id: "fix", timelineEdits: [{ label: "Close the gap", range: { start: 724, end: 726 }, replaces: { changeId: "pass", spot: 1 } }] };
+    const [framing] = buildThreads({ changes: [{ ...pass, flags }, revision], notes: [], tasks: [run("framing-run", "framing")] })
+      .filter(t => t.id === "framing");
+    expect(threadEditList(framing!).map(e => [e.changeId, e.check, e.previous])).toEqual([["fix", REVISED_CHECK, [{ changeId: "pass", spot: 1 }]]]);
+    // The editor's request about it from that request's card stays there, and doesn't join the two requests.
+    const revise = Task.parse({ ...run("revise-run", "framing"), kind: "revise", context: { threadId: "framing", changeId: "pass", editIndex: 1 } });
+    const threads = buildThreads({ changes: [{ ...pass, flags }, revision], notes: [], tasks: [run("cutting", "dialogue"), run("framing-run", "framing"), revise] });
+    expect(threads.map(t => [t.id, t.tasks.map(x => x.id)])).toEqual(expect.arrayContaining([["dialogue", ["cutting"]], ["framing", ["framing-run", "revise-run"]]]));
   });
 });

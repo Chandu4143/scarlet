@@ -3,7 +3,7 @@ import { isSea } from "node:sea";
 import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
-import type { ApproveResponse, ProposeChangeRequest, Task, User } from "@scarlet/shared";
+import { buildThreads, threadTimeline, type ApproveResponse, type FlagEditRequest, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
@@ -2115,4 +2115,62 @@ export function reviseChange(ctx: Ctx, user: User, change: Change, body: ReviseR
     data: { changeId: change.id, threadId: saved.threadId, taskId: task.id },
   });
   return { change: saved, note, task };
+}
+
+/** A flagged edit as the run that flagged it hears of it: what the editor reads and which request made it. */
+interface FlaggedEdit { changeId: string; spot: number; label: string; request: string; range: { start: number; end: number }; at?: number }
+
+/**
+ * A run found a doubt about an edit already in the video, its own or another request's: a black gap a cut left, a line
+ * played twice. The doubt goes on that edit, and the request that raised it lists the edit as one that needs the
+ * editor until they keep it there, as an edit the run flagged as it made it does. Nothing about the edit changes.
+ * The edit is named by its change and place, or found on the working cut where `range` falls; when several edits are
+ * there, the one that covers most of it, and the run is told of the others. Caller holds the write lock.
+ */
+export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEditRequest): { flagged: FlaggedEdit; version: string; alsoThere?: FlaggedEdit[] } {
+  const project = ctx.repos.projects.get(projectId);
+  if (!project?.head) throw conflict("no_timeline", "There is no video to flag an edit in yet.");
+  const read = (version: string) => ctx.repos.versions.get(projectId, version)?.timeline;
+  const head = read(project.head);
+  if (!head) throw conflict("no_timeline", "There is no video to flag an edit in yet.");
+  const threads = buildThreads({
+    changes: ctx.repos.changes.select("project_id = ?", [projectId]),
+    tasks: ctx.repos.tasks.select("project_id = ? AND kind != 'transcribe'", [projectId]),
+    notes: ctx.repos.notes.select("project_id = ? AND json_extract(json, '$.changeId') IS NOT NULL", [projectId]),
+  });
+  const links = ctx.repos.versions.links(projectId);
+  // Every applied edit on the working cut, as its own request lists it, so a revision is flagged and not what it replaced.
+  const edits = threads.filter(t => t.changes.some(c => c.state === "approved")).flatMap(thread =>
+    threadTimeline({ ...thread, flagged: undefined }, head, links, read, project.settings.fps).filter(e => !e.elsewhere).map(edit => ({ edit, thread })));
+  const named = (e: { edit: ThreadEdit; thread: { title: string } }): FlaggedEdit => ({ changeId: e.edit.changeId, spot: e.edit.spot,
+    label: e.edit.label, request: e.thread.title, range: e.edit.range, ...(e.edit.at !== undefined && { at: e.edit.at }) });
+  let found: (typeof edits)[number] | undefined;
+  let alsoThere: (typeof edits) = [];
+  if (body.changeId !== undefined) {
+    found = edits.find(e => e.edit.changeId === body.changeId && e.edit.spot === body.spot);
+    if (!found) throw notFound(`edit ${body.spot} of change ${body.changeId} on the working cut`);
+  } else {
+    const { start, end } = body.range!;
+    // A cut is a point, where it joins; any other edit is the footage it changed. Each is weighed by how much of the
+    // stretch it shares, a join inside the stretch counting as it would cover it all.
+    const near = 0.25;
+    const weigh = (e: ThreadEdit) => {
+      if (e.at !== undefined) return e.at >= start - near && e.at <= end + near ? 1 : 0;
+      const shared = Math.min(end, e.range.end) - Math.max(start, e.range.start);
+      if (end - start < 1e-6) return start >= e.range.start - near && start <= e.range.end + near ? 1 : 0;
+      return shared > 0 ? shared / (Math.max(end, e.range.end) - Math.min(start, e.range.start)) : 0;
+    };
+    const there = edits.map(e => ({ ...e, weight: weigh(e.edit) })).filter(e => e.weight > 0).sort((a, b) => b.weight - a.weight);
+    if (!there.length) throw badRequest("no_edit_there", `No applied edit is on the working cut (${project.head}) between ${start.toFixed(2)} s and ${end.toFixed(2)} s. ` +
+      "Read the current version's times with timeline_get or timeline_at. If no edit made it, say so in your reply.");
+    [found, ...alsoThere] = there;
+  }
+  const change = ctx.repos.changes.get(found!.edit.changeId)!;
+  const flags = change.flags ?? [];
+  if (!flags.some(f => f.spot === found!.edit.spot && f.taskId === task.id && f.check === body.check))
+    saveChange(ctx, { ...change, flags: [...flags, { spot: found!.edit.spot, check: body.check, taskId: task.id, at: now() }] });
+  logActivity(ctx, { projectId, actor: { type: "scarlet", name: "Scarlet" }, type: "change.flagged",
+    summary: `Scarlet flagged ${quote(found!.edit.label)}: ${quote(body.check, 120)}`,
+    data: { changeId: change.id, threadId: change.threadId, taskId: task.id } });
+  return { flagged: named(found!), version: project.head, ...(alsoThere.length && { alsoThere: alsoThere.slice(0, 6).map(named) }) };
 }
