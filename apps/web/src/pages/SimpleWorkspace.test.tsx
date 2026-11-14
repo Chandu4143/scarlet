@@ -7529,7 +7529,8 @@ it("bookmarks a place in the video itself while a suggestion, an open cut or a c
   await act(async () => {});
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Keep the image test” · After");
   await act(async () => usePlayerStore.setState({ time: 11 }));
-  expect(place()).toBe(`/p/${PRJ}?t=6`);
+  // The cut that's open goes with the place, so a launch after a quit opens it again.
+  expect(place()).toBe(`/p/${PRJ}?t=6&open=${encodeURIComponent(`edit:${threadWith("chg_approved_2").id}:chg_approved_2:0`)}`);
   await press("Escape");
   expect(editPanel()).toBeNull();
   // Behind a clip from Media, it is where the video was left.
@@ -9956,6 +9957,41 @@ it("comes back from Settings or a restart to update at the speed the editor was 
   // A speed the picker doesn't offer is left alone.
   await reopen(`/p/${PRJ}?t=4&speed=9`);
   expect([usePlayerStore.getState().time, usePlayerStore.getState().rate]).toEqual([4, 1]);
+});
+
+it("opens again, after a quit, the call or the cut that was open, without playing it", async () => {
+  runningPass();
+  const listen = vi.spyOn(player, "audition");
+  await show();
+  await act(async () => {});
+  await openCall("Repeated aside.");
+  await act(async () => {});
+  const card = () => container.querySelector<HTMLElement>('[aria-label="Call"]');
+  const note = card()!.querySelector(".edit-note")?.textContent ?? card()!.textContent;
+  // The editor opened it, so it played.
+  expect(listen.mock.calls.length).toBeGreaterThan(0);
+  expect(listen.mock.calls.every(call => !call[2])).toBe(true);
+  const place = bookmark();
+  expect(new URLSearchParams(place.split("?")[1]).get("open")).toMatch(/^call:[\w-]+:\d+$/);
+  // Scarlet quits and opens at that place: the call's card is back, and nothing plays until the editor says so.
+  listen.mockClear();
+  await reopen(place);
+  await act(async () => {});
+  expect(card()?.textContent).toContain(note);
+  expect(listen.mock.calls.length).toBeGreaterThan(0);
+  expect(listen.mock.calls.every(call => call[2] === true)).toBe(true);
+  expect(usePlayerStore.getState().playing).toBe(false);
+  // What was open is read once, like the place.
+  expect(container.querySelector("#address")?.textContent).toBe(`/p/${PRJ}`);
+  // The editor's own press plays it as ever.
+  listen.mockClear();
+  await press("\\");
+  expect(listen.mock.calls.some(call => !call[2])).toBe(true);
+  // A call that is gone since opens nothing, and nothing is left waiting to open.
+  await reopen(`/p/${PRJ}?open=${encodeURIComponent("call:chg_gone:0")}`);
+  await act(async () => {});
+  expect(card()).toBeNull();
+  expect(bookmark()).not.toContain("open=");
 });
 
 it("keeps the conversation and the cut on screen when the edit moves on and its new timeline can't be read, and says so after them only if it keeps failing", async () => {
