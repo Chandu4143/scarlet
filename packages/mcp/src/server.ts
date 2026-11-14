@@ -49,6 +49,7 @@ import {
   makeTimeMap,
   mergeRanges,
   rangesOverlap,
+  replayOnCopy,
   timelineDuration,
   timelineFromKeepRanges,
   timelineToSource,
@@ -2533,7 +2534,8 @@ ${OPS_DOC}`,
               if (inside.length) throw new Error(inside.map(e => `ops[${i}] ${e.edge} at ${(e.edge === "start" ? op.start : op.end).toFixed(2)} s falls inside “${e.transcriptSplitsWord}”, which is sounding there`).join("; ") +
                 ". Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
             }
-            on = applyOps(on, [op]);
+            // A step on the way, not a version: only the batch's result is checked, below, so a clip may meet a track of the other kind on the way.
+            on = replayOnCopy(on, [op]);
           }
         }
         // Dry-run against the pinned base before deriving the picture from the synchronized clips.
