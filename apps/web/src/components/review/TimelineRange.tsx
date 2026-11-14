@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 import type { TimeRange } from "@scarlet/timeline";
 import { clockRange, lengthLabel, playbackClock } from "../../lib/format";
+import type { ScrubRelease } from "../../lib/player";
 import { QueuedImg } from "./QueuedImg";
 import { useUiStore } from "../../stores/ui";
 
@@ -67,6 +68,8 @@ interface Gesture {
   /** The close-up: the time and pointer position it opened at, and whether the end has moved in it since. */
   precise?: { time: number; x: number; moved?: boolean };
   paint?: number;
+  /** It let go having marked a range, not pressed a point. */
+  marked?: boolean;
   stop(): void;
 }
 
@@ -84,7 +87,7 @@ interface RangeSelect {
   range?: TimeRange;
   onRange(range: TimeRange | undefined): void;
   onSeek(time: number): void;
-  onScrubStart?(gesture: AbortSignal): (() => void) | undefined;
+  onScrubStart?(gesture: AbortSignal): ((release?: ScrubRelease) => void) | undefined;
   /** A press on the ruler that never became a range. It takes off the range there was. */
   onPress(time: number): void;
   beforeGesture(): void;
@@ -170,6 +173,7 @@ export function useRangeSelect({ slider, drag, from, span, start, end, fps, edge
       // A press held on the ruler and let go without moving draws nothing: the close-up opened, and nothing was chosen.
       const drawn = !cancelled && (g.moved || (!!g.precise && (!!edge || !!g.precise.moved)));
       if (drawn) place(g);
+      g.marked = drawn;
       g.stop();
       setLive(undefined);
       if (drawn && g.last) now.current.onRange(g.last);
@@ -191,7 +195,7 @@ export function useRangeSelect({ slider, drag, from, span, start, end, fps, edge
       document.removeEventListener("pointercancel", up, true);
       if (drag.current === held) drag.current = null;
       lifetime.abort();
-      finish?.();
+      finish?.({ marked: !!g.marked });
     };
     // The scrubber's own drag slot says a pointer is held, so the zoom waits and the markers don't light.
     const held = { id: -1, start: from, span, x: e.clientX, lifetime, finish: undefined };

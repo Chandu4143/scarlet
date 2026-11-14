@@ -197,13 +197,13 @@ it("plays on past the listen's end after a seek beyond it", () => {
   expect(usePlayerStore.getState().time).toBe(81);
 });
 
-/** A press on the timeline at `time`, released without moving. */
-function press(time: number) {
+/** A press on the timeline at `time`, released without moving, or a range marked on the ruler that ends there. */
+function press(time: number, marked = false) {
   const gesture = new AbortController();
   const finish = pauseForScrub(gesture.signal);
   player.seek(time, true);
   gesture.abort();
-  finish();
+  finish({ marked });
 }
 
 it("plays from a point picked on the timeline after the listen ran to its end", () => {
@@ -239,6 +239,21 @@ it("plays from a point picked in an edit's passage after it ran to its end", () 
   expect(video.paused).toBe(true);
   press(44);
   expect(video.paused).toBe(true);
+});
+
+it("leaves a listen or passage that ran to its end paused when the editor marks a range, and plays one that was playing", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(49);
+  reach(50.02);
+  expect(video.paused).toBe(true);
+  press(44, true);
+  expect(video.currentTime).toBe(44);
+  expect(video.paused).toBe(true);
+
+  player.play();
+  expect(video.paused).toBe(false);
+  press(46, true);
+  expect(video.paused).toBe(false);
 });
 
 /**

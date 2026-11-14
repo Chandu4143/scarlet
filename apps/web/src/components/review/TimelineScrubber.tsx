@@ -7,6 +7,7 @@ import { useUiStore } from "../../stores/ui";
 import { arrowSeekTime, ignorePageShortcut, useHotkeys } from "../../lib/hotkeys";
 import { playbackClock } from "../../lib/format";
 import { playbackLog } from "../../lib/playbackLog";
+import type { ScrubRelease } from "../../lib/player";
 import { TimelineWaveform, type WaveformMedia } from "./TimelineWaveform";
 import type { EditCue } from "./EditReferences";
 import { ScrubPreview, type HoverVideo } from "../player/ScrubPreview";
@@ -205,7 +206,7 @@ interface TimelineScrubberProps {
   /** Commit an editor-selected position, independently of playback updates. */
   onSelectTime?(time: number): void;
   /** Suspend playback during a pointer drag. The returned callback runs on release. */
-  onScrubStart?(gesture: AbortSignal): (() => void) | undefined;
+  onScrubStart?(gesture: AbortSignal): ((release?: ScrubRelease) => void) | undefined;
   /** The simple view's highlight: zoom to the change and shade what it touches. */
   highlight?: ProgressFocus;
   /**

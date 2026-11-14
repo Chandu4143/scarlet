@@ -70,6 +70,20 @@ it("marks a stretch with a drag along the ruler, and lands its end on a cut it c
   expect(marked).toHaveBeenLastCalledWith({ start: 300, end: 450 });
 });
 
+it("tells the player a drag marked a range, so a paused video stays paused, and a press that it didn't", async () => {
+  const released = vi.fn();
+  await act(async () => root.render(
+    <TimelineScrubber start={0} duration={3000} playhead={100} frameAt={() => undefined} onSeek={t => seeks.push(t)} onSelectTime={t => picks.push(t)}
+      onScrubStart={() => released} onRange={marked} fps={30} marks={[]} />));
+  await press(".timeline-range-zone", 100);
+  await move(150);
+  await release(150);
+  expect(released).toHaveBeenLastCalledWith({ marked: true });
+  await press(".timeline-range-zone", 100);
+  await release(101);
+  expect(released).toHaveBeenLastCalledWith({ marked: false });
+});
+
 it("still moves the playhead on a press on the ruler that doesn't drag", async () => {
   await show();
   await press(".timeline-range-zone", 100);
