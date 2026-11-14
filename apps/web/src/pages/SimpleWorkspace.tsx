@@ -48,7 +48,7 @@ import { cutAudition, cutAuditionClock, isolatedReviewCut } from "../lib/cutAudi
 import { besides, removedSince } from "../lib/removedSince";
 import { usePlayerStore } from "../stores/player";
 import { verifiedJoinClock, type JoinClock } from "../lib/joinClock";
-import { buildThreads, firstCutDeliveries, isRedo, queueLabel, requestTarget, revisionTarget, stagedCuts, threadConversation, type Thread, type ThreadEntry } from "../lib/threads";
+import { buildThreads, firstCutDeliveries, isRecheck, isRedo, queueLabel, requestTarget, revisionTarget, stagedCuts, threadConversation, type Thread, type ThreadEntry } from "../lib/threads";
 import { runIsActive } from "../lib/taskRun";
 import { canPreviewMedia } from "../lib/upload";
 import { useProjectStore } from "../stores/project";
@@ -551,11 +551,11 @@ interface PassCall { index: number; askOrder?: number;
   /** The request about this cut that Scarlet is on, or the next one waiting, while it's sent back. */
   run?: Task;
   /** What the last version was and the note that sent it back, for a revised call. */
-  earlier?: { reason?: string; note: string } }
+  earlier?: { reason?: string; note?: string } }
 
 const callRowKey = (c: PassCall) => `call/${c.n}`;
 
-type Revision = { reason?: string; note: string };
+type Revision = { reason?: string; note?: string };
 const noRevisions: Revision[] = [];
 
 /**
@@ -600,7 +600,8 @@ function callRevisions(pass: Change, tasks: readonly Task[], changes: readonly C
     for (const index of indices) {
       const revisions = byCall.get(index) ?? [];
       const staged = previous && reviewReasons(previous, stagedCuts(previous).map(removed => ({ removed })))[index]?.join(" ");
-      revisions.unshift({ note: task.context.message ?? task.instruction,
+      // A recheck Scarlet asked for itself has no words of the editor's to show.
+      revisions.unshift({ note: isRecheck(task) ? undefined : task.context.message ?? task.instruction,
         reason: previous?.cutAssessments?.find(a => a.index === index)?.reason ?? (staged || undefined) });
       byCall.set(index, revisions);
     }
@@ -865,7 +866,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       state: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : c.version > 1 ? `v${c.version}` : undefined,
       value: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : undefined,
       busy: c.state === "revising" && isWorking(c.run?.state),
-      version: c.version > 1 ? c.version : 0, title: c.earlier && `v${c.version - 1}: ${c.earlier.reason ?? "Scarlet’s earlier version."}\nYou: “${c.earlier.note}”`,
+      version: c.version > 1 ? c.version : 0, title: c.earlier && `v${c.version - 1}: ${c.earlier.reason ?? "Scarlet’s earlier version."}${c.earlier.note ? `\nYou: “${c.earlier.note}”` : ""}`,
       on: listening?.changeId === pass!.change.id && listening.index === c.index, word: undefined, revised: false, fresh: false,
       open: c.state === "revising" ? undefined : () => pass!.openCall(c.index) })),
   ].sort((a, b) => a.at - b.at);
@@ -3045,7 +3046,9 @@ export function SimpleWorkspace() {
   // Undo edit is about the open edit, so it puts back that edit, whatever the message box is aimed at just then: a
   // message still being written may be about another one.
   const openTarget = reviewingEdit && shownChange && focusThread ? threadTimeline.selectedTarget : undefined;
-  const undoTarget = openTarget && focusThread?.changes.some(c => c.id === openTarget.changeId && c.state === "approved") ? openTarget : undefined;
+  // An edit another request made, open here because this request flagged it, is undone from here too.
+  const undoTarget = openTarget && [...focusThread?.changes ?? [], ...focusThread?.flagged ?? []]
+    .some(c => c.id === openTarget.changeId && c.state === "approved") ? openTarget : undefined;
   // An edit sent back for revision has no card until its new version lands: its note and its decisions are about the
   // version on its way out, and its row in the chat says Scarlet is on it. It stays open meanwhile: the message box is
   // still aimed at it, ↑ ↓ step on and Esc closes it.
@@ -3119,7 +3122,7 @@ export function SimpleWorkspace() {
       {/* The call's number, the same as on its line in the chat and its dot on the timeline. */}
       <span className="edit-card-count" title={callPlace >= 0 ? `${callPlace + 1} of ${waitingCalls.length} still waiting for you` : undefined}>Cut {callNo.get(openCall.index)}</span>
       {callHistory.length > 0 && <EditVersion n={callHistory.length + 1}
-        title={`v${callHistory.length}: ${callHistory.at(-1)!.reason ?? "Scarlet’s earlier version."}\nYou: “${callHistory.at(-1)!.note}”`} />}
+        title={`v${callHistory.length}: ${callHistory.at(-1)!.reason ?? "Scarlet’s earlier version."}${callHistory.at(-1)!.note ? `\nYou: “${callHistory.at(-1)!.note}”` : ""}`} />}
       <EditNote key={callKey} text={openCall.reason} unchecked={openCall.unchecked} />
       <span className="edit-card-side">
         <TranscriptLink open={callScriptOpen} disabled={!!conflict && !heard} toggle={() => setScriptFor(callScriptOpen ? undefined : callKey)} />
@@ -3424,7 +3427,7 @@ export function SimpleWorkspace() {
    * edit the box talks to stays its target, and Scarlet is told both. With nothing aimed it is a new edit about that
    * stretch. A queued request's words and a message being spoken are left as they are.
    */
-  const markRange = (marked: MarkedRange | undefined) => {
+  const markRange = (marked: MarkedRange | undefined, byKey?: boolean) => {
     const box = useUiStore.getState();
     if (rewordingItem || box.speaking) return;
     const was = box.agentContext && box.agentContext !== "whole" ? box.agentContext : undefined;
@@ -3433,7 +3436,8 @@ export function SimpleWorkspace() {
     if (was && was === wordsInCall.current && next) wordsInCall.current = next;
     setOfferedPoint(undefined);
     box.setAgentContext(next, next && was?.changeId ? was : undefined);
-    if (marked) box.focusComposer();
+    // A handle stepped a frame by ← or → keeps the keys, so the next press steps it again.
+    if (marked && !byKey) box.focusComposer();
   };
   // A click anywhere but the message box and the timeline takes a marked range off: the timeline says for itself
   // which of its presses do. A drag, a scroll or a press held and moved isn't a click.
@@ -3470,8 +3474,11 @@ export function SimpleWorkspace() {
       box.setAgentContext(picked);
     }
   };
-  // It left the queue meanwhile, taken out or begun: the box goes back to the message being written.
-  useEffect(() => { if (rewording && !queued.some(t => t.id === rewording.id)) setRewording(undefined); }, [queued, rewording]);
+  // It left the queue meanwhile, taken out or begun: the box goes back to the message being written. Not while the
+  // project's requests are still loading: the queue then reads empty, and the words restored from before would be lost.
+  useEffect(() => {
+    if (!current.reviewStatus && rewording && !queued.some(t => t.id === rewording.id)) setRewording(undefined);
+  }, [queued, rewording, current.reviewStatus]);
   useRewordingHold(rewording?.id, (id, on) => on ? queueAction(holdForRewording(id, true))
     // Letting go of a hold says nothing when it fails: the hold lapses by itself.
     : holdForRewording(id, false), () => setRewording(undefined));
