@@ -6,12 +6,17 @@ import { spawnSync } from "node:child_process";
 import desktopConfig from "../desktop/src-tauri/tauri.conf.json";
 
 const revision = spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: import.meta.dirname, encoding: "utf8", windowsHide: true });
+const releaseChannel = process.env.SCARLET_RELEASE_CHANNEL;
+if (releaseChannel && !["stable", "early-access", "linux-preview"].includes(releaseChannel)) {
+  throw new Error(`Unknown Scarlet release channel: ${releaseChannel}`);
+}
 
 export default defineConfig(({ command, mode }) => ({
   // The public video and frame belong to the isolated native interview demo.
   publicDir: command === "serve" && mode === "desktop-demo" ? process.env.SCARLET_DEMO_MEDIA_DIR || "public" : false,
   define: {
     __SCARLET_VERSION__: JSON.stringify(desktopConfig.version),
+    __SCARLET_RELEASE_CHANNEL__: JSON.stringify(releaseChannel || null),
     __SCARLET_REVISION__: JSON.stringify(revision.status === 0 ? revision.stdout.trim() : ""),
   },
   plugins: [react(), tailwindcss()],
