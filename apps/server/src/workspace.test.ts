@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi, onTestFinished } from "vitest";
 import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, sha256, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
 import { buildThreads, isThreadDone, taskPlan, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
@@ -2046,6 +2046,9 @@ it("resumes a pending native fingerprint after an engine restart", async () => {
 
 // Only macOS is asked when a process began: elsewhere an import stays with whatever process has its engine's id.
 it.runIf(process.platform === "darwin")("finishes an import a killed engine left once another program has its process id", async () => {
+  // The computer has been up for days: the engine's note is from since it started, so only `ps` can say it is gone.
+  const up = vi.spyOn(os, "uptime").mockReturnValue(30 * 86_400);
+  onTestFinished(() => up.mockRestore());
   const { ctx } = workspace;
   ctx.paths.ensureProject(project.id);
   const file = join(ctx.paths.media(project.id), "owned.wav");
