@@ -1690,11 +1690,18 @@ it("recovers dead workers, keeps saved proposals and lets follow-ups run exactly
   expect(repos.tasks.get(a.id)?.interrupted).toBe(true);
   const third = await claim();
   expect(third).toMatchObject({ id: repos.tasks.get(a.id)?.retryTaskId, resumeRootId: interrupted.id });
-  // A run that keeps losing its worker stops there and waits for the editor, and the follow-up goes ahead.
+  // The quit that began this chain isn't held against it: only a lost worker counts, so the run carries on again.
   workspace.ctx.db.prepare("UPDATE tasks SET worker_seen_at = '2000-01-01' WHERE id = ?").run(third.id);
   recoverTasks(workspace.ctx);
-  expect(repos.tasks.get(third.id)?.interrupted).toBe(true);
-  expect(repos.tasks.get(third.id)?.retryTaskId).toBeUndefined();
+  expect(repos.tasks.get(a.id)).toMatchObject({ interrupted: true, lostWorker: true });
+  expect(repos.tasks.get(interrupted.id)?.lostWorker).toBeUndefined();
+  const fourth = await claim();
+  expect(fourth).toMatchObject({ id: repos.tasks.get(third.id)?.retryTaskId, resumeRootId: interrupted.id });
+  // A run that keeps losing its worker stops there and waits for the editor, and the follow-up goes ahead.
+  workspace.ctx.db.prepare("UPDATE tasks SET worker_seen_at = '2000-01-01' WHERE id = ?").run(fourth.id);
+  recoverTasks(workspace.ctx);
+  expect(repos.tasks.get(fourth.id)?.interrupted).toBe(true);
+  expect(repos.tasks.get(fourth.id)?.retryTaskId).toBeUndefined();
   expect((await claim()).id).toBe(follow.id);
 });
 
