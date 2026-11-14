@@ -9,7 +9,7 @@ import { canPlayOriginal, isPreparingMedia } from "../lib/upload";
 import { isLink } from "../lib/pendingImports";
 import { useUploader, useImportCount } from "../components/media/UploadDropzone";
 import { ImportProgress } from "../components/media/ImportProgress";
-import { pauseForScrub, player } from "../lib/player";
+import { pauseForScrub, player, type ScrubRelease } from "../lib/player";
 import { playbackLog } from "../lib/playbackLog";
 import type { JoinClock } from "../lib/joinClock";
 import { api, IS_MOCK, loggedFetch } from "../lib/client";
@@ -408,8 +408,8 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     const held = beforeShown.current ? beforeClip.current?.scrub() : undefined;
     const release = pauseForScrub(gesture);
     if (!held) return release;
-    return () => {
-      release();
+    return (how?: ScrubRelease) => {
+      release(how);
       // A drag that left the edit's passage ends on After, which goes on as the clip would have: playing if the clip
       // was, or had played to the passage's end and stopped there.
       if (beforeShown.current) held.carryOn();
