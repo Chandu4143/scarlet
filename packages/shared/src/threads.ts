@@ -10,7 +10,7 @@
  */
 import { isThreadDone } from "./threadTimeline.js";
 import { isAsideTask, taskRecoveryAction, type Skill, type Task } from "./api.js";
-import { cutSummary, isPublishedCall, mergeRanges, type Author, type Change, type Note, type TimeRange } from "@scarlet/timeline";
+import { cutSummary, isPublishedCall, mergeRanges, rangesOverlap, type Author, type Change, type Note, type TimeRange } from "@scarlet/timeline";
 
 export type ThreadStatus = "needs_you" | "working" | "done" | "closed";
 
@@ -23,6 +23,11 @@ export interface Thread {
   tasks: Task[];
   /** Attempts, oldest first. */
   changes: Change[];
+  /**
+   * Other requests' applied changes with an edit this request flagged for the editor (`Change.flags`). The request
+   * lists that edit with its own, as one that needs the editor.
+   */
+  flagged?: Change[];
   latest?: Change;
   question?: Task;
   active?: Task;
@@ -68,11 +73,20 @@ export function buildThreads(d: Source): Thread[] {
   const g = new Groups();
   const tasks = d.tasks.filter((t) => t.kind !== "transcribe" && !isAsideTask(t));
   const key = (kind: "t" | "c" | "x", id: string) => `${kind}:${id}`;
+  // The requests that flagged each change's edits. A request there about one of those edits, such as Revise or Undo
+  // from its card, stays in the request that raised the doubt, which lists the edit, and doesn't join the two.
+  const raisedIn = new Map<string, Set<string>>();
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  for (const c of d.changes) for (const flag of c.flags ?? []) {
+    const raiser = byId.get(flag.taskId);
+    if (raiser) (raisedIn.get(c.id) ?? raisedIn.set(c.id, new Set()).get(c.id)!).add(raiser.context.threadId ?? raiser.id);
+  }
   for (const t of tasks) {
     g.add(key("t", t.id));
     if (t.retryTaskId) g.union(key("t", t.id), key("t", t.retryTaskId));
     if (t.context.threadId) g.union(key("x", t.context.threadId), key("t", t.id));
-    if (t.context.changeId) g.union(key("c", t.context.changeId), key("t", t.id));
+    if (t.context.changeId && !(t.context.threadId && raisedIn.get(t.context.changeId)?.has(t.context.threadId)))
+      g.union(key("c", t.context.changeId), key("t", t.id));
     for (const c of t.changeIds) g.union(key("t", t.id), key("c", c));
   }
   const feedbackChanges = new Map<string, string>();
@@ -167,6 +181,13 @@ export function buildThreads(d: Source): Thread[] {
       createdAt,
       updatedAt,
     });
+  }
+  // A doubt about an edit goes to the request that raised it, where the editor is looking, not to the one that made it.
+  const byTask = new Map(threads.flatMap(thread => thread.tasks.map(task => [task.id, thread] as const)));
+  for (const change of d.changes) for (const flag of change.flags ?? []) {
+    const thread = byTask.get(flag.taskId);
+    if (!thread || thread.changes.includes(change) || thread.flagged?.includes(change)) continue;
+    (thread.flagged ??= []).push(change);
   }
   return threads;
 }
@@ -417,7 +438,7 @@ export function callNumbers(pass: Pick<Change, "cutAssessments" | "cutChoices">,
  * the revision's own request, so the run is found back through the passes each revision replaced, and then at its
  * latest attempt.
  */
-export function passRunOver(pass: Change, changes: readonly Change[], tasks: readonly Task[]): boolean {
+function passRunOver(pass: Change, changes: readonly Change[], tasks: readonly Task[]): boolean {
   let run = tasks.find(t => t.id === pass.taskId);
   for (let hops = 0; run?.context.cutIndex !== undefined && run.context.changeId && hops < 50; hops++) {
     const replaced = changes.find(c => c.id === run!.context.changeId);
@@ -443,7 +464,6 @@ function cutInPass(pass: Change, { changeId, cutIndex }: Task["context"], change
   if (!changeId || cutIndex === undefined) return undefined;
   if (changeId === pass.id) return cutIndex;
   const same = (a: TimeRange, b: TimeRange) => Math.abs(a.start - b.start) < 0.05 && Math.abs(a.end - b.end) < 0.05;
-  const overlaps = (a: TimeRange, b: TimeRange) => a.start < b.end && a.end > b.start;
   const staged = (c: Change) => mergeRanges((c.cutReasons ?? []).map(({ start, end }) => ({ start, end })));
   // The proposal that took one's place: the one named on it, or the one a revision of one of its cuts made from it.
   const after = (from: Change) => changes.find(c => c.id === from.replacedBy) ?? changes.find(c => c.id !== from.id && !!c.cutReasons
@@ -469,11 +489,11 @@ function cutInPass(pass: Change, { changeId, cutIndex }: Task["context"], change
       // The next part can stage a cut that touches this one, and the review then lists the two as one.
       const ranges = [cut, ...(change.cutReasons ?? []).filter(r => r.start >= cut!.start && r.end <= cut!.end)];
       const carried = next.cutReasons.filter(r => ranges.some(range => same(r, range)));
-      found = cuts.findIndex(r => overlaps(r, cut!) && carried.some(kept => kept.start >= r.start && kept.end <= r.end));
+      found = cuts.findIndex(r => rangesOverlap(r, cut!) && carried.some(kept => kept.start >= r.start && kept.end <= r.end));
     }
     const at = found >= 0 ? found : index;
     const moved = cuts[at];
-    if (!moved || !overlaps(moved, cut)) return undefined;
+    if (!moved || !rangesOverlap(moved, cut)) return undefined;
     change = next; index = at; cut = moved;
   }
   return undefined;

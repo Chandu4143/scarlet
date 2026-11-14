@@ -6,7 +6,7 @@ import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
 import { removedSeconds } from "../../lib/format";
 import { editKindWord } from "../../lib/editKind";
-import { editKey, keepEdits, useKeptEdits } from "../../lib/keptEdits";
+import { editKey, keepEdits, reviewKey, useKeptEdits } from "../../lib/keptEdits";
 import { useProjectStore } from "../../stores/project";
 import { Dropdown, MenuItem } from "../shell/WorkspaceNavigation";
 import { Icon } from "../ui/primitives";
@@ -87,7 +87,8 @@ type ListedEdit = Omit<ThreadEdit, "at">;
 export function useThreadEdits(projectId: string, thread: Thread | undefined): ListedEdit[] {
   const head = useProjectStore(s => s.current?.project.head ?? null);
   const saved = useMemo(() => thread ? threadEditList(thread) : [], [thread]);
-  const applied = !!thread?.changes.some(c => c.state === "approved");
+  // An edit another request made counts here once this request flagged it.
+  const applied = !!thread?.changes.some(c => c.state === "approved") || !!thread?.flagged?.length;
   const key = useThreadEditKey(projectId, head, thread);
   const [loaded, setLoaded] = useState<{ key: string; threadId: string; edits?: ThreadEdit[] }>();
   useEffect(() => {
@@ -118,7 +119,10 @@ export function useReviewed(projectId: string, thread: Thread | undefined) {
   const kept = useKeptEdits(projectId, thread?.id);
   return useMemo(() => {
     const decided = new Set(thread?.changes.filter(c => c.state === "approved" && (c.appliedReview || c.approvedSpots)).map(c => c.id));
-    return (edit: EditRef) => kept.has(editKey(edit)) || decided.has(edit.changeId);
+    // A pass decided cut by cut was reviewed as it was applied, not a doubt raised about one of its edits since,
+    // nor what a later save asks of a cut it moved.
+    return (edit: EditRef & { recheck?: string; reviewRef?: EditRef }) =>
+      kept.has(reviewKey(edit)) || (!edit.recheck && !edit.reviewRef && decided.has(edit.changeId));
   }, [kept, thread]);
 }
 
@@ -170,7 +174,7 @@ function removedLabel(edit: ListedEdit) {
  * One list per thread, at its end, always current: a revision updates its edit's row in place and
  * new edits join the list. Every edit is listed, however many: the link that opens the list opens all of it.
  * It is a list of rows as a pass's is, each led by its edit's number where a pass's row has its time.
- * A row plays its edit, whose details and decisions sit in the strip under the player. Pressed again, the open row
+ * A row plays its edit, whose details and decisions sit in its card on top of the timeline. Pressed again, the open row
  * plays its edit again. `under` is what sits directly under an edit's row: a request about that one edit that hasn't
  * left the chat. With `only`, the list is just the edits it picks, such as the ones that need the editor, each with
  * the number it has in the whole list.

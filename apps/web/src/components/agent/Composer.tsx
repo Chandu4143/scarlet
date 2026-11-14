@@ -29,7 +29,7 @@ export function Composer(props: ComposerProps) {
   return project ? <ComposerBox {...props} project={project} /> : null;
 }
 
-export interface Rewording { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void }
+interface Rewording { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void }
 
 interface ComposerProps {
   /** What sits attached to the top of the message box: the requests queued behind the one Scarlet is on. */
@@ -158,7 +158,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     }
     if (!effective) throw new Error(unavailableReason);
     if (replying) {
-      if (anchor?.changeId && !thread.changes.some(c => c.id === anchor.changeId)) throw new Error("This suggestion is unavailable. Select the edit again.");
+      if (anchor?.changeId && ![...thread.changes, ...thread.flagged ?? []].some(c => c.id === anchor.changeId)) throw new Error("This suggestion is unavailable. Select the edit again.");
       const position = anchor && requestPosition(anchor);
       if (revising) {
         await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),

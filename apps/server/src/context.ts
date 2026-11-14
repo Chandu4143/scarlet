@@ -62,6 +62,9 @@ export function noteEngineStart(ctx: Pick<Ctx, "db" | "log">): boolean {
   return inherited;
 }
 
+/** Room for a clock set since the computer started. */
+const BOOT_MARGIN_MS = 60_000;
+
 /**
  * Whether the engine that claimed an import, a source cache or a render under a process id still runs. A process with
  * that id is not enough: once an engine is killed its id goes to another program, which would hold the claim for as
@@ -74,9 +77,6 @@ export function noteEngineStart(ctx: Pick<Ctx, "db" | "log">): boolean {
  * age from what the clock read as it began, as the note does. Linux counts it from boot, so a clock set forward since
  * would read as a later start, and Windows has no `ps`.
  */
-/** Room for a clock set since the computer started. */
-const BOOT_MARGIN_MS = 60_000;
-
 export function engineIsAlive(ctx: Pick<Ctx, "db" | "track" | "log">, pid: number): boolean {
   if (pid === process.pid) return true;
   if (!processIsAlive(pid)) {
@@ -202,6 +202,9 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
   const whisperCli = bundledWhisperCli(env);
   // The audio helper is one per engine process. Its notes on where each model runs go to this engine's log.
   audioWorker.log = options.log ?? (m => console.log(m));
+  // An agent at work asks for the helper's models again within a turn or two.
+  const agentAtWork = db.prepare("SELECT 1 FROM tasks WHERE state IN ('claimed','running') AND kind != 'transcribe' LIMIT 1");
+  audioWorker.wanted = () => { try { return !!agentAtWork.get(); } catch { return false; } };
   const repos = createRepos(db, () => whisperCli || hasCrisperWhisper(paths.root) ? "whispercpp" : "none");
   const pending = new Set<Promise<unknown>>();
   const shutdown = new AbortController();
