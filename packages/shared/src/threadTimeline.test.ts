@@ -144,6 +144,59 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(flagged).toHaveLength(1);
   });
 
+  it("reads a later save that only moved a cut's join as that cut, revised", () => {
+    const keep = (version: string, ...ranges: Array<[number, number]>) =>
+      ({ ...timelineFromKeepRanges("project", "interview", ranges.map(([start, end]) => ({ start, end }))), version });
+    const versions: Record<string, ReturnType<typeof keep>> = {
+      base: keep("base", [0, 3468]),
+      v1: keep("v1", [0, 99], [101, 3468]),
+      // Listening back, the pass started 0.2 s earlier after the join, then let the line before it run 0.3 s longer,
+      // then took the breath after it out as well.
+      v2: keep("v2", [0, 99], [100.8, 3468]),
+      v3: keep("v3", [0, 99.3], [100.8, 3468]),
+      v4: keep("v4", [0, 99.3], [101.5, 3468]),
+    };
+    const read = (version: string) => versions[version];
+    const all = ["base", "v1", "v2", "v3", "v4"].map((version, i, list) => ({ version, parent: list[i - 1] ?? null }));
+    const save = (id: string, fromVersion: string, toVersion: string, timelineEdits: NonNullable<Change["timelineEdits"]>) =>
+      ({ ...change, id, fromVersion, toVersion, createdAt: `2026-01-0${toVersion[1]}T00:00:00Z`, timelineEdits });
+    const pass = save("batch", "base", "v1", [{ label: "Remove the delivery aside", range: { start: 99, end: 99 } }]);
+    const right = save("right", "v1", "v2", [{ label: "Keep the price whole", range: { start: 99, end: 99 },
+      check: "Listen for the start of “fifteen”", summary: "Started in the quiet before “fifteen.”" }]);
+    const left = save("left", "v2", "v3", [{ label: "Finish the model number", range: { start: 99.3, end: 99.3 }, summary: "Kept the final “three.”" }]);
+    const more = save("more", "v3", "v4", [{ label: "Close the breath", range: { start: 99.3, end: 99.3 }, summary: "Took out the breath after it." }]);
+
+    // Footage put back on the right of the join: the cut is still the pass's, at the same place, and removes less.
+    const once = threadTimeline(thread([pass, right]), versions.v2!, all, read, 30);
+    expect(once).toHaveLength(1);
+    expect(once[0]).toMatchObject({ changeId: "batch", label: "Remove the delivery aside", kind: "cut", at: 99,
+      check: "Listen for the start of “fifteen”", reviewChangeId: "right", summary: "Started in the quiet before “fifteen.”",
+      // Its reason to look is the later save's, so a Keep is recorded under that save's edit.
+      reviewRef: { changeId: "right", spot: 0 }, beforeCut: { version: "base" } });
+    expect(once[0]!.beforeCut!.removed.start).toBeCloseTo(99);
+    expect(once[0]!.beforeCut!.removed.end).toBeCloseTo(100.8);
+
+    // Put back on the left, the join moves along with it. Taking more out there is the same cut again.
+    const twice = threadTimeline(thread([pass, right, left]), versions.v3!, all, read, 30);
+    expect(twice.map(e => [e.changeId, e.kind, e.at, e.summary])).toEqual([["batch", "cut", 99.3, "Kept the final “three.”"]]);
+    const thrice = threadTimeline(thread([pass, right, left, more]), versions.v4!, all, read, 30);
+    expect(thrice.map(e => [e.changeId, e.kind, e.at, e.reviewChangeId])).toEqual([["batch", "cut", 99.3, "more"]]);
+    expect(thrice[0]!.beforeCut!.removed.start).toBeCloseTo(99.3);
+    expect(thrice[0]!.beforeCut!.removed.end).toBeCloseTo(101.5);
+
+    // Put back whole, the cut is not in the video and neither is the footage an addition to it.
+    const whole = { ...versions.base!, version: "v2" };
+    const undo = save("undo", "v1", "v2", [{ label: "Keep the complete aside", range: { start: 99, end: 101 } }]);
+    expect(threadTimeline(thread([pass, undo]), whole, all.slice(0, 3), v => v === "v2" ? whole : read(v), 30)).toEqual([]);
+
+    // With no cut of this request at the join, footage named at a point is still a stretch of the video.
+    const alone = threadTimeline(thread([right]), versions.v2!, all, read, 30);
+    expect(alone).toMatchObject([{ changeId: "right", kind: "restore" }]);
+    expect(alone[0]!.at).toBeUndefined();
+    expect(alone[0]!.range.start).toBeCloseTo(99);
+    expect(alone[0]!.range.end).toBeCloseTo(99.2);
+  });
+
   it("shows the footage a change left out as it built the video from the pieces to keep, each stretch a cut", () => {
     // Scarlet built the video by placing what to keep, so what came between was never on a timeline. The engine read
     // it when the change was applied, with a version that plays it (2026-11-12: a first pass on a screen and a camera).
