@@ -9971,13 +9971,21 @@ it("opens again, after a quit, the call or the cut that was open, without playin
   // The editor opened it, so it played.
   expect(listen.mock.calls.length).toBeGreaterThan(0);
   expect(listen.mock.calls.every(call => !call[2])).toBe(true);
+  // They were half-way through saying what to change about it.
+  await act(async () => useUiStore.getState().setAgentDraft("Leave the breath in"));
+  const aim = useUiStore.getState().draftOwner;
   const place = bookmark();
   expect(new URLSearchParams(place.split("?")[1]).get("open")).toMatch(/^call:[\w-]+:\d+$/);
   // Scarlet quits and opens at that place: the call's card is back, and nothing plays until the editor says so.
   listen.mockClear();
+  await act(async () => root.unmount());
+  // The project's page closing puts the message away under what it was aimed at.
+  await act(async () => useUiStore.getState().openDraft(null));
   await reopen(place);
   await act(async () => {});
   expect(card()?.textContent).toContain(note);
+  // The message is in the box again, still aimed at that call.
+  expect([useUiStore.getState().agentDraft, useUiStore.getState().draftOwner]).toEqual(["Leave the breath in", aim]);
   expect(listen.mock.calls.length).toBeGreaterThan(0);
   expect(listen.mock.calls.every(call => call[2] === true)).toBe(true);
   expect(usePlayerStore.getState().playing).toBe(false);
