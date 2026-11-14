@@ -5541,7 +5541,7 @@ it("continues editing during an export and reopens the original range, quality a
   await selectOption(field("#export-range"), "Custom range");
   await click(sheet().querySelector("summary")!);
   expect(field("#export-captions")).toBeNull();
-  await selectOption(field("#export-quality"), "Smaller file");
+  await selectOption(field("#export-quality"), "Compressed");
   await selectOption(field("#export-resolution"), / × 480$/);
   const resolution = field("#export-resolution").textContent;
   const end = sheet().querySelector<HTMLInputElement>("#export-end")!.value;
@@ -5564,7 +5564,7 @@ it("continues editing during an export and reopens the original range, quality a
   expect(sheet().querySelector<HTMLProgressElement>("progress")?.position).toBe(0.42);
   expect(field("#export-resolution").textContent).toBe(resolution);
   expect(sheet().querySelector("summary")!.textContent).toContain(`${data.project.settings.fps} fps`);
-  expect(field("#export-quality").textContent).toBe("Smaller file");
+  expect(field("#export-quality").textContent).toBe("Compressed");
   expect(field("#export-range").textContent).toBe("Custom range");
   expect(sheet().querySelector<HTMLInputElement>("#export-end")!.value).toBe(end);
   expect(sheet().querySelector('[role="alert"]')?.textContent ?? "").toBe("");
@@ -5574,6 +5574,34 @@ it("continues editing during an export and reopens the original range, quality a
   expect(sheet().querySelector("progress")).toBeNull();
   expect(release).toHaveBeenCalledWith("custom-export", request.mock.calls[0]![1].owner);
   expect(exportButton().querySelector("svg")).toBeNull();
+});
+
+it("exports at Original quality as a software encode, and reopens on it", async () => {
+  vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 9, path: "/chosen/cut.mp4" });
+  vi.spyOn(desktop, "keepVideoExport").mockResolvedValue();
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  vi.spyOn(api, "releaseRender").mockResolvedValue();
+  const request = vi.spyOn(api, "requestRender").mockImplementation(async (_id, body) => ({ render: {
+    ...data.renders[0]!, id: "best-export", kind: body.kind!, version: body.version!, quality: body.quality,
+    range: body.range ?? null, exportOptions: body.exportOptions, state: "running", progress: 0.1,
+  } }));
+  await show();
+  const sheet = () => container.querySelector<HTMLDialogElement>("dialog[open]")!;
+  const field = (id: string) => sheet().querySelector<HTMLButtonElement>(id)!;
+  await click(exportButton());
+  await click(sheet().querySelector("summary")!);
+  // High is the default, and each level says what it trades.
+  expect(field("#export-quality").textContent).toBe("High");
+  expect(sheet().textContent).toContain("Looks the same as the original, in a smaller file.");
+  await selectOption(field("#export-quality"), "Original quality");
+  expect(sheet().textContent).toContain("Matches the original footage, for re-editing or grading. About the size of the original.");
+  expect(sheet().querySelector("summary")!.textContent).toContain("Original quality");
+  await click(buttonIn(sheet(), "Export")!);
+  expect(request).toHaveBeenCalledWith(PRJ, expect.objectContaining({ kind: "export", quality: "delivery",
+    exportOptions: { bestQuality: true } }));
+  await click(buttonIn(sheet(), "Continue editing")!);
+  await click(exportButton());
+  expect(field("#export-quality").textContent).toBe("Original quality");
 });
 
 it("updates the Export button as the job advances without drawing the player or chat again", async () => {
