@@ -5,13 +5,15 @@ on:
     branches: [master]
   workflow_call:
   pull_request:
+    types: [opened, synchronize, reopened, closed]
 
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ci-${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed'
     name: Build and test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45

@@ -17,15 +17,26 @@ class DesktopPermissionsTest < Minitest::Test
     # Psych versions using YAML 1.1 read the key 'on' as true.
     trigger = @entry["on"] || @entry.fetch(true)
     assert_equal({"branches" => ["main"]}, trigger.fetch("push"))
-    # A branch-wide lock can cancel a pending release. Only a pull request's runs share a group, and a newer push to it
-    # cancels the older ones; a push to main and a manual run each have a group of their own.
-    assert_equal({ "group" => "desktop-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}", "cancel-in-progress" => true },
-      @entry.fetch("concurrency"), "A branch-wide lock can cancel a pending release")
     assert_equal %w[aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc],
       @build.dig("strategy", "matrix", "include").map { |target| target.fetch("triple") }.sort
     assert_equal false, @build.dig("strategy", "fail-fast")
     assert_equal "${{ needs.version.outputs.version }}", @jobs.dig("build", "with", "version")
     assert_equal "${{ needs.version.outputs.version }}", @jobs.fetch("publish").fetch("steps").last.dig("env", "RELEASE_VERSION")
+  end
+
+  def test_closing_a_pr_cancels_its_checks_without_starting_another_build
+    {"ci" => "build-and-test", "desktop" => "version", "linux-desktop" => "ubuntu"}.each do |name, first_job|
+      workflow = YAML.safe_load(File.read(File.expand_path("../workflows/#{name}.yml", __dir__)))
+      trigger = workflow["on"] || workflow.fetch(true)
+      assert_equal %w[opened synchronize reopened closed].sort, trigger.fetch("pull_request").fetch("types").sort
+      # Keep the same group as the open PR, including runs started before this workflow changed.
+      assert_equal "#{name}-${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.run_id }}",
+        workflow.fetch("concurrency").fetch("group")
+      assert_equal true, workflow.fetch("concurrency").fetch("cancel-in-progress")
+      assert_equal "github.event_name != 'pull_request' || github.event.action != 'closed'",
+        workflow.fetch("jobs").fetch(first_job).fetch("if")
+    end
+    assert_equal "version", @jobs.fetch("build").fetch("needs")
   end
 
   def test_checks_and_native_builds_have_read_only_repository_access

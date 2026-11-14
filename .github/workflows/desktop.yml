@@ -10,6 +10,7 @@ on:
         required: false
         type: string
   pull_request:
+    types: [opened, synchronize, reopened, closed]
     paths:
       - "apps/desktop/**"
       - "apps/server/**"
@@ -29,11 +30,9 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request cancels that pull request's builds still waiting or running, as CI and the Linux build
-# already do: the macOS runners are few, and builds of a commit that has been replaced held them for hours. A push to
-# main, which can publish, and a manual run each keep their own group and are never cancelled.
+# Replacing the PR head or closing the PR releases its runners. Each main build and manual run gets its own group.
 concurrency:
-  group: desktop-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: desktop-${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -42,6 +41,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   version:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.number.outputs.version }}
