@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { fileInDirectory } from "@scarlet/render";
-import { clipEnd, mergeRanges, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { carriesAudio, clipEnd, mergeRanges, sourceToTimeline, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import { adjacentRepeatCandidates, cutAnchorOn, normalizeTranscriptToken, type JoinHearing, type Task } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { acousticWordReader } from "../transcribe/acousticWords.js";
@@ -82,7 +82,7 @@ export function joinSides(sides: JoinSide[]) {
 }
 
 function placements(project: Project, tl: Timeline): Placement[] {
-  const audible = new Set(project.media.filter(m => m.kind === "audio" || (m.kind === "video" && m.hasAudio !== false)).map(m => m.id));
+  const audible = new Set(project.media.filter(carriesAudio).map(m => m.id));
   return tl.tracks.filter(t => t.kind !== "caption" && !t.muted).flatMap(t => t.clips.flatMap(c =>
     c.kind === "media" && c.enabled && c.volume > 0 && audible.has(c.mediaId)
       ? [{ track: t.id, clip: c, source: { start: c.sourceIn, end: c.sourceOut } }] : []));
@@ -172,14 +172,14 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
       const language = transcriptLanguage(ctx, project.id, media);
       const add = (p: Placement, w: Word) => {
         const { source, track, clip } = p;
-        const at = (s: number) => clip.timelineIn + (s - clip.sourceIn) / clip.speed;
+        const at = (s: number) => sourceToTimeline(clip, s);
         const text = normalizeTranscriptToken(w.text);
         if (text) heard.push({ text, source: Math.max(source.start, w.start), sourceEnd: Math.min(source.end, w.end), mediaId, track, clip: clip.id, clipStart: clip.timelineIn, clipEnd: clipEnd(clip),
           start: at(Math.max(w.start, source.start)), end: at(Math.min(w.end, source.end)) });
       };
       const lang = language || ctx.settings().transcription.language;
       const side = ({ clip, track, source }: Placement) => {
-        const at = (t: number) => clip.timelineIn + (t - clip.sourceIn) / clip.speed;
+        const at = (t: number) => sourceToTimeline(clip, t);
         return { mediaId, clipId: clip.id, trackId: track, timelineStart: at(source.start), timelineEnd: at(source.end), source };
       };
       if (lang && lang !== "auto" && !alignsLanguage(lang)) {

@@ -17,11 +17,11 @@ import { SCREEN_TEXT_MODELS, type ScreenLine } from "../transcribe/screenTextMod
 import { pictureDecoder, pictureLane } from "./pictureWork.js";
 
 /** Bump when the reading changes: the models, the sampling or how lines become spans. Kept readings are read again. */
-export const SCREEN_TEXT_VERSION = 2;
+const SCREEN_TEXT_VERSION = 2;
 /** Seconds of a recording read and kept together. */
-export const SCREEN_TEXT_CHUNK = 60;
+const SCREEN_TEXT_CHUNK = 60;
 /** Frames a second looked at. Text shown for less than a second can be missed. */
-export const SCREEN_TEXT_FPS = 1;
+const SCREEN_TEXT_FPS = 1;
 /** Frames decoded and read in one go, so a recording that changes every second holds about 60 MB of frames at once. */
 const BATCH_SECONDS = 10;
 /** A line the reader is less sure of than this is left out: on real screens, those were icons read as letters. */
@@ -209,6 +209,9 @@ async function readWindow(ctx: Ctx, media: MediaAsset & { projectId: string }, f
     const frames = join(ctx.paths.tmp, `screen-text-${randomUUID()}.rgb`);
     await mkdir(ctx.paths.tmp, { recursive: true });
     const fd = openSync(frames, "w");
+    // Closed once: after the first close the number belongs to whichever file opens next, another window's frames.
+    let open = true;
+    const close = () => { if (open) { open = false; closeSync(fd); } };
     const picked: number[] = [];
     try {
       await pictureLane(ctx).run(() => screenFrames(file, { start: from, end: to }, { fps: SCREEN_TEXT_FPS, width, height, decoder, signal,
@@ -219,13 +222,13 @@ async function readWindow(ctx: Ctx, media: MediaAsset & { projectId: string }, f
         picked.push(from + i / SCREEN_TEXT_FPS);
         writeSync(fd, rgb);
       }), { signal });
-      closeSync(fd);
+      close();
       if (picked.length) {
         const lines = await audioWorker.request<ScreenLine[][]>({ kind: "screenText", frames, width, height, finder, reader, letters }, { signal });
         picked.forEach((at, i) => read.push({ at, lines: lines[i] ?? [] }));
       }
     } finally {
-      try { closeSync(fd); } catch { /* Closed above. */ }
+      close();
       await rm(frames, { force: true });
     }
   }
