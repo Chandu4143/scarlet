@@ -9,31 +9,9 @@ on:
         description: "Early Access numeric version, for example 0.1.4. Leave empty for a regular check build."
         required: false
         type: string
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-    paths:
-      - "apps/desktop/**"
-      - "apps/server/**"
-      - "apps/agent/**"
-      - "apps/web/**"
-      - "packages/**"
-      - "skills/**"
-      - "integrations/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/desktop*.yml"
-      - ".github/scripts/*desktop-release*"
-      - ".github/scripts/sign-*-release.*"
-      - ".github/workflows/ci.yml"
-      - ".github/tests/desktop_permissions_test.rb"
 
 permissions:
   contents: read
-
-# Replacing the PR head or closing the PR releases its runners. Each main build and manual run gets its own group.
-concurrency:
-  group: desktop-${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   ci:
@@ -41,7 +19,6 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   version:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.number.outputs.version }}

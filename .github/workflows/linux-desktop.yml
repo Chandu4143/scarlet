@@ -4,27 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-    paths:
-      - ".github/workflows/linux-desktop.yml"
-      - "apps/**"
-      - "packages/**"
-      - "skills/**"
-      - "integrations/**"
-      - "package.json"
-      - "pnpm-*.yaml"
 
 permissions:
   contents: read
 
-concurrency:
-  group: linux-desktop-${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   ubuntu:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed'
     name: Ubuntu 24.04 amd64 package and native playback
     runs-on: ubuntu-24.04
     timeout-minutes: 90
