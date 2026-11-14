@@ -467,6 +467,8 @@ const HardwareEncoder = z.enum(["none", "auto", "nvenc", "qsv", "videotoolbox"])
 const ExportOptions = z.object({
   height: z.number().int().min(2).max(16384).multipleOf(2).optional(),
   omitCaptions: z.boolean().optional(),
+  /** Original quality: encode in software at about the source's own rate, with 320 kb/s sound. A larger file than a delivery render. */
+  bestQuality: z.boolean().optional(),
 });
 
 /** Where a desktop export saves its file. The ticket names a destination only the desktop app can resolve. */
