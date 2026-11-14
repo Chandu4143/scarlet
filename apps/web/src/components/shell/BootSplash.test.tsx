@@ -262,7 +262,7 @@ it("opens a project's page again where the editor was when the engine went away 
   window.addEventListener("scarlet:bookmark-project", page);
   window.history.replaceState(null, "", `/p/${project.id}`);
   try {
-    await becomes("offline");
+    await becomes("loading");
     expect(host.textContent).not.toContain("Project");
     expect(router.state.location.search).toBe("");
     // The engine is back: the page is shown at that place, and reads it as it does on the way back from Settings.
@@ -272,7 +272,7 @@ it("opens a project's page again where the editor was when the engine went away 
     // The place is used once. An outage on a page with no place in a project brings back that page as it is.
     await act(async () => { await router.navigate("/somewhere"); });
     window.history.replaceState(null, "", "/somewhere");
-    await becomes("offline");
+    await becomes("loading");
     await becomes("ready");
     expect(router.state.location.pathname + router.state.location.search).toBe("/somewhere");
   } finally {

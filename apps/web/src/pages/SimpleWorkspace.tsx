@@ -126,6 +126,23 @@ export function cutOnWorkingCut(cut: TimeRange, onto: { map: TimeMap; timeline: 
 }
 
 type Panel = "media" | "history" | "export" | "learnings" | null;
+
+const REWORDING_KEY = "scarlet.rewording.v1";
+/** The queued request whose words were in the message box when the project was last on screen, with those words. */
+function savedRewording(projectId: string): { id: string; text: string } | undefined {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REWORDING_KEY) ?? "null") as { projectId?: unknown; id?: unknown; text?: unknown } | null;
+    return saved && saved.projectId === projectId && typeof saved.id === "string" && typeof saved.text === "string" ? { id: saved.id, text: saved.text } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function saveRewording(projectId: string, rewording: { id: string; text: string } | undefined) {
+  try {
+    if (rewording) localStorage.setItem(REWORDING_KEY, JSON.stringify({ projectId, ...rewording }));
+    else if (savedRewording(projectId)) localStorage.removeItem(REWORDING_KEY);
+  } catch { /* Without storage the words last for this session only. */ }
+}
 type CutChoice = "keep" | "cut";
 const savedChoices = (change: Change): Record<number, CutChoice> =>
   Object.fromEntries((change.cutChoices ?? []).map(c => [c.index, c.choice]));
@@ -2598,7 +2615,8 @@ export function SimpleWorkspace() {
   // decided or a pass applied meanwhile, opens nothing.
   const reviewRead = cutReview.review !== undefined || !!cutReview.error;
   useEffect(() => {
-    if (!reopen) return;
+    // At launch the project's requests and edits are read a moment after the page is up: until they are, nothing is gone.
+    if (!reopen || current.reviewStatus === "loading") return;
     const [kind, first, second, third] = reopen.split(":");
     if (kind === "edit") {
       const thread = threads.find(t => t.id === first);
@@ -2611,7 +2629,7 @@ export function SimpleWorkspace() {
       if (call) { quietOpen.current = true; actions.listen(pass, call); }
     }
     setReopen(undefined);
-  }, [reopen, pass?.id, allCalls.length, reviewRead]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reopen, current.reviewStatus, pass?.id, allCalls.length, reviewRead]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const bookmark = (event: Event) => {
       const at = placeNow.current();
@@ -3309,7 +3327,10 @@ export function SimpleWorkspace() {
   const queueHint = queued[0] && waitHint(queued[0]);
   // The queued request whose words are in the message box to change, and the words as they stand there. Scarlet
   // doesn't start it meanwhile. A message being written waits, and is in the box again once these words are done.
-  const [rewording, setRewording] = useState<{ id: string; text: string }>();
+  // They are kept as they are typed, as an unsent message is: after a quit the request is in the box again with the
+  // words as they stood, and held again, instead of starting a minute later with the words it was first given.
+  const [rewording, setRewording] = useState<{ id: string; text: string } | undefined>(() => savedRewording(current.id));
+  useEffect(() => saveRewording(current.id, rewording), [current.id, rewording]);
   // Whether the tray is open. Held here: the box it sits on is built again whenever it is aimed somewhere else.
   const trayOpen = useState(false);
   const rewordingItem = rewording && queuedItems.find(item => item.id === rewording.id);

@@ -145,8 +145,8 @@ async function run(projectId: string, file: ExportFile, context: string, version
     }
     if (ticket === null) throw new Error("Export destination expired");
     let url: () => string;
-    // Whether the engine went away while the file was being saved, which is what stopped the save.
-    let engineLeft = async () => false;
+    // Waits until the engine answers again.
+    let engineBack = async () => {};
     if (file.format === "otio") {
       url = () => api.otioUrl(projectId, version);
     } else {
@@ -179,13 +179,8 @@ async function run(projectId: string, file: ExportFile, context: string, version
       }
       // The engine may be back at another address by the time the file is read again.
       url = () => api.renderFileUrl(id);
-      engineLeft = async () => {
-        let left = false;
-        for (;;) {
-          if (cancelled) return false;
-          const there = await api.render(id).then(() => true, err => { if (unreachable(err)) return false; throw err; });
-          if (there) return left;
-          left = true;
+      engineBack = async () => {
+        while (!cancelled && !await api.render(id).then(() => true, err => { if (unreachable(err)) return false; throw err; })) {
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
       };
@@ -199,10 +194,9 @@ async function run(projectId: string, file: ExportFile, context: string, version
       } catch (err) {
         // The engine restarting under a save is no failure: the render is still there once it is back, under the same
         // id, and the file is read again. Anything else that stops a save is the editor's to see.
-        // It may be back already when asked, so what the save said counts too: the file stopped arriving part-way.
-        if (cancelled || attempt >= SAVE_ATTEMPTS || errorMessage(err) === "Export destination expired") throw err;
-        const left = await engineLeft();
-        if (!left && !ENGINE_WENT.test(errorMessage(err))) throw err;
+        // What the save said tells them apart: the engine wasn't there, or the file stopped arriving part-way.
+        if (cancelled || attempt >= SAVE_ATTEMPTS || !ENGINE_WENT.test(errorMessage(err))) throw err;
+        await engineBack();
         if (cancelled) return;
       }
     }

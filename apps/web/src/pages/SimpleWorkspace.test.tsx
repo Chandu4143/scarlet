@@ -4355,6 +4355,35 @@ it("keeps a queued request's new words when holding it fails for another reason,
   } finally { vi.useRealTimers(); }
 });
 
+it("puts a queued request's words back in the box as they stood when Scarlet quit while they were being changed", async () => {
+  runningPass();
+  data = { ...data, tasks: [...data.tasks, callRequest("task_queued_revision", 2, { kind: "edit" as const, instruction: "Keep the aside.",
+    context: { ...callRequest("task_queued_revision", 2, {}).context, message: "Keep the aside." } })] };
+  const holdForRewording = vi.fn().mockResolvedValue(undefined);
+  useProjectStore.setState({ current: data, holdForRewording, rewordTask: vi.fn() });
+  await show();
+  await act(async () => {});
+  await click(container.querySelector('[aria-label="Queued requests"] .queue-reword')!);
+  await act(async () => composer.props!.rewording!.onChange("Keep the aside, but trim the breath before it."));
+  // Scarlet quits. Opened again, the request is in the box with the new words, and held again so it can't start with the old ones.
+  holdForRewording.mockClear();
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toMatchObject({ id: "task_queued_revision", text: "Keep the aside, but trim the breath before it." });
+  expect(holdForRewording).toHaveBeenCalledWith("task_queued_revision", true);
+  // Left as they were with Esc, nothing is kept: the next launch has an empty box.
+  await act(async () => composer.props!.rewording!.onCancel());
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toBeUndefined();
+  // Words kept for a request Scarlet has started since are let go.
+  localStorage.setItem("scarlet.rewording.v1", JSON.stringify({ projectId: PRJ, id: "task_started_since", text: "Too late" }));
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toBeUndefined();
+  expect(localStorage.getItem("scarlet.rewording.v1")).toBeNull();
+});
+
 it("offers no way to fold the queue while one of several queued requests has its words in the box", async () => {
   runningPass();
   const queued = (id: string, index: number, words: string) => {
@@ -10000,6 +10029,33 @@ it("opens again, after a quit, the call or the cut that was open, without playin
   await act(async () => {});
   expect(card()).toBeNull();
   expect(bookmark()).not.toContain("open=");
+});
+
+it("opens again, after a quit, the applied cut that was open, on its card and paused", async () => {
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "Keep the image test", range: { start: 4, end: 8 }, at: 6,
+        beforeCut: { version: "v_before", removed: { start: 10, end: 12.4 } }, previous: [] }] }));
+  vi.spyOn(api, "timeline").mockImplementation(async (_, version = "head") => ({ timeline: { ...data.timeline!, version } }));
+  const listen = vi.spyOn(player, "audition");
+  await show();
+  await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
+  await act(async () => {});
+  expect(editPanel()).not.toBeNull();
+  const place = bookmark();
+  expect(place).toContain("open=edit");
+  listen.mockClear();
+  // At launch the page is up before the project's requests and edits have been read. The cut opens once they are.
+  const read = useProjectStore.getState().current!;
+  useProjectStore.setState({ current: { ...read, changes: [], tasks: [], reviewStatus: "loading" } });
+  await reopen(place);
+  await act(async () => {});
+  expect(editPanel()).toBeNull();
+  await act(async () => useProjectStore.setState({ current: read }));
+  await act(async () => {});
+  expect(editPanel()).not.toBeNull();
+  expect(listen.mock.calls.every(call => call[2] === true)).toBe(true);
+  expect(usePlayerStore.getState().playing).toBe(false);
 });
 
 it("keeps the conversation and the cut on screen when the edit moves on and its new timeline can't be read, and says so after them only if it keeps failing", async () => {

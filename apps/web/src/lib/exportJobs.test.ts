@@ -24,7 +24,6 @@ const answers = () => ({
   save: vi.spyOn(desktop, "finishVideoExport").mockResolvedValue(DESTINATION.path),
   release: vi.spyOn(api, "releaseRender").mockResolvedValue(),
   request: vi.spyOn(api, "requestRender").mockImplementation(async () => ({ render })),
-  // The engine is there when a failed save asks after it.
   found: vi.spyOn(api, "render").mockImplementation(async () => ({ render })),
 });
 let asked: ReturnType<typeof answers>;
