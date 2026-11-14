@@ -283,15 +283,16 @@ function startNextSave(ctx: Ctx, skillId: string): void {
 }
 
 /**
- * A skill edit ended. The learning it was saving is saved, or goes back to the editor with why it wasn't. A run cut
- * short and resumed is the same request: when the attempt that carried on saves the skill, the learning is saved.
+ * A skill edit ended. The learning it was saving is saved once the run saved the skill, however the run ended, or goes
+ * back to the editor with why it wasn't. A run cut short and resumed is the same request: when the attempt that carried
+ * on saves the skill, the learning is saved.
  */
 export function skillEditEnded(ctx: Ctx, task: Task): void {
   if (!isSkillEdit(task) || !task.context.skillId || !FINISHED_TASK.has(task.state)) return;
   const learning = task.context.learningId ? ctx.repos.learnings.get(task.context.learningId) : null;
   const saving = learning?.editTaskId ? ctx.repos.tasks.get(learning.editTaskId) : null;
   if (learning && sameRun(task, saving ?? undefined)) {
-    if (task.state === "done" && task.resultSkillId) {
+    if (task.resultSkillId) {
       if (learning.state === "saving" || learning.state === "suggested") {
         save(ctx, { ...learning, state: "saved", error: undefined });
         ctx.log(`[learning] ${learning.id} saved by ${task.id}`);
