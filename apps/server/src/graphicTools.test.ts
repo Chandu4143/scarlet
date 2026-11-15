@@ -89,7 +89,7 @@ describe.skipIf(!hasChrome())("graphics", () => {
     const call = await session({ ...agentCapabilities("claude"), images: false });
     const missing = await call("graphic_render", { html: `<p style="font-family:'Brand Nope';color:#fff">Hi</p>`, duration: 0.5 });
     const result = JSON.parse(textOf(missing));
-    expect(result).toMatchObject({ added: false, missingFonts: [{ family: "Brand Nope", sample: "Hi" }], next: expect.stringContaining("ask the editor") });
+    expect(result).toMatchObject({ added: false, missingFonts: [{ family: "Brand Nope", sample: "Hi" }], next: expect.stringContaining("A font the editor named: ask them"), installedFonts: expect.arrayContaining([expect.any(String)]) });
     expect(images(missing)).toEqual([]);
   });
 
