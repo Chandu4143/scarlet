@@ -6356,12 +6356,12 @@ it("records the editor's dialogue shortcut across rewords, answers, retries, not
   const guide = ctx.repos.skills.select("name = ?", ["dialogue-pass"])[0]!;
   const task = async (instruction: string, context = {}) => (await (await api("POST", projectsPath() + "/tasks",
     { agent: "codex", instruction, context })).json()).task as Task;
-  await api("PATCH", `/skills/${guide.id}`, { enabled: false });
+  await api("PUT", `/skills/${guide.id}`, { enabled: false });
   const noGuide = await task("Do /dialogue-pass now");
   expect(noGuide.context.dialogueOperation).toBe("first-cut");
   const rewordedWithoutGuide = await (await api("POST", `/tasks/${noGuide.id}/reword`, { text: "Here /tighten-pauses-here" })).json();
   expect(rewordedWithoutGuide.task.context.dialogueOperation).toBe("local-pauses");
-  await api("PATCH", `/skills/${guide.id}`, { enabled: true });
+  await api("PUT", `/skills/${guide.id}`, { enabled: true });
   const pinned = await task("Use the selected guide", { skillIds: [guide.id], dialogueOperation: "first-cut" });
   expect(pinned.context.dialogueOperation).toBe("none");
   const queued = await task("Start here /TIGHTEN-PAUSES-HERE with this pause", { skillIds: [guide.id] });
@@ -6389,11 +6389,15 @@ it("records the editor's dialogue shortcut across rewords, answers, retries, not
   const custom = await task("/tighten-pauses-here");
   expect(custom.context.dialogueOperation).toBe("none");
   const shadow = ctx.repos.skills.select("name = ?", ["tighten-pauses-here"])[0]!;
-  await api("PATCH", `/skills/${shadow.id}`, { enabled: false });
+  await api("PUT", `/skills/${shadow.id}`, { enabled: false });
   expect((await task("/tighten-pauses-here")).context.dialogueOperation).toBe("none");
   expect((await task("/dialogue-pass")).context.dialogueOperation).toBe("first-cut");
-  await api("PATCH", `/skills/${guide.id}`, { content: "# My first cut" });
+  await api("PUT", `/skills/${guide.id}`, { content: "# My first cut" });
   expect((await task("/dialogue-pass")).context.dialogueOperation).toBe("first-cut");
+  expect((await api("PUT", `/skills/${guide.id}`, { name: "my-first-pass" })).status).toBe(200);
+  expect((await task("/my-first-pass")).context.dialogueOperation).toBe("first-cut");
+  await api("PUT", `/skills/${guide.id}`, { enabled: false });
+  expect((await task("/my-first-pass")).context.dialogueOperation).toBe("none");
   await api("DELETE", `/skills/${guide.id}`);
   expect((await task("/dialogue-pass")).context.dialogueOperation).toBe("first-cut");
   await api("POST", "/skills", { name: "dialogue-pass", content: "# My different guide", scope: "team" });

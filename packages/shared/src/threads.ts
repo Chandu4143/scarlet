@@ -239,8 +239,12 @@ export function skillCommands(draft: string) {
   });
 }
 
+function firstCutName(name: string | undefined) {
+  return name === "dialogue-pass" || name === "first-cut-dialogue";
+}
+
 export function isDialogueGuide(skill: Skill) {
-  return (skill.name === "dialogue-pass" || skill.name === "first-cut-dialogue") && (skill.bundledName === skill.name ||
+  return firstCutName(skill.name) && (skill.bundledName === skill.name ||
     (!skill.bundledName && (skill.source === "bundled" || skill.source === "seed")));
 }
 
@@ -248,8 +252,11 @@ type DialogueOperation = NonNullable<Task["context"]["dialogueOperation"]>;
 
 /** A custom entry owns its command name even when disabled. The shipped guide is optional advice for the product shortcut. */
 export function dialogueShortcut(name: string, library: readonly Skill[]): DialogueOperation | undefined {
-  if (name !== "dialogue-pass" && name !== "first-cut-dialogue" && name !== "tighten-pauses-here") return;
   const entry = library.find(skill => skill.name === name);
+  if (!firstCutName(name) && name !== "tighten-pauses-here") {
+    if (entry?.enabled && firstCutName(entry.bundledName)) return "first-cut";
+    return;
+  }
   if (entry && !isDialogueGuide(entry)) return;
   return name === "tighten-pauses-here" ? "local-pauses" : "first-cut";
 }
