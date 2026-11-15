@@ -350,21 +350,15 @@ it("only ever sends: stopping a running edit is on its card, not in the message 
   expect(cancelTask).not.toHaveBeenCalled();
 });
 
-it("offers the displayed cut time and includes it in the request only after the editor presses Edit here", async () => {
+it("tags the box with a picked moment and sends it with the request", async () => {
   useHostsStore.setState({ hosts: [] });
   await show();
   const tag = () => container.querySelector('.composer-context-row .composer-scope');
-  const action = () => container.querySelector<HTMLButtonElement>('button[aria-label="Edit here at 7:23"]');
   expect(tag()).toBeNull();
-  expect(action()).toBeNull();
+  expect(container.querySelector(".composer-edit-here")).toBeNull();
   const picked = { time: 443.25, version: project.head!, clipIds: [] };
-  await show({ editHere: { time: "7:23", onSelect: () => useUiStore.getState().setAgentContext(picked) } });
   await type("Cut here");
-  expect(action()?.textContent).toBe("Edit here");
-  expect(tag()).toBeNull();
-  await act(async () => action()!.click());
-  expect(document.activeElement).toBe(container.querySelector("textarea"));
-  expect(action()).toBeNull();
+  await act(async () => useUiStore.getState().setAgentContext(picked));
   expect(tag()?.textContent).toBe("7:23.250");
   expect(useUiStore.getState().agentDraft).toBe("Cut here");
   expect(container.querySelector<HTMLButtonElement>(".composer-input button.btn-primary")?.disabled).toBe(true);
@@ -373,6 +367,27 @@ it("offers the displayed cut time and includes it in the request only after the 
   await submit();
   expect(useProjectStore.getState().createNote).toHaveBeenCalledWith(PRJ, expect.objectContaining({ text: "Cut here", time: 443.25, version: project.head }));
   expect(tag()).toBeNull();
+});
+
+it("takes a picked moment off on Backspace in an empty box, but not a cut it revises or a held Backspace", async () => {
+  const onClearTarget = vi.fn();
+  await show({ targetTag: "At 0:07", targetIsPoint: true, onClearTarget });
+  const backspace = (repeat = false) => act(async () => {
+    container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", repeat, bubbles: true, cancelable: true }));
+  });
+  await type("Zoom");
+  await backspace();
+  expect(onClearTarget).not.toHaveBeenCalled();
+  await type("");
+  // Holding Backspace to clear the words stops at the empty box.
+  await backspace(true);
+  expect(onClearTarget).not.toHaveBeenCalled();
+  await backspace();
+  expect(onClearTarget).toHaveBeenCalledTimes(1);
+  // A cut or an edit the box revises stays: only its × starts a new edit instead.
+  await show({ targetTag: "Cut at 2:05", targetIsPoint: false, onClearTarget });
+  await backspace();
+  expect(onClearTarget).toHaveBeenCalledTimes(1);
 });
 
 it("sends the version of an explicitly attached point even when the project head has advanced", async () => {
@@ -1154,14 +1169,13 @@ it("keeps an explicit range or whole-video choice when text is erased", async ()
   expect(useUiStore.getState().agentContext).toBe("whole");
 });
 
-it("dictates for the whole video while a time is offered, including after an abandoned hold", async () => {
+it("dictates for the whole video with no moment picked, including after an abandoned hold", async () => {
   let micProps!: ComponentProps<typeof mic.MicButton>;
   vi.spyOn(mic, "MicButton").mockImplementation(props => { micProps = props; return <></>; });
   const createVoiceNote = vi.fn();
   useProjectStore.setState({ createVoiceNote });
   vi.spyOn(api, "speechToText").mockResolvedValue({ text: "Fix the levels throughout" });
-  const onSelect = vi.fn();
-  await show({ editHere: { time: "0:03", onSelect } });
+  await show();
   await act(async () => { micProps.onStart?.(); });
   expect(useUiStore.getState().agentContext).toBeNull();
   await act(async () => usePlayerStore.getState().setTime(300));
@@ -1171,7 +1185,6 @@ it("dictates for the whole video while a time is offered, including after an aba
   expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
     instruction: "Fix the levels throughout", voiceTranscript: "Fix the levels throughout", context: { version: project.head },
   }));
-  expect(onSelect).not.toHaveBeenCalled();
   expect(createVoiceNote).not.toHaveBeenCalled();
 });
 

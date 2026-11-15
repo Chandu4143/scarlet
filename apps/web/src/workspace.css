@@ -120,8 +120,6 @@
 .composer-tag-clear:hover:not(:disabled) { background: var(--color-raised); color: var(--color-fg); }
 .composer-tag-clear:disabled { opacity: .5; cursor: default; }
 .composer-tag-clear:focus-visible { outline-offset: 1px; }
-.composer-edit-here { flex: none; align-self: center; padding: 4px; color: var(--color-muted); font-size: 12px; white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; }
-.composer-edit-here:hover { color: var(--color-fg); }
 .composer-skills { position: absolute; z-index: 5; inset: auto 0 calc(100% + 6px); padding: 5px; border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-panel); box-shadow: 0 6px 20px #0005; }
 .composer-skill-list { overflow-y: auto; max-height: min(16rem, 32vh); }
 .composer-skill-list button { display: block; width: 100%; padding: 5px 8px; border-radius: 5px; text-align: left; }
