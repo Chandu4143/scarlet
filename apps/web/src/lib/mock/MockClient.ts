@@ -1463,7 +1463,7 @@ export class MockClient implements ScarletApi {
   async updateSettings(body: Partial<ServerSettings>): Promise<{ settings: ServerSettings }> {
     this.requireAuth();
     const previous = this.db.settings.render;
-    this.db.settings = { ...this.db.settings, ...body, editingTools: { ...this.db.settings.editingTools, ...body.editingTools }, transcription: { ...this.db.settings.transcription, ...body.transcription }, noteCleanup: { ...this.db.settings.noteCleanup, ...body.noteCleanup }, render: { ...this.db.settings.render, ...body.render } };
+    this.db.settings = { ...this.db.settings, ...body, transcription: { ...this.db.settings.transcription, ...body.transcription }, noteCleanup: { ...this.db.settings.noteCleanup, ...body.noteCleanup }, render: { ...this.db.settings.render, ...body.render } };
     if (previous.hwaccel !== this.db.settings.render.hwaccel || previous.previewHeight !== this.db.settings.render.previewHeight) this.emit({ type: "render.settings.updated" });
     return this.latency({ settings: this.db.settings }, 250);
   }

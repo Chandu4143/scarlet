@@ -344,12 +344,9 @@
 .settings-page form[data-unsaved] button[type="submit"]:focus,
 .skill-editor-toolbar[data-unsaved] > .btn-primary[data-esc-focus]:focus,
 .skill-chat .composer-send[data-esc-focus]:focus { outline: 2px solid var(--color-muted); outline-offset: 2px; }
-.tools-subheading, .tool-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.tools-subheading { margin-bottom: 8px; }
-.tools-subheading h4 { font-size: 14px; font-weight: 600; }
-.tools-subheading p, .tool-inventory p { color: var(--color-muted); font-size: 12px; }
-.tool-setting-row { padding-block: 12px; }
-.tool-inventory { margin-top: 8px; border-top: 1px solid var(--color-line); font-size: 12px; }
+.tool-settings { margin-top: 28px; }
+.tool-setting-row { padding: 12px 14px; }
+.tool-inventory { font-size: 12px; }
 .tool-inventory summary { padding-top: 12px; color: var(--color-muted); cursor: pointer; }
 .tool-inventory dl { display: grid; gap: 12px; margin: 15px 0; }
 .tool-inventory dt { display: flex; align-items: baseline; gap: 6px; font-weight: 500; }

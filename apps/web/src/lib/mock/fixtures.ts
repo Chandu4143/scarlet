@@ -700,7 +700,6 @@ export function buildDb(chatLayouts = false): MockDb {
 
   const settings: ServerSettings = {
     telemetryEnabled: true,
-    editingTools: {},
     transcription: { provider: "whispercpp", openaiModel: "whisper-1", whisperCppPath: "/opt/whisper.cpp/main", whisperModelPath: "/opt/whisper.cpp/models/ggml-large-v3.bin", language: "en" },
     noteCleanup: { enabled: true, provider: "anthropic", model: "claude-haiku-4-5" },
     render: { handleSeconds: 1.5, previewHeight: DEFAULT_PREVIEW_HEIGHT, concurrency: 2, hwaccel: "auto" },
