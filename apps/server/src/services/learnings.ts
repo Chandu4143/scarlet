@@ -58,8 +58,23 @@ export function startLearningCheck(ctx: Ctx, task: Task): Task | undefined {
   }
 }
 
-const RECENT_REQUESTS = 6;
+const RECENT_REQUESTS = 12;
 const KNOWN_RULES = 30;
+
+/**
+ * The skills that made the change a request is about. A revision names none of its own, but a correction to a cut is a
+ * correction to the skill that cut it, so the rule belongs there.
+ */
+function skillsBehind(ctx: Ctx, changeId: string | undefined): string[] {
+  const change = changeId ? ctx.repos.changes.get(changeId) : null;
+  let maker = change?.taskId ? ctx.repos.tasks.get(change.taskId) : null;
+  // A pass resumed or continued keeps the skills of the request that started it.
+  for (let hops = 0; maker && !maker.context.skillIds?.length && hops < 5; hops++) {
+    const root = maker.resumeRootId ?? maker.context.threadId;
+    maker = root && root !== maker.id ? ctx.repos.tasks.get(root) : null;
+  }
+  return maker?.context.skillIds ?? [];
+}
 
 /** What a learning check is shown: the request, what it was about, the editor's skills and the rules already offered. */
 export function learningCheckContext(ctx: Ctx, check: Task): LearningCheckContext {
@@ -67,14 +82,30 @@ export function learningCheckContext(ctx: Ctx, check: Task): LearningCheckContex
   if (!asked || asked.projectId !== check.projectId) throw notFound("the request this check reads");
   const skills = enabledSkills(ctx);
   const named = (id: string) => ctx.repos.skills.get(id)?.name ?? "a skill since deleted";
+  const aimedAt = (task: Task) => {
+    const c = task.context;
+    const kind = c.cutIndex !== undefined ? "cut" : c.editIndex !== undefined ? "edit" : c.changeId ? "edit" : undefined;
+    const makers = kind ? skillsBehind(ctx, c.changeId).map(named) : [];
+    return { kind, makers };
+  };
   const c = asked.context;
   const at = c.time !== undefined ? ` at ${clock(Math.floor(c.time))}` : "";
+  const target = aimedAt(asked);
+  const madeBy = target.makers.length ? ` with ${target.makers.join(", ")}` : "";
   const about = c.changeId && (c.cutIndex !== undefined || c.editIndex !== undefined)
-    ? `They said it about one ${c.cutIndex !== undefined ? "cut" : "edit"} Scarlet made${at}.`
-    : c.changeId ? "They said it about an edit Scarlet made."
+    ? `They said it about one ${c.cutIndex !== undefined ? "cut" : "edit"} Scarlet made${madeBy}${at}.`
+    : c.changeId ? `They said it about an edit Scarlet made${madeBy}.`
     : at ? `They said it about the moment${at} in the video.` : undefined;
-  const earlier = ctx.repos.tasks.select("project_id = ? AND kind IN ('edit', 'note', 'revise') AND json_extract(json, '$.createdBy.type') = 'human' AND json_extract(json, '$.resumeRootId') IS NULL AND rowid < (SELECT rowid FROM tasks WHERE id = ?)",
-    [asked.projectId, asked.id], `created_at DESC, rowid DESC LIMIT ${RECENT_REQUESTS}`).reverse().map(t => clip(wordsOf(t), 400));
+  // A correction that keeps coming back is the rule, and it comes back across videos, so the list isn't this project's
+  // alone. Each line says what it was about and which skill made that, as the request above does.
+  const earlier = ctx.repos.tasks.select("kind IN ('edit', 'note', 'revise') AND json_extract(json, '$.createdBy.type') = 'human' AND json_extract(json, '$.resumeRootId') IS NULL AND rowid < (SELECT rowid FROM tasks WHERE id = ?)",
+    [asked.id], `created_at DESC, rowid DESC LIMIT ${RECENT_REQUESTS * 3}`)
+    .filter(t => !ONLY_A_SKILL.test(wordsOf(t))).slice(0, RECENT_REQUESTS).reverse()
+    .map(t => {
+      const { kind, makers } = aimedAt(t);
+      return { said: clip(wordsOf(t), 400), ...(kind && { about: `${kind === "cut" ? "a cut" : "an edit"} ${makers.length ? makers.join(", ") : "Scarlet"} made` }),
+        ...(t.projectId !== asked.projectId && { elsewhere: true }) };
+    });
   const rules = ctx.repos.learnings.select("state != 'declined'", [], `created_at DESC, rowid DESC LIMIT ${KNOWN_RULES}`).reverse()
     .map(l => ({ rule: l.rule, skill: named(l.skillId), state: l.state === "saved" ? "saved" as const : "offered" as const }));
   return {
@@ -283,15 +314,16 @@ function startNextSave(ctx: Ctx, skillId: string): void {
 }
 
 /**
- * A skill edit ended. The learning it was saving is saved, or goes back to the editor with why it wasn't. A run cut
- * short and resumed is the same request: when the attempt that carried on saves the skill, the learning is saved.
+ * A skill edit ended. The learning it was saving is saved once the run saved the skill, however the run ended, or goes
+ * back to the editor with why it wasn't. A run cut short and resumed is the same request: when the attempt that carried
+ * on saves the skill, the learning is saved.
  */
 export function skillEditEnded(ctx: Ctx, task: Task): void {
   if (!isSkillEdit(task) || !task.context.skillId || !FINISHED_TASK.has(task.state)) return;
   const learning = task.context.learningId ? ctx.repos.learnings.get(task.context.learningId) : null;
   const saving = learning?.editTaskId ? ctx.repos.tasks.get(learning.editTaskId) : null;
   if (learning && sameRun(task, saving ?? undefined)) {
-    if (task.state === "done" && task.resultSkillId) {
+    if (task.resultSkillId) {
       if (learning.state === "saving" || learning.state === "suggested") {
         save(ctx, { ...learning, state: "saved", error: undefined });
         ctx.log(`[learning] ${learning.id} saved by ${task.id}`);
