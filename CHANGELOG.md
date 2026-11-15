@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- Drag up from the picture strip or waveform to see neighboring frames, then move sideways to scrub one frame at a time.
+- The timeline hover preview keeps its picture in view while the next frame loads.
 - Export › Advanced export saves a folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro: the timeline with its cuts, tracks, zooms, volume and fades, a copy of the footage, the captions, and a Read me that lists anything that doesn't carry over.
 - In the project library, a project whose caching you paused says Importing paused instead of still importing its files.
 - Recordings of your spoken notes are no longer deleted the day after you save them.
