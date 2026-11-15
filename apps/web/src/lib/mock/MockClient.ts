@@ -32,8 +32,8 @@ import type {
   WsEvent,
 } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript } from "@scarlet/timeline";
-import { planRevert, toOtio, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
-import type { ActivityEntry, ApproveResponse, TrashedProject } from "@scarlet/shared";
+import { planRevert, toOtio, toFcpxml, usedMedia, handoffFileNames, handoffLosses, handoffReadMe, toSrt, captionTracks, exactRate, type HandoffSource, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
+import type { ActivityEntry, ApproveResponse, HandoffFile, HandoffResponse, TrashedProject } from "@scarlet/shared";
 import type { ScarletApi } from "../api";
 import { buildDb, mc, SAMPLE_TRANSCRIPTION_MODEL, templatePreviewSvg, type MockDb } from "./fixtures";
 import sampleWaveform from "./sample-waveform.json";
@@ -528,6 +528,31 @@ export class MockClient implements ScarletApi {
     const tl = this.db.timelines[version === "head" ? (project.head ?? "") : version];
     const otio = tl ? toOtio({ ...project, media: this.db.media[projectId] ?? project.media }, tl, { mediaRoot: "C:/scarlet/media" }) : {};
     return `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(otio, null, 2))}`;
+  }
+
+  /** The demo's folder for another app: real timeline files, with the sample video standing in for every clip. */
+  async handoff(projectId: string, version: string, folder: string): Promise<HandoffResponse> {
+    const stored = this.projectById(projectId);
+    const project = { ...stored, media: this.db.media[projectId] ?? stored.media };
+    const tl = this.db.timelines[version === "head" ? (project.head ?? "") : version];
+    if (!tl) throw notFound("Version");
+    const base = folder.split(/[\\/]/).filter(Boolean).pop() || project.name;
+    const assets = usedMedia(project, tl);
+    const names = handoffFileNames(assets.map(a => a.name));
+    const sources = new Map<string, HandoffSource>(assets.map((a, i) => [a.id, {
+      url: `file://${encodeURI(`${folder}/Media/${names[i]}`)}`, fileName: names[i]!, hasVideo: a.kind !== "audio", hasAudio: a.hasAudio !== false,
+      rate: a.fps ? exactRate(a.fps).rate : undefined, width: a.width, height: a.height, duration: a.duration ?? 0,
+    }]));
+    const captions = captionTracks(tl).map(({ cues }) => ({ path: `${base} captions.srt`, text: toSrt(cues) })).slice(0, 1);
+    const files: HandoffFile[] = [
+      { path: `${base}.fcpxml`, text: toFcpxml(project, tl, sources) },
+      { path: `${base}.otio`, text: JSON.stringify(toOtio(project, tl, { sources }), null, 2) },
+      ...captions,
+      { path: "Read me.txt", text: handoffReadMe({ projectName: project.name, timelineFiles: { fcpxml: `${base}.fcpxml`, otio: `${base}.otio` },
+        captionFiles: captions.map(c => c.path), losses: handoffLosses(project, tl, sources), warnings: [] }) },
+      ...names.map(name => ({ path: `Media/${name}`, source: "/sample.mp4", size: 0 })),
+    ];
+    return this.latency({ files, mediaBytes: 0 }, 250);
   }
 
   // --- changes -------------------------------------------------------------------------
