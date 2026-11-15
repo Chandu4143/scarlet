@@ -18,6 +18,7 @@ import { useHostsStore } from "../stores/hosts";
 import { usePlayerStore } from "../stores/player";
 import { useProjectStore, type ProjectData } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
+import { useTemplatesStore } from "../stores/templates";
 import { useUiStore, type AgentContext } from "../stores/ui";
 import { SimpleWorkspace } from "./SimpleWorkspace";
 import { cutOnWorkingCut, keepGoesTo } from "../lib/passCalls";
@@ -511,6 +512,114 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   expect([...container.querySelectorAll(".simple-timeline-mark.is-numbered")].map(d => d.classList.contains("is-on"))).toEqual([true, false, false]);
   // No row of edit points is drawn, with an edit open or closed.
   expect(container.querySelector(".timeline-cuts")).toBeNull();
+});
+
+/** An earlier request's pass of many cuts and a graphic, and the latest request's edits, on a working cut of `length` seconds. */
+const everyEdit = (length: number) => {
+  appliedEdits();
+  const cuts = Array.from({ length: 200 }, (_, i) => {
+    const at = 0.05 + i * (length - 0.1) / 200;
+    return { changeId: "chg_approved_1", spot: i, label: `Cut ${i + 1}`, range: { start: Math.max(0, at - 1.5), end: Math.min(length, at + 1.5) }, at,
+      beforeCut: { version: "ver_1", removed: { start: at, end: at + 0.4 } }, kind: "cut" as const, previous: [] };
+  });
+  const graphic = { changeId: "chg_approved_1", spot: 200, label: "Lower third for Daniel", range: { start: length * .3, end: length * .3 + 1.2 }, kind: "graphic" as never, previous: [] };
+  // Just the two requests: the pass first, then the request whose edits the timeline numbers.
+  const one = threadWith("chg_approved_1"), two = threadWith("chg_approved_2");
+  data = { ...data, changes: [...one.changes, ...two.changes], tasks: [...one.tasks, ...two.tasks], notes: [] };
+  useProjectStore.setState({ current: data });
+  const latest = two.id, earlier = one.id;
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId === earlier ? [...cuts, graphic] : threadId !== latest ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, kind: "audio" as const, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.2, end: 2.4 }, kind: "text" as const, previous: [] },
+      { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY },
+    ] }));
+  return { cuts, graphic };
+};
+const editMarks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-edit")];
+const countLabels = () => editMarks().filter(m => m.classList.contains("is-count")).map(m => m.textContent);
+
+it("draws every applied edit on the working cut under what needs the editor, gathered into counts on the whole video", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("timeline-slider") ? 1000 : 0; });
+  const length = timelineDuration(data.timeline!);
+  const { cuts } = everyEdit(length);
+  await show();
+  await act(async () => {});
+  // The whole video can't fit 200 lines: they gather into a few counts that say what they hold, and none touch.
+  const counts = countLabels();
+  expect(counts.length).toBeGreaterThan(1);
+  expect(counts.length).toBeLessThanOrEqual(12);
+  for (const label of counts) expect(label).toMatch(/^\d+ cuts( · \d+ (graphic|graphics|captions?|audio edits?|other edits?))*( · \d+ more)?$/);
+  const held = counts.reduce((sum, label) => sum + label!.split(" · ").filter(part => !/more$/.test(part)).reduce((n, part) => n + parseInt(part), 0)
+    + parseInt(label!.match(/(\d+) more$/)?.[1] ?? "0"), 0);
+  const drawn = editMarks().filter(m => !m.classList.contains("is-count")).length;
+  // Every edit of the earlier request on the working cut is in a count or drawn on its own. The latest request's have
+  // their numbered dots, and aren't drawn again under them.
+  expect(held + drawn).toBe(cuts.length + 1);
+  // What needs the editor is unchanged on top: the latest request's numbered dots, the flagged one amber.
+  const numbered = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
+  expect(numbered.map(d => [d.textContent, d.dataset.state])).toEqual([["1–2", undefined], ["3", "check"]]);
+  // Drawn after the counts, the marks sit over them.
+  const order = [...container.querySelectorAll(".simple-timeline-edit, .simple-timeline-mark")];
+  expect(order.findIndex(m => m.classList.contains("simple-timeline-mark"))).toBeGreaterThan(order.findLastIndex(m => m.classList.contains("simple-timeline-edit")));
+  // Hovering a count says what it holds and that a press zooms in.
+  const strip = timelineStrip();
+  // One clear of the numbered dots, which win a press over anything under them.
+  const dotsAt = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(d => parseFloat(d.style.left));
+  const first = editMarks().find(m => m.classList.contains("is-count") && dotsAt.every(at => Math.abs(at - parseFloat(m.style.left)) > 10))!;
+  await act(async () => { strip.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(first.style.left) * 10 })); });
+  const note = container.querySelector(".timeline-track .simple-timeline-tip.is-joined > span")!;
+  expect(note.querySelector("b")?.textContent).toBe(first.textContent);
+  expect(note.querySelector("small")?.textContent).toMatch(/Click to zoom in$/);
+  // A press on a count zooms to its stretch, and the count opens into the marks it held, with room for each.
+  zoomAtOnce();
+  const ruler = container.querySelector(".timeline-ruler")!.textContent;
+  await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(first.style.left) * 10 })); });
+  await act(async () => {});
+  expect(container.querySelector(".timeline-ruler")!.textContent).not.toBe(ruler);
+  expect(editPanel()).toBeNull();
+  for (let i = 0; i < 4 && countLabels().length; i++) {
+    const count = editMarks().find(m => m.classList.contains("is-count"))!;
+    await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(count.style.left) * 10 })); });
+    await act(async () => {});
+  }
+  const lines = editMarks().filter(m => m.classList.contains("is-cut"));
+  expect(lines.length).toBeGreaterThan(1);
+  expect(countLabels()).toEqual([]);
+  // Hovering a line names its cut, and a press opens it in the card, as its row in the chat would.
+  const line = lines[1]!;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(line.style.left) * 10 })); });
+  expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined b")?.textContent).toMatch(/^Cut at \d+:\d\d$/);
+  expect(line.classList.contains("is-hot")).toBe(true);
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(line.style.left) * 10 })); });
+  await act(async () => {});
+  expect(editPanel()).not.toBeNull();
+});
+
+it("draws a graphic as a bar as long as it is on screen, and lets a dot that needs the editor win a press over an edit under it", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("timeline-slider") ? 1000 : 0; });
+  const length = timelineDuration(data.timeline!);
+  const { graphic } = everyEdit(length);
+  await show();
+  await act(async () => {});
+  zoomAtOnce();
+  // Zoomed to the graphic, it is a bar from where it comes on to where it goes.
+  for (let i = 0; i < 6; i++) await press("+");
+  const bars = () => editMarks().filter(m => m.classList.contains("is-bar"));
+  const seekTo = (t: number) => act(async () => { usePlayerStore.setState({ time: t }); });
+  await seekTo(graphic.range.start + .6);
+  for (let i = 0; i < 6 && !bars().length; i++) await press("+");
+  expect(bars().map(b => b.dataset.kind)).toContain("graphic");
+  const bar = bars().find(b => b.dataset.kind === "graphic")!;
+  expect(parseFloat(bar.style.width)).toBeGreaterThan(0);
+  // The latest request's flagged edit sits on cuts of the earlier pass: a press on its dot opens it, not a cut.
+  await press("0");
+  const wrap = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")].find(d => d.textContent === "3")!;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(wrap.style.left) * 10 })); });
+  await act(async () => {});
+  expect(openTitle()).toBe("wrap");
+  // The open edit isn't drawn again under its band.
+  expect(editMarks().some(m => m.classList.contains("is-tick") && Math.abs(parseFloat(m.style.left) - parseFloat(wrap.style.left)) < .01)).toBe(false);
 });
 
 it("steps between a request's edits with the arrow keys, sideways or up and down, and keeps K and Esc", async () => {
@@ -1803,6 +1912,54 @@ it("undoes one applied edit by asking Scarlet to put back just that edit", async
   // Sent: the box is no longer aimed at the edit, and the player goes back to the whole timeline.
   expect(boxTag()).not.toBe("Edit at 0:00");
   expect(editPanel()).toBeNull();
+});
+
+it("saves a graphic from its card as a template, with an icon before Undo edit and T as its key", async () => {
+  appliedEdits();
+  // The engine says the second edit laid a graphic over the picture.
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "Lower third: Daniel", range: { start: 0.2, end: 2.4 }, previous: [], kind: "graphic" as const,
+        summary: "Added a lower third naming Daniel as he first speaks." },
+    ] }));
+  let sent!: () => void;
+  const createTask = vi.fn().mockImplementation(() => new Promise(resolve => { sent = () => resolve({ id: "task_template" }); }));
+  useProjectStore.setState({ createTask });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  const panel = editPanel()!;
+  // The card names what the edit is, and its small icons come before Revise and Keep: Save as template, then Undo edit.
+  expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("Graphic");
+  expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-label"), b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
+    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["", "Undo edit", "U", "Undo edit (U)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"]]);
+  // T sends one request however long it is held, worded as Undo edit's is: about this edit, named "Save as template".
+  await press("t");
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", repeat: true, bubbles: true })); });
+  await press("t");
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    kind: "edit", agent: "claude", model: "opus",
+    instruction: expect.stringMatching(/^Save the graphic of edit 2, “Lower third: Daniel” as a reusable template\. Work out which parts of it change/),
+    context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, editNumber: 2, threadId: threadWith("chg_approved_2").id, message: "Save as template" }),
+  }));
+  await act(async () => sent());
+  // An edit that isn't a graphic has no such icon.
+  await press("ArrowUp");
+  await act(async () => {});
+  expect(editPanel()?.querySelector(".edit-card-template")).toBeNull();
+});
+
+it("draws the template lit in the message box's $ list over the player's picture until the list closes", async () => {
+  await show();
+  const monitor = container.querySelector(".watch-monitor")!;
+  expect(monitor.querySelector(".template-on-picture")).toBeNull();
+  await act(async () => useTemplatesStore.getState().setLit({ id: "tpl_lower", url: "data:image/png;base64,AA==" }));
+  const over = monitor.querySelector<HTMLImageElement>(".template-on-picture")!;
+  expect([over.getAttribute("src"), over.dataset.template]).toEqual(["data:image/png;base64,AA==", "tpl_lower"]);
+  await act(async () => useTemplatesStore.getState().setLit(null));
+  expect(monitor.querySelector(".template-on-picture")).toBeNull();
 });
 
 it("undoes the open edit with U, once however long the key is held", async () => {
@@ -10614,3 +10771,4 @@ it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flag
   // Nothing else waits: the card closes.
   expect(keepGoesTo([[edit(13, undefined, true)], [edit(21)]], 1, still, [])).toBeUndefined();
 });
+
