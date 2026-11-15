@@ -213,7 +213,7 @@ export class MockClient implements ScarletApi {
     const thread = this.projectThread(id, threadId);
     const head = project.head && this.db.timelines[project.head];
     return { version: project.head, edits: head ? threadTimeline(thread, head, this.db.versions[id] ?? [],
-      version => this.db.timelines[version], project.settings.fps) : [] };
+      version => this.db.timelines[version], project.settings.fps, this.db.media[id]) : [] };
   }
 
   async setThreadDone(id: string, threadId: string, done: boolean, revision: string) {

@@ -86,7 +86,8 @@ type ListedEdit = Omit<ThreadEdit, "at">;
  */
 export function useThreadEdits(projectId: string, thread: Thread | undefined): ListedEdit[] {
   const head = useProjectStore(s => s.current?.project.head ?? null);
-  const saved = useMemo(() => thread ? threadEditList(thread) : [], [thread]);
+  const media = useProjectStore(s => s.current?.media);
+  const saved = useMemo(() => thread ? threadEditList(thread, media) : [], [thread, media]);
   // An edit another request made counts here once this request flagged it.
   const applied = !!thread?.changes.some(c => c.state === "approved") || !!thread?.flagged?.length;
   const key = useThreadEditKey(projectId, head, thread);

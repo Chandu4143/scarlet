@@ -10,7 +10,7 @@ export type SentencePart = string | { strong: string };
 /** What each kind of edit is called when the sentence counts it. A kind with no word of its own counts as an edit. */
 const NOUNS: Partial<Record<EditKind, [one: string, many: string]>> = {
   restore: ["passage put back", "passages put back"], audio: ["sound fix", "sound fixes"], zoom: ["zoom", "zooms"], reframe: ["reframe", "reframes"],
-  text: ["text edit", "text edits"], overlay: ["overlay", "overlays"], speed: ["speed change", "speed changes"],
+  text: ["text edit", "text edits"], overlay: ["overlay", "overlays"], graphic: ["graphic", "graphics"], speed: ["speed change", "speed changes"],
 };
 
 /** How many of a request's edits are named in its sentence before it counts them by kind instead. */
@@ -48,7 +48,8 @@ export function madeSentence(listed: readonly Listed[], length: (seconds: number
     else parts.push("Made ", { strong: plural(cuts.length, "cut") });
   }
   if (others.length) {
-    if (!cuts.length && others.length <= NAMED) {
+    // Graphics are counted however few: their names are the words on them, which say little in a sentence.
+    if (!cuts.length && others.length <= NAMED && !others.every(o => o.edit.kind === "graphic")) {
       parts.push("Made ", { strong: String(others.length) }, ` edits: ${others.map(o => o.edit.label.replace(/[.!?]+$/, "")).join(", ")}`);
     } else {
       // Counted by what they did, in the order each kind first appears.
