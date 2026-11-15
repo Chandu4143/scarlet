@@ -60,6 +60,7 @@ import type {
   StagedCutRevision,
   LocalModelStatus,
   TelemetryUnavailable,
+  HandoffResponse,
 } from "./api.js";
 
 /**
@@ -731,6 +732,11 @@ export class ScarletClient {
   restoreProject(projectId: string) {
     return this.post<{ project: Project }>(`/projects/${projectId}/restore`);
   }
+  /** What the folder for finishing the edit in another app holds, linked as it will sit at `folder`. */
+  handoff(projectId: string, version: string, folder: string) {
+    return this.post<HandoffResponse>(`/projects/${projectId}/versions/${version}/handoff`, { folder });
+  }
+
   importOtio(projectId: string, otio: unknown, opts: { autoApprove?: boolean } = {}) {
     return this.post<{ change: Change; timeline: Timeline }>(`/projects/${projectId}/import/otio`, { otio, autoApprove: opts.autoApprove });
   }

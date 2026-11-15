@@ -7,6 +7,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 15, 2026
 
 - A file you add from a link is named as it is, without %20 and other codes.
+- Export › Advanced export saves a folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro: the timeline with its cuts, tracks, zooms, volume and fades, a copy of the footage, the captions, and a Read me that lists anything that doesn't carry over.
 - In the project library, a project whose caching you paused says Importing paused instead of still importing its files.
 - Recordings of your spoken notes are no longer deleted the day after you save them.
 - Type a timestamp like 1:42 in a new edit request to mark it on the timeline. Click it to jump there, or send the note about that moment.

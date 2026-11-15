@@ -4,8 +4,9 @@
  * Resolve understands: Timeline → Stack → Track → Clip/Gap with
  * ExternalReference media.
  */
-import type { Clip, MediaAsset, Project, Timeline, Track } from "./schema.js";
-import { clipDuration, clipEnd } from "./time.js";
+import { sourceStart, type HandoffSource } from "./handoff.js";
+import type { Clip, MediaAsset, MediaClip, Project, Timeline, Track } from "./schema.js";
+import { carriesAudio, clipDuration, clipEnd } from "./time.js";
 
 type OtioRationalTime = { OTIO_SCHEMA: "RationalTime.1"; rate: number; value: number };
 type OtioTimeRange = { OTIO_SCHEMA: "TimeRange.1"; duration: OtioRationalTime; start_time: OtioRationalTime };
@@ -37,6 +38,11 @@ export interface OtioExportOptions {
   mediaRoot?: string;
   /** Include caption tracks as markers on the timeline (Resolve has no OTIO subtitle import). */
   captionsAsMarkers?: boolean;
+  /**
+   * The copies a hand-off folder links to, by media id: their URLs and the footage's own timecode, which other apps
+   * count source times from. Without it the timeline links to Scarlet's library and counts from zero.
+   */
+  sources?: Map<string, HandoffSource>;
 }
 
 export function toOtio(project: Project, timeline: Timeline, opts: OtioExportOptions = {}): unknown {
@@ -50,6 +56,20 @@ export function toOtio(project: Project, timeline: Timeline, opts: OtioExportOpt
   const audio = timeline.tracks.filter((t) => t.kind === "audio");
   for (const t of video) tracks.push(...otioTracks(t, "Video", rate, media, opts));
   for (const t of audio) tracks.push(...otioTracks(t, "Audio", rate, media, opts));
+  // In Scarlet a picture clip plays its own sound. Other apps put sound on audio tracks, so each picture track that is
+  // heard gets one, cut the same way. Scarlet's import drops these again as the clips' linked twins.
+  for (const t of video) {
+    if (t.muted) continue;
+    const heard = t.clips.filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false && c.volume > 0 &&
+      (opts.sources ? opts.sources.get(c.mediaId)?.hasAudio === true : !!media.get(c.mediaId) && carriesAudio(media.get(c.mediaId)!)) &&
+      media.get(c.mediaId)?.kind !== "audio");
+    if (!heard.length) continue;
+    const sound: Track = { ...t, kind: "audio", name: `${t.name} sound`, clips: heard };
+    for (const lane of otioTracks(sound, "Audio", rate, media, opts) as Array<{ metadata: { scarlet: Record<string, unknown> } }>) {
+      lane.metadata = { scarlet: { soundOf: t.id } };
+      tracks.push(lane);
+    }
+  }
 
   const markers: unknown[] = timeline.markers.map((m) => ({
     OTIO_SCHEMA: "Marker.2",
@@ -98,12 +118,12 @@ export function toOtio(project: Project, timeline: Timeline, opts: OtioExportOpt
   };
 }
 
-/** OTIO track children play sequentially. Give overlapping clips parallel
- * tracks, with each new clip above every earlier clip it overlaps. */
-function otioTracks(track: Track, kind: "Video" | "Audio", rate: number, media: Map<string, MediaAsset>, opts: OtioExportOptions): unknown[] {
+/** A track's clips can overlap, where one track of another app can't. Give overlapping clips parallel
+ * layers, with each new clip above every earlier clip it overlaps. */
+export function trackLayers(clips: Clip[], includeDisabled = false): Clip[][] {
   const lanes: Array<{ clips: Clip[]; end: number }> = [{ clips: [], end: 0 }];
-  for (const clip of track.clips) {
-    if (clip.enabled === false) continue;
+  for (const clip of clips) {
+    if (clip.enabled === false && !includeDisabled) continue;
     const end = clipEnd(clip);
     let lane = lanes.length - 1;
     while (lane >= 0) {
@@ -116,7 +136,11 @@ function otioTracks(track: Track, kind: "Video" | "Audio", rate: number, media: 
     target.clips.push(clip);
     target.end = Math.max(target.end, end);
   }
-  return lanes.map((lane, layer) => otioTrack(track, lane.clips, layer, kind, rate, media, opts));
+  return lanes.map(lane => lane.clips);
+}
+
+function otioTracks(track: Track, kind: "Video" | "Audio", rate: number, media: Map<string, MediaAsset>, opts: OtioExportOptions): unknown[] {
+  return trackLayers(track.clips).map((clips, layer) => otioTrack(track, clips, layer, kind, rate, media, opts));
 }
 
 function otioTrack(
@@ -160,20 +184,23 @@ function otioClip(clip: Clip, frames: number, rate: number, media: Map<string, M
 
   if (clip.kind === "media") {
     const asset = media.get(clip.mediaId);
-    const url = asset ? toFileUrl(asset.path, opts.mediaRoot) : "";
+    const copy = opts.sources?.get(clip.mediaId);
+    const url = copy ? copy.url : asset ? toFileUrl(asset.path, opts.mediaRoot) : "";
     const availableDuration = asset?.duration ?? clip.sourceOut;
+    // Another app counts a file's times from its timecode, such as 01:00:00:00.
+    const origin = sourceStart(copy);
     mediaReference = {
       OTIO_SCHEMA: "ExternalReference.1",
-      name: asset?.name ?? clip.mediaId,
+      name: copy?.fileName ?? asset?.name ?? clip.mediaId,
       target_url: url,
-      available_range: tr(0, availableDuration, asset?.fps ?? rate),
+      available_range: tr(origin, availableDuration, asset?.fps ?? rate),
       metadata: { scarlet: { mediaId: clip.mediaId, hash: asset?.hash ?? null } },
     };
     // OTIO plays children end to end. Counting each cut in camera frames lets rounding drift accumulate
     // against the audio. Keep genuine subframes when the footage clock or playback speed differs.
     const preserveSubframes = (asset?.fps ?? rate) !== rate || (clip.speed ?? 1) !== 1;
     // The footage it plays is its timeline length at its speed.
-    sourceRange = framesRange(clip.sourceIn, frames * (clip.speed ?? 1), rate, preserveSubframes);
+    sourceRange = framesRange(origin + clip.sourceIn, frames * (clip.speed ?? 1), rate, preserveSubframes);
     if ((clip.speed ?? 1) !== 1) {
       effects.push({
         OTIO_SCHEMA: "LinearTimeWarp.1",
