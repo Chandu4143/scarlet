@@ -6,7 +6,7 @@ import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { now } from "../db.js";
-import { badRequest, conflict, HttpError, notFound } from "../errors.js";
+import { conflict, HttpError, notFound } from "../errors.js";
 import { ensureHead, resolveTimeline } from "../services/timeline.js";
 import { jsonBody, optionalNumberParam, requireProject, requireProjectHeader } from "./util.js";
 import { actorFor, logActivity, quote } from "../services/activity.js";
@@ -134,12 +134,7 @@ export function timelineRoutes(ctx: Ctx) {
       const timeline = resolveTimeline(ctx, project, c.req.param("v"));
       const start = optionalNumberParam(c.req.query("start"), "start");
       const end = optionalNumberParam(c.req.query("end"), "end");
-      if (start !== undefined && start < 0) {
-        throw badRequest("bad_param", "query parameter \"start\" must be at least 0");
-      }
-      if (start !== undefined && end !== undefined && !(end > start)) {
-        throw badRequest("bad_param", "query parameter \"end\" must be after \"start\"");
-      }
+      // captionExportRange checks the range, so the engine and the demo refuse the same intervals the same way.
       const trackId = c.req.query("trackId") || undefined;
       let body: string;
       try {

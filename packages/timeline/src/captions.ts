@@ -44,6 +44,7 @@ const TRACK_NOT_FOUND = "That caption track isn’t in this version.";
 const NOT_CAPTION_TRACK = "That track isn’t captions.";
 const TRACK_HIDDEN = "That caption track is hidden. Show it, then export again.";
 const BAD_RANGE_START = "Range start must be at least 0.";
+const BAD_RANGE_ORDER = "Range end must be after its start.";
 
 function captionExportTrack(timeline: Timeline, trackId?: string): Track {
   if (trackId) {
@@ -62,7 +63,9 @@ function captionExportTrack(timeline: Timeline, trackId?: string): Track {
 export function captionExportRange(start?: number, end?: number): { start: number; end: number } | undefined {
   if (start !== undefined && start < 0) throw new CaptionExportError(BAD_RANGE_START, "bad_range");
   if (start === undefined && end === undefined) return undefined;
-  return { start: start ?? 0, end: end ?? Number.POSITIVE_INFINITY };
+  const range = { start: start ?? 0, end: end ?? Number.POSITIVE_INFINITY };
+  if (!(range.end > range.start)) throw new CaptionExportError(BAD_RANGE_ORDER, "bad_range");
+  return range;
 }
 
 export function captionExportHttpStatus(code: CaptionExportErrorCode): 400 | 404 {

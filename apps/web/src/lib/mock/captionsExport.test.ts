@@ -22,3 +22,9 @@ it("builds SubRip and WebVTT data URLs for the sample interview's captions", () 
   expect(() => api.srtUrl(PRJ, "ver_2")).toThrow(/no caption track to export/);
   expect(() => api.srtUrl(PRJ, "head", { start: 12, end: 16 })).toThrow(/no captions in this range/);
 });
+
+it("refuses a backwards range as the engine does, not as a range with no captions", () => {
+  for (const url of [() => api.srtUrl(PRJ, "head", { start: 5, end: 4 }), () => api.vttUrl(PRJ, "head", { start: 5, end: 4 })]) {
+    expect(url).toThrow(expect.objectContaining({ status: 400, code: "bad_range", message: "Range end must be after its start." }));
+  }
+});

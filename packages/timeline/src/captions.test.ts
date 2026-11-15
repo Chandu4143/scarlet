@@ -152,10 +152,13 @@ describe("caption sidecars", () => {
     expect(() => timelineToVtt(tl, { range: { start: 8, end: 10 } })).toThrow(NO_CAPTIONS_IN_RANGE);
   });
 
-  it("refuses a range that starts before 0", () => {
+  it("refuses a range that starts before 0 or does not end after its start", () => {
     expect(() => captionExportRange(-0.1, 2)).toThrow(CaptionExportError);
     expect(() => captionExportRange(-0.1, 2)).toThrow("Range start must be at least 0.");
     expect(captionExportRange(0, 2)).toEqual({ start: 0, end: 2 });
+    expect(() => captionExportRange(5, 4)).toThrow("Range end must be after its start.");
+    expect(() => captionExportRange(3, 3)).toThrow(CaptionExportError);
+    expect(() => captionExportRange(undefined, 0)).toThrow(CaptionExportError);
   });
 
   it("writes plain cue text and leaves out karaoke words and uppercase style", () => {

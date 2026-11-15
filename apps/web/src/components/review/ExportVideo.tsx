@@ -166,9 +166,9 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
         </details> : null}
       </fieldset>
     </form>
-    {!running && <InlineError>{!hasCut ? "There’s no video to export yet." :
-      noCaptionTrack ? NO_CAPTION_TRACK :
+    {!running && <InlineError>{noCaptionTrack ? NO_CAPTION_TRACK :
       noCaptionsInRange ? NO_CAPTIONS_IN_RANGE :
+      !hasCut ? "There’s no video to export yet." :
       invalidRange ? `Enter a range between 0:00 and ${playbackClock(duration)}, at least one frame long.` : sampleOnly ? "The isolated demo saves its included MP4. Custom video settings are available in library projects." : ""}</InlineError>}
     {busy && <div className="mt-3">
       {busy.phase === "choosing" ? <p className="text-xs text-muted" role="status">Choose a location…</p> :

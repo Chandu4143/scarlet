@@ -1280,6 +1280,17 @@ it("disables caption export when the video has no caption track", async () => {
   expect(container.textContent).toContain(NO_CAPTION_TRACK);
 });
 
+it("tells a new project with no cut to add captions when captions are chosen", async () => {
+  const timeline = { ...data.timeline!, tracks: data.timeline!.tracks.filter(t => t.kind !== "caption") };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut={false} onClose={() => {}} />);
+  expect(container.textContent).toContain("There’s no video to export yet.");
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTION_TRACK);
+  expect(container.textContent).not.toContain("There’s no video to export yet.");
+});
+
 it("disables caption export when the range has no cues", async () => {
   await show(<ExportSheet hasCut onClose={() => {}} />);
   await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);

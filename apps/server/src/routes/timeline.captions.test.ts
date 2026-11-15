@@ -86,7 +86,12 @@ it("shifts a range so 0 is the range start, and answers 404 when there is no cap
 
   const beforeZero = await api("GET", `/projects/${project.id}/versions/head/export.srt?start=-1&end=6`);
   expect(beforeZero.status).toBe(400);
-  expect(beforeZero.json).toMatchObject({ error: { code: "bad_param", message: 'query parameter "start" must be at least 0' } });
+  expect(beforeZero.json).toMatchObject({ error: { code: "bad_range", message: "Range start must be at least 0." } });
+  for (const format of ["srt", "vtt"]) {
+    const backwards = await api("GET", `/projects/${project.id}/versions/head/export.${format}?start=5&end=4`);
+    expect(backwards.status).toBe(400);
+    expect(backwards.json).toMatchObject({ error: { code: "bad_range", message: "Range end must be after its start." } });
+  }
 
   const missed = await api("GET", `/projects/${project.id}/versions/head/export.vtt?start=20&end=21`);
   expect(missed.status).toBe(400);
