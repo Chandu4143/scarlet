@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { open, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractWav } from "../render/ffmpeg.js";
-import { pcmWavHeader } from "../transcribe/wordAlign.js";
+import { EMISSION_STORE_SUFFIXES, pcmWavHeader } from "../transcribe/wordAlign.js";
 
 type Paths = { paths: { tmp: string; waveforms(projectId: string): string } };
 
@@ -29,10 +29,14 @@ export async function emissionStore(ctx: Paths, projectId: string, file: string,
   return emissionPath(ctx, projectId, await stamp(file, audioStream));
 }
 
-/** Older engines wrote under the import path during transcription and the resolved path during a scan. */
+/**
+ * Every store a recording's emissions can be under: older engines wrote under the import path during transcription
+ * and the resolved path during a scan, and a recording aligned in another language keeps that language's beside it.
+ */
 export async function emissionStorePaths(ctx: Paths, projectId: string, file: string, imported: string, audioStream?: number) {
   const [source, ...identity] = await stamp(file, audioStream);
-  return [...new Set([source, file, imported])].map(path => emissionPath(ctx, projectId, [path, ...identity]));
+  return [...new Set([source, file, imported])].map(path => emissionPath(ctx, projectId, [path, ...identity]))
+    .flatMap(store => EMISSION_STORE_SUFFIXES.map(suffix => store + suffix));
 }
 
 /** How long a recording's decode is kept after its last reader, for the next scan page to find it. */

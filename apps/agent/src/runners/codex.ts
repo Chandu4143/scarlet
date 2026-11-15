@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { writePrivateFile } from "../private-files.js";
 import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
-import { addUsage, codexUsage } from "./usage.js";
+import { addUsage, codexUsage, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
 
 export interface CodexParseState {
@@ -312,7 +312,7 @@ export async function runCodex(opts: RunAgentOptions): Promise<RunAgentResult> {
   } catch {
     /* not written */
   }
-  const usage = st.usage && !st.usage.model && opts.model ? { ...st.usage, model: opts.model } : st.usage;
+  const usage = usageWithModel(st.usage, opts.model);
   const early = earlyResult(st, outcome, { usage });
   if (early) return early;
   // A failure line fails the run whatever it says, an empty reason included.

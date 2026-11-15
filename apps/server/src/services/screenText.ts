@@ -12,7 +12,7 @@ import type { Ctx } from "../context.js";
 import { audioWorker } from "../transcribe/audioWorker.js";
 import { LocalWhisperModel } from "../transcribe/localModel.js";
 import { SCREEN_TEXT_MODELS, type ScreenLine } from "../transcribe/screenTextModel.js";
-import { pictureReader, withFrames, type VideoMedia } from "./pictureReading.js";
+import { pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
 
 /** Bump when the reading changes: the models, the sampling or how lines become spans. Kept readings are read again. */
 const SCREEN_TEXT_VERSION = 2;
@@ -27,8 +27,6 @@ const MIN_CONFIDENCE = 0.7;
 
 /** A line of text on screen: source seconds, its words, and its box as fractions of the frame (left, top, right, bottom). */
 export interface ScreenTextSpan { start: number; end: number; text: string; box: [number, number, number, number]; confidence: number }
-
-interface Kept { identity: string; chunks: Record<string, ScreenTextSpan[]> }
 
 /** Mean grey of each cell of a cols × rows grid over the frame, from every other pixel. */
 export function pictureGrid(rgb: Buffer, width: number, height: number, cols = 32, rows = 18): Float32Array {
@@ -52,7 +50,6 @@ export function pictureChanged(before: Float32Array, after: Float32Array) {
 }
 
 const plain = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-const r3 = (n: number) => Math.round(n * 1000) / 1000;
 
 /** How alike two readings are, 0..1: one minus their edit distance over the longer one's length. */
 function likeness(a: string, b: string) {

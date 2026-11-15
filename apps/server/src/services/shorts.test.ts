@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { storeVersion } from "./timeline.js";
 import { taskPrompt } from "./tasks.js";
+import { makeShorts } from "./shorts.js";
 
 let directory: string;
 let workspace: ScarletApp;
@@ -110,4 +111,40 @@ it("keeps the line about where a short came from until the editor dismisses it, 
   expect(ctx.repos.projects.header(id)!.source).toEqual({ projectId: long.id, name: "Interview, final", gone: true });
   // A short isn't made into shorts again: its source is the video to make them from.
   expect((await api("POST", `/projects/${id}/shorts`, form)).status).toBe(400);
+});
+
+it("copies only the files the edit plays, and leaves a file without a transcript to be transcribed when a short needs it", async () => {
+  const { ctx } = workspace;
+  writeFileSync(join(ctx.paths.media(long.id), "unused.mp4"), "never in the edit");
+  ctx.repos.projects.putMedia(long.id, { id: "unused", name: "Outtakes.mp4", path: "unused.mp4", kind: "video", duration: 60, width: 1920, height: 1080,
+    fps: 30, hasAudio: true, transcriptionOnImport: "whispercpp" }, "ready");
+  const cam = ctx.repos.projects.getMedia("cam")!;
+  const { projectId: _p, status: _s, error: _e, ...asset } = cam;
+  // The camera's transcript hasn't been made yet, and it was to be made on import.
+  ctx.repos.projects.putMedia(long.id, { ...asset, transcriptId: undefined, transcriptionOnImport: "whispercpp", transcriptionRevisionOnImport: 0 }, "ready");
+  const { projects } = await (await api("POST", `/projects/${long.id}/shorts`, { ...form, count: 2 })).json() as { projects: Project[] };
+  for (const short of projects) {
+    expect(short.media.map(m => m.name)).toEqual(["Camera.mp4"]);
+    expect(readdirSync(ctx.paths.media(short.id))).toEqual([short.media[0]!.path]);
+    // Not marked to transcribe on import, so the next launch doesn't start one transcription per short.
+    expect(short.media[0]!.transcriptionOnImport).toBeUndefined();
+    expect(short.media[0]!.transcriptId).toBeUndefined();
+  }
+  const waiting = ctx.db.prepare(`SELECT m.id FROM media m WHERE json_extract(m.json, '$.transcriptionOnImport') IS NOT NULL
+    AND json_extract(m.json, '$.transcriptId') IS NULL`).all() as Array<{ id: string }>;
+  expect(waiting.map(w => w.id).sort()).toEqual(["cam", "unused"]);
+});
+
+it("removes the shorts outright, with their footage, when making them fails part-way", async () => {
+  const { ctx } = workspace;
+  const ids = () => (ctx.db.prepare("SELECT id FROM projects").all() as Array<{ id: string }>).map(p => p.id);
+  const before = ids();
+  // The footage went missing from the long video's folder, so the copy for the short fails.
+  rmSync(join(ctx.paths.media(long.id), "cam.mp4"));
+  await expect(makeShorts(ctx, { id: "u1", name: "Editor" } as never, long.id, { ...form, count: 2 } as never)).rejects.toThrow();
+  await Promise.allSettled([...ctx.pending]);
+  expect(ids()).toEqual(before);
+  expect(ctx.repos.projects.listDeleted()).toEqual([]);
+  const folders = readdirSync(join(directory, "projects"));
+  expect(folders).toEqual([long.id]);
 });

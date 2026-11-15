@@ -57,6 +57,7 @@ import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { notify } from "./notify.js";
 import { createTask, editsDialogue, FINISHED_TASK, parseAssignTo, isDialoguePass, queueRepeatCheck, saveTask, stagesCut } from "./tasks.js";
+import { runAttemptIds, runRoot } from "./runAttempts.js";
 import { ensureHead, resolveTimeline, storeValidatedVersion, storeVersion } from "./timeline.js";
 import { actorFor, authorName, logActivity, quote } from "./activity.js";
 import { proposalAfterRevisions, resumeReviewState } from "./revisionState.js";
@@ -371,16 +372,17 @@ function opsOnWholeFrames(ctx: Ctx, projectId: string, body: ProposeChangeReques
 
 // A resumed run still owns its earlier parts. A cut the editor sent back can be in a successor made by its own task.
 function dialogueParts(projectId: string, rootId: string) {
+  const attempts = runAttemptIds(projectId, rootId);
   const ids = `WITH RECURSIVE parts(id) AS (
-    SELECT id FROM changes WHERE project_id = ? AND json_extract(json, '$.taskId') IN
-      (SELECT id FROM tasks WHERE project_id = ? AND (id = ? OR json_extract(json, '$.resumeRootId') = ?))
+    SELECT id FROM changes WHERE project_id = ? AND json_extract(json, '$.taskId') IN (${attempts.sql})
     UNION SELECT c.id FROM parts JOIN tasks t ON json_extract(t.json, '$.context.changeId') = parts.id
       JOIN changes c ON json_extract(c.json, '$.taskId') = t.id
       WHERE c.project_id = ? AND t.project_id = ? AND json_extract(t.json, '$.context.cutIndex') IS NOT NULL
     UNION SELECT json_extract(c.json, '$.replacedBy') FROM parts JOIN changes c ON c.id = parts.id
       WHERE json_extract(c.json, '$.rejectReason') = ? AND json_extract(c.json, '$.replacedBy') IS NOT NULL
   ) SELECT id FROM parts`;
-  return { ids, args: [projectId, projectId, projectId, rootId, rootId, projectId, projectId, REVISED] };
+  // The first parameter is the caller's own `project_id = ?`, which comes before these ids in each query.
+  return { ids, args: [projectId, projectId, ...attempts.params, projectId, projectId, REVISED] };
 }
 
 /**
@@ -1174,7 +1176,7 @@ export function foldStrandedPasses(ctx: Ctx): void {
 
 /** Later saves by the producing run can move a published call on the timeline but must preserve its footage and edges. */
 function assertStagedCallsStand(ctx: Ctx, project: Project, task: Task, base: Timeline, next: Timeline): void {
-  const parts = dialogueParts(project.id, task.resumeRootId ?? task.id);
+  const parts = dialogueParts(project.id, runRoot(task));
   const waiting = ctx.repos.changes.select(`project_id = ? AND state IN ('ready','revising') AND json_extract(json, '$.intent') = 'suggestion'
     AND json_array_length(json, '$.cutReasons') > 0 AND id IN (${parts.ids})`, parts.args);
   if (!waiting.length) return;
@@ -1708,9 +1710,8 @@ const SAVED_AGAIN = "Scarlet saved this work again on the video as it was by the
  * (2026-11-11). One with nothing applied after it by its run still waits.
  */
 export function retireStaleSaves(ctx: Ctx, task: Task): void {
-  const rootId = task.resumeRootId ?? task.id;
-  const own = ctx.repos.changes.select(`project_id = ? AND json_extract(json, '$.taskId') IN
-    (SELECT id FROM tasks WHERE project_id = ? AND (id = ? OR json_extract(json, '$.resumeRootId') = ?))`, [task.projectId, task.projectId, rootId, rootId], "created_at ASC, rowid ASC");
+  const attempts = runAttemptIds(task.projectId, runRoot(task));
+  const own = ctx.repos.changes.select(`project_id = ? AND json_extract(json, '$.taskId') IN (${attempts.sql})`, [task.projectId, ...attempts.params], "created_at ASC, rowid ASC");
   // In the order they were saved: two saves can share a millisecond, and only one made after the refused save replaces it.
   for (const [at, stale] of own.entries()) {
     if (stale.state !== "ready" || stale.intent !== "requested" || !stale.error?.startsWith(STALE_SAVE)) continue;
@@ -2242,7 +2243,10 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
   }
   const change = ctx.repos.changes.get(found!.edit.changeId)!;
   const flags = change.flags ?? [];
-  if (!flags.some(f => f.spot === found!.edit.spot && f.taskId === task.id && f.check === body.check))
+  // A resumed run is a new task of the same run: the doubt it flags again is the one its earlier attempt flagged.
+  const root = runRoot(task);
+  const sameRun = (taskId: string) => taskId === task.id || (ctx.repos.tasks.get(taskId)?.resumeRootId ?? taskId) === root;
+  if (!flags.some(f => f.spot === found!.edit.spot && f.check === body.check && sameRun(f.taskId)))
     saveChange(ctx, { ...change, flags: [...flags, { spot: found!.edit.spot, check: body.check, taskId: task.id, at: now() }] });
   logActivity(ctx, { projectId, actor: { type: "scarlet", name: "Scarlet" }, type: "change.flagged",
     summary: `Scarlet flagged ${quote(found!.edit.label)}: ${quote(body.check, 120)}`,

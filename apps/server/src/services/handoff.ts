@@ -13,6 +13,7 @@ import type { HandoffFile } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { badRequest } from "../errors.js";
 import { ffmpeg, ffprobe } from "../render/ffmpeg.js";
+import { safeFileName } from "./fileName.js";
 
 interface ProbedStream {
   codec_type?: string;
@@ -63,7 +64,7 @@ export interface Handoff {
  */
 export async function buildHandoff(ctx: Ctx, project: Project, timeline: Timeline, folder: string, signal?: AbortSignal): Promise<Handoff> {
   if (!isAbsolute(folder)) throw badRequest("handoff_folder", "Choose where to save the folder.");
-  const base = (folder.split(/[\\/]/).filter(Boolean).pop() || project.name).replace(/[\\/:*?"<>|]+/g, " ").trim() || "Scarlet";
+  const base = safeFileName(folder.split(/[\\/]/).filter(Boolean).pop() || project.name).trim() || "Scarlet";
   const assets = usedMedia(project, timeline);
   const names = handoffFileNames(assets.map(a => extname(a.name) ? a.name : `${a.name}${extname(a.path)}`));
   const mediaUrl = (name: string) => pathToFileURL(join(folder, "Media", name)).href;
@@ -86,7 +87,7 @@ export async function buildHandoff(ctx: Ctx, project: Project, timeline: Timelin
       rate, width: asset.width, height: asset.height,
       hasVideo: asset.kind !== "audio", hasAudio: asset.kind === "audio" || (asset.kind === "video" && asset.hasAudio !== false),
       audioChannels: probed.channels, audioRate: probed.sampleRate, audioStreams: probed.audioStreams,
-      duration: asset.duration ?? 0, still: asset.kind === "image",
+      duration: asset.duration ?? 0, still: asset.kind === "image" || (asset.kind === "graphic" && !asset.duration),
     });
     files.push({ path: `Media/${names[i]}`, source: file, size });
   }
@@ -98,7 +99,7 @@ export async function buildHandoff(ctx: Ctx, project: Project, timeline: Timelin
     for (const clip of track.clips) {
       if (clip.kind !== "color" || colorStills.has(clip.color)) continue;
       if (!parseColor(clip.color)) continue;
-      const name = `Solid ${clip.color.replace(/^#/, "")}.png`.replace(/[\\/:*?"<>|]+/g, " ");
+      const name = safeFileName(`Solid ${clip.color.replace(/^#/, "")}.png`);
       colorStills.set(clip.color, { url: mediaUrl(name), fileName: name, hasVideo: true, hasAudio: false, width, height, duration: 0, still: true });
       // Kept in the library's temporary folder, where the desktop app copies from; the same colour and size reuse it.
       const still = join(ctx.paths.tmp, "handoff", `${Buffer.from(`${clip.color}:${width}x${height}`).toString("hex")}.png`);
@@ -121,7 +122,7 @@ export async function buildHandoff(ctx: Ctx, project: Project, timeline: Timelin
   const captionFiles: string[] = [];
   const captions = captionTracks(timeline);
   for (const { track, cues } of captions) {
-    const name = captions.length > 1 ? `${base} captions (${track.name.replace(/[\\/:*?"<>|]+/g, " ")}).srt` : `${base} captions.srt`;
+    const name = captions.length > 1 ? `${base} captions (${safeFileName(track.name)}).srt` : `${base} captions.srt`;
     captionFiles.push(name);
     files.push({ path: name, text: toSrt(cues) });
   }

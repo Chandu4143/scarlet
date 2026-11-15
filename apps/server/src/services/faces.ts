@@ -13,7 +13,7 @@ import type { Ctx } from "../context.js";
 import { audioWorker } from "../transcribe/audioWorker.js";
 import { FACE_MODEL, FACE_SIDE, iou, type Face } from "../transcribe/faceModel.js";
 import { LocalWhisperModel } from "../transcribe/localModel.js";
-import { pictureReader, withFrames, type VideoMedia } from "./pictureReading.js";
+import { pictureReader, r3, rememberLast, withFrames, type VideoMedia } from "./pictureReading.js";
 
 /** Bump when the reading changes: the model, the sampling or what a frame keeps. Kept readings are read again. */
 const FACES_VERSION = 1;
@@ -46,7 +46,6 @@ export interface FaceSpan { track: number; start: number; end: number; box: [num
 /** A face followed through the video: when it is first and last seen, for how long, its usual box and how sure the detector usually was. */
 export interface FaceTrack { track: number; start: number; end: number; seconds: number; box: [number, number, number, number]; confidence: number }
 
-const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const median = (values: readonly number[]) => {
   const sorted = [...values].sort((a, b) => a - b), mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
@@ -178,7 +177,9 @@ async function readWindow(ctx: Ctx, media: VideoMedia, file: string, { start, en
 }
 
 const reading = pictureReader<FaceSample[]>({ name: "faces", window: FACES_WINDOW, identity, read: readWindow });
+/** The tracks followed through each video's windows, for the 32 videos asked about last. */
 const followed = new Map<string, { windows: string; result: ReturnType<typeof faceTracks> }>();
+const MAX_FOLLOWED = 32;
 
 export interface FacesResult {
   mediaId: string;
@@ -204,7 +205,8 @@ export async function faces(ctx: Ctx, media: MediaAsset & { projectId: string },
   // Following the faces through an hour took 50 ms: done again only when more of the video has been read.
   const key = `${ctx.paths.root}\0${media.id}\0${identity(media)}`, windows = read.all.map(w => w.index).join(",");
   let all = followed.get(key)?.windows === windows ? followed.get(key)!.result : undefined;
-  if (!all) followed.set(key, { windows, result: all = faceTracks(read.all.map(w => ({ start: w.start, end: w.end, samples: w.value }))) });
+  all ??= faceTracks(read.all.map(w => ({ start: w.start, end: w.end, samples: w.value })));
+  rememberLast(followed, key, { windows, result: all }, MAX_FOLLOWED);
   const spans = all.spans.filter(s => s.end > read.from && s.start < read.to);
   const shown = new Set(spans.map(s => s.track));
   const tracks = all.tracks.filter(t => shown.has(t.track)).map(t => {
