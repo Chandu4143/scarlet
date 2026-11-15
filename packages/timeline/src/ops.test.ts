@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ZodError } from "zod/v3";
 import {
-  applyOp, applyOps, clipEnd, emptyTimeline, makeMediaClip, makeTrack, OpError, shiftClip, splitClip, trimHead, trimTail,
+  applyOp, applyOps, clipEnd, diffTimelines, emptyTimeline, makeMediaClip, makeTrack, OpError, shiftClip, splitClip, trimHead, trimTail,
   type CaptionClip, type ColorClip, type Marker, type MediaClip, type Timeline, type TimelineOp,
 } from "./index.js";
 
@@ -225,5 +225,14 @@ describe("transitions on clips", () => {
     expect(split.tracks[0]!.clips.map(c => c.kind === "media" && c.transitionIn?.type)).toEqual([undefined, "push", undefined]);
     const off = applyOps(timeline(), [{ op: "updateClip", clipId: "b", patch: { transitionIn: null } }]);
     expect(off.tracks[0]!.clips[1]).not.toHaveProperty("transitionIn");
+  });
+});
+
+describe("where a transition changes the video", () => {
+  it("is around its join, not along the clip it leads into", () => {
+    const before = emptyTimeline("prj");
+    before.tracks[0]!.clips = [makeMediaClip("m", 0, 5, 0, { id: "a" }), makeMediaClip("m", 10, 15, 5, { id: "b" })];
+    const after = applyOps(before, [{ op: "updateClip", clipId: "b", patch: { transitionIn: { type: "push", duration: 0.4, direction: "left" } } }]);
+    expect(diffTimelines(before, after).ranges.map(r => [r.start, r.end].map(x => Math.round(x * 100) / 100))).toEqual([[4.8, 5.2]]);
   });
 });

@@ -445,10 +445,13 @@
 .transition-picture { position: absolute; inset: 0; overflow: hidden; background: #000; }
 .transition-picture > span { position: absolute; inset: 0; }
 .transition-picture img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Over the player it sits where the picture does, letterboxed as the video is. */
+.template-on-picture > .transition-picture img { object-fit: contain; }
 .transition-picture .transition-veil { background: var(--transition-color, #000); opacity: 0; }
-/* With no footage to show it on (a skill's page), two plain tones stand for the pictures. */
-.transition-picture .transition-from:empty { background: #5a5a5a; }
-.transition-picture .transition-to:empty { background: #a8a8a8; }
+/* With no footage to show it on (a skill's page), two plain pictures stand in: a dark one with a round shape, and a
+   light one with a square, so each kind of move reads. */
+.transition-picture .transition-from:empty { background: radial-gradient(circle at 50% 45%, #9a9a9a 0 22%, transparent 23%), #3a3a3a; }
+.transition-picture .transition-to:empty { background: linear-gradient(#ececec, #ececec) center / 50% 50% no-repeat, #8c8c8c; }
 .transition-picture > span { animation-duration: var(--transition-seconds, 1.2s); animation-timing-function: ease-in-out; animation-iteration-count: infinite;
   animation-play-state: paused; animation-delay: calc(var(--transition-seconds, 1.2s) * -0.5); }
 .transition-picture.is-playing > span { animation-play-state: running; animation-delay: 0s; }
@@ -460,7 +463,7 @@
 .transition-picture.is-dip .transition-to { animation-name: transition-swap; }
 .transition-picture.is-dip .transition-veil { animation-name: transition-dip; }
 /* Halfway through, a dip is all colour: still, it stands a little before, on the picture going down into it. */
-.transition-picture.is-dip:not(.is-playing) > span { animation-delay: calc(var(--transition-seconds, 1.2s) * -0.4); }
+.transition-picture.is-dip:not(.is-playing) > span { animation-delay: calc(var(--transition-seconds, 1.2s) * -0.36); }
 .transition-picture.to-right { --transition-x: -1; }
 .transition-picture.to-up { --transition-y: 1; --transition-x: 0; }
 .transition-picture.to-down { --transition-y: -1; --transition-x: 0; }
