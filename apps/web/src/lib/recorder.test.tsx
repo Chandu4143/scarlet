@@ -259,6 +259,44 @@ it("rings the mic with the voice while it records, and lets it go when it stops"
   host.remove();
 });
 
+it("holds the mic's ring still while it records with motion reduced, and follows the voice again when motion is let back", async () => {
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  let reduced = true;
+  const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+  vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(query, { matches: { get: () => reduced } }));
+  class TestAudio {
+    resume = async () => {};
+    close = async () => {};
+    createAnalyser() { return { fftSize: 0, getFloatTimeDomainData: (out: Float32Array) => out.fill(0.2) }; }
+    createMediaStreamSource() { return { connect() {} }; }
+  }
+  vi.stubGlobal("AudioContext", TestAudio);
+  const button = () => document.querySelector<HTMLButtonElement>("button[aria-pressed]")!;
+  const host = document.createElement("div");
+  document.body.append(host);
+  await act(async () => root!.unmount());
+  root = createRoot(host);
+  await act(async () => root!.render(<MemoryRouter><MicButton onResult={result} /></MemoryRouter>));
+  await act(async () => { button().click(); });
+  await act(async () => { grant(stream); });
+  const draw = async () => act(async () => { frames.splice(0).forEach(cb => cb(0)); });
+  // The ring rests at its width, so it still says it records, and doesn't move with the voice.
+  await draw();
+  expect(button().className).toContain("mic-voice");
+  expect(button().style.getPropertyValue("--voice")).toBe("");
+  // The setting is read as it records: let back, the ring follows the voice on the next frame; reduced again, it rests.
+  reduced = false;
+  await draw();
+  expect(button().style.getPropertyValue("--voice")).toBe("1.000");
+  reduced = true;
+  await draw();
+  expect(button().style.getPropertyValue("--voice")).toBe("");
+  await act(async () => { button().click(); });
+  host.remove();
+});
+
 it("names the V key only on the mic that follows it", async () => {
   const el = document.createElement("div");
   const host = createRoot(el);

@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- With reduced motion on, the ring round the mic stays still while it records.
 - Codex installed through Homebrew can start editing on macOS while keeping its sandbox.
 
 ## November 14, 2026
