@@ -284,28 +284,33 @@ function CallStanding({ run, answer }: { run?: Task; answer?(): void }) {
     : <span className="edit-card-status working-text" role="status">Revising…</span>;
 }
 
+/** What Approve chooses on a call: the cut, or for a revision that left the footage in, keeping it. */
+const approves = (call: Pick<CutAssessment, "proposes"> | undefined): CutChoice => call?.proposes ?? "cut";
+
 /**
  * A call's decisions and their keys: Approve (A) makes the change Scarlet proposed, Skip (S) leaves it out, and the
- * chosen one stays pressed. Revise (R) aims the message box at this call, so feedback on it goes ahead of requests
- * waiting for the pass.
+ * chosen one stays pressed. A revision that left the cut's footage in proposes keeping it, so there Approve keeps it
+ * and Skip cuts as first staged. Revise (R) aims the message box at this call, so feedback on it goes ahead of
+ * requests waiting for the pass.
  */
-function CallActions({ choice, disabled, decide, revise }: { choice?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
+function CallActions({ choice, proposes = "cut", disabled, decide, revise }: { choice?: CutChoice; proposes?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
+  const skips: CutChoice = proposes === "cut" ? "keep" : "cut";
   useHotkeys(event => {
     if (disabled || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     const key = event.key.toLowerCase();
     if (key === "r") { event.preventDefault(); revise(); return; }
-    const chosen = key === "a" ? "cut" : key === "s" ? "keep" : undefined;
+    const chosen = key === "a" ? proposes : key === "s" ? skips : undefined;
     if (chosen) { event.preventDefault(); decide(chosen); }
   });
   // The decisions stay on the card for the next call. Clicked, one lets go of the focus (WebView2 leaves it there), or
   // Space would press it again on the next call while the video is paused. Pressed by keyboard, it keeps it.
   return <div className="review-actions">
     <button type="button" className="btn-quiet" data-key="R" aria-keyshortcuts="R" title="Revise (R)" disabled={disabled} onClick={revise}>Revise</button>
-    <button type="button" className="btn-primary" data-key="A" aria-keyshortcuts="A" title="Approve (A)" aria-pressed={choice === "cut"} disabled={disabled}
-      onClick={letGo(() => decide("cut"))}>Approve</button>
+    <button type="button" className="btn-primary" data-key="A" aria-keyshortcuts="A" title="Approve (A)" aria-pressed={choice === proposes} disabled={disabled}
+      onClick={letGo(() => decide(proposes))}>Approve</button>
     {/* Skip is a small × after the decision, named on hover, so the row's one button is Approve. */}
-    <button type="button" className="edit-card-icon edit-card-skip" aria-label="Skip" aria-keyshortcuts="S" title="Skip (S)" aria-pressed={choice === "keep"}
-      disabled={disabled} onClick={letGo(() => decide("keep"))}><Icon name="x" size={12} /></button>
+    <button type="button" className="edit-card-icon edit-card-skip" aria-label="Skip" aria-keyshortcuts="S" title="Skip (S)" aria-pressed={choice === skips}
+      disabled={disabled} onClick={letGo(() => decide(skips))}><Icon name="x" size={12} /></button>
   </div>;
 }
 
@@ -1680,7 +1685,7 @@ export function SimpleWorkspace() {
     if (!pass || !listening || listening.changeId !== pass.id || deciding) return;
     const decidedNow = { ...choicesOf(pass), [listening.index]: choice };
     // A and S reach the log as a bare key: this says which call it decided and how many still wait.
-    appLog("action", choice === "cut" ? "approve-call" : "skip-call", { change: pass.id, cut: listening.index, at: listening.cut.start, left: remainingCalls.length });
+    appLog("action", choice === approves(allCalls.find(a => a.index === listening.index)) ? "approve-call" : "skip-call", { change: pass.id, cut: listening.index, at: listening.cut.start, left: remainingCalls.length });
     const next = nextCallAfterDecision;
     player.pause();
     setListening(next ? { changeId: pass.id, index: next.index, cut: { start: next.start, end: next.end }, side: "after", take: 0, key: `${pass.id}/${next.index}` } : undefined);
@@ -2010,7 +2015,7 @@ export function SimpleWorkspace() {
       const at = edit ? (edit.version === head ? edit.range.start : undefined) : placeCut(a)?.start;
       return { index: a.index, askOrder: a.askOrder, n: callNo.get(a.index)!, start: listedAt.get(a.index)!, at, reason: a.reason, version: past.length + 1, earlier: past.at(-1),
         run: cutRuns.get(a.index),
-        state: sentBack(a.index) ? "revising" : passChoices[a.index] === "cut" ? "approved" : passChoices[a.index] === "keep" ? "skipped" : "open" };
+        state: sentBack(a.index) ? "revising" : passChoices[a.index] === undefined ? "open" : passChoices[a.index] === approves(a) ? "approved" : "skipped" };
     }),
     openCall: index => { const call = allCalls.find(a => a.index === index); if (call) actions.listen(pass, call); },
     apply: () => void (passRunning ? saveChoices(pass, choicesOf(pass), true) : approveReview(pass)),
@@ -2724,7 +2729,7 @@ export function SimpleWorkspace() {
           flash={!conflict && listening.side === "before" && listening.at !== undefined} toggle={() => listenSide(listening.side === "after" ? "before" : "after")} />
       </span>
       {openCallBack ? <CallStanding run={cutRuns.get(openCall.index)} answer={answeringCut && passThread ? () => actions.reply(passThread) : undefined} />
-        : <CallActions choice={passChoices[openCall.index]} disabled={!!deciding} decide={choice => void decideCut(choice)} revise={reviseReview} />}
+        : <CallActions choice={passChoices[openCall.index]} proposes={approves(openCall)} disabled={!!deciding} decide={choice => void decideCut(choice)} revise={reviseReview} />}
     </div>
     {/* A call hasn't come out yet, so its words are marked in amber. When the pass's version couldn't be loaded there
         is nothing to read them on: the passage stops waiting and offers to ask again, as it does for the words. */}

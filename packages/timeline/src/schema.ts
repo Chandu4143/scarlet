@@ -456,6 +456,11 @@ export const CutAssessment = z.object({
   /** Set by the engine on a cut the editor sent back, once revised: it waits for their call whatever the recommendation. */
   revised: z.boolean().optional(),
   /**
+   * Set by the engine on a cut the editor sent back whose revision leaves its footage in. It waits for their call all
+   * the same: Approve takes the revision and keeps the footage, Skip leaves the revision out and cuts as first staged.
+   */
+  proposes: z.literal("keep").optional(),
+  /**
    * Set by the engine on a cut Scarlet asks the editor about: the order its pass's asks reached them in, from 1. The
    * editor's number for the call goes by it, so a later ask, earlier in the video, doesn't renumber the calls they've
    * seen. It goes with the note onto a later part.
