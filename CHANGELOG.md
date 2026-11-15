@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- The tokens a request has used now show in the chat by default; turn them off in Settings › Usage.
 - Codex installed through Homebrew can start editing on macOS while keeping its sandbox.
 
 ## November 14, 2026
