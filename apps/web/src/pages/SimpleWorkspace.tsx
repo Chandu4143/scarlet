@@ -71,6 +71,9 @@ function subscribeWidth(update: () => void) {
 const simpleRailWidth = (available: number) => Math.max(380, Math.min(480, available * 0.32));
 /** The narrowest the chat stays usable at. */
 const SIMPLE_RAIL_MIN = 320;
+/** The Transcript's column beside the player: wide enough for a few lines of words, never more of the window than the chat. */
+const transcriptRailWidth = (available: number) => Math.max(300, Math.min(400, available * 0.26));
+const TRANSCRIPT_RAIL_MIN = 260;
 
 const ChangelogPage = lazy(async () => ({ default: (await import("./ChangelogPage")).ChangelogPage }));
 const TranscriptPane = lazy(async () => ({ default: (await import("../components/transcript/TranscriptPane")).TranscriptPane }));
@@ -1526,8 +1529,6 @@ export function SimpleWorkspace() {
   const source = draftVersion ? undefined : chosenSource
     ?? (hasCut ? undefined : previewable.find(m => m.kind === "video" && m.status !== "failed") ?? previewable[0]);
   const [transcript, setTranscript] = useState(false);
-  // The transcript's one heading row: the pane puts its figures and help mark here.
-  const [transcriptTools, setTranscriptTools] = useState<HTMLElement | null>(null);
   const [menuError, setMenuError] = useState("");
   const needsYou = [toLearn > 0 && `${plural(toLearn, "rule")} to review in Learnings`, exportWarning, modelNeedsYou && "No model is ready"]
     .filter((reason): reason is string => !!reason);
@@ -2595,10 +2596,10 @@ export function SimpleWorkspace() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [reviewKeysOn, !!pass]);
 
-  // Esc goes back to the chat from the Transcript. A cut, an edit or a suggestion that's open takes Esc first.
-  const escBackToChat = workspaceActive && transcript && !reviewingEdit && !(reviewKeysOn && (!!listening || !!suggestion));
+  // Esc closes the Transcript beside the player. A cut, an edit or a suggestion that's open takes Esc first.
+  const escClosesTranscript = workspaceActive && transcript && !reviewingEdit && !(reviewKeysOn && (!!listening || !!suggestion));
   useEffect(() => {
-    if (!escBackToChat) return;
+    if (!escClosesTranscript) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || ignorePageShortcut(e) || inFullScreen()) return;
       e.preventDefault();
@@ -2606,7 +2607,7 @@ export function SimpleWorkspace() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [escBackToChat]);
+  }, [escClosesTranscript]);
 
   // Keep the newest message in view as replies arrive, unless the editor scrolled up to read.
   const chat = useRef<HTMLDivElement>(null);
@@ -3078,10 +3079,9 @@ export function SimpleWorkspace() {
   useRewordingHold(rewording?.id, (id, on) => on ? queueAction(holdForRewording(id, true))
     // Letting go of a hold says nothing when it fails: the hold lapses by itself.
     : holdForRewording(id, false), () => setRewording(undefined));
-  // What a message does when it lands, sent while the box was aimed as it is in this render. It went to the chat, so
-  // the Transcript gives the chat its side back.
+  // What a message does when it lands, sent while the box was aimed as it is in this render. The Transcript stays open
+  // beside the player: the chat, where the message went, is in view with it.
   const sentUnder = (aim: number) => () => {
-    setTranscript(false);
     if (aims.current === aim) {
       setOfferedPoint(undefined);
       settleAim.current("sent");
@@ -3156,16 +3156,7 @@ export function SimpleWorkspace() {
             {importFailed && !menuError && <button type="button" className="simple-link" onClick={() => setPanel("media")}>View media</button>}
           </div>}
           <div className="simple-thread">
-            {transcript && <div className="simple-subhead"><strong title={source?.name}>Transcript{source ? ` · ${source.name}` : ""}</strong>
-              <span ref={setTranscriptTools} className="simple-subhead-tools" />
-              <button type="button" className="simple-link" onClick={() => setTranscript(false)}>Back to chat</button></div>}
-            {transcript && <div className="simple-transcript"><Suspense fallback={<Loading label="Opening transcript…" />}>
-              {/* An applied cut plays on the version before it, so its transcript is that version's: the working cut's
-                  would highlight and seek early by everything the pass took out before that point. */}
-              <TranscriptPane key={source?.id ?? (appliedCut ? beforeCut!.version : draftVersion) ?? head} draft={appliedCut ? beforeTimeline : draft} source={source}
-                onAsk={askAbout} toolsHost={transcriptTools} />
-            </Suspense></div>}
-            <div ref={chat} className="simple-chat" hidden={transcript} onScroll={e => {
+            <div ref={chat} className="simple-chat" onScroll={e => {
               const pane = e.currentTarget;
               follow.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 48;
             }}>
@@ -3179,7 +3170,6 @@ export function SimpleWorkspace() {
               {!current.reviewStatus && current.headError && <p className="simple-error" role="alert">{current.headError}{" "}
                 <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>}
             </div>
-            {/* The Transcript takes the chat's side, not this: what Scarlet is on, its Stop and its question stay in view. */}
             <div ref={setPinHost} className="simple-pin" aria-label="Working on now" />
             {!rewordingItem && (replyThread || !aimMatches) && <div className={aimMatches ? "simple-target is-quiet" : "simple-target"} role="status">
               <span title={aimLabel}>{aimLabel}</span>
@@ -3216,6 +3206,20 @@ export function SimpleWorkspace() {
             <button type="button" className="btn-ghost" onClick={backToVideo}>Back to the video</button>
           </div>}
         </div>
+        {/* The Transcript is its own column on the right of the player, so the chat stays in view beside it. */}
+        {transcript && <ChatRail compact={compact} id="simple-transcript" className="simple-transcript-rail" label="Transcript" side="right" resizes="transcript"
+          storageKey="scarlet.simpleTranscriptWidth" initialWidth={transcriptRailWidth} minWidth={TRANSCRIPT_RAIL_MIN} maxWidth={available => available * 0.4}>
+          {/* Headed as the chat is: its name, and the × that closes it. */}
+          <header className="simple-header"><h1 title={source?.name}>Transcript{source && <span className="simple-header-sub"> · {source.name}</span>}</h1>
+            <button type="button" className="btn-icon" aria-label="Close transcript" title="Close transcript (Esc)"
+              onClick={() => setTranscript(false)}><Icon name="x" /></button></header>
+          <div className="simple-transcript"><Suspense fallback={<Loading label="Opening transcript…" />}>
+            {/* An applied cut plays on the version before it, so its transcript is that version's: the working cut's
+                would highlight and seek early by everything the pass took out before that point. */}
+            <TranscriptPane key={source?.id ?? (appliedCut ? beforeCut!.version : draftVersion) ?? head} draft={appliedCut ? beforeTimeline : draft} source={source}
+              onAsk={askAbout} simple />
+          </Suspense></div>
+        </ChatRail>}
       </Dropzone>
     </main>
     {panel === "media" && <MediaDrawer uploads={uploads} notice={local ? undefined : notice}
