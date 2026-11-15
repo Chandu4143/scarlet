@@ -496,7 +496,7 @@ describe("skills that the workflows replaced", () => {
   ].join("\n");
 
   it("ships only the dialogue pass, captions, screen framing and motion graphics, and removes unedited copies of the rest on upgrade", async () => {
-    expect(app.ctx.repos.skills.select().map(skill => skill.name).sort()).toEqual(["add-captions", "dialogue-pass", "frame-screen", "motion-graphics"]);
+    expect(app.ctx.repos.skills.select().map(skill => skill.name).sort()).toEqual(["add-captions", "dialogue-pass", "frame-screen", "make-shorts", "motion-graphics"]);
     const stock = createSkill(app.ctx, null, { name: "smooth-audio-cuts", scope: "team", content: smoothing }, { source: "bundled" });
     const run = uses([stock.id]);
     app.ctx.repos.tasks.put({ ...run, state: "done" });

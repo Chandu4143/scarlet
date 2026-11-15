@@ -470,3 +470,5 @@
 /* The full history's entries keep one colour. A small mark before the words says which were approved, put back or went wrong. */
 .history-mark { display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; vertical-align: 0.14em; }
 .import-transcription-notice .simple-link { font-size: inherit; color: var(--color-fg); }
+/* A short sits under the video it was made from, set in from it. */
+.list .project-card.is-short { margin-left: 44px; }

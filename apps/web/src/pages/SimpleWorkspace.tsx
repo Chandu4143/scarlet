@@ -6,7 +6,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
-import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type TimeRange, type Timeline } from "@scarlet/timeline";
+import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestText, REVISED_CHECK, threadEditList, type EditRef, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
@@ -33,6 +33,7 @@ import { ignorePageShortcut, useHotkeys } from "../lib/hotkeys";
 import { RequestTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
+import { MakeShortsSheet } from "../components/review/MakeShorts";
 import { ExportButton, ExportMenuItem, useExportWarning } from "../components/review/ExportMenuItem";
 import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Drawer, Icon, Loading } from "../components/ui/primitives";
@@ -110,7 +111,7 @@ function afterPlayerMount(start: () => () => void) {
   };
 }
 
-type Panel = "media" | "history" | "export" | "learnings" | null;
+type Panel = "media" | "history" | "export" | "learnings" | "shorts" | null;
 
 const REWORDING_KEY = "scarlet.rewording.v1";
 /** The queued request whose words were in the message box when the project was last on screen, with those words. */
@@ -296,6 +297,35 @@ const approves = (call: Pick<CutAssessment, "proposes"> | undefined): CutChoice 
  * and Skip cuts as first staged. Revise (R) aims the message box at this call, so feedback on it goes ahead of
  * requests waiting for the pass.
  */
+type ProjectSource = NonNullable<Project["source"]>;
+
+/** The video a short was made from, by name: a link to it, unless it is in the trash or gone. */
+function SourceName({ source }: { source: ProjectSource }) {
+  return source.gone ? <span>{source.name}</span> : <Link to={`/p/${source.projectId}`}>{source.name}</Link>;
+}
+
+function SourceLine({ source }: { source: ProjectSource }) {
+  return <span className="simple-header-source" title={`From ${source.name}`}>From <SourceName source={source} /></span>;
+}
+
+/**
+ * The first thing in a short's chat: that it is a new project, and the video it was made from. It stays until the
+ * editor dismisses it with its ×.
+ */
+function SourceNote({ projectId, source }: { projectId: string; source: ProjectSource }) {
+  const [gone, setGone] = useState(false);
+  if (gone) return null;
+  return <section className="simple-turn simple-source-note" aria-label="New project">
+    <div className="simple-msg from-scarlet">
+      <span className="simple-who">Scarlet</span>
+      <p className="said">New project, made from <SourceName source={source} />. That video isn’t changed.</p>
+      <button type="button" className="btn-icon simple-source-dismiss" aria-label="Dismiss" title="Dismiss"
+        onClick={() => { setGone(true); void api.updateProject(projectId, { sourceNotice: false }).catch(() => setGone(false)); }}>
+        <Icon name="x" size={12} /></button>
+    </div>
+  </section>;
+}
+
 function CallActions({ choice, proposes = "cut", disabled, decide, revise }: { choice?: CutChoice; proposes?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
   const skips: CutChoice = proposes === "cut" ? "keep" : "cut";
   useHotkeys(event => {
@@ -3145,7 +3175,10 @@ export function SimpleWorkspace() {
           <header className="simple-header">
             <Link to="/" className="simple-back" onClick={() => player.pause()} title="All projects" aria-label="All projects">
               <span className="rotate-180 inline-flex"><Icon name="arrow" size={13} /></span></Link>
-            <h1 title={current.project.name}>{current.project.name}</h1>
+            {/* A short says which video it was made from, under its name, for as long as it is open. */}
+            <h1 title={current.project.name} className={current.project.source ? "has-source" : undefined}>
+              {current.project.source ? <><span className="simple-header-name">{current.project.name}</span><SourceLine source={current.project.source} /></> : current.project.name}
+            </h1>
             <ConnectionStatus />
             {/* The menu's button is marked when something inside needs the editor, and the row that does carries the
                 same mark. While videos cache, the ring is on the Media button. */}
@@ -3162,6 +3195,8 @@ export function SimpleWorkspace() {
                   <CachingMenuItem close={close} />
                   <MenuItem onClick={() => { close(); setTranscript(v => !v); }}><Icon name="diff" />{transcript ? "Hide transcript" : "Transcript"}</MenuItem>
                   <ExportMenuItem onOpen={() => setPanel("export")} close={close} />
+                  {/* A short is made from the long video, not from another short. */}
+                  {!current.project.source && <MenuItem onClick={() => { close(); setPanel("shorts"); }}><Icon name="portrait" />Make shorts</MenuItem>}
                   <div role="separator" className="my-1 border-t border-line" />
                   <AgentChip variant="menu" direction="down" threadInput={replyThread ? replyThread.question ? "answer" : "reply" : undefined} />
                   <MenuItem onClick={() => { close(); useUiStore.getState().setProjectSettingsOpen(true); }}><Icon name="monitor" />Project settings</MenuItem>
@@ -3181,6 +3216,7 @@ export function SimpleWorkspace() {
               const pane = e.currentTarget;
               follow.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 48;
             }}>
+              {current.project.source?.notice && <SourceNote projectId={current.id} source={current.project.source} />}
               {current.reviewStatus === "loading" ? <Loading label="Loading edits…" />
                 : current.reviewStatus === "error" ? <p className="simple-error" role="alert">{current.reviewError}{" "}
                   <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>
@@ -3249,5 +3285,6 @@ export function SimpleWorkspace() {
       <Suspense fallback={<Loading label="Opening history…" />}><ChangelogPage /></Suspense>
     </Drawer>
     {panel === "export" && <ExportSheet hasCut={hasCut} onClose={() => setPanel(null)} />}
+    {panel === "shorts" && <MakeShortsSheet onClose={() => setPanel(null)} />}
   </EditHoverContext.Provider>;
 }

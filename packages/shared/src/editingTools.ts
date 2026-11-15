@@ -16,7 +16,7 @@ export const EDITING_TOOL_GROUPS = [
   { title: "Review and delivery", description: "Follow review notes, preview a change and render a delivery.", preference: null,
     tools: ["change_get", "change_list", "edit_flag", "notes_list", "note_reply", "note_resolve", "render_request", "render_status"] },
   { title: "Requests and skills", description: "Report progress, ask editorial questions, use saved instructions and offer rules to add to them.", preference: null,
-    tools: ["task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit"] },
+    tools: ["task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit", "shorts_plan"] },
   { title: "Motion graphics", description: "Draw graphics from web pages and saved templates, and read the files and style guide the editor gave.", preference: null,
     tools: ["graphic_render", "graphic_get", "template_list", "template_get", "template_save", "style_guide_save", "attachment_read"] },
   { title: "Frame inspection", description: "Examine a source frame or several moments from an edit together.", preference: "pictures",
