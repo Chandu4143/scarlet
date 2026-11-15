@@ -38,7 +38,6 @@ const it = partedIt(vitestIt);
 
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
 type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void;
-  editHere?: { time: string; onSelect(): void };
   messageClock?: import("../lib/messageTimestamps").MessageClock;
   rewording?: { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void } };
 const composer = vi.hoisted(() => ({ props: undefined as BoxProps | undefined }));
@@ -859,27 +858,24 @@ it("goes to After at a point picked outside the passage on Before, where Before 
   expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 3, false]);
 });
 
-it("offers Edit here on Before and After once the editor has taken the revision tag off", async () => {
+it("aims a new edit at a pick on Before and After once the editor has taken the revision tag off", async () => {
   beforeClipReady();
   await show();
   await captionsOnBefore();
   // The box talks to the edit that's open, and a pick doesn't move it.
   await pressTimeline(8);
   expect([sideShown(), playhead(), pointTag()]).toEqual(["Before", 8, ["Edit at 0:04", false]]);
-  expect(offeredTime()).toBeUndefined();
   await press(" ");
   await act(async () => composer.props!.onClearTarget!());
   await pressTimeline(8.5);
-  expect([sideShown(), playhead(), offeredTime(), boxTag()]).toEqual(["Before", 8.5, "0:08", undefined]);
+  expect([sideShown(), playhead(), pointTag()]).toEqual(["Before", 8.5, ["At 0:08", true]]);
   await skipKey("ArrowLeft", true);
-  expect([sideShown(), playhead(), offeredTime(), boxTag()]).toEqual(["Before", 7.5, "0:07", undefined]);
+  expect([sideShown(), playhead(), pointTag()]).toEqual(["Before", 7.5, ["At 0:07", true]]);
   await click(compareButton(editPanel()!));
   await act(async () => {});
   await press(" ");
   await skipKey("ArrowRight", true);
-  expect([sideShown(), playhead(), offeredTime(), boxTag()]).toEqual(["After", 5, "0:05", undefined]);
-  await chooseEditHere();
-  expect(pointTag()).toEqual(["At 0:05", true]);
+  expect([sideShown(), playhead(), pointTag()]).toEqual(["After", 5, ["At 0:05", true]]);
 });
 
 it("goes to After at the point picked while Before is still opening, since there is no clip to move", async () => {
@@ -8117,24 +8113,22 @@ const idle = () => {
   useProjectStore.setState({ current: data });
 };
 const pointTag = () => [composer.props!.targetTag, composer.props!.targetIsPoint];
-const offeredTime = () => composer.props!.editHere?.time;
-const chooseEditHere = () => act(async () => composer.props!.editHere!.onSelect());
-
-it("offers the latest manual seek for a new request and attaches it only when Edit here is chosen", async () => {
+it("aims a new edit at the latest manual seek at once, with no second press", async () => {
   idle();
   await show();
-  expect([offeredTime(), boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, undefined, null]);
+  expect([boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, null]);
   await press("ArrowRight");
-  expect([offeredTime(), boxTag(), useUiStore.getState().agentContext]).toEqual(["0:05", undefined, null]);
+  expect(pointTag()).toEqual(["At 0:05", true]);
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 5 });
   const slider = container.querySelector<HTMLElement>(".timeline-slider")!;
   await act(async () => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
-  expect([offeredTime(), boxTag()]).toEqual(["0:10", undefined]);
-  // Playback and a subsequent pause offer no timestamp of their own.
+  expect(pointTag()).toEqual(["At 0:10", true]);
+  // Playback lets go of an empty box's moment, and a pause picks none of its own.
   await act(async () => usePlayerStore.setState({ playing: true }));
-  expect(offeredTime()).toBeUndefined();
+  expect([boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, null]);
   await act(async () => usePlayerStore.setState({ playing: false, time: 14 }));
-  expect([offeredTime(), boxTag()]).toEqual([undefined, undefined]);
-  // On a drag, the offered time is where the editor let go.
+  expect([boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, null]);
+  // On a drag, the moment is where the editor let go.
   slider.getBoundingClientRect = () => ({ left: 0, width: Number(slider.getAttribute("aria-valuemax")) }) as DOMRect;
   slider.setPointerCapture = vi.fn();
   const pointer = (type: string, x: number) => new PointerEvent(type, { bubbles: true, button: 0, isPrimary: true, pointerId: 1, clientX: x });
@@ -8143,11 +8137,8 @@ it("offers the latest manual seek for a new request and attaches it only when Ed
     slider.dispatchEvent(pointer("pointermove", 8));
     slider.dispatchEvent(pointer("pointerup", 9));
   });
-  expect([offeredTime(), boxTag(), useUiStore.getState().agentContext]).toEqual(["0:09", undefined, null]);
-  await chooseEditHere();
   expect(pointTag()).toEqual(["At 0:09", true]);
   expect(useUiStore.getState().agentContext).toMatchObject({ time: 9 });
-  expect(offeredTime()).toBeUndefined();
   await act(async () => useUiStore.getState().setAgentDraft("Zoom in here"));
   await act(async () => usePlayerStore.setState({ playing: true, time: 12 }));
   expect(pointTag()).toEqual(["At 0:09", true]);
@@ -8162,18 +8153,16 @@ it("offers the latest manual seek for a new request and attaches it only when Ed
   expect(useUiStore.getState().agentContext).toBe("whole");
 });
 
-it("releases an empty box's attached point on a seek or playback, and offers the new point only on a manual seek", async () => {
+it("moves an empty box's point to the next manual seek, and releases it on playback", async () => {
   idle();
   await show();
   await press("n");
   expect(pointTag()).toEqual(["At 0:00", true]);
   await press("ArrowRight");
-  expect([boxTag(), offeredTime(), useUiStore.getState().agentContext]).toEqual([undefined, "0:05", null]);
-  await chooseEditHere();
   expect(pointTag()).toEqual(["At 0:05", true]);
   await act(async () => usePlayerStore.setState({ playing: true }));
   await act(async () => usePlayerStore.setState({ playing: false, time: 0 }));
-  expect([boxTag(), offeredTime(), useUiStore.getState().agentContext]).toEqual([undefined, undefined, null]);
+  expect([boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, null]);
 });
 
 it("drops an empty box's timestamp when the working cut changes at the same clock time", async () => {
@@ -8182,7 +8171,7 @@ it("drops an empty box's timestamp when the working cut changes at the same cloc
   await press("n");
   expect(useUiStore.getState().agentContext).toMatchObject({ time: 0, version: data.project.head });
   await event(d => ({ ...d, project: { ...d.project, head: "ver_new_cut" }, timeline: { ...d.timeline!, version: "ver_new_cut" } }));
-  expect([playhead(), boxTag(), offeredTime(), useUiStore.getState().agentContext]).toEqual([0, undefined, undefined, null]);
+  expect([playhead(), boxTag(), useUiStore.getState().agentContext]).toEqual([0, undefined, null]);
 });
 
 it("gives the message box the cursor on N, about the moment the playhead is on, and opens no second box to write in", async () => {
@@ -8225,7 +8214,7 @@ it("leaves a box aimed at an edit or at Scarlet's question as it is when a point
   await show();
   expect(boxTag()).toBe("Answer");
   await press("ArrowRight");
-  expect([boxTag(), useUiStore.getState().agentContext, offeredTime()]).toEqual(["Answer", null, undefined]);
+  expect([boxTag(), useUiStore.getState().agentContext]).toEqual(["Answer", null]);
   // With an edit open the box revises that edit, wherever the playhead goes.
   appliedEdits();
   await show();
@@ -8233,7 +8222,7 @@ it("leaves a box aimed at an edit or at Scarlet's question as it is when a point
   await act(async () => {});
   expect(boxTag()).toBe("Edit at 0:00");
   await press("ArrowRight");
-  expect([boxTag(), offeredTime()]).toEqual(["Edit at 0:00", undefined]);
+  expect(boxTag()).toBe("Edit at 0:00");
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_approved_2", editIndex: 1 });
 });
 
@@ -10521,15 +10510,13 @@ it("keeps the conversation and the cut on screen when the edit moves on and its 
     // The player plays that cut as itself, not the new version's footage at its places.
     await act(async () => player.play());
     expect(loader).toHaveBeenLastCalledWith(PRJ, shown);
-    // Edit here attaches a point on the timeline the editor can see while the new one is loading.
+    // A press on the timeline aims a new edit at a point on the timeline the editor can see while the new one is loading.
     await act(async () => player.pause());
     const slider = container.querySelector<HTMLElement>(".timeline-slider")!;
     slider.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100 }) as DOMRect;
     slider.setPointerCapture = vi.fn();
     const pointer = (type: string) => new PointerEvent(type, { bubbles: true, button: 0, isPrimary: true, pointerId: 1, clientX: 50 });
     await act(async () => { slider.dispatchEvent(pointer("pointerdown")); slider.dispatchEvent(pointer("pointerup")); });
-    expect(useUiStore.getState().agentContext).toBeNull();
-    await chooseEditHere();
     expect(useUiStore.getState().agentContext).toMatchObject({ version: shown });
     // The store reads it again by itself, and only once that has kept failing is it said after the conversation,
     // which stays, with Retry.
@@ -10732,7 +10719,7 @@ it("starts a new edit about a stretch marked on the ruler, and keeps it while th
   expect(marked).toMatchObject({ time: 11, end: 16, markedRange: { start: 11, end: 16 } });
   expect(marked.changeId).toBeUndefined();
   // It is the message's own aim, with no tag of a cut or an edit, and no moment is offered beside it.
-  expect([boxTag(), offeredTime()]).toEqual([undefined, undefined]);
+  expect(boxTag()).toBeUndefined();
   expect(container.querySelector(".timeline-range")).not.toBeNull();
   // A skip moves the video, not the stretch: it stays until it is sent or taken off.
   await press("ArrowRight");

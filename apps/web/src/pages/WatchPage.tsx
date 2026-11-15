@@ -174,7 +174,7 @@ interface PreviewProps {
     /** A click inside the shaded passage, when the playing side steps over it. */
     onBand?(time: number): void;
     /** Timeline navigation offers the point to the composer. N attaches it explicitly. */
-    onPick?(point: AgentContext, action: "offer" | "attach"): void;
+    onPick?(point: AgentContext, how: "seek" | "n"): void;
     /** A stretch marked on the timeline's ruler for the message being written, or none once it is taken off there. */
     onRange?(range: MarkedRange | undefined, byKey?: boolean): void;
     /** The chosen edit is about to play on another version: don't start its passage on this one meanwhile. */
@@ -444,12 +444,12 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   useLayoutEffect(() => { setSelectedTime(undefined); }, [cacheVersion, source?.id]);
   const selectedFrameUrl = useMemo(() => selectedTime === undefined ? undefined
     : cutFrameUrl(current.project, displayedTimeline, selectedTime, true, true), [current.project, displayedTimeline, selectedTime]);
-  const selectTime = (time: number, action: "offer" | "attach" = "offer") => {
+  const selectTime = (time: number, how: "seek" | "n" = "seek") => {
     const at = Math.min(time, lastFrame);
     if (!source) setSelectedTime(at);
     // The point is on the timeline the player is on, which is the one before while the edit's new timeline is read.
     const point = editTargetAt(at, draftVersion ?? current.timeline?.version ?? current.project.head ?? undefined, displayedTimeline, source?.id);
-    simple.onPick?.(point, action);
+    simple.onPick?.(point, how);
   };
 
   // The stretch marked for the message in the box, drawn while the timeline is the one it was marked on.
@@ -598,7 +598,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       // Held down, N is one press too: it has already picked the moment and asked for the cursor.
       if (e.repeat) return;
       player.pause();
-      if (playable && duration > 0) selectTime(usePlayerStore.getState().time, "attach");
+      if (playable && duration > 0) selectTime(usePlayerStore.getState().time, "n");
       useUiStore.getState().focusComposer();
     }
   });

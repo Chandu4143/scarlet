@@ -1639,7 +1639,6 @@ export function SimpleWorkspace() {
   // Reply and Answer aim the box at one request. Sending clears it. Scarlet's own work in that request doesn't:
   // a run that resumes or asks a question while the editor types leaves their message aimed where it was.
   const [replyTo, setReplyTo] = useState<string>();
-  const [offeredPoint, setOfferedPoint] = useState<AgentContext>();
   const replyThread = threads.find(t => t.id === replyTo);
   const replyGone = !!replyTo && !replyThread;
   // Words chosen in the transcript that just took the box off a call to start a new edit: they are the message's, even
@@ -1651,7 +1650,6 @@ export function SimpleWorkspace() {
   useEffect(() => { if (replyGone) setReplyTo(aimed => aimed === replyTo ? undefined : aimed); }, [replyGone]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     openDraft(current.id, replyTo);
-    setOfferedPoint(undefined);
     // A point picked on the timeline, or words chosen in the transcript, are for the message written then. An empty
     // box doesn't come back still aimed at them.
     const box = useUiStore.getState();
@@ -3090,28 +3088,23 @@ export function SimpleWorkspace() {
   const markTypedTimes = !!messageClock && !!point?.fromMessage && point.version === playerVersion && point.mediaId === source?.id;
   const typedTimes = useUiStore(useShallow(s => markTypedTimes
     ? [...new Set(messageTimestamps(s.agentDraft, messageDuration).map(stamp => stamp.time))] : []));
-  const canOfferPoint = !replyTo && !rewordingItem && !speaking && !aimed;
   // Leave a picked moment behind when playback or a seek takes the editor away. Once a message is being
   // written or recorded, its explicit target stays with it. N can attach while the player's pause is settling.
   useLayoutEffect(() => {
-    const watching = point ?? offeredPoint;
-    if (!watching || (point && (written || speaking))) return;
+    if (!point || written || speaking) return;
     const release = () => {
       const box = useUiStore.getState();
-      if (point && box.agentContext === point && !box.agentDraft.trim() && !box.speaking) box.setAgentContext(null);
-      if (offeredPoint) setOfferedPoint(current => current === offeredPoint ? undefined : current);
+      if (box.agentContext === point && !box.agentDraft.trim() && !box.speaking) box.setAgentContext(null);
     };
-    const moved = (time: number) => Math.abs(time - watching.time) >= .1;
-    const playerState = usePlayerStore.getState();
-    if (watching.version !== playerVersion || watching.mediaId !== source?.id || moved(playerState.time) ||
-        (offeredPoint && (!canOfferPoint || playerState.playing))) {
+    const moved = (time: number) => Math.abs(time - point.time) >= .1;
+    if (point.version !== playerVersion || point.mediaId !== source?.id || moved(usePlayerStore.getState().time)) {
       release();
       return;
     }
     return usePlayerStore.subscribe((now, was) => {
       if ((now.playing && !was.playing) || moved(now.time)) release();
     });
-  }, [point, offeredPoint, written, speaking, playerVersion, source?.id, canOfferPoint]);
+  }, [point, written, speaking, playerVersion, source?.id]);
 
   /**
    * A stretch marked on the timeline's ruler, or taken off there. It goes on the message as it is aimed: a cut or an
@@ -3125,7 +3118,6 @@ export function SimpleWorkspace() {
     if (!marked && !was?.markedRange) return;
     const next = withMarkedRange(box.agentContext, marked);
     if (was && was === wordsInCall.current && next) wordsInCall.current = next;
-    setOfferedPoint(undefined);
     box.setAgentContext(next, next && was?.changeId ? was : undefined);
     // A handle stepped a frame by ← or → keeps the keys, so the next press steps it again.
     if (marked && !byKey) box.focusComposer();
@@ -3152,18 +3144,17 @@ export function SimpleWorkspace() {
       document.removeEventListener("pointerup", release, true);
     };
   }, [hasMarkedRange]);
-  const pickPoint = (picked: AgentContext, action: "offer" | "attach") => {
+  // A press, a scrub or a skip on the timeline, or N, aims a new edit at that moment at once: the box shows it as its
+  // edit-point icon. A message aimed at a cut or an edit, or one being written, stays where it was. Words chosen in the
+  // transcript or a stretch marked on the ruler stay through a seek; only N takes their place.
+  const pickPoint = (picked: AgentContext, how: "seek" | "n") => {
     const box = useUiStore.getState();
     if (replyTo || rewordingItem || box.speaking) return;
     const target = box.agentContext;
     if (target && target !== "whole" && (target.changeId || box.agentDraft.trim())) return;
-    if (action === "offer") {
-      if (!target || target === "whole" || pointOf(target)) setOfferedPoint(picked);
-    } else {
-      setOfferedPoint(undefined);
-      playheadPoints.add(picked);
-      box.setAgentContext(picked);
-    }
+    if (how === "seek" && target && (target === "whole" ? box.agentDraft.trim() : !pointOf(target))) return;
+    playheadPoints.add(picked);
+    box.setAgentContext(picked);
   };
   // It left the queue meanwhile, taken out or begun: the box goes back to the message being written. Not while the
   // project's requests are still loading: the queue then reads empty, and the words restored from before would be lost.
@@ -3177,7 +3168,6 @@ export function SimpleWorkspace() {
   // beside the player: the chat, where the message went, is in view with it.
   const sentUnder = (aim: number) => () => {
     if (aims.current === aim) {
-      setOfferedPoint(undefined);
       settleAim.current("sent");
     }
   };
@@ -3187,7 +3177,6 @@ export function SimpleWorkspace() {
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
     messageClock={messageClock}
-    editHere={offeredPoint && canOfferPoint ? { time: clockLabel(offeredPoint.time), onSelect: () => pickPoint(offeredPoint, "attach") } : undefined}
     targetTag={boxTag} targetIsPoint={!!pointTag && boxTag === pointTag} onClearTarget={() => settleAim.current("new")}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
     rewording={rewordingItem && { id: rewordingItem.id, text: rewording!.text,

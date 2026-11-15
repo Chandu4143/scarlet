@@ -41,8 +41,6 @@ interface ComposerProps {
   targetTag?: string;
   /** The tag is a moment a new edit is about ("At 18:28"), not something being revised. Its × makes the message about the whole video. */
   targetIsPoint?: boolean;
-  /** A moment the editor navigated to and can attach to this message. */
-  editHere?: { time: string; onSelect(): void };
   messageClock?: MessageClock;
   /** What taking the tag off does. Without it, the message becomes a reply to the whole request. */
   onClearTarget?(): void;
@@ -55,7 +53,7 @@ interface ComposerProps {
   rewording?: Rewording;
   selectedEdit?: AgentContext; onClearSelectedEdit?(): void; thread?: Thread; onCreated?(task: Task): void; onSent?(): void; modelPicker?: boolean }
 
-function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, rewording, editHere, messageClock }: ComposerProps & { project: Project }) {
+function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, rewording, messageClock }: ComposerProps & { project: Project }) {
   const media = useProjectStore(s => s.current?.media);
   const createTask = useProjectStore((s) => s.createTask);
   const createNote = useProjectStore((s) => s.createNote);
@@ -377,7 +375,15 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       {attached.length > 0 && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }} />}
       {/* Esc leaves a queued request's words as they were, unless the skill list took it first. */}
       {/* While an input method composes, Esc is its own: it puts away its candidates, and the words stay in the box. */}
-      <div className={firstEditHint ? "composer-box first-edit-hint" : "composer-box"} onKeyDown={e => { if (rewording && e.key === "Escape" && !e.defaultPrevented && !isComposing(e)) rewording.onCancel(); }}
+      {/* Backspace in an empty box takes a picked moment off, as it would a tag. A held Backspace that just emptied the box doesn't. */}
+      <div className={firstEditHint ? "composer-box first-edit-hint" : "composer-box"} onKeyDown={e => {
+        if (rewording && e.key === "Escape" && !e.defaultPrevented && !isComposing(e)) rewording.onCancel();
+        if (e.key === "Backspace" && !e.repeat && !e.defaultPrevented && !isComposing(e) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey &&
+            placeTag && targetIsPoint && !recording && !heard && e.target === inputRef.current && !inputRef.current.value) {
+          e.preventDefault();
+          takeOffTarget();
+        }
+      }}
         onKeyDownCapture={e => {
           if (!e.repeat) arrivedByKey.current = false;
           else if (arrivedByKey.current) e.preventDefault();
@@ -402,11 +408,6 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           <SkillCommandInput key={owner} id={inputId} inputRef={inputRef} value={value} skills={skills}
             placeholder={rewording ? "What should it ask instead?" : question ? "Answer Scarlet…" : displayAnchor?.changeId && context ? "What should change?" : replying ? "Write a follow-up…" : NEW_EDIT_HINT}
             timestamps={sameClock ? times : undefined} onTimestamp={inputClock?.seek} onChange={changeText} onSubmit={() => void submitText()} />
-          {editHere && !tag && !rewording && !replying && !displayAnchor && !recording && !heard && <button type="button" className="composer-edit-here"
-            aria-label={`Edit here at ${editHere.time}`} title={`Edit here at ${editHere.time}`} onClick={() => {
-              editHere.onSelect();
-              inputRef.current?.focus();
-            }}>Edit here</button>}
           {/* The reason is only for a mic with no agent to talk to. While a message sends or is written down the spinner says why. */}
           <MicButton onResult={(r) => void onVoice(r)} onStart={() => {
             dismissFirstEditHint();
