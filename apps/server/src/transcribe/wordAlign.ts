@@ -28,6 +28,14 @@ const spanishWeights = {
   url: "https://huggingface.co/parseh/aligner-es/resolve/d2b70028033dac453897da0cafaa98ce3a6121b9/model.int8.onnx",
   size: 356293089, sha256: "6531e09eb1646c7789e90f7d606c23e533e8570c3e6983ae99c0c4a5dfaee775",
 };
+/** What aligning one language takes: its model's letters, its output classes (five special ones first), and what its
+ * emission store adds to the name of the recording's store. */
+interface AlignLanguage { letters: string; classes: number; storeSuffix: string }
+const ENGLISH: AlignLanguage = { letters: CTC_LETTERS, classes: 5 + CTC_LETTERS.length, storeSuffix: "" };
+const SPANISH: AlignLanguage = { letters: SPANISH_CTC_LETTERS, classes: 5 + SPANISH_CTC_LETTERS.length,
+  storeSuffix: `.es-${spanishWeights.sha256.slice(0, 8)}.bin` };
+/** A recording's emission store for each language it can be aligned in is the store's own path with one of these added. */
+export const EMISSION_STORE_SUFFIXES: readonly string[] = [ENGLISH, SPANISH].map(language => language.storeSuffix);
 /**
  * The feature encoder's strided convolutions, which ONNX Runtime 1.22's WebGPU path computes wrongly (any one of
  * them on the GPU changed the top letter in 2,379 of 5,996 frames). With these six on the CPU and the rest of the
@@ -129,10 +137,8 @@ export class WordAligner {
     opts.signal.throwIfAborted();
     if (!alignsLanguage(opts.language)) return segments;
     const spanish = isSpanish(opts.language);
-    const alphabet = spanish ? SPANISH_CTC_LETTERS : CTC_LETTERS;
-    const classes = 5 + alphabet.length;
-    const emissions = spanish && opts.emissions
-      ? { ...opts.emissions, file: `${opts.emissions.file}.es-${spanishWeights.sha256.slice(0, 8)}.bin` } : opts.emissions;
+    const { letters, classes, storeSuffix } = spanish ? SPANISH : ENGLISH;
+    const emissions = opts.emissions && { ...opts.emissions, file: opts.emissions.file + storeSuffix };
     const words = segments.flatMap(s => s.words);
     const { resume } = opts;
     const through = resume?.through ?? 0;
@@ -151,7 +157,7 @@ export class WordAligner {
     }
     const nextWord = hasCursor ? cursor : fixedPrefix;
     const groups = alignmentGroups(segments, undefined, nextWord);
-    if (!groups.some(g => groupLabels(g.words, alphabet).spelled)) return segments;
+    if (!groups.some(g => groupLabels(g.words, letters).spelled)) return segments;
     const timings: Array<WordTiming | undefined> = [];
     let after = through > 0 ? through : undefined;
     // Progress is how far into the speech alignment has reached. A turn covers up to five minutes of speech,
@@ -351,13 +357,13 @@ async function storeCovers(source: EmissionSource, groups: AlignRequest["groups"
 export async function runAlignWorker(wav: string, model: string, requestFile: string, onProgress?: (done: number) => void,
   sessions?: Sessions): Promise<AlignResponse> {
   const { groups, after, store, measure, language } = JSON.parse(await readFile(requestFile, "utf8")) as AlignRequest;
-  const alphabet = language === "es" ? SPANISH_CTC_LETTERS : CTC_LETTERS;
-  if (store) return alignFromStore(wav, model, groups, after, store, alphabet, onProgress, sessions, measure);
+  const lang = language === "es" ? SPANISH : ENGLISH;
+  if (store) return alignFromStore(wav, model, groups, after, store, lang, onProgress, sessions, measure);
   // Before the audio is opened: a missing runtime throws here, with no file left open.
   const ort = loadRuntime();
   const audio = await openWav(wav);
   // On the GPU when there is one. A run that fails there starts again on the CPU, so it builds its result afresh.
-  try { return await withAligner(ort, model, alphabet, sessions, async readWindow => {
+  try { return await withAligner(ort, model, lang, sessions, async readWindow => {
     const out: AlignResponse = groups.map(g => g.words.map(() => null));
     const regions = searchRegions(groups, audio.samples / SAMPLE_RATE);
     let previousEnd = after ?? -Infinity;
@@ -367,9 +373,9 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
       const from = Math.floor(region.start * SAMPLE_RATE / FRAME_SAMPLES) * FRAME_SAMPLES;
       const samples = await audio.read(from, Math.ceil(region.end * SAMPLE_RATE));
       const length = region.end - region.start;
-      const emissions = await emit(readWindow, samples, 5 + alphabet.length, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
+      const emissions = await emit(readWindow, samples, lang.classes, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
       emitted += length;
-      previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out, alphabet);
+      previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out, lang.letters);
     }
     return out;
   }); } finally {
@@ -396,8 +402,8 @@ function place(em: Emissions, groups: AlignRequest["groups"], indices: number[],
  * recording, and saved; when it has them all, no audio is read and the model is never loaded.
  */
 async function alignFromStore(wav: string, model: string, groups: AlignRequest["groups"], after: number | undefined,
-  { file, offset, duration }: NonNullable<AlignRequest["store"]>, alphabet: string, onProgress?: (done: number) => void, sessions?: Sessions, measure?: TimeRange[]): Promise<AlignResponse> {
-  const classes = 5 + alphabet.length;
+  { file, offset, duration }: NonNullable<AlignRequest["store"]>, lang: AlignLanguage, onProgress?: (done: number) => void, sessions?: Sessions, measure?: TimeRange[]): Promise<AlignResponse> {
+  const { classes } = lang;
   const audio = wav ? await openWav(wav) : undefined;
   let store: EmissionFile | null | undefined;
   try {
@@ -412,7 +418,7 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
       if (!audio) throw new Error("The recording's alignment store lacks audio it was not given.");
       const ort = loadRuntime();
       // Save each verified window as it finishes. CPU fallback resumes at the first missing window.
-      await withAligner(ort, model, alphabet, sessions, async readWindow => {
+      await withAligner(ort, model, lang, sessions, async readWindow => {
         for (const [done, index] of missing.entries()) {
           if (saved.missing(saved.chunks[index]!.keep[0], saved.chunks[index]!.keep[1]).includes(index)) {
             const chunk = saved.chunks[index]!;
@@ -431,7 +437,7 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
       const [from, to] = region.frames;
       if (to <= from) continue;
       const em: Emissions = { logProbs: await saved.read(from, to), frames: to - from, origin: from * FRAME_SAMPLES / SAMPLE_RATE - offset };
-      previousEnd = place(em, groups, region.groups, previousEnd, out, alphabet);
+      previousEnd = place(em, groups, region.groups, previousEnd, out, lang.letters);
     }
     onProgress?.(1);
     return out;
@@ -463,15 +469,15 @@ type Session = Awaited<ReturnType<Runtime["InferenceSession"]["create"]>>;
 type ReadWindow = (part: Float32Array) => Promise<Float32Array>;
 
 /** Check the first accelerated window against this model's CPU output before its timings or emissions are used. */
-function withAligner<T>(ort: Runtime, model: string, alphabet: string, sessions: Sessions | undefined,
+function withAligner<T>(ort: Runtime, model: string, lang: AlignLanguage, sessions: Sessions | undefined,
   work: (readWindow: ReadWindow) => Promise<T>) {
-  const classes = 5 + alphabet.length;
-  const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: alphabet === CTC_LETTERS ? WEBGPU_CPU_NODES : undefined } : {};
+  const { classes } = lang;
+  const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: lang === ENGLISH ? WEBGPU_CPU_NODES : undefined } : {};
   return withInference(ort, model, async (session, provider) => {
     let verified = sessions?.verified.has(model) ?? false;
     return work(async part => {
       const logits = await infer(ort, session, part, classes);
-      if (!verified && (provider === "webgpu" || (provider === "dml" && alphabet === SPANISH_CTC_LETTERS))) {
+      if (!verified && (provider === "webgpu" || (provider === "dml" && lang === SPANISH))) {
         const expected = await withInference(ort, model, cpu => infer(ort, cpu, part, classes), { sessions, gpu: false });
         const { worst, flips } = compareLogits(expected, logits, classes);
         if (!(worst <= GPU_LOGIT_TOLERANCE && flips <= GPU_FLIP_TOLERANCE)) {

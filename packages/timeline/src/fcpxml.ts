@@ -4,8 +4,9 @@
  * Every time is a whole number of frames, as Final Cut requires, counted the way `toOtio` counts them so cuts don't
  * drift against the sound.
  */
-import { exactRate, isDropFrameRate, type ExactRate, type HandoffSource } from "./handoff.js";
+import { exactRate, isDropFrameRate, sourceStartQ, type ExactRate, type HandoffSource } from "./handoff.js";
 import { trackLayers } from "./otio.js";
+import { add, div, fraction, frames, mul, q, secondsQ, snapQ, sub, type Q } from "./rational.js";
 import type { CaptionClip, Clip, ColorClip, Marker, MediaClip, Project, Timeline, TransformKeyframe } from "./schema.js";
 import { clipEnd } from "./time.js";
 
@@ -13,24 +14,7 @@ import { clipEnd } from "./time.js";
 // Rational seconds
 // ---------------------------------------------------------------------------
 
-type Q = { n: number; d: number };
-const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : Math.abs(a));
-function q(n: number, d = 1): Q {
-  if (d < 0) [n, d] = [-n, -d];
-  const g = gcd(n, d) || 1;
-  return { n: n / g, d: d / g };
-}
-const add = (a: Q, b: Q) => q(a.n * b.d + b.n * a.d, a.d * b.d);
-const sub = (a: Q, b: Q) => q(a.n * b.d - b.n * a.d, a.d * b.d);
-const mul = (a: Q, b: Q) => q(a.n * b.n, a.d * b.d);
-const div = (a: Q, b: Q) => q(a.n * b.d, a.d * b.n);
 const fmt = (t: Q) => (t.n === 0 ? "0s" : t.d === 1 ? `${t.n}s` : `${t.n}/${t.d}s`);
-/** `frames` frames at `rate`. */
-const frames = (count: number, rate: ExactRate) => q(Math.round(count) * rate.den, rate.num);
-/** A playback speed as a fraction, to a thousandth. */
-function speedQ(speed: number): Q {
-  return q(Math.round(speed * 1000), 1000);
-}
 
 // ---------------------------------------------------------------------------
 // XML
@@ -77,6 +61,7 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
   const fps = project.settings.fps;
   const rate = exactRate(fps).rate;
   const frameOf = (seconds: number) => Math.round(seconds * rate.num / rate.den);
+  const sec = (seconds: number) => secondsQ(seconds, rate);
   const W = project.settings.width, H = project.settings.height;
 
   // Resources: the sequence's format, one format per kind of footage, one asset per file.
@@ -89,7 +74,8 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
     if (!id) {
       id = `r${nextId++}`;
       formats.set(key, id);
-      resources.add(el("format", { id, frameDuration: r ? fmt(q(r.den, r.num)) : undefined, width, height }));
+      // A still has no frame rate; Final Cut names that format so.
+      resources.add(el("format", { id, name: r ? undefined : "FFVideoFormatRateUndefined", frameDuration: r ? fmt(q(r.den, r.num)) : undefined, width, height }));
     }
     return id;
   };
@@ -104,7 +90,7 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
     assets.set(source, id);
     const start = sourceStartQ(source);
     resources.add(el("asset", {
-      id, name, start: fmt(start), duration: source.still ? "0s" : fmt(frames(source.duration * (source.rate ?? rate).num / (source.rate ?? rate).den, source.rate ?? rate)),
+      id, name, start: fmt(start), duration: source.still ? "0s" : fmt(secondsQ(source.duration, source.rate ?? rate)),
       hasVideo: source.hasVideo ? 1 : undefined, format,
       hasAudio: source.hasAudio ? 1 : undefined,
       audioSources: source.hasAudio ? Math.max(1, source.audioStreams ?? 1) : undefined,
@@ -119,7 +105,7 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
   const videoLayers: Layer[] = [], audioLayers: Layer[] = [], captionLayers: Layer[] = [];
   for (const track of timeline.tracks) {
     const target = track.kind === "video" ? videoLayers : track.kind === "audio" ? audioLayers : captionLayers;
-    for (const clips of trackLayers(track.clips, true)) {
+    for (const clips of trackLayers(track.clips, true, track.kind === "audio")) {
       target.push({ clips, kind: track.kind === "audio" ? "audio" : "video", muted: track.muted, hidden: track.hidden, name: track.name });
     }
   }
@@ -180,12 +166,7 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
     for (const m of markers) if (m.item === item) item.node.add(m.node);
   }
 
-  function sourceStartQ(source: HandoffSource): Q {
-    const tc = source.timecode;
-    return tc ? frames(tc.frames, tc.rate) : q(0);
-  }
-
-  /** A clip as an `asset-clip` (or a caption), placed at `offset` on its parent's clock. */
+  /** A clip as an `asset-clip` (a still as a `video`, a caption as a `caption`), placed at `offset` on its parent's clock. */
   function clipNode(clip: Clip, layer: Layer, lane: number, offset: Q, from: number, to: number): { node: Node; localStart: Q } | undefined {
     const duration = frames(to - from, rate);
     const laneAttr = lane || undefined;
@@ -201,32 +182,36 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
     const speed = clip.kind === "media" ? clip.speed ?? 1 : 1;
     const sourceRate = source.rate ?? rate;
     // Where the clip starts reading: the footage's own clock (its timecode) plus the clip's start, on the footage's frames.
-    let localStart = clip.kind === "media" && !source.still
-      ? add(sourceStartQ(source), frames(clip.sourceIn * sourceRate.num / sourceRate.den, sourceRate))
-      : q(0);
-    const node = el("asset-clip", { ref, lane: laneAttr, offset: fmt(offset), name, start: undefined, duration: fmt(duration) });
-    if (speed !== 1 && clip.kind === "media") {
-      // A retimed clip's own clock runs at its speed: the time map turns that clock back into the footage's.
-      localStart = div(localStart, speedQ(speed));
-      const end = div(add(sourceStartQ(source), q(Math.ceil(source.duration * 1000), 1000)), speedQ(speed));
+    let localStart = clip.kind === "media" && !source.still ? add(sourceStartQ(source), secondsQ(clip.sourceIn, sourceRate)) : q(0);
+    // Final Cut places a still image as a `video`, an asset with no length of its own.
+    const node = el(source.still ? "video" : "asset-clip", { ref, lane: laneAttr, offset: fmt(offset), name, start: undefined, duration: fmt(duration) });
+    if (speed !== 1 && clip.kind === "media" && !source.still) {
+      // A retimed clip's own clock runs at its speed: the time map turns that clock back into the footage's. Its start
+      // is on the sequence's frames like every other time, and the map uses the same speed the duration was counted at.
+      const rateQ = fraction(speed);
+      localStart = snapQ(div(localStart, rateQ), rate);
+      const footageEnd = snapQ(div(add(sourceStartQ(source), q(Math.ceil(source.duration * 1000), 1000)), rateQ), rate);
+      const clipStop = add(localStart, duration);
+      const last = sub(footageEnd, clipStop).n >= 0 ? footageEnd : clipStop;
       node.add(el("timeMap", {}, [
         el("timept", { time: "0s", value: "0s", interp: "linear" }),
-        el("timept", { time: fmt(end), value: fmt(mul(end, speedQ(speed))), interp: "linear" }),
+        el("timept", { time: fmt(last), value: fmt(mul(last, rateQ)), interp: "linear" }),
       ]));
     }
     node.attrs.start = localStart.n ? fmt(localStart) : undefined;
 
-    const audible = clip.kind === "media" && source.hasAudio && !layer.muted;
-    const visible = source.hasVideo && layer.kind === "video";
+    // A hidden picture track that is heard keeps only its sound; one that isn't heard either is off.
+    const heard = clip.kind === "media" && source.hasAudio && !layer.muted && clip.volume > 0;
+    const shown = source.hasVideo && layer.kind === "video" && !layer.hidden;
     if (layer.kind === "audio" && source.hasVideo && source.hasAudio) node.attrs.srcEnable = "audio";
-    else if (layer.kind === "video" && source.hasVideo && source.hasAudio && (!audible || (clip.kind === "media" && clip.volume <= 0))) node.attrs.srcEnable = "video";
-    const enabled = clip.enabled !== false && !(layer.kind === "video" && layer.hidden && !audible) && !(layer.kind === "audio" && layer.muted);
+    else if (layer.kind === "video" && source.hasVideo && source.hasAudio && shown !== heard) node.attrs.srcEnable = heard ? "audio" : "video";
+    const enabled = clip.enabled !== false && (layer.kind === "audio" ? !layer.muted : shown || heard);
     if (!enabled) node.attrs.enabled = 0;
 
-    if (visible) {
+    if (source.hasVideo && layer.kind === "video" && node.attrs.srcEnable !== "audio") {
       for (const adjustment of pictureAdjustments(clip, localStart, duration, source)) node.add(adjustment);
     }
-    if (clip.kind === "media" && audible && node.attrs.srcEnable !== "video") {
+    if (clip.kind === "media" && source.hasAudio && !layer.muted && node.attrs.srcEnable !== "video") {
       const volume = soundAdjustment(clip);
       if (volume) node.add(volume);
     }
@@ -254,7 +239,7 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
         rotation: base.rotation ? num(-base.rotation) : undefined,
       });
       const sorted = [...keyframes].sort((a, b) => a.time - b.time);
-      const at = (k: TransformKeyframe) => fmt(add(localStart, frames(Math.max(0, k.time) * rate.num / rate.den, rate)));
+      const at = (k: TransformKeyframe) => fmt(add(localStart, sec(Math.max(0, k.time))));
       const moves = sorted.filter(k => k.transform.x !== undefined || k.transform.y !== undefined);
       if (moves.length) {
         transform.add(el("param", { name: "position" }, [el("keyframeAnimation", {}, moves.map(k => el("keyframe", {
@@ -278,10 +263,10 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
         const keys: Node[] = [];
         if (fadeIn > 0) {
           keys.push(el("keyframe", { time: fmt(localStart), value: "0" }));
-          keys.push(el("keyframe", { time: fmt(add(localStart, frames(fadeIn * rate.num / rate.den, rate))), value: num(opacity) }));
+          keys.push(el("keyframe", { time: fmt(add(localStart, sec(fadeIn))), value: num(opacity) }));
         }
         if (fadeOut > 0) {
-          keys.push(el("keyframe", { time: fmt(sub(end, frames(fadeOut * rate.num / rate.den, rate))), value: num(opacity) }));
+          keys.push(el("keyframe", { time: fmt(sub(end, sec(fadeOut))), value: num(opacity) }));
           keys.push(el("keyframe", { time: fmt(end), value: "0" }));
         }
         blend.add(el("param", { name: "amount" }, [el("keyframeAnimation", {}, keys)]));
@@ -296,8 +281,8 @@ export function toFcpxml(project: Project, timeline: Timeline, sources: Map<stri
     const volume = el("adjust-volume", { amount: decibels(clip.volume) });
     if (clip.audioFadeIn || clip.audioFadeOut) {
       const param = volume.add(el("param", { name: "amount" }));
-      if (clip.audioFadeIn) param.add(el("fadeIn", { type: "linear", duration: fmt(frames(clip.audioFadeIn * rate.num / rate.den, rate)) }));
-      if (clip.audioFadeOut) param.add(el("fadeOut", { type: "linear", duration: fmt(frames(clip.audioFadeOut * rate.num / rate.den, rate)) }));
+      if (clip.audioFadeIn) param.add(el("fadeIn", { type: "linear", duration: fmt(sec(clip.audioFadeIn)) }));
+      if (clip.audioFadeOut) param.add(el("fadeOut", { type: "linear", duration: fmt(sec(clip.audioFadeOut)) }));
     }
     return volume;
   }

@@ -7,7 +7,7 @@ import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
-import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
+import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { needNumbers } from "../lib/needNumbers";
@@ -112,20 +112,28 @@ function afterPlayerMount(start: () => () => void) {
 
 type Panel = "media" | "history" | "export" | "learnings" | "shorts" | null;
 
-const REWORDING_KEY = "scarlet.rewording.v1";
+/** Each project keeps its own: rewording a request in one project leaves the words kept for another as they are. */
+const LEGACY_REWORDING_KEY = "scarlet.rewording.v1";
+const rewordingKey = (projectId: string) => `${LEGACY_REWORDING_KEY}:${projectId}`;
+function readRewording(key: string, projectId: string): { id: string; text: string } | undefined {
+  const saved = JSON.parse(localStorage.getItem(key) ?? "null") as { projectId?: unknown; id?: unknown; text?: unknown } | null;
+  return saved && saved.projectId === projectId && typeof saved.id === "string" && typeof saved.text === "string" ? { id: saved.id, text: saved.text } : undefined;
+}
 /** The queued request whose words were in the message box when the project was last on screen, with those words. */
 function savedRewording(projectId: string): { id: string; text: string } | undefined {
   try {
-    const saved = JSON.parse(localStorage.getItem(REWORDING_KEY) ?? "null") as { projectId?: unknown; id?: unknown; text?: unknown } | null;
-    return saved && saved.projectId === projectId && typeof saved.id === "string" && typeof saved.text === "string" ? { id: saved.id, text: saved.text } : undefined;
+    // Words kept before each project had its own slot are in the one slot all projects shared.
+    return readRewording(rewordingKey(projectId), projectId) ?? readRewording(LEGACY_REWORDING_KEY, projectId);
   } catch {
     return undefined;
   }
 }
 function saveRewording(projectId: string, rewording: { id: string; text: string } | undefined) {
   try {
-    if (rewording) localStorage.setItem(REWORDING_KEY, JSON.stringify({ projectId, ...rewording }));
-    else if (savedRewording(projectId)) localStorage.removeItem(REWORDING_KEY);
+    if (rewording) localStorage.setItem(rewordingKey(projectId), JSON.stringify({ projectId, ...rewording }));
+    else localStorage.removeItem(rewordingKey(projectId));
+    // The shared slot is this project's no longer: its words are in the project's own now, or done with.
+    if (readRewording(LEGACY_REWORDING_KEY, projectId)) localStorage.removeItem(LEGACY_REWORDING_KEY);
   } catch { /* Without storage the words last for this session only. */ }
 }
 
@@ -333,13 +341,15 @@ function SourceLine({ source }: { source: ProjectSource }) {
  */
 function SourceNote({ projectId, source }: { projectId: string; source: ProjectSource }) {
   const [gone, setGone] = useState(false);
+  const updateProject = useProjectStore(s => s.updateProject);
   if (gone) return null;
   return <section className="simple-turn simple-source-note" aria-label="New project">
     <div className="simple-msg from-scarlet">
       <span className="simple-who">Scarlet</span>
       <p className="said">New project, made from <SourceName source={source} />. That video isn’t changed.</p>
       <button type="button" className="btn-icon simple-source-dismiss" aria-label="Dismiss" title="Dismiss"
-        onClick={() => { setGone(true); void api.updateProject(projectId, { sourceNotice: false }).catch(() => setGone(false)); }}>
+        // Through the store, so the project it holds says the note is dismissed and it doesn't come back with the chat.
+        onClick={() => { setGone(true); void updateProject({ sourceNotice: false }, projectId).catch(() => setGone(false)); }}>
         <Icon name="x" size={12} /></button>
     </div>
   </section>;
@@ -771,6 +781,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   const retryTask = (taskId: string) => retryRun(taskId, effective ?? undefined);
   const continueWhenReady = useProjectStore(s => s.continueWhenReady);
   const allTasks = useProjectStore(s => s.current?.tasks ?? []);
+  // The changes a request about one cut or edit can name, to tell which edit it is across its revisions (`requestTargetKey`).
+  const threadChanges = useMemo(() => [...thread.changes, ...thread.flagged ?? []], [thread.changes, thread.flagged]);
   const historyKey = useMemo(() => JSON.stringify(thread.tasks.filter(t => !waitingToStart(t)).map(t => [t.id, runIsActive(t)])), [thread.tasks]);
   useEffect(() => {
     const scopes = useProjectStore.getState().current?.taskEventScopes;
@@ -878,10 +890,9 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   // before the cut was sent back reads the same as one made since, and a revision of an approved cut that couldn't
   // finish would leave without a word (2026-11-09).
   const overtaken = (run: Run) => {
-    const { changeId, cutIndex, editIndex } = aimOf(run).context, about = subject(run);
+    const { cutIndex } = aimOf(run).context, about = subject(run), aim = requestTargetKey(aimOf(run), threadChanges);
     const later = runs.some(other => other !== run && other !== owner && aboutOne(other) && ts(other.attempts[0]!.createdAt) > ts(run.task.createdAt)
-      && ((!!about && subject(other) === about)
-        || (aimOf(other).context.changeId === changeId && aimOf(other).context.cutIndex === cutIndex && aimOf(other).context.editIndex === editIndex)));
+      && ((!!about && subject(other) === about) || (!!aim && requestTargetKey(aimOf(other), threadChanges) === aim)));
     if (later || cutIndex === undefined) return later;
     const target = targets.get(run.root);
     if (target?.edit) return true;
@@ -971,7 +982,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
         // Asked again since, and done: picking the old one up would do the same work a second time. The same words
         // about another cut or edit were other work, and leave this one to pick up.
         const redone = allTasks.some(t => t.state === "done" && Date.parse(t.createdAt ?? "") > Date.parse(task.createdAt ?? "") && requestText(t) === requestText(task)
-          && t.context.changeId === task.context.changeId && t.context.cutIndex === task.context.cutIndex && t.context.editIndex === task.context.editIndex);
+          && requestTargetKey(t, threadChanges) === requestTargetKey(task, threadChanges));
         if (action && !redone) recovery = { label: action.label === "Resume agent" ? "Resume" : "Retry", run: () => attempt(run.root, retryTask(action.taskId)) };
       }
     });
@@ -1208,6 +1219,8 @@ export function SimpleWorkspace() {
   // request picked in the chat, else the latest, so that request's edits are marked from the start.
   const focusThread = threads.find(t => t.id === focus?.threadId) ?? marked;
   const firstCuts = useMemo(() => focusThread && firstCutDeliveries(focusThread), [focusThread]);
+  // The request's own edits and the ones it flagged that another request made.
+  const focusChanges = useMemo(() => [...focusThread?.changes ?? [], ...focusThread?.flagged ?? []], [focusThread]);
   // A proposal Scarlet is waiting on. A dialogue pass waits where it is until its calls are made; a suggestion opens in
   // the card on the timeline when its line is pressed. Neither stands in for the other: a suggestion that plays
   // leaves the pass its calls, its block and its place above the message box (2026-11-08: they went until Esc).
@@ -1262,9 +1275,12 @@ export function SimpleWorkspace() {
   // cuts it never checked are the editor's calls, and a schedule sent along with one of them would apply over the rest.
   // The last save sent for each pass, what a save that failed said, and the calls of each pass that the last failed save
   // carried and no save has carried since: those are back with the editor, and the line saying why stays until they're saved.
-  const saves = useRef<{ last: Record<string, object>; failed?: string; unsent: Record<string, Set<number>> }>({ last: {}, unsent: {} });
+  // Saves are numbered as they are sent, and `landed` holds the latest of each pass's that has landed.
+  const saves = useRef<{ last: Record<string, object>; failed?: string; unsent: Record<string, Set<number>>; sent: number; landed: Record<string, number> }>(
+    { last: {}, unsent: {}, sent: 0, landed: {} });
   async function saveChoices(change: Change, calls: Record<number, CutChoice>, apply = passRunning && applyWhenDone(change)) {
     const sent = { calls, applyWhenDone: apply };
+    const order = ++saves.current.sent;
     saves.current.last[change.id] = sent;
     setUnsaved(all => ({ ...all, [change.id]: sent }));
     try {
@@ -1272,6 +1288,7 @@ export function SimpleWorkspace() {
         choices: Object.entries(calls).map(([index, choice]) => ({ index: Number(index), choice })) });
       const unsent = saves.current.unsent[change.id];
       for (const index of Object.keys(calls)) unsent?.delete(Number(index));
+      saves.current.landed[change.id] = Math.max(saves.current.landed[change.id] ?? 0, order);
       if (saves.current.last[change.id] !== sent) return;
       // A part may have landed before the click reached the engine. Its response carries the choices at their live
       // indices. A project event can beat that response, including one that supersedes this proposal again.
@@ -1290,6 +1307,8 @@ export function SimpleWorkspace() {
       if (!unsent?.size) setDecideError(shown => shown === saves.current.failed ? "" : shown);
       return live;
     } catch (e) {
+      // A later save that has landed carried every call this one did: nothing was lost, and nothing is said.
+      if ((saves.current.landed[change.id] ?? 0) > order) return;
       saves.current.unsent[change.id] = new Set(Object.keys(calls).map(Number));
       saves.current.failed = errorMessage(e);
       setDecideError(saves.current.failed);
@@ -2148,7 +2167,7 @@ export function SimpleWorkspace() {
   const shownAt = shownEdit && (shownEdit.at ?? shownEdit.range.start);
   // The applied edit on screen, so Revise is about it and not a proposal still waiting.
   // An edit another request made is open here when this request flagged it (`Thread.flagged`).
-  const shownChange = shownEdit && [...focusThread?.changes ?? [], ...focusThread?.flagged ?? []].find(c => belongsTo(shownEdit, c));
+  const shownChange = shownEdit && focusChanges.find(c => belongsTo(shownEdit, c));
   // Keep (K) records that the edit was reviewed and moves on to the next flagged edit that hasn't been; Revise (R) changes this one.
   const reviewingEdit = shownEdit && shownChange && focusThread ? shownEdit : undefined;
   const threadEdits = threadTimeline.edits;
@@ -2695,7 +2714,7 @@ export function SimpleWorkspace() {
   // message still being written may be about another one.
   const openTarget = reviewingEdit && shownChange && focusThread ? threadTimeline.selectedTarget : undefined;
   // An edit another request made, open here because this request flagged it, is undone from here too.
-  const undoTarget = openTarget && [...focusThread?.changes ?? [], ...focusThread?.flagged ?? []]
+  const undoTarget = openTarget && focusChanges
     .some(c => c.id === openTarget.changeId && c.state === "approved") ? openTarget : undefined;
   // An edit sent back for revision has no card until its new version lands: its note and its decisions are about the
   // version on its way out, and its row in the chat says Scarlet is on it. It stays open meanwhile: the message box is
@@ -3124,7 +3143,9 @@ export function SimpleWorkspace() {
     if (replyTo || rewordingItem || box.speaking) return;
     const target = box.agentContext;
     if (target && target !== "whole" && (target.changeId || box.agentDraft.trim())) return;
-    if (how === "seek" && target && (target === "whole" ? box.agentDraft.trim() : !pointOf(target))) return;
+    // A message being written about the whole video, aimed or not yet, stays so through a seek: the line above the
+    // box offers to bring it along.
+    if (how === "seek" && (!target || target === "whole" ? box.agentDraft.trim() : !pointOf(target))) return;
     playheadPoints.add(picked);
     box.setAgentContext(picked);
   };
@@ -3278,7 +3299,7 @@ export function SimpleWorkspace() {
             {/* An applied cut plays on the version before it, so its transcript is that version's: the working cut's
                 would highlight and seek early by everything the pass took out before that point. */}
             <TranscriptPane key={source?.id ?? (appliedCut ? beforeCut!.version : draftVersion) ?? head} draft={appliedCut ? beforeTimeline : draft} source={source}
-              onAsk={askAbout} simple />
+              onAsk={askAbout} />
           </Suspense></div>
         </ChatRail>}
       </Dropzone>

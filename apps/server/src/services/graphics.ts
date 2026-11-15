@@ -18,6 +18,7 @@ import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { actorFor, logActivity, quote } from "./activity.js";
 import { ingestMedia } from "./ingest.js";
+import { safeFileName } from "./fileName.js";
 import { previewPictures } from "./previewPictures.js";
 import { resolveTimeline } from "./timeline.js";
 
@@ -34,7 +35,7 @@ const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
 /** A file name kept as the editor gave it, minus anything that could leave its folder or hide it. */
 export function attachmentName(name: string): string {
-  const base = basename(name.replace(/\\/g, "/")).replace(/[\u0000-\u001f<>:"|?*]/g, "_").replace(/^\.+/, "").trim().slice(0, 200);
+  const base = safeFileName(basename(name.replace(/\\/g, "/")), "_").replace(/^\.+/, "").trim().slice(0, 200);
   return base || "attachment";
 }
 
@@ -102,10 +103,13 @@ export async function saveStyleGuide(ctx: Ctx, projectId: string, body: SaveStyl
     const found = await findAttachment(ctx, projectId, body.attachmentId);
     if (!found) throw badRequest("unknown_attachment", "That attachment isn't in this project. Ask the editor to attach the guide again.");
     const staging = `${folder}.${randomUUID()}`;
-    await mkdir(staging, { recursive: true, mode: 0o700 });
-    await cp(found.path, join(staging, found.attachment.name));
-    await rm(folder, { recursive: true, force: true });
-    await rename(staging, folder);
+    try {
+      await mkdir(staging, { recursive: true, mode: 0o700 });
+      await cp(found.path, join(staging, found.attachment.name));
+      await swapInFolder(staging, folder);
+    } finally {
+      await rm(staging, { recursive: true, force: true });
+    }
     file = relative(ctx.paths.project(projectId), join(folder, found.attachment.name)).split(sep).join("/");
   } else await rm(folder, { recursive: true, force: true });
   const guide: StyleGuide = { name: body.name, ...(body.text?.trim() && { text: body.text }), ...(file && { file }), savedAt: now() };
@@ -122,6 +126,25 @@ export async function removeStyleGuide(ctx: Ctx, projectId: string, user: User |
   const project = ctx.repos.projects.get(projectId);
   if (project) ctx.bus.publish({ type: "project.updated", projectId, project });
   logActivity(ctx, { projectId, actor: actorFor(user), type: "project.style_guide", summary: "The style guide was removed" });
+}
+
+/**
+ * Put a folder made beside `folder` in its place. The folder there before is moved aside first and put back if the new
+ * one can't go in, so `folder` is never left missing while the database points at it. The one aside is then removed.
+ */
+export async function swapInFolder(staging: string, folder: string) {
+  const aside = `${folder}.old-${randomUUID()}`;
+  const hadOld = await rename(folder, aside).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  try {
+    await rename(staging, folder);
+  } catch (error) {
+    if (hadOld) await rename(aside, folder).catch(() => undefined);
+    throw error;
+  }
+  if (hadOld) await rm(aside, { recursive: true, force: true }).catch(() => undefined);
 }
 
 /** Where the guide's file is, when it is a file. */
@@ -150,32 +173,45 @@ export function assetPath(name: string): string {
   return parts.join("/");
 }
 
-const LINKS = /(\b(?:src|href)\s*=\s*["']|url\(\s*["']?)([^"')\s>]+)/gi;
+/** A link in a page: a quoted attribute or `url()` up to its closing quote (spaces and all), or an unquoted one. */
+const LINKS = /(\b(?:src|href)\s*=\s*|url\(\s*)(?:"([^"]*)"|'([^']*)'|([^"')\s>]+))/gi;
+
+/** The file a link names, when it names one by absolute path or file URL. A file URL is decoded by its parser. */
+function linkedFile(link: string): string | undefined {
+  try {
+    if (/^file:/i.test(link)) return resolve(fileURLToPath(link));
+  } catch { return undefined; }
+  if (!isAbsolute(link) || link.startsWith("//")) return undefined;
+  // The page reads a plain path as a URL, so `%20` is a space. A `%` that isn't an escape (`100%.png`) stays as written.
+  try { return resolve(decodeURIComponent(link)); } catch { return resolve(link); }
+}
 
 /**
  * Bring the files of this library that a page links to by absolute path or file URL (an attachment, a style guide's
  * font, another graphic's picture) into its folder, and link them there. A graphic keeps working when the attachment
  * or the project it came from is gone.
  */
-async function adoptLinkedFiles(html: string, folder: string, roots: string[]): Promise<string> {
+export async function adoptLinkedFiles(html: string, folder: string, roots: string[]): Promise<string> {
   const copies = new Map<string, string>();
   for (const match of html.matchAll(LINKS)) {
-    const link = match[2]!;
-    let file: string | undefined;
-    try {
-      if (/^file:/i.test(link)) file = fileURLToPath(link);
-      else if (isAbsolute(link) && !link.startsWith("//")) file = link;
-    } catch { continue; }
-    if (!file || copies.has(link)) continue;
-    file = resolve(decodeURIComponent(file));
-    if (!roots.some(root => inside(root, file!))) continue;
+    const link = (match[2] ?? match[3] ?? match[4] ?? "").trim();
+    if (!link || copies.has(link)) continue;
+    let file = linkedFile(link);
+    // A path with a literal `%` that decoding read as an escape is the file as written.
+    if (file && !(await stat(file).catch(() => null))?.isFile() && !/^file:/i.test(link) && resolve(link) !== file) file = resolve(link);
+    if (!file || !roots.some(root => inside(root, file!))) continue;
     if (!(await stat(file).catch(() => null))?.isFile()) continue;
-    const name = `linked/${createHash("sha256").update(file).digest("hex").slice(0, 8)}-${basename(file)}`;
+    const name = `${createHash("sha256").update(file).digest("hex").slice(0, 8)}-${basename(file)}`;
     await mkdir(join(folder, "linked"), { recursive: true });
-    await cp(file, join(folder, name));
-    copies.set(link, name);
+    await cp(file, join(folder, "linked", name));
+    copies.set(link, `linked/${encodeURIComponent(name)}`);
   }
-  return copies.size ? html.replace(LINKS, (all, lead: string, link: string) => copies.has(link) ? lead + copies.get(link) : all) : html;
+  if (!copies.size) return html;
+  return html.replace(LINKS, (all, lead: string, double?: string, single?: string, bare?: string) => {
+    const copy = copies.get((double ?? single ?? bare ?? "").trim());
+    if (!copy) return all;
+    return lead + (double !== undefined ? `"${copy}"` : single !== undefined ? `'${copy}'` : copy);
+  });
 }
 
 /** Copy a folder's files, except its page, into another. */
@@ -288,8 +324,7 @@ export async function saveTemplate(ctx: Ctx, body: SaveTemplateRequest, user: Us
       id, name: body.name, title: body.title, description: body.description, fields, previewVersion,
       createdAt: existing?.createdAt ?? stamp, updatedAt: stamp, html, sample: body.sample, width, height, duration, previewAt,
     });
-    await rm(folder, { recursive: true, force: true });
-    await rename(staging, folder);
+    await swapInFolder(staging, folder);
     ctx.repos.templates.put(template);
     logActivity(ctx, { projectId: body.projectId ?? null, actor: actorFor(user), type: "template.saved",
       summary: `${existing ? "Replaced" : "Saved"} the graphic template $${template.name}`, data: { templateId: template.id } });

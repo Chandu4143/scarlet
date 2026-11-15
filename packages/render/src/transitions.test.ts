@@ -101,6 +101,24 @@ describe("transitions", () => {
     }
   });
 
+  it("moves from a colour card that ends at the join, wherever the card is stored on the track", async () => {
+    const card = { id: "card", kind: "color" as const, color: "#ff0000", timelineIn: 0, timelineOut: 2, enabled: true, opacity: 1 };
+    const blue = makeMediaClip("blue", 1, 3, 2, { id: "blue-clip", transitionIn: { type: "push", duration: 1, direction: "left" } });
+    for (const clips of [[card, blue], [blue, card]]) {
+      const timeline: Timeline = { ...edit([]), tracks: [{ id: "video", kind: "video", name: "video", muted: false, hidden: false, clips }] };
+      const plan = planTransitions(timeline, new Map(project.media.map(m => [m.id, m])), 30);
+      expect(plan.joins).toEqual([expect.objectContaining({ clipId: "blue-clip", start: 1.5, end: 2.5, note: undefined })]);
+      expect(plan.motions.get("card")).toEqual([expect.objectContaining({ role: "out", type: "push" })]);
+      // The card is pushed off to the left as the clip comes in from the right.
+      const middle = await frameAt(timeline, 2);
+      expect([at(middle, 8), at(middle, 56)]).toEqual(["r", "b"]);
+    }
+    const dip = { ...edit([]), tracks: [{ id: "video", kind: "video" as const, name: "video", muted: false, hidden: false,
+      clips: [card, { ...blue, transitionIn: { type: "dip" as const, duration: 1, direction: "left" as const } }] }] };
+    expect(planTransitions(dip, new Map(project.media.map(m => [m.id, m])), 30).joins[0]!.note).toBeUndefined();
+    expect(at(await frameAt(dip, 1.98), 32)).toBe(".");
+  });
+
   it("changes the key of the sections it touches and no others", () => {
     const plain = join(), pushed = join({ type: "push", duration: 1, direction: "left" });
     const key = (timeline: Timeline, start: number, end: number) => segmentKey(project, timeline, { start, end }, "preview");

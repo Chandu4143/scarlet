@@ -8,6 +8,7 @@ import { emptyTimeline, makeMediaClip, OpError, timelineDuration, type MediaClip
 import { z } from "zod/v3";
 import { toolAnnotations } from "./annotations.js";
 import { syncRate } from "./audio-sync.js";
+import { relativeLinks } from "./graphics-tools.js";
 import { createScarletMcpServer, transcriptionNote, validateOps, type ScarletMcpContext } from "./server.js";
 import { describeError, formatZodError } from "./tool-result.js";
 import { makeState, startMockServer, type MockServer, type RecordedRequest } from "./mock-server.js";
@@ -846,5 +847,13 @@ describe("shorts_plan", () => {
       expect(sent("/tasks/short-1/shorts-plan")[0]!.body).toEqual({ moments });
       expect((await second.listTools()).tools.map(t => t.name)).not.toContain("shorts_plan");
     } finally { await Promise.all([first.close(), second.close()]); }
+  });
+});
+
+describe("a graphic page's files", () => {
+  it("reads each relative link once, decoded as a browser decodes it, and a stray % as part of the name", () => {
+    const html = `<img src="a%b.png"><img src="logo%20dark.svg"><img src='logo%20dark.svg'><link href="https://fonts.example/x.css">
+      <img src="/abs/pic.png"><style>@font-face { src: url("fonts/Brand.woff2") } .x { background: url(bg.jpg?v=2) }</style>`;
+    expect(relativeLinks(html)).toEqual(["a%b.png", "logo dark.svg", "fonts/Brand.woff2", "bg.jpg"]);
   });
 });

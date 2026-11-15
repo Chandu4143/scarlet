@@ -977,7 +977,8 @@ it("folds what the message revises into an edit-point icon, whose card's × hand
   await show({ targetTag: "Cut at 2:05", onClearTarget });
   expect(container.querySelector(".composer-row")?.firstElementChild?.classList.contains("composer-aim")).toBe(true);
   expect(aimIcon()!.getAttribute("aria-label")).toBe("About Cut at 2:05");
-  expect(container.querySelector(".composer-aim-card")).toBeNull();
+  // Added to a box with nothing aimed, it arrives: the card shows by itself with that line lit.
+  expect(container.querySelector(".composer-aim-row.is-new .composer-aim-name")?.textContent).toBe("Cut at 2:05");
   // Its card lists it, with a × that takes it off.
   await openAim();
   expect(aimRows()).toEqual([["Cut at 2:05", "the cut that’s open"]]);
@@ -1042,6 +1043,75 @@ it("shows the icon's card by itself for a moment when something is attached, the
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("shows the card by itself when the first thing is aimed in an empty box", async () => {
+  vi.useFakeTimers();
+  try {
+    await show();
+    expect(aimIcon()).toBeNull();
+    await act(async () => useUiStore.getState().setAgentContext({ time: 42, end: 51.5, clipIds: [], markedRange: { start: 42, end: 51.5 } }));
+    expect(container.querySelector(".composer-aim-row.is-new .composer-aim-name")?.textContent).toBe("0:42 – 0:51");
+    await act(async () => { vi.advanceTimersByTime(ARRIVAL_MS); });
+    expect(container.querySelector(".composer-aim-card")).toBeNull();
+    expect(aimIcon()!.classList.contains("is-pulsing")).toBe(true);
+    // Another stretch in its place stays folded.
+    await act(async () => useUiStore.getState().setAgentContext({ time: 60, end: 64, clipIds: [], markedRange: { start: 60, end: 64 } }));
+    expect(container.querySelector(".composer-aim-card")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("opens the icon's card on a click whether or not the click focuses it, and closes it on a press elsewhere or Esc", async () => {
+  await show({ targetTag: "Cut at 2:05" });
+  await act(async () => { container.querySelector<HTMLElement>(".composer-aim")!.dispatchEvent(new PointerEvent("pointerleave")); });
+  const card = () => container.querySelector(".composer-aim-card");
+  const press = (target: Element) => act(async () => { target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+  // A click that focuses the icon (WebView2, WebKitGTK) opens it, and so does one that doesn't (WKWebView).
+  await act(async () => { aimIcon()!.focus(); aimIcon()!.click(); });
+  expect(card()).not.toBeNull();
+  await act(async () => aimIcon()!.click());
+  expect(card()).not.toBeNull();
+  await press(document.body);
+  await act(async () => aimIcon()!.blur());
+  expect(card()).toBeNull();
+  await act(async () => aimIcon()!.click());
+  expect(card()).not.toBeNull();
+  // A press inside the card leaves it open; Esc closes it wherever the keyboard is.
+  await press(card()!);
+  expect(card()).not.toBeNull();
+  await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  expect(card()).toBeNull();
+});
+
+it("keeps a picked moment, and a whole-video choice, through a time typed in the message", async () => {
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek: vi.fn() };
+  await show({ messageClock });
+  const picked = { time: 10, version: project.head!, clipIds: [] };
+  await selectPoint(picked);
+  await type("Match the look at 1:30");
+  expect(useUiStore.getState().agentContext).toBe(picked);
+  await type("Match the look");
+  expect(useUiStore.getState().agentContext).toBe(picked);
+  // Once the editor took the aim off, a time typed doesn't put one back.
+  await act(async () => useUiStore.getState().setAgentContext("whole"));
+  await type("Match the look at 1:30");
+  expect(useUiStore.getState().agentContext).toBe("whole");
+  await submit();
+  expect(useProjectStore.getState().createTask).toHaveBeenLastCalledWith(PRJ, expect.objectContaining({
+    instruction: "Match the look at 1:30", context: { version: project.head },
+  }));
+});
+
+it("answers Scarlet's question with a stretch marked on the ruler beside it, still tagged Answer", async () => {
+  const asking = buildThreads(current).find(t => t.question)!;
+  await act(async () => useUiStore.getState().setAgentContext({ time: 42, end: 51.5, clipIds: [], markedRange: { start: 42, end: 51.5 } }));
+  await show({ thread: asking, targetTag: "Answer" });
+  expect(container.querySelector(".composer-tag-name")?.textContent).toBe("Answer");
+  await type("Yes, this part");
+  await submit();
+  expect(useProjectStore.getState().answerTask).toHaveBeenCalledWith(asking.question!.id, expect.stringMatching(/^At 0:42.*0:51 — Yes, this part$/), undefined);
 });
 
 it("keeps the icon's × from taking the box elsewhere while a spoken message is in it, which would drop the recording", async () => {

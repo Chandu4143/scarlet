@@ -506,6 +506,8 @@ export interface RenderFileInfo {
   channels?: number;
   /** EBU R128 loudness of the file's sound, as heard with every gain and effect. Silence reads null. */
   loudness?: { integratedLufs: number | null; loudnessRangeLu: number | null; truePeakDbtp: number | null };
+  /** Why the loudness couldn't be measured, when it couldn't. The other figures still hold. */
+  loudnessUnavailable?: string;
 }
 
 export const RenderKind = z.enum(["segment", "full", "proxy", "preview", "playback", "export"]);

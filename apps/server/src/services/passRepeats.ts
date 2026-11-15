@@ -7,6 +7,7 @@ import { auditDialogueAudio } from "./dialogueRepeatAudit.js";
 import { prepareCutReview } from "./changes.js";
 import { appendTaskEvent, editsDialogue, saveTask } from "./tasks.js";
 import { resolveTimeline } from "./timeline.js";
+import { runAttempts, runRoot } from "./runAttempts.js";
 
 export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<typeof RepeatAuditRequest>, signal: AbortSignal) {
   if (taskDialogueOperation(task) === "local-pauses") throw badRequest("local_pauses", "This request only tightens local pauses.");
@@ -28,8 +29,9 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
   const check = await ctx.track(auditDialogueAudio(ctx, project, tl, task, AbortSignal.any([signal, ctx.projectSignal(projectId)])));
   return ctx.db.transaction(() => {
     const owner = current();
-    const root = owner.resumeRootId ?? owner.id;
-    const attempts = ctx.repos.tasks.select("project_id = ? AND (id = ? OR json_extract(json,'$.resumeRootId') = ?)", [projectId, root, root]);
+    const root = runRoot(owner);
+    const run = runAttempts(projectId, root);
+    const attempts = ctx.repos.tasks.select(run.where, run.params);
     const ids = JSON.stringify(attempts.map(t => t.id));
     const rows = ctx.db.prepare(`SELECT json_extract(json,'$.data') AS data FROM task_events
       WHERE task_id IN (SELECT value FROM json_each(?)) AND json_extract(json,'$.data.kind') IN ('dialogue_preserved','repeat_kept')`).all(ids) as { data: string }[];

@@ -17,7 +17,7 @@ import { CaptionWord } from "./schema.js";
 import type { Clip, Marker, MediaClip, Timeline, TimeRange, Track } from "./schema.js";
 import { OpError, applyOp, replayOnCopy, shiftClip, type TimelineOp } from "./ops.js";
 import { ZodError } from "zod/v3";
-import { clipEnd, mergeRanges, sourceToTimeline, timelineDuration } from "./time.js";
+import { clipEnd, JOIN_SLACK, meets, mergeRanges, sourceToTimeline, subtractRanges, timelineDuration } from "./time.js";
 import { firstIndex, intervalCandidates } from "./intervals.js";
 import { stableStringify } from "./ids.js";
 
@@ -270,9 +270,10 @@ function indexedLayers(timeline: Timeline) {
  * The transition a clip's picture is in at `t`: its own into it for the first half of that transition, or the next
  * clip's out of it for the half before that clip starts. Elsewhere none, so a transition is a change only at its join.
  */
-function transitionAt(candidates: (start: number, end: number) => Clip[], c: MediaClip, t: number, end: number): string | undefined {
-  if (c.transitionIn && t < c.timelineIn + c.transitionIn.duration / 2) return `in|${stableStringify(c.transitionIn)}`;
-  const next = candidates(end - EPS, end + EPS).find(n => n !== c && n.kind === "media" && n.transitionIn && Math.abs(n.timelineIn - end) <= EPS);
+function transitionAt(candidates: (start: number, end: number) => Clip[], c: Clip, t: number, end: number): string | undefined {
+  if (c.kind === "media" && c.transitionIn && t < c.timelineIn + c.transitionIn.duration / 2) return `in|${stableStringify(c.transitionIn)}`;
+  // The same join the planner finds (`planTransitions`): footage or a colour can be the picture a transition leaves.
+  const next = candidates(end - JOIN_SLACK, end + JOIN_SLACK).find(n => n !== c && n.kind === "media" && n.transitionIn && meets(end, n.timelineIn));
   if (next?.kind === "media" && next.transitionIn && t >= end - next.transitionIn.duration / 2) return `out|${stableStringify(next.transitionIn)}`;
 }
 
@@ -294,7 +295,7 @@ function signature(tracks: ReturnType<typeof indexedLayers>, t: number) {
       } else if (c.kind === "caption") {
         if (track.kind === "caption" && !track.hidden) captions.push({ content: keyFor(c), source: 0 });
       } else {
-        if (visible) video.push({ content: keyFor(c), source: 0 });
+        if (visible) video.push({ content: keyFor(c), source: 0, transition: transitionAt(candidates, c, t, end) });
       }
     }
   }
@@ -541,36 +542,52 @@ function isFootagePatch(op: TimelineOp): op is Extract<TimelineOp, { op: "update
   return op.op === "updateClip" && FOOTAGE_KEYS.some(key => op.patch[key] !== undefined);
 }
 
-/** Each recording's source ranges that `before` plays on some enabled clip and `after` plays on none, on any track. */
+/** An edit that can make the timeline play footage it didn't: a new clip or track, a trim, or a clip turned back on. */
+function addsFootage(op: TimelineOp): boolean {
+  if (op.op === "addClip") return op.clip.kind === "media";
+  if (op.op === "addTrack") return op.track.clips.some(c => c.kind === "media");
+  return op.op === "updateClip" && (op.patch.enabled === true || isFootagePatch(op));
+}
+
+/** Pictures and sound are cut apart: a cut of the picture alone leaves the sound playing what it cut. */
+const playsAs = (track: Track) => track.kind === "audio" ? "sound" : "picture";
+
+/**
+ * Each recording's source ranges that `before` plays on some enabled clip of a picture (or sound) track and `after`
+ * plays on none of that kind, keyed by kind and recording.
+ */
 function footageCut(before: Timeline, after: Timeline): Map<string, TimeRange[]> {
   const played = (tl: Timeline) => {
     const ranges = new Map<string, TimeRange[]>();
     for (const track of tl.tracks) for (const c of track.clips) {
       if (c.kind !== "media" || c.enabled === false) continue;
+      const key = `${playsAs(track)}|${c.mediaId}`;
       const range = { start: c.sourceIn, end: c.sourceOut };
-      const group = ranges.get(c.mediaId);
+      const group = ranges.get(key);
       if (group) group.push(range);
-      else ranges.set(c.mediaId, [range]);
+      else ranges.set(key, [range]);
     }
     return ranges;
   };
   const kept = played(after);
-  const cut = new Map<string, TimeRange[]>();
-  for (const [mediaId, ranges] of played(before)) {
-    let left = mergeRanges(ranges);
-    for (const k of kept.get(mediaId) ?? []) {
-      const remaining: TimeRange[] = [];
-      for (const r of left) {
-        const end = Math.min(r.end, k.start);
-        if (end > r.start) remaining.push({ start: r.start, end });
-        const start = Math.max(r.start, k.end);
-        if (r.end > start) remaining.push({ start, end: r.end });
-      }
-      left = remaining;
+  return new Map([...played(before)].map(([key, ranges]) => [key, subtractRanges(ranges, kept.get(key) ?? [])]));
+}
+
+/**
+ * The clips the edits that went in made or changed must play none of the footage the current version cut since for
+ * more than half a frame, on the kind of track it was cut from. Clips the current version already had play none of
+ * it there, so checking every clip is the same.
+ */
+function assertCutFootageStaysOut(base: Timeline, onto: Timeline, cur: Timeline, fps: number, opIndex: number) {
+  const cut = new Map([...footageCut(base, onto)].map(([key, ranges]) =>
+    [key, intervalCandidates(ranges, r => r.start, r => r.end)]));
+  for (const track of cur.tracks) for (const clip of track.clips) {
+    if (clip.kind !== "media" || clip.enabled === false) continue;
+    const played = (r: TimeRange) => (Math.min(r.end, clip.sourceOut) - Math.max(r.start, clip.sourceIn)) / (clip.speed ?? 1);
+    if (cut.get(`${playsAs(track)}|${clip.mediaId}`)?.(clip.sourceIn, clip.sourceOut).some(r => played(r) > 0.5 / fps)) {
+      throw new RebaseConflict(`the footage under clip ${clip.id} changed since`, opIndex, clip.timelineIn);
     }
-    cut.set(mediaId, left);
   }
-  return cut;
 }
 
 /** Every two enabled clips of a track that play over each other, with how long they do, the later-starting one second. */
@@ -625,6 +642,15 @@ function sameFootage(before: Clip | undefined, now: Clip | undefined, map: () =>
   return placed != null && sameFrame(placed, now.timelineIn, fps);
 }
 
+/** A footage patch's clip must hold the same footage on the version it was written for as on the current one. */
+function assertFootageUnchanged(clipId: string, from: Timeline, cur: Timeline, fps: number, opIndex: number) {
+  const before = findClip(from, clipId);
+  const now = findClip(cur, clipId);
+  if ((before?.kind === "media" || now?.kind === "media") && !sameFootage(before, now, () => makeTimeMap(from, cur, fps), fps)) {
+    throw new RebaseConflict(`the footage under clip ${clipId} changed since`, opIndex, before?.timelineIn);
+  }
+}
+
 /**
  * Replay `ops` (written in sequence against `base`) onto `onto`, translating
  * every time through the footage. `include(i)` skips ops; later ops are still
@@ -636,6 +662,8 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
   let cur = onto;
   // The last included footage patch, and the included ops replayed onto `base` too, kept only to check them.
   const lastFootagePatch = onto === base ? -1 : ops.findLastIndex((op, i) => isFootagePatch(op) && include(i));
+  // The last included edit that can bring footage back, which footage cut since must not.
+  const lastAddition = onto === base ? -1 : ops.findLastIndex((op, i) => addsFootage(op) && include(i));
   let selectedOnBase = lastFootagePatch >= 0 ? base : undefined;
   // Map `op` from where the original sequence was to `at`, and apply it there.
   const replay = (at: Timeline, op: TimelineOp, i: number): [Timeline, TimelineOp] => {
@@ -654,15 +682,7 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
     if (include(i)) {
       // A footage patch is written for the footage the clip held. The clip is compared as the edits that go in
       // left it on the version the change was made on and on the current one, since those edits can split or make it.
-      if (selectedOnBase && isFootagePatch(op)) {
-        const { clipId } = op;
-        const from = selectedOnBase;
-        const before = findClip(from, clipId);
-        const now = findClip(cur, clipId);
-        if ((before?.kind === "media" || now?.kind === "media") && !sameFootage(before, now, () => makeTimeMap(from, cur, fps), fps)) {
-          throw new RebaseConflict(`the footage under clip ${clipId} changed since`, i, before?.timelineIn);
-        }
-      }
+      if (selectedOnBase && isFootagePatch(op)) assertFootageUnchanged(op.clipId, selectedOnBase, cur, fps, i);
       let translated: TimelineOp;
       [cur, translated] = replay(cur, op, i);
       translatedOps?.push(translated);
@@ -671,48 +691,41 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
     }
     orig = nextOrig;
   });
-  // With a footage patch, the clips the edits that went in made or changed must play none of the footage the
-  // current version cut since for more than half a frame.
-  if (selectedOnBase) {
-    const cut = new Map([...footageCut(base, onto)].map(([id, ranges]) =>
-      [id, intervalCandidates(ranges, r => r.start, r => r.end)]));
-    // Clips the current version already had play none of it, so checking every clip is the same.
-    for (const track of cur.tracks) for (const clip of track.clips) {
-      if (clip.kind !== "media" || clip.enabled === false) continue;
-      const played = (r: TimeRange) => (Math.min(r.end, clip.sourceOut) - Math.max(r.start, clip.sourceIn)) / (clip.speed ?? 1);
-      if (cut.get(clip.mediaId)?.(clip.sourceIn, clip.sourceOut).some(r => played(r) > 0.5 / fps)) {
-        throw new RebaseConflict(`the footage under clip ${clip.id} changed since`, lastFootagePatch, clip.timelineIn);
-      }
-    }
-    // Each replay overlap must already pair the same footage on this track in the included base replay or in `onto`.
-    // Any two distinct matches can prove it, regardless of IDs. At both endpoints, their mapped times must agree
-    // within half a frame and lie within both matches' spans; the pair can have moved on the timeline.
-    // Refusal names the changed clip if the other is unchanged on `onto`; otherwise it names the later-starting one.
-    const asItIs = (clip: Clip) => stableStringify(findClip(onto, clip.id) ?? null) === stableStringify(clip);
-    const half = 0.5 / fps;
-    const plays = (clip: Clip, t: number) => clip.timelineIn - half <= t && t <= clipEnd(clip) + half;
-    for (const track of cur.tracks) {
-      const pairs = overlappingPairs(track);
-      if (!pairs.some(({ seconds }) => seconds > half)) continue;
-      const allowedTracks = [selectedOnBase, onto].map(tl =>
-        indexClipsPlaying(tl.tracks.find(t => t.id === track.id), fps));
-      for (const { seconds, clips: [earlier, later] } of pairs) {
-        if (seconds <= half) continue;
-        const [from, to] = [later.timelineIn, Math.min(clipEnd(earlier), clipEnd(later))];
-        const allowed = allowedTracks.some(matches => {
-          const bs = matches(later, from, to);
-          return matches(earlier, from, to).some(a => bs.some(b => a !== b && [from, to].every(t => {
-            const [ta, tb] = [placed(earlier, a, t), placed(later, b, t)];
-            return Math.abs(ta - tb) <= half && plays(a, ta) && plays(b, tb);
-          })));
-        });
-        if (allowed) continue;
-        const clip = asItIs(later) && !asItIs(earlier) ? earlier : later;
-        throw new RebaseConflict(`the footage under clip ${clip.id} changed since`, lastFootagePatch, clip.timelineIn);
-      }
+  if (lastAddition >= 0) assertCutFootageStaysOut(base, onto, cur, fps, lastAddition);
+  if (selectedOnBase) assertOverlapsAllowed(selectedOnBase, onto, cur, fps, lastFootagePatch);
+  return cur;
+}
+
+/**
+ * Each overlap the replay leaves must already pair the same footage on its track in the included base replay or in
+ * `onto`. Any two distinct matches can prove it, regardless of IDs. At both endpoints, their mapped times must agree
+ * within half a frame and lie within both matches' spans; the pair can have moved on the timeline. Refusal names the
+ * changed clip if the other is unchanged on `onto`; otherwise it names the later-starting one.
+ */
+function assertOverlapsAllowed(selectedOnBase: Timeline, onto: Timeline, cur: Timeline, fps: number, opIndex: number) {
+  const asItIs = (clip: Clip) => stableStringify(findClip(onto, clip.id) ?? null) === stableStringify(clip);
+  const half = 0.5 / fps;
+  const plays = (clip: Clip, t: number) => clip.timelineIn - half <= t && t <= clipEnd(clip) + half;
+  for (const track of cur.tracks) {
+    const pairs = overlappingPairs(track);
+    if (!pairs.some(({ seconds }) => seconds > half)) continue;
+    const allowedTracks = [selectedOnBase, onto].map(tl =>
+      indexClipsPlaying(tl.tracks.find(t => t.id === track.id), fps));
+    for (const { seconds, clips: [earlier, later] } of pairs) {
+      if (seconds <= half) continue;
+      const [from, to] = [later.timelineIn, Math.min(clipEnd(earlier), clipEnd(later))];
+      const allowed = allowedTracks.some(matches => {
+        const bs = matches(later, from, to);
+        return matches(earlier, from, to).some(a => bs.some(b => a !== b && [from, to].every(t => {
+          const [ta, tb] = [placed(earlier, a, t), placed(later, b, t)];
+          return Math.abs(ta - tb) <= half && plays(a, ta) && plays(b, tb);
+        })));
+      });
+      if (allowed) continue;
+      const clip = asItIs(later) && !asItIs(earlier) ? earlier : later;
+      throw new RebaseConflict(`the footage under clip ${clip.id} changed since`, opIndex, clip.timelineIn);
     }
   }
-  return cur;
 }
 
 function sameRanges(actual: TimeRange[], expected: TimeRange[]): boolean {

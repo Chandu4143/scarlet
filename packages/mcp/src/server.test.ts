@@ -2565,6 +2565,15 @@ it("measures the recording beside a staged cut's new edges with no scan read, an
     expect(saved.at(-1)).toMatchObject({ start: .35, end: 2.28 });
     expect(inside.audio).toContain("to preserve “Hello”");
     expect(inside.next).toContain("dialogue_check_join");
+    // A start in the quiet just before “Um,” would be saved on frame 75 (2.5 s), where the word begins: it goes on a
+    // quiet frame, as dialogue_apply_cuts saves it, and the result says so.
+    // Read to the millisecond, so the quiet ends where the word begins.
+    mock.state.waveform = (id, from, to) => spokenWaveform(id, from, to, Math.round((to - from) * 1000));
+    const framed = await move(2.47, 3.5);
+    expect(saved.at(-1)!.start).toBeCloseTo(74 / 30);
+    expect(saved.at(-1)!.end).toBe(3.5);
+    expect(framed.audio).toContain("onto a quiet frame");
+    expect(framed.next).toBeUndefined();
   } finally {
     Object.assign(mock.state, original);
     await scoped.close();
@@ -3980,6 +3989,47 @@ it("refuses a word reference read from a list that has changed since, instead of
     const applied = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [{ ...cut, toWord: 5 }] } }) as CallToolResult;
     expect(applied.isError).toBeFalsy();
     expect(JSON.parse(textOf(applied)).gate.decisions[0].words).toBe("welcome back. so Um,");
+  } finally {
+    Object.assign(mock.state, original);
+    await editor.close();
+  }
+});
+
+it("refuses a word reference from an earlier read even after a later read showed the new list", async () => {
+  const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform, transcripts: mock.state.transcripts };
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "reread-twice";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 6, 0)];
+  mock.state.timeline = tl;
+  mock.state.waveform = spokenWaveform;
+  mock.state.extra = (req, res) => {
+    if (!req.path.endsWith("/dialogue-cuts")) return false;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ changes: [] }));
+    return true;
+  };
+  mock.state.transcripts = { m1: estimated };
+  const editor = await connect(undefined, undefined, undefined, undefined, 0);
+  try {
+    expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1" } }) as CallToolResult)).toContain("#4 2.20-2.40 Um,");
+    const [segment] = transcript.segments;
+    mock.state.transcripts = { m1: { ...transcript, segments: [{ ...segment!, words: [...segment!.words.slice(0, 4), { text: "so", start: 1.95, end: 2.1 }, ...segment!.words.slice(4)] }] } };
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    // A later read of the opening shows the new list; the model still holds #2–#4 from the first read, which meant “welcome back. Um,”.
+    expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 0, toWord: 1 } }) as CallToolResult)).toContain("#0");
+    const cut = { mediaId: "m1", fromWord: 2, toWord: 4, kind: "retake", decision: "cut", reason: "The second take is cleaner." };
+    const refused = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [cut] } }) as CallToolResult;
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("The transcript of m1 changed since you read it");
+    expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
+    // Words that read the same in both lists are named the same by either, and go through.
+    const opening = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the opening",
+      cuts: [{ mediaId: "m1", fromWord: 0, toWord: 1, kind: "retake", decision: "cut", reason: "A false start." }] } }) as CallToolResult;
+    expect(textOf(opening)).not.toContain("changed since you read it");
+    // Read again, the new indices hold.
+    expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 5 } }) as CallToolResult)).toContain("#5 2.50-2.70 Um,");
+    const applied = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [{ ...cut, toWord: 5 }] } }) as CallToolResult;
+    expect(applied.isError, textOf(applied)).toBeFalsy();
   } finally {
     Object.assign(mock.state, original);
     await editor.close();

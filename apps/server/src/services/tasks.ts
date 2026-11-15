@@ -15,6 +15,7 @@ import { restoreUnreplacedProposal } from "./revisionState.js";
 import { assistantSkills } from "./skills.js";
 import { applyChoicesWhenDone, changeDiff, cutRevisionReference, passToRevise, retireStaleSaves } from "./changes.js";
 import { resolveTimeline } from "./timeline.js";
+import { runAttemptIds } from "./runAttempts.js";
 import { learningCheckContext, skillEditEnded, startLearningCheck } from "./learnings.js";
 
 /** States a task never leaves. */
@@ -281,9 +282,9 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     for (const change of own()) applyChoicesWhenDone(ctx, change);
     retireStaleSaves(ctx, task);
     // A run resumed after a quit may finish without saving another part. Its earlier attempts' pass still applies.
-    const rootId = task.resumeRootId;
-    if (rootId) for (const change of ctx.repos.changes.select(`project_id = ? AND state = 'ready' AND json_extract(json, '$.taskId') IN
-        (SELECT id FROM tasks WHERE project_id = ? AND (id = ? OR json_extract(json, '$.resumeRootId') = ?))`, [task.projectId, task.projectId, rootId, rootId])) {
+    const attempts = task.resumeRootId && runAttemptIds(task.projectId, task.resumeRootId);
+    if (attempts) for (const change of ctx.repos.changes.select(`project_id = ? AND state = 'ready' AND json_extract(json, '$.taskId') IN (${attempts.sql})`,
+        [task.projectId, ...attempts.params])) {
       if (change.taskId !== task.id) applyChoicesWhenDone(ctx, change);
     }
   }
@@ -669,9 +670,18 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   const thread = (t: string) => `coalesce(json_extract(${t}.json, '$.context.threadId'), ${t}.id)`;
   const aboutOne = (t: string) => `(json_extract(${t}.json, '$.context.changeId') IS NOT NULL
     AND (json_extract(${t}.json, '$.context.cutIndex') IS NOT NULL OR json_extract(${t}.json, '$.context.editIndex') IS NOT NULL))`;
-  const beside = (a: string, b: string) => `(${aboutOne(a)} AND ${aboutOne(b)} AND NOT (${thread(a)} IS ${thread(b)}
-    AND json_extract(${a}.json, '$.context.cutIndex') IS json_extract(${b}.json, '$.context.cutIndex')
-    AND json_extract(${a}.json, '$.context.editIndex') IS json_extract(${b}.json, '$.context.editIndex')))`;
+  // The cut or edit a request is about, as requestTargetKey in @scarlet/shared keys it: a call by its pass's thread and
+  // index, an applied edit by the change and spot it was first made at, followed back through each revision's `replaces`.
+  const edited = (t: string) => `(WITH RECURSIVE up(id, spot, n) AS (
+      SELECT json_extract(${t}.json, '$.context.changeId'), json_extract(${t}.json, '$.context.editIndex'), 0
+      UNION ALL SELECT json_extract(c.json, '$.timelineEdits[' || up.spot || '].replaces.changeId'),
+        json_extract(c.json, '$.timelineEdits[' || up.spot || '].replaces.spot'), up.n + 1
+      FROM up JOIN changes c ON c.id = up.id
+      WHERE up.n < 50 AND json_extract(c.json, '$.timelineEdits[' || up.spot || '].replaces.changeId') IS NOT NULL)
+    SELECT json_array('edit', id, spot) FROM up ORDER BY n DESC LIMIT 1)`;
+  const target = (t: string) => `CASE WHEN json_extract(${t}.json, '$.context.cutIndex') IS NOT NULL
+    THEN json_array('call', ${thread(t)}, json_extract(${t}.json, '$.context.cutIndex')) ELSE ${edited(t)} END`;
+  const beside = (a: string, b: string) => `(${aboutOne(a)} AND ${aboutOne(b)} AND (${target(a)}) IS NOT (${target(b)}))`;
   // A resumed run keeps the place in line of the run it continues: requests asked while that run worked still wait for it.
   // It takes that run's row number as well as its time, so a request asked in the same millisecond as that run doesn't pass it.
   const place = (t: string) => {

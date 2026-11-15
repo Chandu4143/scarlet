@@ -1,6 +1,6 @@
 import { applyReviewRemovals, clipDuration, crossfadeJoins, sourceToTimeline, timelineDuration, timelineToSource, type MediaAsset, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
 import { JOIN_WORD_SECONDS, normalizeTranscriptToken } from "@scarlet/shared";
-import { dbfs, isTag, round3 } from "./analysis.js";
+import { audibleClipsByTrack, dbfs, isTag, round3 } from "./analysis.js";
 import { REPEAT_WITHIN } from "./dialogue-leftovers.js";
 import { partialRepeatAtJoin, type FragmentSide } from "./dialogue-fragment-repeat.js";
 import { MAX_CROSSFADE, QUIET_PEAK, QUIET_RMS, timelineJoins, type JoinSide } from "./timeline-perception.js";
@@ -126,7 +126,7 @@ export function pageAt(pages: JoinPage[], mediaId: string, stream: number | unde
 }
 
 /** Sound this loud is speech or a sound the ear follows: the bar under which quiet runs are measured. */
-const SPEECH_DBFS = -40;
+const SPEECH_DBFS = dbfs(QUIET_RMS);
 
 /**
  * How close sound at speaking level comes to a cut's edge on the side it removes: after source instant `t` for the
@@ -139,12 +139,13 @@ export function soundBesideEdge(pages: JoinPage[], mediaId: string, stream: numb
   const page = pageAt(pages, mediaId, stream, t), levels = page?.levels;
   if (!levels || !pageReaches(page, t)) return;
   const { from, step, db } = levels;
-  const here = Math.floor((t - from) / step);
+  // A bucket is on the side its middle is on: the one the edge falls in holds kept sound as well as removed sound, and
+  // is counted as removed only when most of it is.
   if (side === "out") {
-    for (let i = Math.max(0, here); i < db.length && from + i * step < t + limit; i++)
+    for (let i = Math.max(0, Math.ceil((t - from) / step - .5)); i < db.length && from + i * step < t + limit; i++)
       if (db[i]! > SPEECH_DBFS) return Math.max(0, from + i * step - t);
   } else {
-    for (let i = Math.min(db.length - 1, here); i >= 0 && from + (i + 1) * step > t - limit; i--)
+    for (let i = Math.min(db.length - 1, Math.floor((t - from) / step - .5)); i >= 0 && from + (i + 1) * step > t - limit; i--)
       if (db[i]! > SPEECH_DBFS) return Math.max(0, t - from - (i + 1) * step);
   }
 }
@@ -291,7 +292,7 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
 export function dialogueClips(tl: Timeline, project: Pick<Project, "media">) {
   const streams = new Map(project.media.filter(m => m.kind === "audio" || m.hasAudio).map(m =>
     [m.id, dialogueAudioStream(m) ?? 0] as const));
-  return { clips: audibleMediaClips(tl).filter(c => streams.has(c.mediaId)), streams };
+  return { clips: audibleClipsByTrack(tl).flat().filter(c => streams.has(c.mediaId)), streams };
 }
 
 /** Exact timeline word edges from the same scan that judges the join. */
@@ -539,11 +540,6 @@ export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRan
       snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
 }
 
-/** Every clip of a recording that sounds on this version. */
-export function audibleMediaClips(tl: Timeline) {
-  return tl.tracks.filter(t => t.kind !== "caption" && !t.muted).flatMap(t => t.clips)
-    .filter((c): c is MediaClip => c.kind === "media" && c.enabled && c.volume > 0);
-}
 
 interface EdgeAudio {
   edge: "start" | "end";
@@ -814,6 +810,17 @@ export function edgeOnFrame(at: number, room: TimeRange | undefined, fps: number
     if (best === undefined || Math.abs(f / fps - at) < Math.abs(best - at)) best = f / fps;
   }
   return best ?? at;
+}
+
+/**
+ * What a join check that found both edges in quiet (`unchanged`) did to the range asked for: an edge whose whole frame
+ * would round onto sound moves onto a quiet frame. Undefined when neither edge moved.
+ */
+export function quietFrameNote(asked: TimeRange, placed: TimeRange): string | undefined {
+  const moved = (["start", "end"] as const).filter(side => Math.abs(placed[side] - asked[side]) > 1e-6);
+  if (!moved.length) return undefined;
+  const s3 = (t: number) => `${(Math.round(t * 1000) / 1000).toFixed(3)} s`;
+  return `${moved.map(side => `Moved the ${side} from ${s3(asked[side])} to ${s3(placed[side])}`).join(" and ")}, onto a quiet frame: the recording is quiet at the edge, and the whole frame it would be saved on has sound.`;
 }
 
 /** A short word's far side can fall inside ASR's slack. Keep its strongest sound on the side the agent named. */
