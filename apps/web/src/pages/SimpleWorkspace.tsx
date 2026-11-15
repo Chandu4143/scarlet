@@ -787,12 +787,12 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   /** Something that belongs to no run: a note left on a change, a decision the engine recorded. Part of the request's own conversation. */
   const loose = (entry: ThreadEntry, i: number) => {
     switch (entry.kind) {
-      // The editor's words keep to two lines, as a request's do, and the whole message is in its title.
+      // The editor's words keep to two lines, as a request's do, and a click opens the rest.
       case "request":
-        return <div key={i} className="simple-msg from-you" title={entry.text}><span className="simple-who">You</span>
-          {entry.revisionLabel && <span className="simple-revising">{tagOf(tagFor(entry) ?? entry.revisionLabel)}</span>}<p>{entry.text}</p></div>;
+        return <div key={i} className="simple-msg from-you"><span className="simple-who">You</span>
+          {entry.revisionLabel && <span className="simple-revising">{tagOf(tagFor(entry) ?? entry.revisionLabel)}</span>}<Said text={entry.text} /></div>;
       case "answer":
-        return <div key={i} className="simple-msg from-you" title={entry.text}><span className="simple-who">You</span><p>{entry.text}</p></div>;
+        return <div key={i} className="simple-msg from-you"><span className="simple-who">You</span><Said text={entry.text} /></div>;
       case "agent":
         return <div key={i} className="simple-msg from-scarlet"><span className="simple-who">Scarlet</span><Said text={entry.fullText ?? entry.text} /></div>;
       case "change":
@@ -896,8 +896,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
       if (e.kind === "agent") { if (!quiet && !(e.onNote && closed)) { told = true; if (!listing) said.push(<Said key={i} className="req-say" text={e.fullText ?? e.text} />); } }
       else if (e.kind === "question") said.push(<p key={i} className={e.answered ? "req-say is-quiet" : "req-say"}>{e.text}
         {!e.answered && <button type="button" className="simple-link is-warn" onClick={() => actions.reply(thread)}>Answer</button>}</p>);
-      // The editor's answer is their message: two lines at most, and the whole of it in its title.
-      else if (e.kind === "answer") said.push(<p key={i} className="req-say is-yours" title={e.text}>{e.text}</p>);
+      // The editor's answer is their message: two lines at most, and a click opens the rest.
+      else if (e.kind === "answer") said.push(<Said key={i} className="req-say is-yours" text={e.text} />);
       // An applied change is on the card's last row. A suggestion still says what it is and how to play it. A pass's
       // own proposals are its line, except a suggestion it left that isn't cuts to call: nothing else would show it.
       else if (e.kind === "change" && e.change.state !== "approved" && !isOpenPass(e.change, allTasks)
@@ -974,8 +974,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     // Inside another request's block, under the row it is about: its tag and the editor's words, with where it stands
     // at their right, as in a block's heading, and its work. Under its row the row names it, and the tag is hidden.
     if (inside) return <div key={run.root} className="subunit" data-run={run.root}>
-      {request && <div className="subunit-msg" title={request.text}><span className="simple-who">You</span>
-        <p><span className="simple-revising">{about ?? "Revision"}</span>{request.text}</p><span className="unit-state">{standing}</span>{headingEnd}</div>}
+      {request && <div className="subunit-msg"><span className="simple-who">You</span>
+        <Said lead={<span className="simple-revising">{about ?? "Revision"}</span>} text={request.text} /><span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
@@ -986,13 +986,14 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const marked = markable && actions.marked === thread.id;
     const pressable = markable || !!actions.fitTimeline;
     const block = <div key={run.root} className="unit" data-run={run.root} data-pinned={isPinned || undefined}>
-      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
+      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`}
         aria-current={marked || undefined} onClick={pressable ? e => {
-          if ((e.target as Element).closest("button, a, input, textarea") || window.getSelection()?.toString()) return;
+          // A press on long words opens or folds them, and leaves the timeline as it is.
+          if ((e.target as Element).closest("button, a, input, textarea, .said.is-clipped, .said.is-open") || window.getSelection()?.toString()) return;
           if (markable) actions.mark!(thread.id);
           actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
-        <p>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}{request.text}</p>
+        <Said lead={(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>} text={request.text} />
         <span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
