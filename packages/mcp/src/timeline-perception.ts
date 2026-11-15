@@ -7,6 +7,7 @@ import { clipDuration, formatTimecode, type MediaClip, type Project, type TimeRa
 import type { PictureEntrance } from "./picture-entrance.js";
 import { normalizeTranscriptToken } from "@scarlet/shared";
 import { captionSourceClips, dbfs, isTag, wordsByMidpoint } from "./analysis.js";
+import { QUIET_PEAK, QUIET_RMS } from "./gap-sound.js";
 
 // ---------------------------------------------------------------------------
 // Joins and time mapping
@@ -215,8 +216,6 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
 /** One measured source window: RMS and peaks 0..1 per bucket, and voice activity. */
 export interface Reading { from: number; to: number; peaks: number[]; rms?: number[]; speechActivity?: TimeRange[] }
 
-/** Same thresholds as dialogue_check_join's quiet runs: low RMS, low peak and no detected voice. */
-export const QUIET_RMS = .01, QUIET_PEAK = .05;
 /** Less air than this after the last kept word usually clips its decay or the breath. */
 const MIN_AIR_AFTER = .06;
 /** Less air than this before kept speech resumes usually clips the onset. */

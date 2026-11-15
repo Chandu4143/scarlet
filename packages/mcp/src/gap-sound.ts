@@ -10,6 +10,12 @@ import { dbfs, isTag } from "./analysis.js";
 export interface GapLevels { from: number; to: number; rms: number[] }
 export interface GapSound { seconds: number; runs: TimeRange[] }
 
+/**
+ * Where a recording is quiet: RMS and peak at most these (0..1 per bucket) and no voice detected. Cut edges go in such
+ * quiet (dialogue_check_join), and word alignment keeps the words it can't confirm off it.
+ */
+export const QUIET_RMS = .01, QUIET_PEAK = .05;
+
 /** A gap between two words is described from this length. */
 export const GAP_SECONDS = 0.4;
 /** Sound counts when it is within this of the level speech sits at. A sibilant's hiss and room tone fall well under it. */
