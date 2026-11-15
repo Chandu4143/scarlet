@@ -305,6 +305,13 @@ removed and the fraction it kept. The report needs positive evidence for each wo
 therefore contributes no labels. Score an archived run the same way with
 `python3 -B evals/score_audio_reference.py --case-dir "$CASE_DIR" --reference "$EPISODE/reference-audio.json" --evaluation "$EVALUATION" --verified-keeps`.
 
+The same report includes `cutWordDistance`. It adds editor-kept words the candidate removed and
+editor-skipped words the candidate kept, then divides by the number of labeled source occurrences.
+On a partly matched soundtrack, a skipped word needs a verified local forward splice. It could still
+appear in an unmapped passage. The report records that scope and excludes unknown words from the
+denominator. Compare the two error counts as well as their sum. A word counts as retained when at
+least half of its source duration plays. First-consonant and fade checks are separate measurements.
+
 Score an existing task (read-only) or a case's stored run (offline):
 
 ```sh
@@ -414,3 +421,46 @@ python3 evals/take_listening.py score --choices "$STUDY/choices.json" \
 ```
 
 `strict` needs evidence for every word in the repeated phrase, `majority` needs a majority on each occurrence, and `provenance` uses corresponding word positions with no contradictory evidence. On partially mapped soundtracks these tiers can establish a local choice at a verified splice. Append `Global` to any tier (for example, `provenanceGlobal`) to require evidence that also holds across any unexplained audio in the final. Current reference maps contain source and editor file hashes and stream indices. For legacy maps, regenerate with `evals/tools/match_audio.py` and supply the result as `replayedReference` with its archive source record or verified inventory. The report gives each order’s accuracy, the number right in both, and the denominator. Uncertain passages, mixed edits and passages the editor removed entirely stay visible in the label file. Inspect which takes the reference favored alongside a simple always-later baseline. Whole-edit cut recall, retained-word loss and picture-to-first-word timing use the timeline graders above.
+
+### Freezing aligned word times for a dialogue case
+
+To compare placement with the same model-selected word ranges, derive a separate case from the original English source evidence. The command runs Scarlet’s wav2vec2 alignment worker on the recording and audio stream specified in the case. Original Whisper or Crisper decoder JSON preserves its segment groups when available. Without it the frozen timed word sequence supplies the groups.
+
+```sh
+python3 evals/freeze_aligned_case.py --case-dir "$EPISODE/cases/$CASE" \
+  --source "$RECORDING" --model "$ENGLISH_CTC_WEIGHTS" \
+  --segments "$DECODER_JSON" --out "$STUDY/aligned/$CASE"
+```
+
+The derived case lives under `cases/$CASE` in the new private output root. `alignment.json` identifies each confidence-qualified word index, the number of remaining estimated words, the original stream and the input, weights and output hashes. Word indices and spellings remain stable. Supply the same inclusive removals to native and aligned cases, then score both timelines against the same independently frozen source occurrences and editor joins. A matched published word on either side alone can hide extra words left in between.
+
+To score live model decisions, add `--reference "$EPISODE/reference-audio.json"` when freezing. Use a map from `tools/match_audio.py` with the source file hash and audio stream. The output root then contains the verified audio map, an episode lock, the candidate evidence for the model, and a byte-for-byte copy of the original source evidence in `cases/$CASE/grading-evidence.json`. Deriving another case from this one preserves that original grading transcript. A freeze without an audio map also preserves the original transcript for subsequent offline scoring.
+
+Set `SCARLET_EVAL_DATA` to the derived root for `evals/src/run.ts` and point it at an engine holding the candidate transcript. The runner checks the case declaration, transcript files and map before starting a trial. Its published-word recall, skipped words retained, exact audio joins and matched pause error use the original transcript. Picture entrance scoring uses those same original words when verified picture observations are supplied. `published-words.json` records both the grading file and the ordered-word digests. Compare arms only when their grading word and reference digests agree. Older original cases use their own source evidence.
+
+### Optional suggestions from an editor’s past cuts
+
+`editor_history.py` trains an offline experimental model from one editor’s other frozen recordings. It
+produces possible source-word removals and the words that would meet at each splice. The target input
+is its raw case. Historical editing preferences come from the editor’s own training corpus. The editing
+model can take, change or ignore any suggestion. The generator runs only when invoked for an experiment.
+
+Create a private JSON array with one `{"caseDir": ".../cases/<id>", "reference": ".../reference-audio.json"}`
+per training recording, in a fixed order. Paths are relative to the manifest or absolute. Each
+correlation must carry the recording hashes and audio streams from `tools/match_audio.py`. Reserve whole
+projects for evaluation and keep alternate exports of the same performance together. The runner
+rejects duplicate project IDs and overlapping source or editor digests. Run in an environment with NumPy and scikit-learn (tested with
+2.5.4 and 1.9.1). It fits the model in memory and records the library versions and input digests.
+
+```sh
+python -B evals/editor_history.py --history "$PRIVATE/history.json" \
+  --case-dir "$EPISODE/cases/$CASE_ID" --out "$PRIVATE/suggestions.json"
+```
+
+Use `--include-markers` to reproduce the alternate arm that includes decoder annotations in training labels.
+To try a suggestion file in Scarlet, attach the JSON to a request editing the matching recording and
+ask the model to use the suggestions at its discretion.
+
+Compare the identical editing request with and without the optional suggestions. Score the applied
+timelines on exact word-removing joins, lost editor-kept words and `cutWordDistance` on the same frozen
+reference. Retain the source-only baseline, model seed, prompt and footage digests with each run.

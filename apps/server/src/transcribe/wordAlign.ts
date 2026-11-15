@@ -10,7 +10,7 @@ import {
   alignGroup, applyTimings, alignmentGroups, CTC_LETTERS, SPANISH_CTC_LETTERS, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
   planChunks, round, SAMPLE_RATE, stitchChunks, type AlignWord, type Emissions, type WordTiming,
 } from "./ctcAlign.js";
-import { audioWorker } from "./audioWorker.js";
+import { audioWorker, type AudioRequest } from "./audioWorker.js";
 import { EmissionFile } from "./emissions.js";
 import { LocalWhisperModel } from "./localModel.js";
 import { loadRuntime, webgpuAvailable, withInference, type Sessions } from "./uhm.js";
@@ -72,6 +72,8 @@ export interface AlignRequest { language?: "es"; measure?: TimeRange[]; groups: 
  * a window has to be inferred. */
 export interface EmissionSource { file: string; offset?: number; duration?: number; wav: () => Promise<string> }
 export type AlignResponse = Array<Array<WordTiming | null>>;
+type DispatchAlignment = (message: Extract<AudioRequest, { kind: "align" }>,
+  options: { signal: AbortSignal; onProgress?: (fraction: number) => void }) => Promise<AlignResponse>;
 
 export interface AlignmentCheckpoint {
   /** End of the last confidently placed word in source seconds. */
@@ -110,7 +112,8 @@ export class WordAligner {
   private readonly spanishModel: LocalWhisperModel;
   private readonly turns = new AnalysisCache<AlignResponse>(() => 0, 0, 1);
 
-  constructor(directory: string) {
+  constructor(directory: string, private readonly dispatch: DispatchAlignment = (message, opts) =>
+    audioWorker.request<AlignResponse>(message, opts)) {
     this.model = new LocalWhisperModel(directory, weights);
     this.spanishModel = new LocalWhisperModel(directory, spanishWeights);
   }
@@ -122,7 +125,7 @@ export class WordAligner {
     const request = `${source.file}.${randomUUID()}.part`;
     try {
       await writeFile(request, JSON.stringify({ groups: [], measure: ranges, store: { file: source.file, offset: 0 } } satisfies AlignRequest));
-      await audioWorker.request({ kind: "align", wav, model, request }, { signal });
+      await this.dispatch({ kind: "align", wav, model, request }, { signal });
     } finally { await rm(request, { force: true }); }
   }
 
@@ -193,7 +196,7 @@ export class WordAligner {
           await writeFile(request, JSON.stringify({ groups: runs, after, ...(spanish && { language: "es" as const }),
             ...(emissions && { store: { file: emissions.file, offset: emissions.offset ?? 0, duration: emissions.duration } }) } satisfies AlignRequest));
           const from = reached(first), to = last >= groups.length ? 1 : reached(last);
-          return await audioWorker.request<AlignResponse>({ kind: "align", wav: audio, model, request }, { signal,
+          return await this.dispatch({ kind: "align", wav: audio, model, request }, { signal,
             onProgress: done => { if (done >= 0 && done <= 1) report(from + (to - from) * done); } });
         } finally { await rm(request, { force: true }); }
       };

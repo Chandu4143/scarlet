@@ -18,6 +18,7 @@ import { scoreEntrances } from "./entrances.ts";
 import type { Timeline } from "../../packages/timeline/src/index.ts";
 import { Engine, type TaskRecord } from "./engine.ts";
 import { fetchWords } from "./evidence.ts";
+import { publishedGradingInputs } from "./gradingEvidence.ts";
 import type { EventLike } from "./metrics.ts";
 import { evaluateCaseOrigin, evaluateTask } from "./evaluate.ts";
 import { DEFAULT_EDGE_OPTIONS, KEPT_SIDE_EDGE_OPTIONS } from "./metrics.ts";
@@ -143,12 +144,39 @@ async function reportEntrances(loaded: LoadedCase, timeline: Timeline, dir: stri
     candidateEntrancesInFade: score.candidateOnsetsInFade });
 }
 
+export function reportPublishedWords(inputs: NonNullable<ReturnType<typeof publishedGradingInputs>>, loaded: LoadedCase, applied: Timeline,
+                             dir: string, headline: Record<string, number | null>) {
+  const timeline = join(dir, "applied-timeline.json");
+  writeJson(timeline, applied);
+  const published = JSON.parse(execFileSync("python3", ["-B", join(REPO_ROOT, "evals/score_audio_reference.py"),
+    "--reference", inputs.reference, "--case-dir", loaded.dir, "--evidence", inputs.evidence, "--timeline", timeline, "--verified-keeps", "--matched-joins"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
+    { referenceSha256: string; gradingEvidenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null;
+      cutWordDistance: { labeledWords: number; differingWords: number; differingFraction: number | null; retainedSkippedWords: number };
+      spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null } };
+  if (published.referenceSha256 !== inputs.referenceSha256 || published.gradingEvidenceSha256 !== inputs.evidenceSha256) {
+    throw new Error("The scored reference or grading evidence differs from its frozen digest.");
+  }
+  writeJson(join(dir, "published-words.json"), published);
+  Object.assign(headline, { verifiedPublishedWords: published.verifiedPublishedWords,
+    missingVerifiedWords: published.missingVerifiedWords, verifiedWordRecall: published.verifiedWordRecall,
+    labeledSourceWords: published.cutWordDistance.labeledWords, retainedSkippedWords: published.cutWordDistance.retainedSkippedWords,
+    differingLabeledWords: published.cutWordDistance.differingWords, differingWordFraction: published.cutWordDistance.differingFraction,
+    ...(published.spacing && { editorWordRemovingCuts: published.spacing.editorWordRemovingCuts,
+      recoveredWordRemovingCuts: published.spacing.recoveredWordRemovingCuts, matchedAudioJoins: published.spacing.sharedJoins,
+      matchedPauseErrorMs: published.spacing.meanAbsErrorMs }) });
+}
+
 async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, dir: string, timeoutMs: number, selection: SkillSelection): Promise<TrialRow> {
+  const grading = publishedGradingInputs(loaded);
   const caseId = loaded.file.id, projectId = loaded.file.projectId;
   const row: TrialRow = { caseId, config: configLabel(config), trial, state: "not started" };
   const busy = (await engine.tasks(projectId)).filter(t => t.kind !== "transcribe" && ACTIVE.has(t.state));
   if (busy.length) throw new Error(`Project ${projectId} has active tasks (${busy.map(t => t.id).join(", ")}). Wait until they finish.`);
   const project = await engine.project(projectId);
+  const bound = loaded.file.gradingEvidence;
+  if (bound && !project.media.some(m => m.id === bound.mediaId && m.hash === bound.sourceSha256)) {
+    throw new Error("The engine project does not contain the frozen grading recording.");
+  }
   const original = { branch: project.branch ?? "main", head: project.head! };
   const name = branchName(caseId, config, trial, timestamp());
   const skills = selectTrialSkills(await engine.skills(), loaded.file.request, selection);
@@ -156,6 +184,9 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
   writeJson(join(dir, "skills.json"), skills);
   const before = await transcriptSnapshot(engine, loaded);
   writeJson(join(dir, "transcripts.json"), { before });
+  if (bound && before.some(s => !s.frozenSha256 || s.sha256 !== s.frozenSha256)) {
+    throw new Error("The engine transcript differs from the frozen candidate evidence.");
+  }
   await engine.switchBranch(projectId, { name, from: loaded.file.sourceVersion, expectedHead: original.head, expectedBranch: original.branch });
   let task: TaskRecord | undefined;
   try {
@@ -177,25 +208,10 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
     const transcripts = trialTranscripts(before, after, completed.events);
     writeJson(join(dir, "transcripts.json"), transcripts);
     const evaluation = await evaluateTask(engine, task.id, { loaded });
-    const reference = checkedPath(dataDir(), join(dataDir(), "reference-audio.json"));
-    if (existsSync(reference)) {
-      const lock = readJson<{ case: string; files: Record<string, string> }>(checkedPath(dataDir(), join(dataDir(), "episode.lock.json")));
-      if (lock.case !== caseId) throw new Error("The frozen episode belongs to a different case.");
-      const timeline = join(dir, "applied-timeline.json");
+    if (grading) {
       const applied = await engine.timeline(projectId, evaluation.score.versions.applied);
-      writeJson(timeline, applied);
       await reportEntrances(loaded, applied, dir, evaluation.score.headline);
-      const published = JSON.parse(execFileSync("python3", ["-B", join(REPO_ROOT, "evals/score_audio_reference.py"),
-        "--reference", reference, "--case-dir", loaded.dir, "--timeline", timeline, "--verified-keeps", "--matched-joins"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
-        { referenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null;
-          spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null } };
-      if (published.referenceSha256 !== lock.files["reference-audio.json"]) throw new Error("The published reference differs from its frozen digest.");
-      writeJson(join(dir, "published-words.json"), published);
-      Object.assign(evaluation.score.headline, { verifiedPublishedWords: published.verifiedPublishedWords,
-        missingVerifiedWords: published.missingVerifiedWords, verifiedWordRecall: published.verifiedWordRecall,
-        ...(published.spacing && { editorWordRemovingCuts: published.spacing.editorWordRemovingCuts,
-          recoveredWordRemovingCuts: published.spacing.recoveredWordRemovingCuts, matchedAudioJoins: published.spacing.sharedJoins,
-          matchedPauseErrorMs: published.spacing.meanAbsErrorMs }) });
+      reportPublishedWords(grading, loaded, applied, dir, evaluation.score.headline);
     }
     writeJson(join(dir, "evaluation.json"), evaluation);
     writeText(join(dir, "summary.md"), evaluationMarkdown(evaluation));
@@ -239,6 +255,7 @@ async function runCli(argv = process.argv.slice(2)) {
     const edgeOptions = values["kept-side"] ? KEPT_SIDE_EDGE_OPTIONS : DEFAULT_EDGE_OPTIONS;
     const caseId = values["evaluate-case"] ?? values.case;
     const loaded = caseId ? loadCase(caseId) : undefined;
+    const grading = loaded && publishedGradingInputs(loaded);
     const engine = values["evaluate-case"] ? undefined : await Engine.connect({ url: values.engine });
     const evaluation = values["evaluate-case"]
       ? await evaluateCaseOrigin(loaded!, { edgeOptions })
@@ -246,11 +263,12 @@ async function runCli(argv = process.argv.slice(2)) {
         loaded, referenceVersion: values["reference-version"], edgeOptions, refreshEvidence: values.refresh,
       });
     const dir = join(resultsDir(), "tasks", fileComponent(evaluation.taskId), timestamp() + (values["kept-side"] ? "-kept-side" : ""));
-    if (loaded && existsSync(checkedPath(dataDir(), join(dataDir(), "pictures.json")))) {
+    if (loaded && (grading || existsSync(checkedPath(dataDir(), join(dataDir(), "pictures.json"))))) {
       const version = evaluation.score.versions.applied;
       const tl = loaded.timeline(version) ?? await engine?.timeline(loaded.file.projectId, version);
       if (!tl) throw new Error("The evaluated timeline is absent from the frozen case.");
       await reportEntrances(loaded, tl, dir, evaluation.score.headline);
+      if (grading) reportPublishedWords(grading, loaded, tl, dir, evaluation.score.headline);
     }
     writeJson(join(dir, "evaluation.json"), evaluation);
     const md = evaluationMarkdown(evaluation);
@@ -277,6 +295,7 @@ async function runCli(argv = process.argv.slice(2)) {
     try { engine = await Engine.connect({ url: values.engine }); } catch (err) { console.log(`(engine not reachable: ${(err as Error).message})`); }
     console.log(`Dry run: ${total} agent task(s) = ${cases.length} case(s) × ${configs.length} config(s) × ${trials} trial(s). Results → ${runDir}\n`);
     for (const loaded of cases) {
+      publishedGradingInputs(loaded);
       const project = engine ? await engine.project(loaded.file.projectId).catch(() => undefined) : undefined;
       const skills = engine ? selectTrialSkills(await engine.skills(), loaded.file.request, selection) : undefined;
       const skillIds = skills?.map(s => s.id) ?? (selection.exact ? [] : loaded.file.request.skillIds);

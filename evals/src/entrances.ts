@@ -8,6 +8,7 @@ import { pictureEntranceReader, type PictureEntrance } from "../../packages/mcp/
 import { timelineJoins } from "../../packages/mcp/src/timeline-perception.ts";
 import { cli, isMain, main } from "./args.ts";
 import { loadCase, type LoadedCase } from "./case.ts";
+import { publishedGradingInputs } from "./gradingEvidence.ts";
 import type { Word } from "./metrics.ts";
 import { checkedPath, dataDir, readJson, REPO_ROOT } from "./paths.ts";
 
@@ -94,7 +95,9 @@ export async function scoreEntrances(loaded: LoadedCase, timeline: Timeline) {
   if (manifest.schema !== 1 || loaded.file.id !== manifest.case || loaded.file.dialogueMedia.length !== 1 ||
       !id || timeline.projectId !== loaded.file.projectId) throw new Error("Expected a frozen single-dialogue case and its candidate timeline.");
   const pictures = readJson<Pictures>(file("pictures.json"));
-  const words = loaded.evidence.get(id)?.words;
+  const grading = publishedGradingInputs(loaded, root);
+  if (!grading) throw new Error("Picture observations require their frozen audio reference.");
+  const words = readJson<{ words?: Word[] }>(grading.evidence).words;
   const caseDir = relative(root, loaded.dir);
   for (const key of ["pictures.json", "reference-audio.json", join(caseDir, "case.json"), join(caseDir, "evidence", id + ".json")]) {
     if (await sha(file(key)) !== manifest.files[key.split("\\").join("/")]) throw new Error("Frozen entrance input changed: " + key);
@@ -117,9 +120,9 @@ export async function scoreEntrances(loaded: LoadedCase, timeline: Timeline) {
   const read = pictureEntranceReader(timeline, loaded.file.media, loaded.file.fps);
   const candidates = timelineJoins(timeline, loaded.file).flatMap(j => j.tracks.filter(s => s.out.mediaId === id && s.in.mediaId === id).map(s => read(s, words, words)));
   const rows = entranceRows(words, readJson<Reference>(file("reference-audio.json")), obs, candidates);
-  const graderFiles = ["evals/src/entrances.ts", "packages/mcp/src/picture-entrance.ts", "packages/mcp/src/timeline-perception.ts"];
+  const graderFiles = ["evals/src/entrances.ts", "evals/src/gradingEvidence.ts", "packages/mcp/src/picture-entrance.ts", "packages/mcp/src/timeline-perception.ts"];
   const graderSha256 = Object.fromEntries(await Promise.all(graderFiles.map(async name => [name, await sha(join(REPO_ROOT, name))])));
-  return { schema: 1, case: loaded.file.id, version: timeline.version, graderSha256, episodeSha256: await sha(file("episode.lock.json")),
+  return { schema: 1, case: loaded.file.id, version: timeline.version, graderSha256, gradingEvidenceSha256: grading.evidenceSha256, episodeSha256: await sha(file("episode.lock.json")),
     candidateSha256: createHash("sha256").update(JSON.stringify(timeline)).digest("hex"),
     candidateTrimmedWords: candidates.filter(c => c.status === "word-trimmed").length,
     candidateOnsetsInFade: candidates.filter(c => c.status === "onset-in-fade").length,

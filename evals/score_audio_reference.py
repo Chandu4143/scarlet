@@ -287,6 +287,10 @@ def read_json(path):
     return json.loads(path.read_bytes())
 
 
+def spoken_word(word):
+    return bool(re.search(r'\w', word['text']) and not re.fullmatch(r'\[.*\]', word['text'].strip()))
+
+
 def verified_keeps(words, ref, candidate):
     """Positive-only recall. Unexplained published intervals could contain additional source words."""
     frame = 1 / ref['frameRate'] if 'frameRate' in ref else ref['frameDuration']
@@ -303,7 +307,7 @@ def verified_keeps(words, ref, candidate):
     kept = union((p.start, p.end) for p in candidate)
     missing, count = [], 0
     for index, w in enumerate(words):
-        if w['end'] <= w['start'] or not re.search(r'\w', w['text']) or re.fullmatch(r'\[.*\]', w['text'].strip()):
+        if w['end'] <= w['start'] or not spoken_word(w):
             continue
         # Require the whole word to lie inside a confidently matched span before calling it required.
         if not any(a <= w['start'] and w['end'] <= b for a, b in known):
@@ -316,11 +320,82 @@ def verified_keeps(words, ref, candidate):
                 mappedFraction=ref['mappedFraction'], unmappedFinal=ref['unmappedFinal'])
 
 
+def skipped_occurrences(words, reference):
+    """Timed transcript occurrences skipped at a mapped splice or absent from a complete soundtrack."""
+    pieces = reference_pieces(reference, mapped_only=bool(reference["unmappedFinal"]))
+    frame = 1 / reference["frameRate"] if "frameRate" in reference else reference["frameDuration"]
+    join_times = {join["finalTime"] for join in reference["joins"]}
+    extents = []
+    for piece in pieces:
+        end_time = piece.playback(piece.end)
+        # Give unmatched edges a frame of uncertainty on each side.
+        early = piece.in_shift[0] if piece.at in join_times else -frame
+        late = piece.out_shift[1] if any(abs(end_time - t) <= EPS for t in join_times) else frame
+        extents.append((piece.start + early, piece.end + late))
+    possible = union(extents)
+    skipped = union((left.end + left.out_shift[1], right.start + right.in_shift[0])
+                    for left, right in zip(pieces, pieces[1:])
+                    if right.at in join_times and abs(left.playback(left.end) - right.at) <= .002)
+    cut = set()
+    for index, word in enumerate(words):
+        a, b = word["start"], word["end"]
+        if b <= a:
+            continue
+        if reference["unmappedFinal"] and not any(start <= a and b <= end for start, end in skipped):
+            continue
+        if intersect_len([(a, b)], possible) <= EPS:
+            cut.add(index)
+    return cut
+
+
+def occurrence_evidence(words, reference):
+    """Return independent labels for training or scoring individual source occurrences."""
+    kept = {word["index"] for word in verified_keeps(words, reference, [])["missing"]}
+    cut = skipped_occurrences(words, reference)
+    if kept & cut:
+        raise ValueError("Conflicting source word evidence.")
+    return kept, cut
+
+
+def cut_word_distance(words, reference, candidate, recall):
+    """Count only labeled source occurrences. Local skips carry less evidence than a complete soundtrack."""
+    skipped = {i for i in skipped_occurrences(words, reference) if spoken_word(words[i])}
+    played = union((piece.start, piece.end) for piece in candidate)
+    retained_skips = []
+    for index in sorted(skipped):
+        word = words[index]
+        start, end = word["start"], word["end"]
+        if intersect_len([(start, end)], played) >= (end - start) / 2:
+            retained_skips.append(index)
+    labeled = recall["verifiedPublishedWords"] + len(skipped)
+    errors = recall["missingVerifiedWords"] + len(retained_skips)
+    return dict(skipEvidence="localForwardSplice" if reference["unmappedFinal"] else "completeSoundtrack",
+                labeledWords=labeled, skippedWords=len(skipped), retainedSkippedWords=len(retained_skips),
+                retainedSkippedIndices=retained_skips, differingWords=errors,
+                differingFraction=errors / labeled if labeled else None)
+
+
+def validate_reference_source(case, evidence, reference):
+    """Historical unbound maps use the frozen episode inventory, when available."""
+    binding = reference.get("inputs")
+    if binding is None:
+        return "historicalUnboundMap"
+    media = next((m for m in case["media"] if m["id"] == evidence["mediaId"]), {}) if case else {}
+    identities = [value for value in (media.get("hash"), evidence.get("sourceSha256")) if value is not None]
+    if any(value != binding.get("sourceSha256") for value in identities):
+        raise ValueError("The reference and grading evidence identify different source recordings.")
+    stream = evidence.get("audioStream", media.get("audioStream", 0))
+    if (type(stream) is not int or type(binding.get("audioStream")) is not int or
+            stream != binding["audioStream"] or media.get("audioStream", stream) != stream):
+        raise ValueError("The reference and grading evidence identify different audio streams.")
+    return "recordingAndStream" if identities else "streamOnly"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reference', type=Path, required=True, help='JSON source-to-final audio correlation map')
     parser.add_argument('--case-dir', type=Path, help='Stored Scarlet eval case directory')
-    parser.add_argument('--evidence', type=Path, help='Raw media evidence JSON (mediaId, words in source seconds, optional duration)')
+    parser.add_argument('--evidence', type=Path, help='Fixed grading evidence across candidates (mediaId, words in source seconds, optional duration/sourceSha256/audioStream)')
     selected = parser.add_mutually_exclusive_group(required=True)
     selected.add_argument('--timeline', type=Path, help='Scarlet timeline JSON')
     selected.add_argument('--evaluation', type=Path, help='evaluation.json referencing a timeline stored in --case-dir')
@@ -332,9 +407,11 @@ def main():
         parser.error('--matched-joins requires --verified-keeps')
     case = read_json(args.case_dir / 'case.json') if args.case_dir else None
     if args.evidence:
-        evidence = read_json(args.evidence)
+        evidence_path = args.evidence
+        evidence = read_json(evidence_path)
     elif case and len(case['dialogueMedia']) == 1:
-        evidence = read_json(args.case_dir / 'evidence' / (case['dialogueMedia'][0] + '.json'))
+        evidence_path = args.case_dir / 'evidence' / (case['dialogueMedia'][0] + '.json')
+        evidence = read_json(evidence_path)
     else:
         parser.error('Supply --evidence or --case-dir with evidence for a single dialogue recording.')
     if args.evaluation:
@@ -357,6 +434,7 @@ def main():
     if not words:
         parser.error('No timed spoken words in raw media evidence.')
     reference = read_json(args.reference)
+    binding = validate_reference_source(case, evidence, reference)
     frame = 1 / reference['frameRate'] if 'frameRate' in reference else reference['frameDuration']
     if evidence.get('duration') is not None and not math.isclose(evidence['duration'], reference['rawDuration'],
                                                                 abs_tol=max(.25, frame * 2)):
@@ -364,6 +442,8 @@ def main():
     silent = {m['id'] for m in case['media'] if m['kind'] not in ('audio', 'video') or m.get('hasAudio') is False} if case else set()
     pieces = timeline_pieces(candidate, evidence['mediaId'], silent, source_coverage_only=args.verified_keeps)
     result = verified_keeps(evidence['words'], reference, pieces) if args.verified_keeps else score(words, reference, pieces)
+    if args.verified_keeps:
+        result['cutWordDistance'] = cut_word_distance(evidence['words'], reference, pieces, result)
     if args.matched_joins:
         ref_pieces = reference_pieces(reference, mapped_only=True)
         try:
@@ -373,6 +453,9 @@ def main():
         else:
             result['spacing'] = join_spacing(words, ref_pieces, ordered, join_times={j['finalTime'] for j in reference['joins']})
     result.update(mediaId=evidence['mediaId'], timeline=candidate['version'],
+                  referenceBinding=binding, gradingEvidenceSha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+                  gradingWordsSha256=hashlib.sha256(json.dumps([[w['text'], w['start'], w['end']] for w in evidence['words']],
+                                                               ensure_ascii=False, separators=(',', ':')).encode()).hexdigest(),
                   referenceSha256=hashlib.sha256(args.reference.read_bytes()).hexdigest())
     print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
 

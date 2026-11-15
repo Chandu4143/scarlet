@@ -4,7 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from score_audio_reference import Piece, join_spacing, reference_pieces, score, timeline_pieces
+from score_audio_reference import Piece, cut_word_distance, join_spacing, reference_pieces, score, timeline_pieces, validate_reference_source, verified_keeps
 
 
 class AudioReferenceScoreTests(unittest.TestCase):
@@ -49,6 +49,36 @@ class AudioReferenceScoreTests(unittest.TestCase):
         self.assertEqual((uncut['recoveredWordRemovingCuts'], uncut['meanAbsErrorMs']), (0, None))
         with self.assertRaisesRegex(ValueError, 'unexplained audio'):
             reference_pieces(reference)
+
+    def test_distance_counts_wrong_keeps_and_wrong_removals_on_labeled_spans(self):
+        reference = dict(frameRate=30, mappedFraction=.8, unmappedFinal=[[2, 3]],
+                         segments=[dict(rawStart=a, rawEnd=a+1, finalStart=t, finalEnd=t+1)
+                                   for a, t in [(0, 0), (3, 1), (8, 3)]],
+                         joins=[dict(finalTime=1, earliestFinal=1, latestFinal=1)])
+        words = [*self.words, dict(start=2.1, end=2.5, text="[noise]")]
+        played = [Piece(0, 3, 0), Piece(8, 9, 3)]
+        recall = verified_keeps(words, reference, played)
+        distance = cut_word_distance(words, reference, played, recall)
+        self.assertEqual(recall["missingVerifiedWords"], 1)
+        self.assertEqual(distance, dict(skipEvidence="localForwardSplice", labeledWords=5,
+                                        skippedWords=2, retainedSkippedWords=2, retainedSkippedIndices=[1, 2],
+                                        differingWords=3, differingFraction=.6))
+        empty = cut_word_distance([], reference, [], verified_keeps([], reference, []))
+        self.assertEqual(empty["labeledWords"], 0)
+        self.assertIsNone(empty["differingFraction"])
+
+    def test_bound_reference_rejects_the_wrong_recording_and_track(self):
+        case = dict(media=[dict(id="mic", hash="a"*64, audioStream=1)])
+        evidence = dict(mediaId="mic", audioStream=1)
+        reference = dict(inputs=dict(sourceSha256="a"*64, audioStream=1))
+        self.assertEqual(validate_reference_source(case, evidence, reference), "recordingAndStream")
+        with self.assertRaisesRegex(ValueError, "source recordings"):
+            validate_reference_source(case, evidence, dict(inputs=dict(sourceSha256="b"*64, audioStream=1)))
+        with self.assertRaisesRegex(ValueError, "source recordings"):
+            validate_reference_source(case, dict(evidence, sourceSha256="c"*64), reference)
+        with self.assertRaisesRegex(ValueError, "audio streams"):
+            validate_reference_source(case, dict(evidence, audioStream=0), reference)
+        self.assertEqual(validate_reference_source(case, evidence, {}), "historicalUnboundMap")
 
     def test_word_join_across_quiet_fades_and_ambiguity_when_the_next_word_starts_in_the_mix(self):
         clips = [dict(kind='media', mediaId='mic', sourceIn=0, sourceOut=2, timelineIn=0, audioFadeOut=.1),

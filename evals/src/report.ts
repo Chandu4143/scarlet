@@ -166,6 +166,8 @@ export function runMarkdown(title: string, rows: TrialRow[]): string {
     "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "activeMinutes", "tokens"];
   if (rows.some(r => r.headline?.verifiedPublishedWords !== undefined))
     keys.push("verifiedPublishedWords", "missingVerifiedWords", "verifiedWordRecall");
+  if (rows.some(r => r.headline?.labeledSourceWords !== undefined))
+    keys.push("labeledSourceWords", "retainedSkippedWords", "differingLabeledWords", "differingWordFraction");
   if (rows.some(r => r.headline?.editorWordRemovingCuts !== undefined))
     keys.push("recoveredWordRemovingCuts", "editorWordRemovingCuts", "matchedAudioJoins", "matchedPauseErrorMs");
   if (rows.some(r => r.headline?.verifiedPictureCuts !== undefined))

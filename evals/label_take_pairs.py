@@ -7,40 +7,8 @@ import re
 from pathlib import Path
 
 from compare import encoded, private_path, sha
-from score_audio_reference import EPS, intersect_len, reference_pieces, union, verified_keeps
+from score_audio_reference import occurrence_evidence
 from take_listening import write_new
-
-
-def occurrence_evidence(words, reference):
-    """Prove complete source words kept or skipped; never infer loss from unexplained audio."""
-    pieces = reference_pieces(reference, mapped_only=True)
-    # An empty candidate makes the existing positive-recall scorer return all verified words.
-    kept = {word["index"] for word in verified_keeps(words, reference, [])["missing"]}
-    frame = 1 / reference["frameRate"] if "frameRate" in reference else reference["frameDuration"]
-    join_times = {join["finalTime"] for join in reference["joins"]}
-    extents = []
-    for piece in pieces:
-        end_time = piece.playback(piece.end)
-        # Give unmatched edges a frame of uncertainty on each side.
-        early = piece.in_shift[0] if piece.at in join_times else -frame
-        late = piece.out_shift[1] if any(abs(end_time - t) <= EPS for t in join_times) else frame
-        extents.append((piece.start + early, piece.end + late))
-    possible = union(extents)
-    skipped = union((left.end + left.out_shift[1], right.start + right.in_shift[0])
-                    for left, right in zip(pieces, pieces[1:])
-                    if right.at in join_times and abs(left.playback(left.end) - right.at) <= .002)
-    cut = set()
-    for index, word in enumerate(words):
-        a, b = word["start"], word["end"]
-        if b <= a:
-            continue
-        if reference["unmappedFinal"] and not any(start <= a and b <= end for start, end in skipped):
-            continue
-        if intersect_len([(a, b)], possible) <= EPS:
-            cut.add(index)
-    if kept & cut:
-        raise ValueError("Conflicting source word evidence.")
-    return kept, cut
 
 
 def occurrence_state(evidence, length, *, strict):
