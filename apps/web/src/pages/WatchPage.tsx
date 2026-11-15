@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { ThreadEdit } from "@scarlet/shared";
@@ -162,6 +162,8 @@ interface PreviewProps {
   simple: { cutPlayback?: { key: string; start: number; side: "before" | "after"; beforeFile?: string; afterFile?: string; beforeWindow?: CutPlaybackWindow; afterWindow?: CutPlaybackWindow };
     nextCutPlayback?: PreparedCut;
     marks: TimelineDot[];
+    typedTimes?: number[];
+    seekFromMessage?: Ref<(time: number) => void>;
     /** Every other applied edit on the working cut, drawn under the marks. */
     edits?: TimelineEdit[];
     /** Changes each time the editor asks to see the whole timeline. */
@@ -419,6 +421,9 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     player.seek(Math.min(t, lastFrame), true);
     if (draft || cut) player.prepare();
   }, [threadView, draft, cut, lastFrame]);
+  useImperativeHandle(simple.seekFromMessage, () => (time: number) => {
+    if (active && playable) seekFull(time);
+  }, [active, playable, seekFull]);
   // A drag on the timeline pauses what is playing until it ends. On Before that is the earlier version's clip. It is
   // held before the player is: the player's pause reaches the clip too, and would leave it stopped.
   const scrubStart = useCallback((gesture: AbortSignal) => {
@@ -708,7 +713,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             waveform={{ media: current.media, mediaPaused: current.project.mediaPaused, source, timeline: displayedTimeline, ...sameClockBefore && {
               audioFrom: playingBefore ? sameClockBefore : undefined, scaleWith: playingBefore ? displayedTimeline : sameClockBefore } }} frameAt={frameAt} onSeek={seekFull} onSelectTime={selectTime} onScrubStart={scrubStart}
             range={simple.onRange ? shownRange : undefined} onRange={simple.onRange ? markRange : undefined} fps={fps}
-            marks={simple.marks} edits={simple.edits} fit={simple.fit} gaps={simple.gaps} skippedRanges={simple.skippedRanges} onGap={simple.onGap} onBand={simple.onBand}
+            typedTimes={simple.typedTimes} marks={simple.marks} edits={simple.edits} fit={simple.fit} gaps={simple.gaps} skippedRanges={simple.skippedRanges} onGap={simple.onGap} onBand={simple.onBand}
             highlight={simple.focus ?? (selectedEdit ? editFocus(selectedEdit, duration) : undefined)} />
         </div>
       </div>}

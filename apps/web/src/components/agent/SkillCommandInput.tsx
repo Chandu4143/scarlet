@@ -1,7 +1,8 @@
-import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import type { GraphicTemplateSummary, Skill } from "@scarlet/shared";
+import type { MessageTimestamp } from "../../lib/messageTimestamps";
 import { isComposing } from "../../lib/hotkeys";
 import { skillCommands, useSkillsStore } from "../../stores/skills";
 import { templatePreview, templateTokens, useTemplatesStore } from "../../stores/templates";
@@ -16,6 +17,8 @@ interface Props {
   skills: Skill[];
   id: string;
   placeholder: string;
+  timestamps?: MessageTimestamp[];
+  onTimestamp?(time: number): void;
   onChange(value: string): void;
   onSubmit(): void;
 }
@@ -29,7 +32,7 @@ export const MAKE_TEMPLATE = "Make a template ";
  * or Tab puts its name in the box and Esc puts the list away. A template's row shows its picture over the frame under
  * the playhead, and while it is lit the player shows it over the picture too.
  */
-export function SkillCommandInput({ inputRef, value, skills, id, placeholder, onChange, onSubmit }: Props) {
+export function SkillCommandInput({ inputRef, value, skills, id, placeholder, timestamps, onTimestamp, onChange, onSubmit }: Props) {
   const [focused, setFocused] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const [index, setIndex] = useState<number | "create">(0);
@@ -129,6 +132,19 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, on
   const create = skillsOpen ? createSkill : makeTemplate;
   const retry = skillsOpen ? load : loadTemplates;
 
+  const overlay = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (overlay.current && inputRef.current) overlay.current.scrollTop = inputRef.current.scrollTop;
+  }, [value, timestamps, inputRef]);
+  const markedText: ReactNode[] = [];
+  let end = 0;
+  for (const stamp of timestamps ?? []) {
+    markedText.push(<span key={`before-${stamp.start}`} aria-hidden="true">{value.slice(end, stamp.start)}</span>, <button key={stamp.start} type="button" className="composer-timestamp"
+      aria-label={`Jump to ${stamp.text}`} title={`Jump to ${stamp.text}`}
+      onMouseDown={e => e.preventDefault()} onClick={() => onTimestamp?.(stamp.time)}>{stamp.text}</button>);
+    end = stamp.start + stamp.text.length;
+  }
+
   return <>
     <div className="composer-message">
       <span aria-hidden="true">{value || placeholder}{"​"}</span>
@@ -136,6 +152,7 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, on
         placeholder={placeholder} aria-description="Type / to choose an editing skill, or $ for a graphic template."
         aria-autocomplete="list" aria-haspopup="listbox" aria-controls={open ? listId : undefined}
         aria-activedescendant={activeId} value={value}
+        onScroll={e => { if (overlay.current) overlay.current.scrollTop = e.currentTarget.scrollTop; }}
         onSelect={e => { syncCaret(e.currentTarget); }}
         onFocus={e => { syncCaret(e.currentTarget); setFocused(true); setDismissed(false); }}
         onBlur={() => setFocused(false)}
@@ -184,6 +201,9 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, on
           }
           if (e.key === "Escape") e.currentTarget.blur();
         }} />
+      {markedText.length > 0 && <div ref={overlay} className="composer-timestamp-overlay">
+        {markedText}<span aria-hidden="true">{value.slice(end)}{"​"}</span>
+      </div>}
     </div>
     {skillsOpen && <div className="composer-skills" role="listbox" id={listId} aria-label="Editing skills" data-shortcut-overlay>
       <div className="eyebrow px-2 py-1">Skills</div>
