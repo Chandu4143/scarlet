@@ -182,7 +182,7 @@ export class NoPauseToTrim extends Error {}
 
 /**
  * Resolve a pause named by the word it follows to a timeline range on `tl`: the pause between that word and the next
- * comes down to `leave` seconds, or to the default edge padding, with both edges in the measured quiet.
+ * comes down to `leave` seconds as the clip plays it, or to the default edge padding, with both edges in the measured quiet.
  */
 async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: number; leave?: number }, sources: DialoguePlanSources) {
   let words = await sources.words(ref.mediaId);
@@ -193,17 +193,20 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   sources.sameWordsAsRead?.(ref.mediaId, words);
   const before = words[ref.afterWord]!, after = words[ref.afterWord + 1]!;
   const said = `“${before.text.trim()}” and “${after.text.trim()}” (#${ref.afterWord}, #${ref.afterWord + 1})`;
-  const middle = (before.end + after.start) / 2;
-  await sources.measure([Math.min(before.end + .1, middle), Math.max(after.start - .1, middle)].map(t => ({ mediaId: ref.mediaId, t })));
-  const pageAt = (t: number) => scanPageAt(sources.pages(), ref.mediaId, 0, t);
-  const leave = ref.leave ?? PAUSE_BEAT;
-  const cut = pauseCutRange(before, after, pageAt, leave);
-  if (cut.end - cut.start < .04) throw new NoPauseToTrim(`The pause between ${said} plays ${cut.plays.toFixed(2)} s, which leaves nothing to trim down to ${leave.toFixed(2)} s.`);
   // One clip plays both words: across a join the pause is the join's, and there is no stretch of the recording to take out.
   const clip = audibleMediaClips(tl).find(c => c.mediaId === ref.mediaId &&
       before.start + before.end >= 2 * c.sourceIn && after.start + after.end < 2 * c.sourceOut);
   if (!clip) throw new Error(`Version ${tl.version} does not play ${said} one after the other. Read timeline_transcript for the words this version plays.`);
-  const on = (source: number) => clip.timelineIn + (Math.min(Math.max(source, clip.sourceIn), clip.sourceOut) - clip.sourceIn) / (clip.speed ?? 1);
+  const middle = (before.end + after.start) / 2;
+  await sources.measure([Math.min(before.end + .1, middle), Math.max(after.start - .1, middle)].map(t => ({ mediaId: ref.mediaId, t })));
+  const pageAt = (t: number) => scanPageAt(sources.pages(), ref.mediaId, 0, t);
+  // `leave` is what the editor hears, and the clip plays the recording at its speed: at 2x, 0.4 s heard is 0.8 s of the
+  // recording. The quiet the edges stay in is measured in the recording, so the trim is placed there.
+  const speed = clip.speed ?? 1, leave = ref.leave ?? PAUSE_BEAT;
+  const cut = pauseCutRange(before, after, pageAt, leave * speed);
+  const plays = cut.plays / speed;
+  if ((cut.end - cut.start) / speed < .04) throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, which leaves nothing to trim down to ${leave.toFixed(2)} s.`);
+  const on = (source: number) => clip.timelineIn + (Math.min(Math.max(source, clip.sourceIn), clip.sourceOut) - clip.sourceIn) / speed;
   const fps = (await sources.project()).settings.fps;
   const place = (source: number, room?: TimeRange) => round3(edgeOnFrame(on(source), room, fps, on));
   // The transcript has no word here, which is not the same as nothing being said. What comes out with the pause goes
@@ -212,7 +215,7 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   const notes = held?.runs.length ? [`This pause holds ${held.seconds.toFixed(2)} s of sound at speaking level that no word explains (${
     held.runs.map(r => `${r.start.toFixed(2)}–${r.end.toFixed(2)}`).join(", ")} s in ${ref.mediaId}). It comes out with the pause.`] : [];
   return { start: place(cut.start, cut.room.start), end: place(cut.end, cut.room.end), words: `pause after “${before.text.trim()}”`, problems: cut.problems, notes,
-    source: { start: round3(cut.start), end: round3(cut.end) }, plays: round3(cut.plays) };
+    source: { start: round3(cut.start), end: round3(cut.end) }, plays: round3(plays) };
 }
 
 type CutRef = { occurrence?: RepeatOccurrence; start?: number; end?: number; mediaId?: string; fromWord?: number; toWord?: number; afterWord?: number; leave?: number };

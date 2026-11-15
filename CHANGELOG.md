@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 14, 2026
 
+- A pause Scarlet trims on a sped-up or slowed-down clip plays as long as asked.
 - When Claude Code can't reach Scarlet's editing tools, the request now ends as Couldn't finish with Retry instead of looking finished.
 - Approving a trim that waited while you cut elsewhere no longer brings back footage you cut or leaves clips on top of each other.
 - Scarlet lets you know when a new version of your edition is ready to download.

@@ -283,6 +283,45 @@ describe("dialogue plan", () => {
     expect(tight.decisions[0]!.start).toBeGreaterThanOrEqual(2.26 + .03 - 1e-9);
   });
 
+  it("trims a pause to the length the agent asks as it plays, at the clip's speed", async () => {
+    const { tl, sources } = fixture();
+    const atSpeed = (speed: number) => { tl.tracks[1]!.clips = [makeMediaClip("mic", 0, 5, 0, { speed })]; };
+    // What the pause after #afterWord still plays, word to word on the timeline. Each edge sits on a 1/30 s frame.
+    const withinFrame = (got: number, want: number) => expect(Math.abs(got - want)).toBeLessThanOrEqual(1 / 30 + 1e-9);
+    const left = async (speed: number, afterWord: number, leave?: number) => {
+      atSpeed(speed);
+      const plan = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ kind: "pause", mediaId: "mic", afterWord, leave })] }, sources);
+      if (plan.outcome !== "ready") throw new Error(plan.outcome);
+      const [pause] = plan.decisions;
+      return (words[afterWord + 1]!.start - words[afterWord]!.end) / speed - (pause!.end - pause!.start);
+    };
+    // “first” to “next” is 1.2 s in the recording: 0.6 s at 2x, 2.4 s at 0.5x. Each comes down to 0.4 s as heard.
+    for (const speed of [.5, 1, 1.2, 1.5, 2]) withinFrame(await left(speed, 1, .4), .4);
+    // Without leave, the beat is what plays, too.
+    withinFrame(await left(2, 1), .25);
+    // At 0.5x the beat is 0.125 s of the recording, and its start waits for the quiet after “first” (sound to 2.26 s):
+    // the pause plays a little longer than the beat rather than clip the word.
+    const slow = await left(.5, 1);
+    expect(slow).toBeGreaterThanOrEqual(.25 - 1 / 30);
+    expect(slow).toBeLessThanOrEqual(.32);
+    // “finish” to “first” is 0.42 s in the recording, shorter than the 0.5 s asked, but it plays 0.84 s at 0.5x.
+    withinFrame(await left(.5, 0, .5), .5);
+    // The pause's length before the trim is reported as it plays.
+    atSpeed(2);
+    await expect(resolveCutRange(tl, { mediaId: "mic", afterWord: 1, leave: .4 }, "cut", sources)).resolves.toMatchObject({ plays: .6, source: { start: 2.68, end: 3.08 } });
+  });
+
+  it("finds nothing to trim in a pause that already plays as short as asked at the clip's speed", async () => {
+    const { tl, sources } = fixture();
+    tl.tracks[1]!.clips = [makeMediaClip("mic", 0, 5, 0, { speed: 2 })];
+    const plan = (c: Partial<DialogueCutInput>) => planDialogueCuts({ tl, localPauses: false, cuts: [cut({ kind: "pause", mediaId: "mic", ...c })] }, sources);
+    // 1.2 s in the recording plays 0.6 s at 2x; 0.42 s plays 0.21 s.
+    await expect(plan({ afterWord: 1, leave: .8 })).rejects.toThrow("plays 0.60 s, which leaves nothing to trim down to 0.80 s");
+    await expect(plan({ afterWord: 0, leave: .3 })).rejects.toThrow("plays 0.21 s, which leaves nothing to trim down to 0.30 s");
+    // 0.06 s of the recording comes out, which plays 0.03 s: too little to trim.
+    await expect(plan({ afterWord: 1, leave: .57 })).rejects.toThrow("plays 0.60 s, which leaves nothing to trim down to 0.57 s");
+  });
+
   it("refuses a pause reference that has nothing to trim, names no pause, or belongs to another kind", async () => {
     const { tl, sources } = fixture();
     const plan = (c: Partial<DialogueCutInput>) => planDialogueCuts({ tl, localPauses: false, cuts: [cut({ kind: "pause", ...c })] }, sources);
