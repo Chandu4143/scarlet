@@ -3,6 +3,7 @@ import { agentTarget, type Task, type TaskAttachment } from "@scarlet/shared";
 import { canStartCutReview, cutSummary, type Project } from "@scarlet/timeline";
 import { recordEditReview, requestPosition } from "../../lib/editReviews";
 import { errorMessage, IS_DESKTOP } from "../../lib/client";
+import { messageTimestamps, type MessageClock } from "../../lib/messageTimestamps";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachments";
 import { isComposing } from "../../lib/hotkeys";
@@ -12,7 +13,7 @@ import { useSpeech } from "../../lib/speech";
 import type { Thread } from "../../lib/threads";
 import { useProjectStore } from "../../stores/project";
 import { commandSkillIds, enabledSkills, useSkillsStore } from "../../stores/skills";
-import { markedRangeOf, playheadPoints, useUiStore, withMarkedRange, type AgentContext } from "../../stores/ui";
+import { editTargetAt, markedRangeOf, pointOf, playheadPoints, useUiStore, withMarkedRange, type AgentContext } from "../../stores/ui";
 import { Icon, Spinner, InlineError } from "../ui/primitives";
 import { AgentChip, useAgentAvailability } from "./AgentChip";
 import { SkillCommandInput } from "./SkillCommandInput";
@@ -42,6 +43,7 @@ interface ComposerProps {
   targetIsPoint?: boolean;
   /** A moment the editor navigated to and can attach to this message. */
   editHere?: { time: string; onSelect(): void };
+  messageClock?: MessageClock;
   /** What taking the tag off does. Without it, the message becomes a reply to the whole request. */
   onClearTarget?(): void;
   /**
@@ -53,7 +55,7 @@ interface ComposerProps {
   rewording?: Rewording;
   selectedEdit?: AgentContext; onClearSelectedEdit?(): void; thread?: Thread; onCreated?(task: Task): void; onSent?(): void; modelPicker?: boolean }
 
-function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, rewording, editHere }: ComposerProps & { project: Project }) {
+function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, rewording, editHere, messageClock }: ComposerProps & { project: Project }) {
   const media = useProjectStore(s => s.current?.media);
   const createTask = useProjectStore((s) => s.createTask);
   const createNote = useProjectStore((s) => s.createNote);
@@ -301,6 +303,22 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     }
   };
 
+  // A new note uses the first timestamp in its text. Replies, selected transcript words and marked ranges already
+  // have a destination. A saved point stays on its original source/version even if the editor browses elsewhere.
+  const typedPoint = context && context !== "whole" && context.fromMessage ? context : undefined;
+  const inputClock = !replying && !rewording && (!displayAnchor || pointOf(displayAnchor)) ? messageClock : undefined;
+  const sameClock = !typedPoint || (typedPoint.version === inputClock?.version && typedPoint.mediaId === inputClock?.mediaId);
+  const duration = inputClock?.duration ?? 0;
+  const times = useMemo(() => messageTimestamps(value, duration), [value, duration]);
+  const firstTime = times[0]?.time;
+  useLayoutEffect(() => {
+    if (rewording || replying) return;
+    if (typedPoint && !sameClock && messageTimestamps(value, Infinity).some(t => t.time === typedPoint.time)) return;
+    if (inputClock && firstTime !== undefined) {
+      if (sameClock && firstTime === typedPoint?.time) return;
+      setContext({ ...editTargetAt(firstTime, inputClock.version, inputClock.timeline, inputClock.mediaId), fromMessage: true });
+    } else if (typedPoint) setContext(null);
+  }, [value, firstTime, inputClock, typedPoint, sameClock, rewording, replying, setContext]);
   const tagWords = targetTag && `${targetTag.charAt(0).toLowerCase()}${targetTag.slice(1)}`;
   // What the tag's message does, for its hover note: a cut or an edit is revised, a question answered, an edit replied to.
   const tagAct = !targetTag ? undefined : question && targetTag === "Answer" ? "Answering Scarlet’s question"
@@ -383,7 +401,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           </span>}
           <SkillCommandInput key={owner} id={inputId} inputRef={inputRef} value={value} skills={skills}
             placeholder={rewording ? "What should it ask instead?" : question ? "Answer Scarlet…" : displayAnchor?.changeId && context ? "What should change?" : replying ? "Write a follow-up…" : NEW_EDIT_HINT}
-            onChange={changeText} onSubmit={() => void submitText()} />
+            timestamps={sameClock ? times : undefined} onTimestamp={inputClock?.seek} onChange={changeText} onSubmit={() => void submitText()} />
           {editHere && !tag && !rewording && !replying && !displayAnchor && !recording && !heard && <button type="button" className="composer-edit-here"
             aria-label={`Edit here at ${editHere.time}`} title={`Edit here at ${editHere.time}`} onClick={() => {
               editHere.onSelect();

@@ -6,7 +6,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
-import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type TimeRange, type Timeline } from "@scarlet/timeline";
+import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestText, REVISED_CHECK, threadEditList, type EditRef, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
@@ -30,9 +30,10 @@ import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
 import { ignorePageShortcut, useHotkeys } from "../lib/hotkeys";
-import { LiveTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
+import { RequestTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
+import { MakeShortsSheet } from "../components/review/MakeShorts";
 import { ExportButton, ExportMenuItem, useExportWarning } from "../components/review/ExportMenuItem";
 import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Drawer, Icon, Loading } from "../components/ui/primitives";
@@ -54,6 +55,7 @@ import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
 import { canPreviewMedia } from "../lib/upload";
 import { useProjectStore } from "../stores/project";
+import { messageTimestamps, type MessageClock } from "../lib/messageTimestamps";
 import { markedRangeOf, playheadPoints, pointOf, useUiStore, withMarkedRange, type AgentContext, type MarkedRange } from "../stores/ui";
 import { CutPreview } from "./WatchPage";
 import { EditHoverContext, type TimelineDot, type TimelineGap } from "../components/review/TimelineScrubber";
@@ -109,7 +111,7 @@ function afterPlayerMount(start: () => () => void) {
   };
 }
 
-type Panel = "media" | "history" | "export" | "learnings" | null;
+type Panel = "media" | "history" | "export" | "learnings" | "shorts" | null;
 
 const REWORDING_KEY = "scarlet.rewording.v1";
 /** The queued request whose words were in the message box when the project was last on screen, with those words. */
@@ -295,6 +297,35 @@ const approves = (call: Pick<CutAssessment, "proposes"> | undefined): CutChoice 
  * and Skip cuts as first staged. Revise (R) aims the message box at this call, so feedback on it goes ahead of
  * requests waiting for the pass.
  */
+type ProjectSource = NonNullable<Project["source"]>;
+
+/** The video a short was made from, by name: a link to it, unless it is in the trash or gone. */
+function SourceName({ source }: { source: ProjectSource }) {
+  return source.gone ? <span>{source.name}</span> : <Link to={`/p/${source.projectId}`}>{source.name}</Link>;
+}
+
+function SourceLine({ source }: { source: ProjectSource }) {
+  return <span className="simple-header-source" title={`From ${source.name}`}>From <SourceName source={source} /></span>;
+}
+
+/**
+ * The first thing in a short's chat: that it is a new project, and the video it was made from. It stays until the
+ * editor dismisses it with its ×.
+ */
+function SourceNote({ projectId, source }: { projectId: string; source: ProjectSource }) {
+  const [gone, setGone] = useState(false);
+  if (gone) return null;
+  return <section className="simple-turn simple-source-note" aria-label="New project">
+    <div className="simple-msg from-scarlet">
+      <span className="simple-who">Scarlet</span>
+      <p className="said">New project, made from <SourceName source={source} />. That video isn’t changed.</p>
+      <button type="button" className="btn-icon simple-source-dismiss" aria-label="Dismiss" title="Dismiss"
+        onClick={() => { setGone(true); void api.updateProject(projectId, { sourceNotice: false }).catch(() => setGone(false)); }}>
+        <Icon name="x" size={12} /></button>
+    </div>
+  </section>;
+}
+
 function CallActions({ choice, proposes = "cut", disabled, decide, revise }: { choice?: CutChoice; proposes?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
   const skips: CutChoice = proposes === "cut" ? "keep" : "cut";
   useHotkeys(event => {
@@ -786,12 +817,12 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   /** Something that belongs to no run: a note left on a change, a decision the engine recorded. Part of the request's own conversation. */
   const loose = (entry: ThreadEntry, i: number) => {
     switch (entry.kind) {
-      // The editor's words keep to two lines, as a request's do, and the whole message is in its title.
+      // The editor's words keep to two lines, as a request's do, and a click opens the rest.
       case "request":
-        return <div key={i} className="simple-msg from-you" title={entry.text}><span className="simple-who">You</span>
-          {entry.revisionLabel && <span className="simple-revising">{tagOf(tagFor(entry) ?? entry.revisionLabel)}</span>}<p>{entry.text}</p></div>;
+        return <div key={i} className="simple-msg from-you"><span className="simple-who">You</span>
+          {entry.revisionLabel && <span className="simple-revising">{tagOf(tagFor(entry) ?? entry.revisionLabel)}</span>}<Said text={entry.text} /></div>;
       case "answer":
-        return <div key={i} className="simple-msg from-you" title={entry.text}><span className="simple-who">You</span><p>{entry.text}</p></div>;
+        return <div key={i} className="simple-msg from-you"><span className="simple-who">You</span><Said text={entry.text} /></div>;
       case "agent":
         return <div key={i} className="simple-msg from-scarlet"><span className="simple-who">Scarlet</span><Said text={entry.fullText ?? entry.text} /></div>;
       case "change":
@@ -895,8 +926,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
       if (e.kind === "agent") { if (!quiet && !(e.onNote && closed)) { told = true; if (!listing) said.push(<Said key={i} className="req-say" text={e.fullText ?? e.text} />); } }
       else if (e.kind === "question") said.push(<p key={i} className={e.answered ? "req-say is-quiet" : "req-say"}>{e.text}
         {!e.answered && <button type="button" className="simple-link is-warn" onClick={() => actions.reply(thread)}>Answer</button>}</p>);
-      // The editor's answer is their message: two lines at most, and the whole of it in its title.
-      else if (e.kind === "answer") said.push(<p key={i} className="req-say is-yours" title={e.text}>{e.text}</p>);
+      // The editor's answer is their message: two lines at most, and a click opens the rest.
+      else if (e.kind === "answer") said.push(<Said key={i} className="req-say is-yours" text={e.text} />);
       // An applied change is on the card's last row. A suggestion still says what it is and how to play it. A pass's
       // own proposals are its line, except a suggestion it left that isn't cuts to call: nothing else would show it.
       else if (e.kind === "change" && e.change.state !== "approved" && !isOpenPass(e.change, allTasks)
@@ -955,8 +986,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time. Each has its own Stop.`}>Working on {atOnce} at once</span> : null);
     // One way to stop each request: Stop in its heading once Scarlet has it, the tray's × while it still waits there.
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
-    // The tokens it has used so far sit before Stop, and climb while Scarlet works.
-    const stopLink = stop && <><LiveTokens taskId={task.id} /><button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button></>;
+    // The tokens the request has used sit in its heading, before Stop, climb while Scarlet works and stay once it's done.
+    const headingEnd = <><RequestTokens taskId={task.id} />{stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>}</>;
     const bundle = <RunBundle task={task} events={events[task.id] ?? []} changes={thread.changes} finalChange={final} banded={!!request} callNumber={actions.callNumber}
         say={said.length ? <div className="req-said">{said}</div> : undefined} told={told} result={rows} recovery={recovery}
         // Under its call's row, that row is the cut it saved, with Scarlet's note: the note isn't said again under it.
@@ -973,8 +1004,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     // Inside another request's block, under the row it is about: its tag and the editor's words, with where it stands
     // at their right, as in a block's heading, and its work. Under its row the row names it, and the tag is hidden.
     if (inside) return <div key={run.root} className="subunit" data-run={run.root}>
-      {request && <div className="subunit-msg" title={request.text}><span className="simple-who">You</span>
-        <p><span className="simple-revising">{about ?? "Revision"}</span>{request.text}</p><span className="unit-state">{standing}</span>{stopLink}</div>}
+      {request && <div className="subunit-msg"><span className="simple-who">You</span>
+        <Said lead={<span className="simple-revising">{about ?? "Revision"}</span>} text={request.text} /><span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
@@ -985,14 +1016,15 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const marked = markable && actions.marked === thread.id;
     const pressable = markable || !!actions.fitTimeline;
     const block = <div key={run.root} className="unit" data-run={run.root} data-pinned={isPinned || undefined}>
-      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
+      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`}
         aria-current={marked || undefined} onClick={pressable ? e => {
-          if ((e.target as Element).closest("button, a, input, textarea") || window.getSelection()?.toString()) return;
+          // A press on long words opens or folds them, and leaves the timeline as it is.
+          if ((e.target as Element).closest("button, a, input, textarea, .said.is-clipped, .said.is-open") || window.getSelection()?.toString()) return;
           if (markable) actions.mark!(thread.id);
           actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
-        <p>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}{request.text}</p>
-        <span className="unit-state">{standing}</span>{stopLink}</div>}
+        <Said lead={(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>} text={request.text} />
+        <span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
@@ -2909,7 +2941,7 @@ export function SimpleWorkspace() {
   // Only a point attached to the draft appears as its target. An offered point never reaches the request.
   const point = replyTo ? undefined : pointOf(agentContext);
   const written = useUiStore(s => !!s.agentDraft.trim());
-  const pointTag = point && `At ${clockLabel(point.time)}`;
+  const pointTag = point && !point.fromMessage ? `At ${clockLabel(point.time)}` : undefined;
   // A message being written keeps the box aimed where it was while the editor moves on to another cut or edit. Once
   // they delete it, nothing is being written: the box talks to what is open again, as an empty box does. Left on the
   // cut they came from, the next note typed would revise that one with another cut's card on screen.
@@ -3005,6 +3037,16 @@ export function SimpleWorkspace() {
   const rewordingItem = rewording && queuedItems.find(item => item.id === rewording.id);
   const previewVersion = appliedCut ? beforeCut!.version : pinnedCallVersion ?? draftVersion;
   const playerVersion = previewVersion ?? timeline?.version ?? head ?? undefined;
+  const seekFromMessage = useRef<((time: number) => void) | null>(null);
+  const previewTimeline = appliedCut ? beforeTimeline : pinnedCallVersion ? callTimeline : draft;
+  const messageTimeline = previewVersion ? previewTimeline : timeline?.version === head ? timeline : undefined;
+  const messageDuration = useMemo(() => source ? source.duration ?? 0 : messageTimeline ? timelineDuration(messageTimeline) : 0, [source, messageTimeline]);
+  const messageClock: MessageClock | undefined = messageDuration > 0 && !replyTo && !rewordingItem
+    ? { duration: messageDuration, timeline: messageTimeline, version: playerVersion, mediaId: source?.id, seek: time => seekFromMessage.current?.(time) }
+    : undefined;
+  const markTypedTimes = !!messageClock && !!point?.fromMessage && point.version === playerVersion && point.mediaId === source?.id;
+  const typedTimes = useUiStore(useShallow(s => markTypedTimes
+    ? [...new Set(messageTimestamps(s.agentDraft, messageDuration).map(stamp => stamp.time))] : []));
   const canOfferPoint = !replyTo && !rewordingItem && !speaking && !aimed;
   // Leave a picked moment behind when playback or a seek takes the editor away. Once a message is being
   // written or recorded, its explicit target stays with it. N can attach while the player's pause is settling.
@@ -3101,6 +3143,7 @@ export function SimpleWorkspace() {
     onCreated={() => { follow.current = true; }} onSent={sentUnder(aims.current)}
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
+    messageClock={messageClock}
     editHere={offeredPoint && canOfferPoint ? { time: clockLabel(offeredPoint.time), onSelect: () => pickPoint(offeredPoint, "attach") } : undefined}
     targetTag={boxTag} targetIsPoint={!!pointTag && boxTag === pointTag} onClearTarget={() => settleAim.current("new")}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
@@ -3132,7 +3175,10 @@ export function SimpleWorkspace() {
           <header className="simple-header">
             <Link to="/" className="simple-back" onClick={() => player.pause()} title="All projects" aria-label="All projects">
               <span className="rotate-180 inline-flex"><Icon name="arrow" size={13} /></span></Link>
-            <h1 title={current.project.name}>{current.project.name}</h1>
+            {/* A short says which video it was made from, under its name, for as long as it is open. */}
+            <h1 title={current.project.name} className={current.project.source ? "has-source" : undefined}>
+              {current.project.source ? <><span className="simple-header-name">{current.project.name}</span><SourceLine source={current.project.source} /></> : current.project.name}
+            </h1>
             <ConnectionStatus />
             {/* The menu's button is marked when something inside needs the editor, and the row that does carries the
                 same mark. While videos cache, the ring is on the Media button. */}
@@ -3149,6 +3195,8 @@ export function SimpleWorkspace() {
                   <CachingMenuItem close={close} />
                   <MenuItem onClick={() => { close(); setTranscript(v => !v); }}><Icon name="diff" />{transcript ? "Hide transcript" : "Transcript"}</MenuItem>
                   <ExportMenuItem onOpen={() => setPanel("export")} close={close} />
+                  {/* A short is made from the long video, not from another short. */}
+                  {!current.project.source && <MenuItem onClick={() => { close(); setPanel("shorts"); }}><Icon name="portrait" />Make shorts</MenuItem>}
                   <div role="separator" className="my-1 border-t border-line" />
                   <AgentChip variant="menu" direction="down" threadInput={replyThread ? replyThread.question ? "answer" : "reply" : undefined} />
                   <MenuItem onClick={() => { close(); useUiStore.getState().setProjectSettingsOpen(true); }}><Icon name="monitor" />Project settings</MenuItem>
@@ -3168,6 +3216,7 @@ export function SimpleWorkspace() {
               const pane = e.currentTarget;
               follow.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 48;
             }}>
+              {current.project.source?.notice && <SourceNote projectId={current.id} source={current.project.source} />}
               {current.reviewStatus === "loading" ? <Loading label="Loading edits…" />
                 : current.reviewStatus === "error" ? <p className="simple-error" role="alert">{current.reviewError}{" "}
                   <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>
@@ -3192,7 +3241,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
+          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
             gaps: cutKey ? gaps : undefined, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? audition)?.skips,
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
@@ -3203,7 +3252,7 @@ export function SimpleWorkspace() {
                   beforeWindow: preparedCall?.before.window, afterWindow: preparedCall?.after.window,
                   beforeFile: preparedCall?.before.file, afterFile: preparedCall?.after.file } : undefined,
             onGap: hearInBefore, onBand, onPick: pickPoint, onRange: markRange, holdPassage: cutWaits, writeRequest, heard: heardPick, quiet: quietOpen }} threadView={playerView}
-            workingCache={workingCache} draftVersion={previewVersion} draft={appliedCut ? beforeTimeline : pinnedCallVersion ? callTimeline : draft}
+            workingCache={workingCache} draftVersion={previewVersion} draft={previewTimeline}
             openingJoin={openingJoin && !source && !appliedCut}
             draftFailed={openingJoin ? !!single.error || (!!single.preview && !listenJoined) : pinnedCallVersion ? !!savedBefore.error : !appliedCut && !!draftVersion && draftState?.version === draftVersion && !!draftState.failed}
             onRetryDraft={openingJoin ? single.retry : pinnedCallVersion ? savedBefore.retry : () => setDraftAttempt(n => n + 1)} source={source} autoPlaySource={sourceChoice.play && source === chosenSource} hasCut={hasCut}
@@ -3236,5 +3285,6 @@ export function SimpleWorkspace() {
       <Suspense fallback={<Loading label="Opening history…" />}><ChangelogPage /></Suspense>
     </Drawer>
     {panel === "export" && <ExportSheet hasCut={hasCut} onClose={() => setPanel(null)} />}
+    {panel === "shorts" && <MakeShortsSheet onClose={() => setPanel(null)} />}
   </EditHoverContext.Provider>;
 }

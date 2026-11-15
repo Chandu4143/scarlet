@@ -134,19 +134,22 @@
   background: rgba(40, 22, 21, .9); font-size: 10.5px; line-height: 14px; color: var(--color-fg); white-space: nowrap; }
 /* Every applied edit on the working cut, under what needs the editor and quieter than it: a graphic or overlay a bar
    along the top of the strip as long as it is on screen, a zoom, reframe or caption a dimmer bar, anything else a small
-   tick. Cuts are only counted ("9 cuts", "1 cut"), never drawn as lines. Where marks would touch they gather into a count. */
+   tick. On the whole video cuts are only counted ("9 cuts", "1 cut"), and where marks would touch they gather into a
+   count. Zoomed in to a stretch whose edits fit, each is a tick or bar of its own, a cut too. */
 .simple-timeline-edit { position: absolute; z-index: 1; pointer-events: none; font-style: normal; }
 /* A tick runs on beneath a count. */
 .simple-timeline-edit.is-tick { z-index: 0; }
 .simple-timeline-edit.is-bar, .simple-timeline-edit.is-dim { top: calc(var(--ruler-height) + 3px + var(--edit-lane, 0) * 4px); height: 3px; min-width: 3px; border-radius: 2px;
   background: rgba(244, 241, 233, .78); box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); }
 .simple-timeline-edit.is-dim { background: rgba(244, 241, 233, .32); }
-.simple-timeline-edit.is-tick { top: var(--ruler-height); width: 1px; height: 7px; margin-left: -.5px; background: #8a8782; }
+/* A tick is wide enough to see and point at; the pointer reaches it from either side (LINE_REACH), and the one a press
+   would open stands taller. */
+.simple-timeline-edit.is-tick { top: var(--ruler-height); width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: #c9c5bb; }
 .simple-timeline-edit.is-count { top: calc(var(--ruler-height) - 8px); height: 16px; box-sizing: border-box; display: grid; place-items: center;
   border: 1px solid #4a4845; border-radius: 8px; background: rgba(24, 23, 22, .92); box-shadow: 0 0 0 1px #1a1918; }
 .simple-timeline-edit.is-count span { white-space: nowrap; font-size: 10px; font-weight: 500; line-height: 1; color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .simple-timeline-edit.is-bar.is-hot, .simple-timeline-edit.is-dim.is-hot { background: var(--color-fg); }
-.simple-timeline-edit.is-tick.is-hot { background: var(--color-fg); }
+.simple-timeline-edit.is-tick.is-hot { z-index: 1; width: 3px; height: 15px; margin-left: -1.5px; background: var(--color-fg); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55); }
 .simple-timeline-edit.is-count.is-hot { border-color: var(--color-muted); }
 .simple-timeline-edit.is-count.is-hot span { color: var(--color-fg); }
 .simple-timeline-mark { position: absolute; z-index: 1; pointer-events: none; }
@@ -168,7 +171,7 @@
 .simple-timeline-mark.is-dot.is-hot, .simple-timeline-mark.is-dot.is-on { background: var(--color-fg); }
 .simple-timeline-mark.is-dot.is-on { box-shadow: 0 0 0 3px rgba(255, 255, 255, .16); }
 /* Hovering anywhere along the markers picks the nearest one, and lifts it over the playhead and the others. */
-.simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - 12px); height: 24px; }
+.simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - 12px); height: 32px; }
 /* Over a marker that opens its edit, the pointer says a press opens it instead of scrubbing. */
 .simple-timeline-hover.is-aimed { cursor: pointer; }
 .simple-timeline-mark.is-hot, .simple-timeline-mark.is-on { z-index: 4; }
@@ -481,6 +484,17 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit-stop { flex: none; align-self: center; font-size: 12.5px; line-height: 19px; }
 .unit-state:not(:empty) + .unit-stop { margin-left: -2px; }
 .unit-tokens { flex: none; align-self: baseline; font-size: 12.5px; line-height: 19px; white-space: nowrap; }
+/* A request's tokens open every part of the count on hover, in a note under the count at its right edge. The empty
+   title keeps the heading's own (the editor's whole message) from showing over it. */
+.run-tokens { position: relative; cursor: default; outline: none; }
+.run-tokens:hover, .run-tokens:focus-visible { color: var(--color-muted); }
+.tokens-tip { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; display: flex; flex-direction: column; gap: 3px; width: max-content; min-width: 11rem;
+  padding: 7px 10px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); box-shadow: 0 3px 12px rgb(0 0 0 / 35%);
+  font-size: 12px; line-height: 1.35; font-weight: 400; color: var(--color-muted); text-align: left; white-space: nowrap; pointer-events: none; }
+.tokens-tip > span { display: flex; justify-content: space-between; gap: 16px; }
+.tokens-tip b { font-weight: 500; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+.tokens-tip > .tokens-tip-total { margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--color-line); color: var(--color-fg); }
+.tokens-tip > .tokens-tip-total b { font-weight: 600; }
 .unit:has(> .unit-msg > .unit-stop) .simple-pass-need { right: 42px; }
 .unit:has(.simple-pass-need):has(> .unit-msg > .unit-stop) > .unit-msg { padding-right: var(--chat-gutter, 18px); }
 .unit:has(.simple-pass-need) > .unit-msg > .unit-stop { margin-left: 96px; }
@@ -619,9 +633,11 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .said.is-clipped, .said.is-open { cursor: pointer; }
 .req-say.is-note { font-size: 12.5px; color: var(--color-dim); }
 .req-say.is-bad { color: var(--color-bad); }
-/* The editor's answer is their message: it keeps to two lines, as their request does, and its title has the rest. */
+/* The editor's answer is their message: it keeps to two lines, as their request does, and opens on a click. */
 .req-say.is-yours { padding-left: 10px; border-left: 2px solid var(--color-line); color: var(--color-muted);
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* The editor's own words fold and open the same way, wherever they are clamped. */
+.said.is-open, .unit-msg p.said.is-open, .simple-pin .unit-msg p.said.is-open, .simple-turn > .simple-msg.from-you p.said.is-open, .req-say.is-yours.said.is-open { display: block; }
 .req-say .simple-link { margin-left: 10px; }
 /* Answer sits on its own line under Scarlet's question. */
 .req-say .simple-link.is-warn { display: flex; margin: 5px 0 0; }
@@ -731,3 +747,15 @@ button.queue-head:hover { color: var(--color-fg); }
 .transcript-words .reading-passage [data-match] { text-decoration: underline; text-decoration-color: var(--color-muted); text-underline-offset: 3px; }
 .transcript-words .reading-passage [data-match="current"] { background: var(--color-raised); color: var(--color-fg); text-decoration-color: var(--color-fg); }
 .transcript-words .reading-passage [data-current] { background: var(--color-fg) !important; color: var(--color-bg) !important; }
+
+/* A short's header: its name, and under it the video it was made from, which opens that video. */
+.simple-header h1.has-source { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+.simple-header h1.has-source > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.simple-header-source { font-size: 11.5px; font-weight: 400; color: var(--color-dim); }
+.simple-header-source a, .simple-source-note a { text-decoration: underline; text-underline-offset: 2px; }
+.simple-header-source a:hover, .simple-source-note a:hover { color: var(--color-fg); }
+/* The first thing in a short's chat says it is a new project, until the editor dismisses it. */
+.simple-source-note .simple-msg { display: flex; align-items: flex-start; gap: 8px; }
+.simple-source-note .simple-msg p { flex: 1; min-width: 0; }
+.simple-source-dismiss { flex: none; margin: 1px -6px 0 0; color: var(--color-dim); }
+.simple-source-dismiss:hover { color: var(--color-fg); }

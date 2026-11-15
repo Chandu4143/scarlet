@@ -1406,7 +1406,7 @@ it("asks for a new edit, with the skills and templates it takes, in an empty box
   expect(NEW_EDIT_HINT).toBe("Describe an edit, / skills, $ templates");
 });
 
-it("lists the graphic templates with $, as / lists the skills, and puts the chosen one's name in the box", async () => {
+it("lists the templates with $, graphics and then transitions, as / lists the skills, and puts the chosen one's name in the box", async () => {
   const templates = sampleTemplates();
   const list = vi.spyOn(api, "listTemplates").mockResolvedValue({ templates });
   await show();
@@ -1417,10 +1417,14 @@ it("lists the graphic templates with $, as / lists the skills, and puts the chos
   await type("$");
   expect(list).toHaveBeenCalledTimes(1);
   const box = container.querySelector('[role="listbox"]')!;
-  expect(box.getAttribute("aria-label")).toBe("Graphic templates");
+  expect(box.getAttribute("aria-label")).toBe("Templates");
   expect(box.classList.contains("composer-skills")).toBe(true);
-  expect(box.querySelector(".eyebrow")?.textContent).toBe("Templates");
-  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Lower third", "Title card", "Pull quote"]);
+  expect([...box.querySelectorAll(".eyebrow")].map(e => e.textContent)).toEqual(["Graphics", "Transitions"]);
+  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Lower third", "Title card", "Pull quote", "Swipe", "Dip to black"]);
+  // A transition's row moves between the pictures either side of a cut, and says how many frames it lasts.
+  const swipe = rows()[3]!;
+  expect(swipe.querySelector(".composer-template-thumb .transition-picture")?.className).toBe("transition-picture is-push to-left");
+  expect(swipe.querySelector(".composer-template-fields")?.textContent).toBe(`${Math.round(0.4 * project.settings.fps)} frames`);
   // Each row: its picture over the frame under the playhead, its title, and its fields under it.
   expect(rows()[0]!.querySelectorAll(".composer-template-thumb img")).toHaveLength(2);
   expect(rows()[0]!.querySelector(".composer-template-fields")?.textContent).toBe("Name, Title");
@@ -1431,6 +1435,10 @@ it("lists the graphic templates with $, as / lists the skills, and puts the chos
   await key("ArrowDown");
   expect(rows()[1]!.getAttribute("aria-selected")).toBe("true");
   expect(useTemplatesStore.getState().lit?.id).toBe("tpl_title");
+  // A lit transition plays over the player's picture.
+  await key("ArrowDown");
+  await key("ArrowDown");
+  expect([useTemplatesStore.getState().lit?.id, useTemplatesStore.getState().lit?.transition?.type]).toEqual(["tpl_swipe", "push"]);
   await key("Escape");
   expect(container.querySelector('[role="listbox"]')).toBeNull();
   expect(useTemplatesStore.getState().lit).toBeNull();
@@ -1517,4 +1525,65 @@ it("sends a message about a moment that carries files as a request about that mo
   expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
     instruction: "Put this logo in the corner here", context: expect.objectContaining({ time: 11, attachments: [{ id: "att_logo", name: "logo.png", size: 3 }] }),
   }));
+});
+
+it("marks timestamps as the editor types and sends the first one with the original words", async () => {
+  const seek = vi.fn();
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek };
+  await show({ messageClock });
+  const text = "The audio drops at 1:42. Compare 2:02.";
+  await type(text);
+  const jumps = Array.from(container.querySelectorAll<HTMLButtonElement>(".composer-timestamp"));
+  expect(jumps.map(button => button.textContent)).toEqual(["1:42", "2:02"]);
+  expect(seek).not.toHaveBeenCalled();
+  await act(() => jumps[1]!.click());
+  expect(seek).toHaveBeenCalledExactlyOnceWith(122);
+  expect(container.querySelector("textarea")!.value).toBe(text);
+  await act(() => usePlayerStore.setState({ time: 15 }));
+  await submit();
+  expect(useProjectStore.getState().createNote).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    time: 102, text, version: project.head,
+  }));
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+  expect(useUiStore.getState().agentContext).toBeNull();
+});
+
+it("keeps a timestamp on the original source while browsing and releases it when removed", async () => {
+  const messageClock = { duration: 20, version: project.head!, seek: vi.fn() };
+  await show({ messageClock: { ...messageClock, mediaId: "camera-a" } });
+  await type("Audio drops at 0:06.250");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 6.25, mediaId: "camera-a" });
+  await show({ messageClock });
+  await type("Audio drops at 0:06.250 on the mic");
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 6.25, mediaId: "camera-a" });
+  await type("Audio drops at 0:10");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 10, mediaId: undefined });
+  await type("Audio drops");
+  expect(useUiStore.getState().agentContext).toBeNull();
+});
+
+it("leaves an explicit range on the message and out-of-bounds or incomplete clocks as text", async () => {
+  const messageClock = { duration: 20, version: project.head!, seek: vi.fn() };
+  await show({ messageClock });
+  await type("1: 4:5 0:60 1:92:04 12:00:foo 0:20 5:24.1234");
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+  expect(useUiStore.getState().agentContext).toBeNull();
+  const range = { time: 2, end: 8, version: project.head!, clipIds: [] };
+  await act(() => useUiStore.getState().setAgentContext(range));
+  await type("Compare this with 0:10");
+  await submit();
+  expect(useProjectStore.getState().createNote).toHaveBeenCalledWith(PRJ, expect.objectContaining({ time: 2, end: 8 }));
+});
+
+it("updates the note target when a timestamp is edited and recognizes an hour clock in pasted prose", async () => {
+  const messageClock = { duration: 8000, version: project.head!, seek: vi.fn() };
+  await show({ messageClock });
+  await type("Look here (1:05:02.125).");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 3902.125 });
+  await type("Look here (1:05:03), then at 1:05:04.");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 3903 });
+  await type("Look here a little later");
+  expect(useUiStore.getState().agentContext).toBeNull();
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
 });

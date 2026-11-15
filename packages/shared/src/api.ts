@@ -38,6 +38,7 @@
  *   GET    /projects/:id/versions/:a/diff/:b             → { diff: TimelineDiff, description: string[] }
  *   POST   /projects/:id/versions/:v/checkout            → { project }        (set head to a past version; records a change)
  *   GET    /projects/:id/versions/:v/export.otio         → application/json (OTIO)
+ *   POST   /projects/:id/versions/:v/handoff { folder }  → HandoffResponse (the folder for finishing the edit in another app)
  *
  *  Changes (the review loop)
  *   POST   /projects/:id/changes    ProposeChangeRequest → { change: Change, timeline: Timeline }
@@ -152,6 +153,7 @@ import {
   WritableTimeline,
   TimelineOp,
   TimeRange,
+  Transition,
 } from "@scarlet/timeline";
 
 // ---------------------------------------------------------------------------
@@ -203,6 +205,8 @@ export const ProjectSummary = z.object({
    * Nothing while Scarlet is idle. Old engines omit it.
    */
   activity: z.array(ProjectActivity).optional(),
+  /** The project this one was made from, as a short of it. */
+  source: Project.shape.source,
   updatedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime().optional(),
 });
@@ -227,7 +231,13 @@ export const UpdateProjectRequest = z.object({
   archived: z.boolean().optional(),
   name: z.string().min(1).optional(),
   settings: ProjectSettings.partial().optional(),
+  /** False once the editor dismisses the line in a short's chat that says which project it was made from. */
+  sourceNotice: z.literal(false).optional(),
 });
+
+/** The shapes a short can take. */
+export const ShortAspect = z.enum(["9:16", "1:1", "4:5"]);
+
 
 // ---------------------------------------------------------------------------
 // Media
@@ -244,6 +254,12 @@ export const WaveformResponse = z.object({
   speechActivity: z.array(TimeRange).optional(),
 });
 export type WaveformResponse = z.infer<typeof WaveformResponse>;
+
+/** One file of the folder an editor takes to another app: its text, or a copy of a file in Scarlet's library. */
+export type HandoffFile = { path: string; text: string } | { path: string; source: string; size: number };
+
+/** The folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro, and the bytes of footage it copies. */
+export interface HandoffResponse { files: HandoffFile[]; mediaBytes: number }
 
 // ---------------------------------------------------------------------------
 // Versions & changes
@@ -727,6 +743,19 @@ export const Task = z.object({
       attachments: z.array(TaskAttachment).max(20).optional(),
       /** What such a request asked of the agent, without the thread's history. Its name alone doesn't say which edit, so the thread's later requests are told this. */
       asked: z.string().optional(),
+      /**
+       * A request Make shorts started in one of the projects it made: which short this is, the project and version it
+       * was made from, and what the editor chose. The first short's run chooses every short's moment; the others are
+       * started with theirs, in timeline seconds on the copied edit.
+       */
+      short: z.object({
+        index: z.number().int().positive(), count: z.number().int().positive(),
+        sourceProjectId: Id, sourceName: z.string(), sourceVersion: Id,
+        aspect: ShortAspect, maxSeconds: z.number().positive(), captions: z.boolean(),
+        /** Every project Make shorts made for this request, in order, the first included. */
+        projectIds: z.array(Id),
+        moment: z.object({ start: Seconds, end: Seconds, title: z.string() }).optional(),
+      }).optional(),
     })
     .default({}),
   state: TaskState,
@@ -872,8 +901,34 @@ export const CreateTaskRequest = z.object({
   serviceTier: AgentOptionId.optional(),
   instruction: z.string().min(1),
   voiceTranscript: z.string().optional(),
-  context: Task.shape.context.removeDefault().omit({ dialogueOperation: true, dialogueRange: true }).optional(),
+  context: Task.shape.context.removeDefault().omit({ dialogueOperation: true, dialogueRange: true, short: true }).optional(),
 });
+
+/** What the editor chose in Make shorts. Each short becomes a project of its own, made from this one's finished edit. */
+export const MakeShortsRequest = z.object({
+  /** Up to this many: the run that chooses the moments may find fewer that stand on their own. */
+  count: z.number().int().min(1).max(5),
+  aspect: ShortAspect,
+  /** Each short runs under this long. */
+  maxSeconds: z.number().int().min(10).max(600),
+  captions: z.boolean(),
+  agent: AgentId,
+  model: z.string().optional(),
+  effort: AgentEffort.optional(),
+  fast: z.boolean().optional(),
+  serviceTier: AgentOptionId.optional(),
+});
+export type MakeShortsRequest = z.infer<typeof MakeShortsRequest>;
+
+/** The moments the first short's run chose, in timeline seconds on the copied edit, one per short, in order. */
+export const ShortsPlanRequest = z.object({
+  moments: z.array(z.object({
+    start: Seconds, end: Seconds,
+    /** The short's name: what the editor sees in the library and the project's header. */
+    title: z.string().trim().min(1).max(80),
+  })).min(1).max(5),
+});
+export type ShortsPlanRequest = z.infer<typeof ShortsPlanRequest>;
 
 /**
  * New words for a request still waiting its turn, and the skills their /commands name, resolved as a send resolves
@@ -1095,12 +1150,24 @@ export type UsageResponse = z.infer<typeof UsageResponse>;
 /** Template names are what the editor types after $, so they follow the same rule as skill names. */
 export const TemplateSlug = SkillSlug;
 
+/** What a template makes: a graphic over the picture, or a transition between two clips. */
+export const TemplateKind = z.enum(["graphic", "transition"]);
+export type TemplateKind = z.infer<typeof TemplateKind>;
+
+/** A transition template: how the picture moves at a join, without the name of the template it is. */
+export const TransitionStyle = Transition.omit({ template: true });
+export type TransitionStyle = z.infer<typeof TransitionStyle>;
+
 /**
- * A graphic the editor can reuse: an HTML/CSS page with named fields that Scarlet fills in and renders over the
- * picture. Saved library-wide, like skills.
+ * Something the editor can reuse by typing its name after $. A graphic is an HTML/CSS page with named fields that
+ * Scarlet fills in and renders over the picture; a transition is how the picture moves from one clip to the next.
+ * Saved library-wide, like skills.
  */
 export const GraphicTemplateSummary = z.object({
   id: Id,
+  kind: TemplateKind.default("graphic"),
+  /** A transition template's movement. */
+  transition: TransitionStyle.optional(),
   /** What follows $ in a message, e.g. "lower-third". */
   name: TemplateSlug,
   /** How the list names it, e.g. "Lower third". */
@@ -1120,8 +1187,8 @@ export const TemplateFields = z.record(z.string().max(2000));
 
 /** A saved template as the agent reads it: its page with `{{Field}}` placeholders and what it was drawn with. */
 export const GraphicTemplate = GraphicTemplateSummary.extend({
-  /** The page, with a `{{Field}}` placeholder wherever a field's value goes. */
-  html: z.string().min(1).max(500_000),
+  /** The page, with a `{{Field}}` placeholder wherever a field's value goes. Empty for a transition. */
+  html: z.string().max(500_000),
   /** The values its preview is drawn with. */
   sample: TemplateFields,
   /** The frame it was designed in. A use renders at the project's size. */
@@ -1134,14 +1201,15 @@ export const GraphicTemplate = GraphicTemplateSummary.extend({
 });
 export type GraphicTemplate = z.infer<typeof GraphicTemplate>;
 
-/** POST /templates: save a template, or replace the one with the same name. */
+/** POST /templates: save a template, or replace the one with the same name. A transition sends `transition` and no page. */
 export const SaveTemplateRequest = z.object({
   name: TemplateSlug.max(64),
   title: z.string().trim().min(1).max(120),
   description: z.string().max(2000).default(""),
-  fields: z.array(z.string().trim().min(1).max(60)).max(20),
-  html: z.string().min(1).max(500_000),
-  sample: TemplateFields,
+  fields: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
+  html: z.string().min(1).max(500_000).optional(),
+  sample: TemplateFields.default({}),
+  transition: TransitionStyle.optional(),
   /** A graphic of this project whose files (fonts, pictures) the page links to. */
   projectId: Id.optional(),
   basedOn: Id.optional(),
@@ -1241,6 +1309,13 @@ export const SkillVersion = z.object({
   content: z.string(),
   author: Author.optional(),
   createdAt: z.string().datetime().optional(),
+  /**
+   * What this version changed, in one line, for the skill's history. A version Scarlet wrote for a request carries
+   * the editor's words for it, or the rule they approved in Learnings (`from` says which). Any other version is named
+   * from its difference with the one before: the parts of the skill it added, removed or changed.
+   */
+  note: z.string().optional(),
+  from: z.enum(["request", "learning"]).optional(),
 });
 export type SkillVersion = z.infer<typeof SkillVersion>;
 
