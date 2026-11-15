@@ -183,7 +183,10 @@ const PREPARE = String.raw`(async () => {
     } else if (["monospace", "serif"].some(g => width('72px "' + family + '", ' + g) !== width("72px " + g))) continue;
     missing.push({ family, sample });
   }
-  return missing;
+  // With a font missing, which common families this machine does have, so one can be chosen without guessing.
+  const common = ["Helvetica Neue","Helvetica","Arial","Avenir Next","Avenir","Futura","Gill Sans","Optima","Verdana","Tahoma","Trebuchet MS","Segoe UI","Calibri","Roboto","Open Sans","Lato","Montserrat","Inter","SF Pro Display","SF Pro Text","Georgia","Times New Roman","Palatino","Baskerville","Didot","Garamond","Menlo","Courier New","DejaVu Sans","Liberation Sans","Noto Sans","Ubuntu"];
+  const installed = missing.length ? common.filter(family => ["monospace", "serif"].some(g => width('72px "' + family + '", ' + g) !== width("72px " + g))) : [];
+  return { missing, installed };
 })()`;
 
 export interface MissingFont {
@@ -239,7 +242,7 @@ async function evaluate<T>(browser: Browser, page: Page, expression: string): Pr
 }
 
 async function prepare(browser: Browser, page: Page) {
-  return evaluate<MissingFont[]>(browser, page, PREPARE);
+  return evaluate<{ missing: MissingFont[]; installed: string[] }>(browser, page, PREPARE);
 }
 
 async function frameAt(browser: Browser, page: Page, ms: number): Promise<Buffer> {
@@ -274,6 +277,8 @@ export interface GraphicRenderResult {
   output: string;
   frames: number;
   missingFonts: MissingFont[];
+  /** With a font missing, the common families that are installed here. */
+  installedFonts: string[];
   /** Script errors and files the page couldn't load, as Chrome reported them. */
   problems: string[];
   /** Milliseconds spent. */
@@ -309,7 +314,7 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
   return withBrowser(opts, async (browser, url) => {
     const size = { width: opts.width, height: opts.height, scale: 1 };
     const pages = await Promise.all(Array.from({ length: workers }, () => openPage(browser, url, size, opts.signal)));
-    const missingFonts = await prepare(browser, pages[0]!);
+    const { missing: missingFonts, installed: installedFonts } = await prepare(browser, pages[0]!);
     await Promise.all(pages.slice(1).map(page => prepare(browser, page)));
 
     const ffmpeg = spawn(resolveFfmpeg(opts.ffmpegPath), [
@@ -368,7 +373,7 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
       opts.signal?.removeEventListener("abort", kill);
     }
     return {
-      output: opts.output, frames: total, missingFonts,
+      output: opts.output, frames: total, missingFonts, installedFonts,
       problems: [...new Set(pages.flatMap(p => p.problems))].slice(0, 10),
       elapsedMs: Math.round(performance.now() - started),
     };
@@ -376,13 +381,13 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
 }
 
 /** Draw one moment of the page as a transparent PNG, scaled to `outputWidth` (a template's preview). */
-export async function renderGraphicStill(opts: GraphicPageOptions & { time: number; outputWidth?: number }): Promise<{ png: Buffer; missingFonts: MissingFont[]; problems: string[] }> {
+export async function renderGraphicStill(opts: GraphicPageOptions & { time: number; outputWidth?: number }): Promise<{ png: Buffer; missingFonts: MissingFont[]; installedFonts: string[]; problems: string[] }> {
   return withBrowser(opts, async (browser, url) => {
     const scale = opts.outputWidth ? opts.outputWidth / opts.width : 1;
     const page = await openPage(browser, url, { width: opts.width, height: opts.height, scale }, opts.signal);
-    const missingFonts = await prepare(browser, page);
+    const { missing: missingFonts, installed: installedFonts } = await prepare(browser, page);
     const png = await frameAt(browser, page, opts.time * 1000);
-    return { png, missingFonts, problems: page.problems };
+    return { png, missingFonts, installedFonts, problems: page.problems };
   });
 }
 

@@ -385,7 +385,7 @@ export async function renderProjectGraphic(ctx: Ctx, project: Project, input: Gr
       }));
     }
     const checks = coverage.map((c, i) => ({ ...c, ...(pictures[i] && { jpeg: pictures[i]!.toString("base64") }) }));
-    const base = { missingFonts: drawn.missingFonts, problems: drawn.problems, checks, ...(checkAt !== undefined && { checkAt }),
+    const base = { missingFonts: drawn.missingFonts, ...(drawn.installedFonts.length && { installedFonts: drawn.installedFonts }), problems: drawn.problems, checks, ...(checkAt !== undefined && { checkAt }),
       width, height, fps, duration, renderMs: drawn.elapsedMs };
     if (drawn.missingFonts.length) return base;
 

@@ -1190,6 +1190,8 @@ export const GraphicRenderResponse = z.object({
   /** The page Scarlet kept for this graphic, to read or revise. */
   source: z.string().optional(),
   missingFonts: z.array(z.object({ family: z.string(), sample: z.string() })),
+  /** With a font missing, the common families installed here. */
+  installedFonts: z.array(z.string()).optional(),
   problems: z.array(z.string()),
   checks: z.array(GraphicCheck),
   /** Timeline seconds the checks were laid over, when there was a picture there. */
