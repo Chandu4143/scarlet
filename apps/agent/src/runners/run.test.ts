@@ -154,6 +154,50 @@ describe.skipIf(process.platform === "win32")("runClaude", { timeout: 20_000 }, 
     expect(events.map((e) => e.type)).toEqual(["log", "question"]);
   });
 
+  it("fails a run whose Scarlet MCP server failed to start, and stops the CLI instead of letting it write without tools", async () => {
+    const mcpFailed = "Scarlet's MCP server failed to start, so Claude Code had no editing tools.";
+    // Recorded from claude 2.1.325: the server failed, and Claude answered without tools and called it a success.
+    const failed = '{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-4-1","mcp_servers":[{"name":"scarlet","status":"failed","source":"dynamic"}]}';
+    const success = '{"type":"result","subtype":"success","is_error":false,"result":"I can\'t reach the project\'s tools."}';
+    const { result, events } = await run(runClaude, { lines: [failed, success] });
+    expect(result).toMatchObject({ ok: false, error: mcpFailed, summary: "I can't reach the project's tools.", exitCode: 0, sessionId: "s1" });
+    expect(result).not.toHaveProperty("aborted");
+    expect(result.resumeFailed).toBeUndefined();
+    expect(events[1]).toMatchObject({ type: "error", text: "Scarlet MCP server status: failed" });
+
+    // Nothing useful can follow, so the CLI is stopped instead of left to write for minutes.
+    const started = Date.now();
+    const stopped = await run(runClaude, { lines: [failed, claudeText("m1", "Writing it all out.")], sleep: 30 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(stopped.result).toMatchObject({ ok: false, error: mcpFailed });
+    expect(stopped.result).not.toHaveProperty("aborted");
+    expect(stopped.result).not.toHaveProperty("timedOut");
+
+    // The server's failure is the cause, whatever the CLI made of it afterwards.
+    expect((await run(runClaude, { lines: [failed, '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Ran out of turns."}'] })).result.error).toBe(mcpFailed);
+    expect((await run(runClaude, { lines: [failed], code: 3 })).result.error).toBe(mcpFailed);
+
+    // A resumed session is the same.
+    const resumed = await run(runClaude, { lines: [failed, success] }, { resumeSession: "s1" });
+    expect(resumed.result).toMatchObject({ ok: false, error: mcpFailed, sessionId: "s1" });
+    expect(resumed.result.resumeFailed).toBeUndefined();
+
+    // A question it posted is still a question, and a cancel is still a cancel.
+    expect((await run(runClaude, { lines: [failed, ...claudeQuestion], sleep: 30 })).result).toMatchObject({ ok: true, question: "Keep the cold open?", questionPosted: true });
+    // The cancel lands just after the first line, before the stop, once the stand-in has started its sleep: a group
+    // kill sent while the shell is still forking can miss the new process, which then holds the output open.
+    const controller = new AbortController();
+    const cancelled = await run(runClaude, { lines: [failed], sleep: 30 }, { signal: controller.signal, onEvent: () => setTimeout(() => controller.abort(), 100) });
+    expect(cancelled.result).toMatchObject({ ok: false, error: "cancelled", aborted: true });
+
+    // Only a failed server fails the run: one still starting, or not listed at all, keeps today's result.
+    const noChange = '{"type":"result","subtype":"success","is_error":false,"result":"Nothing to change."}';
+    for (const status of ["connected", "pending", undefined]) {
+      const init = JSON.stringify({ type: "system", subtype: "init", session_id: "s1", mcp_servers: status ? [{ name: "scarlet", status }] : [] });
+      expect((await run(runClaude, { lines: [init, noChange] })).result, String(status)).toMatchObject({ ok: true, error: undefined, summary: "Nothing to change." });
+    }
+  });
+
   it("tells a run that went silent from one at its time cap and one the host cancelled", async () => {
     const stalled = await run(runClaude, { lines: [claudeInit, claudeText("m1", "Reading.")], sleep: 30 }, { stallMs: 1500 });
     expect(stalled.result).toMatchObject({ ok: false, error: "stalled", timedOut: true, stalled: true, summary: "Reading.", sessionId: "s1" });
