@@ -2282,6 +2282,26 @@ const reviewCalls = async () => {
 const passRow = (note: string) => passRows().find(r => r.querySelector(".simple-pass-label")?.textContent?.includes(note))!;
 const call = () => container.querySelector<HTMLElement>('[aria-label="Call"]')!;
 
+it("keeps a call the editor sent back with them once its revision leaves the footage in, until they approve it", async () => {
+  const save = flagged();
+  data = { ...data, changes: data.changes.map(c => c.id === "chg_ready" ? { ...c, cutAssessments: c.cutAssessments!.map(a => a.index === 1
+    ? { ...a, reason: "Left the breath in, as asked.", revised: true, proposes: "keep" as const, askOrder: 1 } : a.index === 2 ? { ...a, askOrder: 2 } : a) } : c) };
+  const approve = vi.fn().mockResolvedValue({ outcome: "applied" });
+  useProjectStore.setState({ current: data, approve });
+  await show();
+  await act(async () => {});
+  // The revised call still needs the editor, as the one Scarlet never revised does.
+  expect(passCard().querySelector(".simple-pass-need")?.textContent).toBe("2 need you");
+  await click(passCard().querySelector(".simple-pass-need")!);
+  expect(call().querySelector(".edit-card-title")?.textContent).toBe("Left the breath in, as asked.");
+  // Approve takes the revision, which keeps the footage.
+  await press("a");
+  expect(save).toHaveBeenLastCalledWith("chg_ready", expect.objectContaining({ choices: [{ index: 1, choice: "keep" }] }));
+  expect(passCard().querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
+  expect(passRows()[0]?.querySelector(".simple-pass-value")?.textContent).toBe("Approved");
+  expect(approve).not.toHaveBeenCalled();
+});
+
 it("sums a dialogue pass up on one card, and makes its calls in the card on the timeline", async () => {
   const save = flagged();
   const approve = vi.fn().mockResolvedValue({ outcome: "applied" });

@@ -4022,7 +4022,20 @@ it("hands off one call while the pass can still trim and assess its other cuts",
   expect(published.filter(c => c.id === next.review.id)).toEqual([next.review]);
 });
 
-it("reserves a published call's number after an editor revision keeps its footage", async () => {
+it("puts the editor's words on the part of a cut they marked, and tells Scarlet which part it is", async () => {
+  const { base, staged, submit, assess } = dialoguePassInParts();
+  const { review } = await submit(base, [staged(2, 3), staged(8, 9)]);
+  expect((await assess(review, [{ index: 1, start: 8, end: 9, verdict: "ask", reason: "Does this pickup land?" }])).status).toBe(200);
+  const res = await api("POST", `/changes/${review.id}/revise`, { text: "leave this part in",
+    position: { version: base, time: 8, end: 9, clipIds: [], cutIndex: 1, markedRange: { version: base, start: 8, end: 8.3 } } });
+  expect(res.status).toBe(200);
+  const { note, task } = await res.json() as { note: Note; task: Task };
+  expect(note).toMatchObject({ time: 8, end: 8.3 });
+  expect(task.context).toMatchObject({ time: 8, end: 9, cutIndex: 1 });
+  expect(task.instruction).toContain("The editor marked 8.00–8.30 s with these words: its first 0.30 s of the cut's 1.00 s.");
+});
+
+it("keeps a call with the editor, and its number, after their revision leaves its footage in", async () => {
   const { base, staged, submit, assess } = dialoguePassInParts();
   const { review } = await submit(base, [staged(2, 3), staged(8, 9)]);
   expect((await assess(review, [{ index: 1, start: 8, end: 9, verdict: "ask", reason: "Does this pickup land?" }])).status).toBe(200);
@@ -4032,7 +4045,10 @@ it("reserves a published call's number after an editor revision keeps its footag
     keep: true, reason: "The pickup stays." });
   expect(res.status).toBe(201);
   const { change: kept } = await res.json() as { change: Change };
-  expect(kept.cutAssessments).toEqual([{ index: 1, start: 8, end: 9, verdict: "keep", reason: "The pickup stays.", askOrder: 1 }]);
+  // The revision proposes keeping the footage, and the call waits for the editor to approve that.
+  expect(kept.cutAssessments).toEqual([{ index: 1, start: 8, end: 9, verdict: "ask", reason: "The pickup stays.", revised: true, proposes: "keep", askOrder: 1 }]);
+  expect(kept.cutChoices ?? []).toEqual([]);
+  expect(kept.applyWhenDone).toBeUndefined();
   expect((await api("POST", `/tasks/${request.id}/complete`, { state: "done" })).status).toBe(200);
   const two = await submit(base, [staged(14, 15)]);
   expect(two.review.cutAssessments).toEqual(kept.cutAssessments);
@@ -4410,7 +4426,9 @@ it.each([false, true])("saves a scoped revision after a later part renumbers its
   expect(change.cutChoices).toContainEqual({ index: 1, choice: "keep", start: 4, end: 5 });
   expect(ctx.repos.changes.get(next.id)).toMatchObject({ state: "rejected", replacedBy: change.id });
   if (changed) {
-    expect(change.cutChoices).toContainEqual({ index: 2, choice: "keep", start: 11, end: 13 });
+    // The editor sent this cut back, so its revision waits for their call even though it leaves the footage in.
+    expect(change.cutChoices.some((c: { index: number }) => c.index === 2)).toBe(false);
+    expect(change.cutAssessments).toContainEqual(expect.objectContaining({ index: 2, verdict: "ask", revised: true, proposes: "keep" }));
     expect(ctx.repos.tasks.get(taskId)?.cutConflict).toBeUndefined();
   } else {
     expect(change.cutEdits).toMatchObject([{ index: 2, version: next.fromVersion, range: { start: 10.5, end: 13 } }]);

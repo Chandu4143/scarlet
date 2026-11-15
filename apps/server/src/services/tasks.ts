@@ -536,7 +536,8 @@ export function followUpInstruction(ctx: Ctx, projectId: string, threadId: strin
 export function aboutStagedCut(ctx: Ctx, projectId: string, context: Task["context"]): string {
   const { changeId, cutIndex, time } = context;
   const pass = changeId && cutIndex !== undefined && time !== undefined ? ctx.repos.changes.get(changeId) : undefined;
-  return pass?.projectId === projectId ? cutRevisionReference(pass, { cutIndex, time: time!, end: context.end, clipIds: context.clipIds ?? [] }) : "";
+  return pass?.projectId === projectId ? cutRevisionReference(pass, { cutIndex, time: time!, end: context.end, clipIds: context.clipIds ?? [],
+    version: context.version, mediaId: context.mediaId, markedRange: context.markedRange }) : "";
 }
 
 /** How long a hold for rewording lasts unless the app renews it, so a closed app can't keep a request from ever starting. */
