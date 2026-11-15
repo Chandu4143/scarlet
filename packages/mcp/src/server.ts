@@ -26,7 +26,7 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, disabledEditingTools, type EditingTools, type ScarletToolName,
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, TimeRange } from "@scarlet/timeline";
@@ -114,7 +114,6 @@ function reviewReminderText({ changeId, total, unchecked }: StagedReview) {
 }
 export interface ScarletMcpContext {
   projectId: string;
-  editingTools?: EditingTools;
   /** How long a cut or an edge check waits for word alignment to reach it. Tests shorten it. */
   alignmentWaitMs?: number;
   /** Time budget for each collection of slow join measurements. */
@@ -294,10 +293,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const pendingDetections = new Map<string, Promise<DialogueDetections>>();
   /** Dialogue analysis requests that failed in a row, per recording, and the last reason. */
   const dialogueFailures = new Map<string, { count: number; error: string }>();
-  const disabled = disabledEditingTools(ctx.editingTools ?? {});
   /** Scarlet only offers WAV to a model whose harness delivers it. */
-  const hearing = caps.audio && !disabled.has("source_audio");
-  const reviewPictures = caps.images && !disabled.has("frame_contact_sheet");
+  const hearing = caps.audio;
+  const reviewPictures = caps.images;
   const authoring = ctx.task?.kind === "skill_from_change" ? ctx.task.context : undefined;
   const server = new McpServer(
     { name: "scarlet", version: "0.1.4" },
@@ -308,8 +306,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         ? "Scarlet exposes the tools for revising one of the editor’s skills; an empty MCP resource list is normal."
         : ctx.task?.kind === "learning_check"
         ? "Scarlet exposes the tools for reading the editor’s skills and offering a rule for one; an empty MCP resource list is normal."
-        : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand." +
-        (disabled.size ? ` The editor turned off these tools in Settings: ${[...disabled].join(", ")}.` : ""),
+        : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand.",
     },
   );
   const fetchImpl = ctx.fetch ?? globalThis.fetch.bind(globalThis);
@@ -899,7 +896,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     shape: Shape,
     handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<ToolResult>,
   ) {
-    if (disabled.has(name) || (name === "source_audio" && !caps.audio)) return;
+    if (name === "source_audio" && !caps.audio) return;
     // Only a harness with file tools can put anything in the artifact directory for asset_add to import.
     if (name === "asset_add" && !caps.files) return;
     if (authoring && !SKILL_FROM_CHANGE_TOOLS.has(name)) return;
@@ -2038,7 +2035,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const repaired = !playback && change.cutReasons?.some(r => r.originalRange && r.start >= removed.start - .00001 && r.start < removed.end);
     if (repaired) {
       let compared = false;
-      if (!disabled.has("change_review_cut") && !disabled.has("frame_contact_sheet") && (audio || caps.images)) {
+      if (audio || caps.images) {
         const comparison = await inspect(() => client.reviewCut(ctx.projectId, { changeId: change.id, index, edge: "start", handles: 1.5,
           includeAudio: audio }), windows => {
             const after = windows.find(w => w.id === change.toVersion && w.label === "After");
@@ -2343,7 +2340,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- timeline -------------------------------------------------------------
 
-  const perception = registerPerception({ tool, client, projectId: ctx.projectId, otherInputWords: async (mediaId, words) => (await otherInput(mediaId, words)).other, seesFrames: caps.images && !disabled.has("media_frame"), getTimeline, peekTimeline, getProject, readPassage, transcriptWords, showWords, settledThrough, readLevels, unavailable: unavailableOnce,
+  const perception = registerPerception({ tool, client, projectId: ctx.projectId, otherInputWords: async (mediaId, words) => (await otherInput(mediaId, words)).other, seesFrames: caps.images, getTimeline, peekTimeline, getProject, readPassage, transcriptWords, showWords, settledThrough, readLevels, unavailable: unavailableOnce,
     readWaveform: (mediaId, from, to, points) => readPrepared(mediaId, "waveform", () => client.waveform(mediaId, from, to, points, true)) });
 
   async function readApprovedExample(changeId: string) {
