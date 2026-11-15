@@ -96,9 +96,10 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   const { effective, unavailableReason } = useAgentAvailability();
   const working = !!edit && !FINISHED.includes(edit.state);
   const question = edit?.state === "waiting_for_user" ? edit.question : null;
-  // The message box takes a new request only while the page shows the skill as saved, which is what Scarlet revises,
-  // and none while Scarlet has one. An answer goes to the request that asked, whichever version shows.
-  const boxOff = !question && (working || viewVersion !== "current");
+  // The message box takes a new request only while the page shows the skill as saved, which is what Scarlet revises:
+  // the skill to edit, or its newest version with what it changed marked. It takes none while Scarlet has one. An
+  // answer goes to the request that asked, whichever version shows.
+  const boxOff = !question && (working || (viewVersion !== "current" && viewVersion !== loaded?.skill.version));
 
   // Unsaved edits are kept on this computer until they are saved or discarded, so a quit doesn't lose them.
   const draftKey = `scarlet.skillDraft.v1/${skillId ?? "new"}`;
@@ -118,6 +119,9 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
     setDirty(false);
   };
   const savedVersion = loaded?.skill.version;
+  // The version saved as the page last loaded it, for a request that ends to tell whether it saved a new one.
+  const savedVersionNow = useRef(savedVersion);
+  savedVersionNow.current = savedVersion;
   useEffect(() => {
     if (!dirty) return;
     // A change that was put back leaves nothing to keep.
@@ -219,6 +223,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
     if (isNew) return void restoreDraft();
     setLoaded(null);
     setEdits([]);
+    setViewVersion("current");
     setAsk("");
     setAskErr(null);
     let stale = false;
@@ -277,9 +282,12 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
     if (!skillId || owner.skillId !== skillId || owner.editId !== task.id) return;
     const res = await api.skill(skillId);
     if (editOwner.current !== owner) return;
+    const revised = res.skill.version !== savedVersionNow.current;
     show(res);
     useSkillsStore.getState().apply(res.skill);
-    setViewVersion("current");
+    // A version Scarlet saved opens as the history shows it, with what it changed marked, until the editor leaves
+    // the page or presses Done. Another request revises it from there.
+    setViewVersion(revised ? res.skill.version : "current");
     setEdit(task);
   }
   useEffect(() => {
