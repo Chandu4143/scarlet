@@ -5,7 +5,11 @@ Every project uses the same library. A skill command pins its guide to the task.
 | Stage | Workflow | Use it when |
 |---|---|---|
 | Story and pacing | [Dialogue pass](dialogue-pass/SKILL.md) | Remove abandoned starts, redundant takes and distracting pauses while preserving the speaker’s meaning and pace. A selected passage limits the cut. |
+| Story and pacing | [Fit a target length](fit-length/SKILL.md) | Bring the edit to a running time you name by taking out the passages it needs least, and offer the rest when hitting the number would cost something. |
+| Story and pacing | [Cold open](cold-open/SKILL.md) | Offer up to three moments that could open the video, each as an alternative you play and choose. Nothing goes in front on its own. |
+| Story and pacing | [Speed through waits](speed-through-waits/SKILL.md) | Play installs, builds, renders and loading fast instead of cutting them, with every track in sync and speech at normal speed. |
 | Picture and graphics | [Frame the screen on what I'm doing](frame-screen/SKILL.md) | Frame tight on the pane or passage being used or read, with smooth zooms in and out as the subject changes. |
+| Picture and graphics | [Punch-ins on a talking head](punch-in/SKILL.md) | Cut between the wide framing and a tighter one across jump cuts and on lines that deserve weight, with the face placed from where it actually is. |
 | Picture and graphics | [Add captions](add-captions/SKILL.md) | Caption retained speech in short, readable lines. |
 | Picture and graphics | [Motion graphics](motion-graphics/SKILL.md) | Lower thirds, titles and callouts that read well on the footage, in the project's style guide or the look the editor has approved. |
 
