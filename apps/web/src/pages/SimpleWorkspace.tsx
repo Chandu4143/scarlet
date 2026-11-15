@@ -70,6 +70,9 @@ function subscribeWidth(update: () => void) {
 const simpleRailWidth = (available: number) => Math.max(380, Math.min(480, available * 0.32));
 /** The narrowest the chat stays usable at. */
 const SIMPLE_RAIL_MIN = 320;
+/** The Transcript's column beside the player: wide enough for a few lines of words, never more of the window than the chat. */
+const transcriptRailWidth = (available: number) => Math.max(300, Math.min(400, available * 0.26));
+const TRANSCRIPT_RAIL_MIN = 260;
 
 const ChangelogPage = lazy(async () => ({ default: (await import("./ChangelogPage")).ChangelogPage }));
 const TranscriptPane = lazy(async () => ({ default: (await import("../components/transcript/TranscriptPane")).TranscriptPane }));
@@ -199,6 +202,8 @@ interface ChatActions {
   marked?: string;
   /** Put a request's edits on the timeline, from a press on its band. */
   mark?(threadId: string): void;
+  /** Show the whole timeline, from a press on any request's band. */
+  fitTimeline?(): void;
   pass?: OpenPass;
   reviewingId?: string;
   listening?: Listening;
@@ -281,28 +286,33 @@ function CallStanding({ run, answer }: { run?: Task; answer?(): void }) {
     : <span className="edit-card-status working-text" role="status">Revising…</span>;
 }
 
+/** What Approve chooses on a call: the cut, or for a revision that left the footage in, keeping it. */
+const approves = (call: Pick<CutAssessment, "proposes"> | undefined): CutChoice => call?.proposes ?? "cut";
+
 /**
  * A call's decisions and their keys: Approve (A) makes the change Scarlet proposed, Skip (S) leaves it out, and the
- * chosen one stays pressed. Revise (R) aims the message box at this call, so feedback on it goes ahead of requests
- * waiting for the pass.
+ * chosen one stays pressed. A revision that left the cut's footage in proposes keeping it, so there Approve keeps it
+ * and Skip cuts as first staged. Revise (R) aims the message box at this call, so feedback on it goes ahead of
+ * requests waiting for the pass.
  */
-function CallActions({ choice, disabled, decide, revise }: { choice?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
+function CallActions({ choice, proposes = "cut", disabled, decide, revise }: { choice?: CutChoice; proposes?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
+  const skips: CutChoice = proposes === "cut" ? "keep" : "cut";
   useHotkeys(event => {
     if (disabled || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     const key = event.key.toLowerCase();
     if (key === "r") { event.preventDefault(); revise(); return; }
-    const chosen = key === "a" ? "cut" : key === "s" ? "keep" : undefined;
+    const chosen = key === "a" ? proposes : key === "s" ? skips : undefined;
     if (chosen) { event.preventDefault(); decide(chosen); }
   });
   // The decisions stay on the card for the next call. Clicked, one lets go of the focus (WebView2 leaves it there), or
   // Space would press it again on the next call while the video is paused. Pressed by keyboard, it keeps it.
   return <div className="review-actions">
     <button type="button" className="btn-quiet" data-key="R" aria-keyshortcuts="R" title="Revise (R)" disabled={disabled} onClick={revise}>Revise</button>
-    <button type="button" className="btn-primary" data-key="A" aria-keyshortcuts="A" title="Approve (A)" aria-pressed={choice === "cut"} disabled={disabled}
-      onClick={letGo(() => decide("cut"))}>Approve</button>
+    <button type="button" className="btn-primary" data-key="A" aria-keyshortcuts="A" title="Approve (A)" aria-pressed={choice === proposes} disabled={disabled}
+      onClick={letGo(() => decide(proposes))}>Approve</button>
     {/* Skip is a small × after the decision, named on hover, so the row's one button is Approve. */}
-    <button type="button" className="edit-card-icon edit-card-skip" aria-label="Skip" aria-keyshortcuts="S" title="Skip (S)" aria-pressed={choice === "keep"}
-      disabled={disabled} onClick={letGo(() => decide("keep"))}><Icon name="x" size={12} /></button>
+    <button type="button" className="edit-card-icon edit-card-skip" aria-label="Skip" aria-keyshortcuts="S" title="Skip (S)" aria-pressed={choice === skips}
+      disabled={disabled} onClick={letGo(() => decide(skips))}><Icon name="x" size={12} /></button>
   </div>;
 }
 
@@ -968,15 +978,18 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
       {bundle}
       {wrong}
     </div>;
-    // A press on the band of a request that applied edits puts them on the timeline; its band is a shade lighter while
-    // they are the ones marked. Its links and Stop keep their own presses.
+    // A press on any request's band shows the whole timeline. On the band of a request that applied edits it also puts
+    // them on the timeline; its band is a shade lighter while they are the ones marked. Its links and Stop keep their
+    // own presses.
     const markable = !!actions.mark && thread.changes.some(c => c.state === "approved");
     const marked = markable && actions.marked === thread.id;
+    const pressable = markable || !!actions.fitTimeline;
     const block = <div key={run.root} className="unit" data-run={run.root} data-pinned={isPinned || undefined}>
-      {request && <div className={`unit-msg${markable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
-        aria-current={marked || undefined} onClick={markable ? e => {
+      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
+        aria-current={marked || undefined} onClick={pressable ? e => {
           if ((e.target as Element).closest("button, a, input, textarea") || window.getSelection()?.toString()) return;
-          actions.mark!(thread.id);
+          if (markable) actions.mark!(thread.id);
+          actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
         <p>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}{request.text}</p>
         <span className="unit-state">{standing}</span>{stopLink}</div>}
@@ -1123,6 +1136,8 @@ export function SimpleWorkspace() {
   // The request whose band the editor pressed in the chat, to see its edits on the timeline. The latest request takes the
   // timeline back when it is new or applies an edit.
   const [picked, setPicked] = useState<string>();
+  // Counts the presses on a band, each of which shows the whole timeline.
+  const [fitTimeline, setFitTimeline] = useState(0);
   // The request whose edits the timeline numbers when nothing is open: the one picked, else the latest.
   const marked = threads.find(t => t.id === picked) ?? ordered.at(-1);
   // The timeline is on the request the editor went to: an edit they opened, or a pass's full list. Otherwise it is on the
@@ -1525,8 +1540,6 @@ export function SimpleWorkspace() {
   const source = draftVersion ? undefined : chosenSource
     ?? (hasCut ? undefined : previewable.find(m => m.kind === "video" && m.status !== "failed") ?? previewable[0]);
   const [transcript, setTranscript] = useState(false);
-  // The transcript's one heading row: the pane puts its figures and help mark here.
-  const [transcriptTools, setTranscriptTools] = useState<HTMLElement | null>(null);
   const [menuError, setMenuError] = useState("");
   const needsYou = [toLearn > 0 && `${plural(toLearn, "rule")} to review in Learnings`, exportWarning, modelNeedsYou && "No model is ready"]
     .filter((reason): reason is string => !!reason);
@@ -1679,7 +1692,7 @@ export function SimpleWorkspace() {
     if (!pass || !listening || listening.changeId !== pass.id || deciding) return;
     const decidedNow = { ...choicesOf(pass), [listening.index]: choice };
     // A and S reach the log as a bare key: this says which call it decided and how many still wait.
-    appLog("action", choice === "cut" ? "approve-call" : "skip-call", { change: pass.id, cut: listening.index, at: listening.cut.start, left: remainingCalls.length });
+    appLog("action", choice === approves(allCalls.find(a => a.index === listening.index)) ? "approve-call" : "skip-call", { change: pass.id, cut: listening.index, at: listening.cut.start, left: remainingCalls.length });
     const next = nextCallAfterDecision;
     player.pause();
     setListening(next ? { changeId: pass.id, index: next.index, cut: { start: next.start, end: next.end }, side: "after", take: 0, key: `${pass.id}/${next.index}` } : undefined);
@@ -1799,6 +1812,7 @@ export function SimpleWorkspace() {
       setPicked(threadId === ordered.at(-1)?.id ? undefined : threadId);
       setFocus(undefined);
     },
+    fitTimeline() { setFitTimeline(n => n + 1); },
     reviewingId: suggestion?.id,
     listening,
     listen(change, a) {
@@ -2009,7 +2023,7 @@ export function SimpleWorkspace() {
       const at = edit ? (edit.version === head ? edit.range.start : undefined) : placeCut(a)?.start;
       return { index: a.index, askOrder: a.askOrder, n: callNo.get(a.index)!, start: listedAt.get(a.index)!, at, reason: a.reason, version: past.length + 1, earlier: past.at(-1),
         run: cutRuns.get(a.index),
-        state: sentBack(a.index) ? "revising" : passChoices[a.index] === "cut" ? "approved" : passChoices[a.index] === "keep" ? "skipped" : "open" };
+        state: sentBack(a.index) ? "revising" : passChoices[a.index] === undefined ? "open" : passChoices[a.index] === approves(a) ? "approved" : "skipped" };
     }),
     openCall: index => { const call = allCalls.find(a => a.index === index); if (call) actions.listen(pass, call); },
     apply: () => void (passRunning ? saveChoices(pass, choicesOf(pass), true) : approveReview(pass)),
@@ -2591,10 +2605,10 @@ export function SimpleWorkspace() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [reviewKeysOn, !!pass]);
 
-  // Esc goes back to the chat from the Transcript. A cut, an edit or a suggestion that's open takes Esc first.
-  const escBackToChat = workspaceActive && transcript && !reviewingEdit && !(reviewKeysOn && (!!listening || !!suggestion));
+  // Esc closes the Transcript beside the player. A cut, an edit or a suggestion that's open takes Esc first.
+  const escClosesTranscript = workspaceActive && transcript && !reviewingEdit && !(reviewKeysOn && (!!listening || !!suggestion));
   useEffect(() => {
-    if (!escBackToChat) return;
+    if (!escClosesTranscript) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || ignorePageShortcut(e) || inFullScreen()) return;
       e.preventDefault();
@@ -2602,7 +2616,7 @@ export function SimpleWorkspace() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [escBackToChat]);
+  }, [escClosesTranscript]);
 
   // Keep the newest message in view as replies arrive, unless the editor scrolled up to read.
   const chat = useRef<HTMLDivElement>(null);
@@ -2723,7 +2737,7 @@ export function SimpleWorkspace() {
           flash={!conflict && listening.side === "before" && listening.at !== undefined} toggle={() => listenSide(listening.side === "after" ? "before" : "after")} />
       </span>
       {openCallBack ? <CallStanding run={cutRuns.get(openCall.index)} answer={answeringCut && passThread ? () => actions.reply(passThread) : undefined} />
-        : <CallActions choice={passChoices[openCall.index]} disabled={!!deciding} decide={choice => void decideCut(choice)} revise={reviseReview} />}
+        : <CallActions choice={passChoices[openCall.index]} proposes={approves(openCall)} disabled={!!deciding} decide={choice => void decideCut(choice)} revise={reviseReview} />}
     </div>
     {/* A call hasn't come out yet, so its words are marked in amber. When the pass's version couldn't be loaded there
         is nothing to read them on: the passage stops waiting and offers to ask again, as it does for the words. */}
@@ -3074,10 +3088,9 @@ export function SimpleWorkspace() {
   useRewordingHold(rewording?.id, (id, on) => on ? queueAction(holdForRewording(id, true))
     // Letting go of a hold says nothing when it fails: the hold lapses by itself.
     : holdForRewording(id, false), () => setRewording(undefined));
-  // What a message does when it lands, sent while the box was aimed as it is in this render. It went to the chat, so
-  // the Transcript gives the chat its side back.
+  // What a message does when it lands, sent while the box was aimed as it is in this render. The Transcript stays open
+  // beside the player: the chat, where the message went, is in view with it.
   const sentUnder = (aim: number) => () => {
-    setTranscript(false);
     if (aims.current === aim) {
       setOfferedPoint(undefined);
       settleAim.current("sent");
@@ -3151,16 +3164,7 @@ export function SimpleWorkspace() {
             {importFailed && !menuError && <button type="button" className="simple-link" onClick={() => setPanel("media")}>View media</button>}
           </div>}
           <div className="simple-thread">
-            {transcript && <div className="simple-subhead"><strong title={source?.name}>Transcript{source ? ` · ${source.name}` : ""}</strong>
-              <span ref={setTranscriptTools} className="simple-subhead-tools" />
-              <button type="button" className="simple-link" onClick={() => setTranscript(false)}>Back to chat</button></div>}
-            {transcript && <div className="simple-transcript"><Suspense fallback={<Loading label="Opening transcript…" />}>
-              {/* An applied cut plays on the version before it, so its transcript is that version's: the working cut's
-                  would highlight and seek early by everything the pass took out before that point. */}
-              <TranscriptPane key={source?.id ?? (appliedCut ? beforeCut!.version : draftVersion) ?? head} draft={appliedCut ? beforeTimeline : draft} source={source}
-                onAsk={askAbout} toolsHost={transcriptTools} />
-            </Suspense></div>}
-            <div ref={chat} className="simple-chat" hidden={transcript} onScroll={e => {
+            <div ref={chat} className="simple-chat" onScroll={e => {
               const pane = e.currentTarget;
               follow.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 48;
             }}>
@@ -3174,7 +3178,6 @@ export function SimpleWorkspace() {
               {!current.reviewStatus && current.headError && <p className="simple-error" role="alert">{current.headError}{" "}
                 <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>}
             </div>
-            {/* The Transcript takes the chat's side, not this: what Scarlet is on, its Stop and its question stay in view. */}
             <div ref={setPinHost} className="simple-pin" aria-label="Working on now" />
             {!rewordingItem && (replyThread || !aimMatches) && <div className={aimMatches ? "simple-target is-quiet" : "simple-target"} role="status">
               <span title={aimLabel}>{aimLabel}</span>
@@ -3189,7 +3192,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
+          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
             gaps: cutKey ? gaps : undefined, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? audition)?.skips,
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
@@ -3211,6 +3214,20 @@ export function SimpleWorkspace() {
             <button type="button" className="btn-ghost" onClick={backToVideo}>Back to the video</button>
           </div>}
         </div>
+        {/* The Transcript is its own column on the right of the player, so the chat stays in view beside it. */}
+        {transcript && <ChatRail compact={compact} id="simple-transcript" className="simple-transcript-rail" label="Transcript" side="right" resizes="transcript"
+          storageKey="scarlet.simpleTranscriptWidth" initialWidth={transcriptRailWidth} minWidth={TRANSCRIPT_RAIL_MIN} maxWidth={available => available * 0.4}>
+          {/* Headed as the chat is: its name, and the × that closes it. */}
+          <header className="simple-header"><h1 title={source?.name}>Transcript{source && <span className="simple-header-sub"> · {source.name}</span>}</h1>
+            <button type="button" className="btn-icon" aria-label="Close transcript" title="Close transcript (Esc)"
+              onClick={() => setTranscript(false)}><Icon name="x" /></button></header>
+          <div className="simple-transcript"><Suspense fallback={<Loading label="Opening transcript…" />}>
+            {/* An applied cut plays on the version before it, so its transcript is that version's: the working cut's
+                would highlight and seek early by everything the pass took out before that point. */}
+            <TranscriptPane key={source?.id ?? (appliedCut ? beforeCut!.version : draftVersion) ?? head} draft={appliedCut ? beforeTimeline : draft} source={source}
+              onAsk={askAbout} simple />
+          </Suspense></div>
+        </ChatRail>}
       </Dropzone>
     </main>
     {panel === "media" && <MediaDrawer uploads={uploads} notice={local ? undefined : notice}

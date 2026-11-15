@@ -317,7 +317,9 @@ export const DialogueCutsRequest = ProposeChangeRequest.pick({ description: true
     /** Editorial classification, also used to enforce the scope of a local pause edit. */
     kind: DialogueCutKind.optional(),
     /** A doubt the editor must settle by listening or looking. Marks an applied cut as needing them until they keep it. */
-    check: z.string().trim().min(1).max(120).optional() })
+    check: z.string().trim().min(1).max(120).optional(),
+    /** Why Scarlet held a cut the agent sent to apply: what it measured. Kept apart from the agent's reason. */
+    held: z.string().trim().min(1).max(800).optional() })
     .refine(c => !c.originalRange || (c.review && c.originalRange.start <= c.start && c.end <= c.originalRange.end),
       "A repaired range must be staged inside its originally proposed removal.")).min(1),
 });

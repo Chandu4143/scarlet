@@ -7,6 +7,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 14, 2026
 
 - Export can save captions as SubRip (.srt) or WebVTT (.vtt) files.
+- Scarlet can read the pages you ask for in a PDF style guide on Mac and Windows, including consecutive pages that look alike.
 - Ask Scarlet for a motion graphic, like a lower third or a title, and it makes one in your style and lays it over the picture as an edit you can revise.
 - Type $ in the message box to pick a saved graphic template, with a preview of each on your picture.
 - Save a graphic as a template with the bookmark on its card.

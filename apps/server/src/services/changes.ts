@@ -595,7 +595,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       if (protectedSlot && clashes)
         throw conflict("cut_changed", "Two earlier review slots now cover the same footage. Their existing reviews are still saved.");
       if (!choice && (clashes || planned.some(c => overlaps(outer(c), outer(r))))) continue;
-      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
+      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, ...(r.held && { held: r.held }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
         ...(r.kind && { kind: r.kind }), ...(r.legacySuggest && { legacySuggest: true }), ...((current || protectedSlot) && { preserveEdges: true }), protectedSlot, ...(recoveredCuts.has(r) && { recovered: true }),
         ...(assessment && { assessment }), ...(choice && !lapsed ? { choice } : { asked: { start: r.start, end: r.end }, ...(lapsed && { lapsed }) }) });
     }
@@ -719,7 +719,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     // Staged cuts the editor hasn't called that now sit against footage they chose to keep. Their call covers them.
     const joined: TimeRange[] = [];
     if (optional.length) {
-      const reasons = optional.map(({ start, end, reason, originalRange, kind, crossfade, legacySuggest }) => ({ start, end, reason, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }) }));
+      const reasons = optional.map(({ start, end, reason, originalRange, kind, crossfade, legacySuggest, held }) => ({ start, end, reason, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }) }));
       const { change } = persistProposal(ctx, user, projectId, { fromVersion: version, intent: "suggestion", autoApprove: false,
         ops: ops(optional), description: whole && own ? own : `Review ${optional.length} optional dialogue ${optional.length === 1 ? "cut" : "cuts"}`,
         taskId, author, noteIds }, ids[1], reasons, { fold });
@@ -740,7 +740,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       // A replaced assessment still needs a recommendation on its new footage before the editor sees it.
       const ask = (index: number, { start, end }: TimeRange): CutAssessment => ({
         index, start, end, verdict: "ask", provisional: true,
-        reason: [...new Set(within({ start, end }).map(c => c.reason))].join(" ").slice(0, 800).trim() || "Staged for a closer look.",
+        reason: [...new Set(within({ start, end }).map(c => c.reason))].join(" ").slice(0, 800).trim() || "No note was saved for this cut.",
       });
       for (const [index, { removed: { start, end } }] of listed.entries()) {
         const inside = within({ start, end });
@@ -1018,7 +1018,10 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     }
     const cutChoices = (latest.cutChoices ?? []).filter(c => c.index !== index);
     const approved = task?.cutConflict?.approved && scoped;
-    if (placement.keep || approved) cutChoices.push({ index, start, end, choice: placement.keep ? "keep" : "cut" });
+    // A cut the editor sent back stays theirs to call once revised, even when the revision leaves its footage in: it
+    // waits for them to approve the new version, and doesn't apply the pass by itself (2026-11-14).
+    const keepsForEditor = !!placement.keep && scoped && !approved;
+    if ((placement.keep && !keepsForEditor) || approved) cutChoices.push({ index, start, end, choice: placement.keep ? "keep" : "cut" });
     const cutEdits = (latest.cutEdits ?? []).filter(e => e.index !== index);
     const edit = placement.edit;
     if (edit) {
@@ -1037,12 +1040,12 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     // Seeding a first assessment must preserve the implicit "cut" decisions of an unassessed pass.
     const assessments: CutAssessment[] = change.cutAssessments?.length ? change.cutAssessments : cuts.map((c, i) => ({
       index: i, ...c, verdict: "cut" as const, reason: change.cutReasons?.find(r => r.start >= c.start - 1e-6 && r.start < c.end)?.reason ?? change.description }));
-    const verdict: CutAssessment["verdict"] = placement.keep ? "keep" : approved ? "cut" : "ask";
+    const verdict: CutAssessment["verdict"] = keepsForEditor ? "ask" : placement.keep ? "keep" : approved ? "cut" : "ask";
     const sentBack = scoped || was?.revised;
     // Moving an unchecked candidate invalidates its assessment. Only a recommendation on the new footage publishes it.
     const provisional = verdict === "ask" && autonomous;
     const updated: CutAssessment = { index, start, end, verdict, reason, ...(provisional && { provisional: true }),
-      ...(verdict === "ask" && sentBack && { revised: true }), ...(was?.askOrder && { askOrder: was.askOrder }) };
+      ...(verdict === "ask" && sentBack && { revised: true }), ...(keepsForEditor && { proposes: "keep" as const }), ...(was?.askOrder && { askOrder: was.askOrder }) };
     const cutAssessments = [...assessments.filter(a => a.index !== index), updated].sort((a, b) => a.index - b.index);
     const decided = new Set(cutChoices.map(c => c.index));
     const done = cuts.every((_, i) => decided.has(i) || cutAssessments.some(a => a.index === i && a.verdict !== "ask"));
@@ -1629,8 +1632,8 @@ function recheckApprovedCut(ctx: Ctx, project: Project, change: Change, review: 
   const removed = review.cuts[index]!.removed;
   const former = change.cutAssessments?.find(a => a.index === index);
   const assessments = [...(change.cutAssessments ?? []).filter(a => a.index !== index), {
-    index, ...removed, verdict: "ask" as const, ...(former?.revised && { revised: true }), ...(former?.askOrder && { askOrder: former.askOrder }),
-    reason: former?.reason ?? change.cutReasons?.find(c => c.start >= removed.start - 1e-6 && c.start < removed.end)?.reason ?? "Check this passage." }];
+    index, ...removed, verdict: "ask" as const, ...(former?.revised && { revised: true }), ...(former?.proposes && { proposes: former.proposes }), ...(former?.askOrder && { askOrder: former.askOrder }),
+    reason: former?.reason ?? change.cutReasons?.find(c => c.start >= removed.start - 1e-6 && c.start < removed.end)?.reason ?? "No note was saved for this cut." }];
   const checked = { ...change, cutChoices: choices.filter(c => c.index !== index), cutAssessments: assessments.sort((a, b) => a.index - b.index) };
   const prior = change.taskId ? ctx.repos.tasks.get(change.taskId) : undefined;
   const task = createTask(ctx, { projectId: project.id, kind: "revise", agent: prior?.agent ?? ctx.settings().defaultAgent,
@@ -2064,6 +2067,25 @@ export function reopenChange(ctx: Ctx, user: User, change: Change): Change {
 type ReviseRequest = z.output<typeof ReviseRequestSchema>;
 
 /** Name the one staged cut a revision is about, with why it was proposed and how it was assessed. */
+/**
+ * Where the stretch the editor marked sits in the cut their words are about, when it is only part of it: "leave this
+ * part in" with the cut's first 0.3 s marked means that part, not the whole cut (2026-11-14).
+ */
+function markedPart(position: ReviseRequest["position"], start: number | undefined, end: number | undefined) {
+  const marked = onPositionClock(position);
+  if (!marked || start === undefined || end === undefined || end <= start) return undefined;
+  const from = Math.max(marked.start, start), to = Math.min(marked.end, end);
+  if (to - from < 0.005 || (marked.start <= start + 0.005 && marked.end >= end - 0.005)) return undefined;
+  const where = from <= start + 0.005 ? "its first" : to >= end - 0.005 ? "its last" : "a middle";
+  return `The editor marked ${marked.start.toFixed(2)}–${marked.end.toFixed(2)} s with these words: ${where} ${(to - from).toFixed(2)} s of the cut's ${(end - start).toFixed(2)} s.`;
+}
+
+/** The stretch the editor marked, when it is on the same timeline version as the request's position. */
+function onPositionClock(position: ReviseRequest["position"]) {
+  const marked = position?.markedRange;
+  return marked && !marked.mediaId && !position.mediaId && (marked.version ?? position.version) === position.version ? marked : undefined;
+}
+
 export function cutRevisionReference(change: Change, position: ReviseRequest["position"]): string {
   const index = position?.cutIndex;
   if (index === undefined) return "";
@@ -2077,6 +2099,8 @@ export function cutRevisionReference(change: Change, position: ReviseRequest["po
   const proposed = start !== undefined && end !== undefined
     ? change.cutReasons?.find(r => r.start < end + 0.01 && r.end > start - 0.01)?.reason : undefined;
   const lines = [`This feedback is about one staged cut only: cut index ${index} of change ${change.id}${span}. Leave the other cuts as they are.`];
+  const marked = markedPart(position, start, end);
+  if (marked) lines.push(marked);
   if (proposed) lines.push(`Why this cut was proposed: "${proposed.trim()}"`);
   if (assessment) lines.push(`Review note on this cut (${assessment.verdict}): "${assessment.reason.trim()}"`);
   return `\n\n${lines.join("\n")}`;
@@ -2095,12 +2119,16 @@ export function reviseChange(ctx: Ctx, user: User, change: Change, body: ReviseR
       ? authorsAgent(ctx, change.author)
       : { agent: ctx.settings().defaultAgent, model: undefined };
   const assignedTo = agentTarget(target.agent, target.model);
+  // The editor's words sit on the part of the cut or edit they marked, when they marked one inside it: that is what
+  // they are about. A stretch marked elsewhere is besides it, and the note stays on the cut or edit.
+  const onClock = onPositionClock(position);
+  const marked = onClock && position?.end !== undefined && onClock.start >= position.time - 0.005 && onClock.end <= position.end + 0.005 ? onClock : undefined;
   const note = ctx.repos.notes.put({
     id: newId("note"),
     projectId: change.projectId,
     version: position?.version ?? change.toVersion,
-    time: position?.time ?? first?.start ?? 0,
-    end: position ? position.end : first?.end,
+    time: marked?.start ?? position?.time ?? first?.start ?? 0,
+    end: marked ? marked.end : position ? position.end : first?.end,
     clipIds: position?.clipIds ?? [],
     text: body.text,
     voiceTranscript: body.voiceTranscript,
@@ -2120,7 +2148,7 @@ export function reviseChange(ctx: Ctx, user: User, change: Change, body: ReviseR
     effort: body.effort,
     serviceTier: body.serviceTier,
     instruction: body.text + cutRevisionReference(change, position),
-    context: { skillIds: body.skillIds, changeId: change.id, noteIds: [note.id], ...position, version: note.version, time: note.time, end: note.end, threadId: threadOfChange(ctx, change), message: body.text },
+    context: { skillIds: body.skillIds, changeId: change.id, noteIds: [note.id], ...position, version: note.version, time: position?.time ?? note.time, end: position ? position.end : note.end, threadId: threadOfChange(ctx, change), message: body.text },
     createdBy: actorFor(user),
   });
   const saved = saveChange(ctx, { ...beginRevision(change, task), noteIds: [...change.noteIds, note.id] });

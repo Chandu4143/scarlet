@@ -456,6 +456,11 @@ export const CutAssessment = z.object({
   /** Set by the engine on a cut the editor sent back, once revised: it waits for their call whatever the recommendation. */
   revised: z.boolean().optional(),
   /**
+   * Set by the engine on a cut the editor sent back whose revision leaves its footage in. It waits for their call all
+   * the same: Approve takes the revision and keeps the footage, Skip leaves the revision out and cuts as first staged.
+   */
+  proposes: z.literal("keep").optional(),
+  /**
    * Set by the engine on a cut Scarlet asks the editor about: the order its pass's asks reached them in, from 1. The
    * editor's number for the call goes by it, so a later ask, earlier in the video, doesn't renumber the calls they've
    * seen. It goes with the note onto a later part.
@@ -503,7 +508,9 @@ export const Change = z.object({
     legacySuggest: z.literal(true).optional(),
     kind: z.enum(["pause", "filler", "retake", "coaching"]).optional(),
     /** Why the editor should look or listen before keeping this applied cut. */
-    check: z.string().trim().min(1).max(120).optional() })).optional(),
+    check: z.string().trim().min(1).max(120).optional(),
+    /** Why Scarlet held this cut for a closer look: what it measured at the edges. For the agent; the editor reads `reason`. */
+    held: z.string().optional() })).optional(),
   /** Second-pass recommendations on the immutable chronological cut-review plan. */
   cutAssessments: z.array(CutAssessment).optional(),
   /** A call rechecked against newer footage. Its index still identifies the same call in the original pass. */
