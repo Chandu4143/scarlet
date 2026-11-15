@@ -315,6 +315,7 @@
 .simple-pass-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; padding: 8px 8px 8px 12px; }
 .simple-pass-toggle { min-width: 0; padding: 0; border: 0; background: none; color: var(--color-fg); font: inherit; font-weight: 600; text-align: left;
   cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; text-decoration: underline; text-underline-offset: 3px; }
+.simple-pass-toggle[data-so-far] { color: #eae5da; text-decoration-color: #ae9d79; }
 .simple-pass-toggle:is(:hover, :focus-visible) { text-decoration-thickness: 2px; }
 .simple-pass-toggle:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
 /* What needs the editor is the amber link, with its rule under it wherever it sits. */
@@ -432,11 +433,11 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
   border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); background: rgba(255, 255, 255, .04); }
 .unit > .req { padding-top: 6px; }
 /* A request that applied edits puts them on the timeline when its band is pressed. The band whose edits are marked is
-   deep violet, its words brighter, with a brighter violet rule at its left, and its link to those edits is teal. */
+   deep violet, its words brighter, with a brighter violet rule at its left. Its finished edit link is teal. */
 .unit > .unit-msg.is-markable { cursor: pointer; }
 .unit > .unit-msg.is-markable:hover { background: rgba(255, 255, 255, .06); }
 .unit > .unit-msg.is-marked, .unit > .unit-msg.is-marked:hover { background: #2a2236; border-color: #3a3048; box-shadow: inset 3px 0 0 #b48ae6; }
-.unit:has(> .unit-msg.is-marked) .simple-pass-toggle { color: #7fd6c6; text-decoration-color: rgb(127 214 198 / 50%); }
+.unit:has(> .unit-msg.is-marked) .simple-pass-toggle:not([data-so-far]) { color: #7fd6c6; text-decoration-color: rgb(127 214 198 / 50%); }
 .unit > .unit-msg.is-marked p { color: var(--color-fg); }
 /* Where the request stands: a dot while Scarlet asks, a word once it stopped early or left a suggestion. A finished
    request has nothing here. While Scarlet has the request, Stop follows as the heading's last word. */
