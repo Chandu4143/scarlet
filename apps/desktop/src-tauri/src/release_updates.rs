@@ -8,8 +8,9 @@
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -17,6 +18,9 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 /// Long enough after launch that the check doesn't compete with opening the project.
 const FIRST_CHECK: Duration = Duration::from_secs(20);
 const CHECK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// Main publishes a release on every green push, each a couple of hundred megabytes. Once one is here and waits for a
+/// restart, a newer one replaces it at most this often, unless the editor asks for updates themselves.
+const REPLACE_STAGED_AFTER: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// Whether this build was made with a release manifest to update from.
 pub fn configured(app: &AppHandle) -> bool {
@@ -41,6 +45,8 @@ pub fn cannot_update_in_place(exe: &Path) -> Option<&'static str> {
 struct Inner {
     /// A verified release that installs on restart, and where its package is.
     ready: Option<(Update, Arc<Mutex<File>>)>,
+    /// When the release that's ready finished downloading.
+    ready_since: Option<SystemTime>,
     /// The release being downloaded: its version, the bytes so far and the size the server gave.
     downloading: Option<(String, u64, Option<u64>)>,
     installing: bool,
@@ -54,6 +60,8 @@ pub struct ReleaseUpdates {
     wake: tokio::sync::Notify,
     /// One check at a time, whether the timer or the editor asked for it.
     checking: tokio::sync::Mutex<()>,
+    /// The editor asked for updates: the next check downloads what's newer without waiting.
+    asked: AtomicBool,
 }
 
 /// What the window shows: the version that installs on restart, and the one under way with how much of it is here.
@@ -85,6 +93,19 @@ fn share(received: u64, total: Option<u64>) -> f64 {
     }
 }
 
+/// Whether to download `offered` now. Nothing ready yet: yes, when it's newer than this copy (the manifest only
+/// offers newer ones). One ready: only when `offered` is newer than it, and either the editor asked or the one that's
+/// ready has waited `REPLACE_STAGED_AFTER`. A version that doesn't parse is never worth replacing a ready one for.
+fn worth_downloading(ready: Option<(&str, Option<SystemTime>)>, offered: &str, now: SystemTime, asked: bool) -> bool {
+    let Some((ready, since)) = ready else { return true };
+    let (Ok(ready), Ok(offered)) = (ready.parse::<semver::Version>(), offered.parse::<semver::Version>()) else { return false };
+    if offered <= ready {
+        return false;
+    }
+    // A clock set back reads as just staged, and waits.
+    asked || since.is_none_or(|since| now.duration_since(since).is_ok_and(|waited| waited >= REPLACE_STAGED_AFTER))
+}
+
 /// Check now and then for as long as the app runs, and download what's newer.
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -104,12 +125,16 @@ async fn check(app: &AppHandle) -> Result<Option<String>, String> {
     let updates = app.state::<ReleaseUpdates>();
     let _one = updates.checking.lock().await;
     let found = app.updater().map_err(|e| format!("no updater: {e}"))?.check().await.map_err(|e| format!("check failed: {e}"))?;
+    // Taken whether or not something is found, so it applies to this check only.
+    let asked = updates.asked.swap(false, Ordering::SeqCst);
     let Some(update) = found else { return Ok(None) };
     let version = update.version.clone();
-    if let Some(ready) = updates.status().ready {
-        if ready.parse::<semver::Version>().ok() >= version.parse::<semver::Version>().ok() {
-            return Ok(Some(ready));
-        }
+    let (ready, since) = {
+        let inner = updates.inner.lock().unwrap();
+        (inner.ready.as_ref().map(|(update, _)| update.version.clone()), inner.ready_since)
+    };
+    if !worth_downloading(ready.as_deref().map(|ready| (ready, since)), &version, SystemTime::now(), asked) {
+        return Ok(ready);
     }
     log::info!("release update: downloading {version} (running {})", update.current_version);
     updates.inner.lock().unwrap().downloading = Some((version.clone(), 0, None));
@@ -128,6 +153,7 @@ async fn check(app: &AppHandle) -> Result<Option<String>, String> {
     // The release on offer until now gives way to the newer one.
     if !inner.installing {
         inner.ready = Some((update, file));
+        inner.ready_since = Some(SystemTime::now());
     }
     log::info!("release update: {version} is ready to install");
     Ok(Some(version))
@@ -160,6 +186,7 @@ pub async fn check_now(app: &AppHandle) -> Result<Option<String>, String> {
     match found.map(|update| update.version) {
         Some(version) => {
             if status.ready.as_deref() != Some(version.as_str()) && status.downloading.map(|(v, _)| v).as_deref() != Some(version.as_str()) {
+                updates.asked.store(true, Ordering::SeqCst);
                 updates.wake.notify_one();
             }
             Ok(Some(version))
@@ -246,6 +273,28 @@ mod tests {
         assert_eq!(share(250, Some(200)), 1.0);
         assert_eq!(share(50, None), 0.0);
         assert_eq!(share(50, Some(0)), 0.0);
+    }
+
+    #[test]
+    fn a_ready_release_gives_way_to_a_newer_one_only_after_a_while_or_when_asked() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let hour = Duration::from_secs(60 * 60);
+        // Nothing here yet: the offered release downloads.
+        assert!(worth_downloading(None, "0.1.30", now, false));
+        // The same or an older one never downloads again, even when asked.
+        assert!(!worth_downloading(Some(("0.1.30", Some(now - 24 * hour))), "0.1.30", now, true));
+        assert!(!worth_downloading(Some(("0.1.30", Some(now - 24 * hour))), "0.1.29", now, true));
+        // A newer one waits while the ready one is recent, and replaces it once it has waited long enough.
+        assert!(!worth_downloading(Some(("0.1.30", Some(now - hour))), "0.1.31", now, false));
+        assert!(!worth_downloading(Some(("0.1.30", Some(now - REPLACE_STAGED_AFTER + hour))), "0.1.31", now, false));
+        assert!(worth_downloading(Some(("0.1.30", Some(now - REPLACE_STAGED_AFTER))), "0.1.31", now, false));
+        // The editor asking for updates fetches it at once.
+        assert!(worth_downloading(Some(("0.1.30", Some(now - hour))), "0.1.31", now, true));
+        // A clock set back since then reads as just staged.
+        assert!(!worth_downloading(Some(("0.1.30", Some(now + hour))), "0.1.31", now, false));
+        // Unknown staging time, or a version that doesn't parse.
+        assert!(worth_downloading(Some(("0.1.30", None)), "0.1.31", now, false));
+        assert!(!worth_downloading(Some(("0.1.30", None)), "next", now, true));
     }
 
     #[test]
