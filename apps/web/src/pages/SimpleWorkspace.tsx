@@ -459,7 +459,7 @@ function EditResultLink({ thread, actions, single, count, soFar, list: [open, se
       title={current ? "Close this edit (Esc)" : "Show on the timeline"} onClick={letGo(toggleEdit)}>{current ? "Close edit" : "See edit"}</button>;
   }
   const label = soFar ? `See ${count} ${count === 1 ? "edit" : "edits"} so far` : count === 2 ? "See both" : "See all";
-  return <button type="button" className="simple-pass-toggle" aria-expanded={expanded}
+  return <button type="button" className="simple-pass-toggle" data-so-far={soFar || undefined} aria-expanded={expanded}
     title={expanded ? "Hide the edits" : soFar ? "Show the edits Scarlet has made so far, in order" : "Show the edits in order"}
     onClick={() => { if (!expanded) reveal(); setOpen(expanded ? undefined : "all"); }}>{expanded ? "Hide" : label}</button>;
 }
