@@ -170,6 +170,18 @@ jobs:
             '
           fi
 
+      # Chrome for Testing arrives with Google's signature, which no longer holds once the browser sits inside our app.
+      # A check build signs it ad hoc like the rest of the app; a release signs it again with the Developer ID.
+      - name: Sign the headless browser for the check build
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chrome=apps/desktop/src-tauri/binaries/chrome-headless-shell
+          find "$chrome" -type f \( -name '*.dylib' -o -name '*.node' \) -print0 | xargs -0 -n1 codesign --force --sign -
+          codesign --force --sign - "$chrome/chrome-headless-shell"
+          codesign --verify --strict --verbose=2 "$chrome/chrome-headless-shell"
+
       - name: Build installers
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # action-v0.6.2
         with:
