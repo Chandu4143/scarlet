@@ -184,8 +184,10 @@ describe.skipIf(process.platform === "win32")("runClaude", { timeout: 20_000 }, 
 
     // A question it posted is still a question, and a cancel is still a cancel.
     expect((await run(runClaude, { lines: [failed, ...claudeQuestion], sleep: 30 })).result).toMatchObject({ ok: true, question: "Keep the cold open?", questionPosted: true });
+    // The cancel lands just after the first line, before the stop, once the stand-in has started its sleep: a group
+    // kill sent while the shell is still forking can miss the new process, which then holds the output open.
     const controller = new AbortController();
-    const cancelled = await run(runClaude, { lines: [failed], sleep: 30 }, { signal: controller.signal, onEvent: () => controller.abort() });
+    const cancelled = await run(runClaude, { lines: [failed], sleep: 30 }, { signal: controller.signal, onEvent: () => setTimeout(() => controller.abort(), 100) });
     expect(cancelled.result).toMatchObject({ ok: false, error: "cancelled", aborted: true });
 
     // Only a failed server fails the run: one still starting, or not listed at all, keeps today's result.
