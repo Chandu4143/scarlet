@@ -279,6 +279,8 @@ interface PlannedDecision extends TimeRange {
   originalRange: TimeRange | undefined;
   /** Marks an applied cut as needing the editor until they keep it. */
   check?: string;
+  /** Why Scarlet held a cut the agent sent to apply: what it measured at the edges. The agent's reason stays its own. */
+  held?: string;
 }
 export type GateLine = Record<string, unknown> & { cut: number };
 
@@ -405,7 +407,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       const reach = next.originalRange ?? next;
       if (reach.start < scope.start || reach.end > scope.end || kept.some(k => reach.start < k.end && reach.end > k.start)) {
         const evidence = "The measured edge would cross the selected range or footage marked to keep. The requested edges are staged for review.";
-        next = { ...decided, review: true, reason: c.reason + " " + evidence };
+        next = { ...decided, review: true, held: evidence };
         found = `The measured range is ${r2(reach.start)}–${r2(reach.end)} s. ${evidence}`;
       }
       const moved = Math.abs(next.start - c.start) > 1e-6 || Math.abs(next.end - c.end) > 1e-6;
@@ -415,7 +417,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     };
     // Word edges without measured silence fall back to word timings, which is not a confident edge.
     const fallback = c.wordEdgeProblems?.length && !decided.review
-      ? { review: true, reason: c.reason + " " + c.wordEdgeProblems.join(" ") } : undefined;
+      ? { review: true, held: c.wordEdgeProblems.join(" ") } : undefined;
     const alternatives = c.cleanAlternatives?.map(a => `#${a.fromWord}–#${a.toWord}`).join(", ");
     const base = fallback ? adjust({ ...decided, ...fallback }, [...c.wordEdgeProblems!, ...(alternatives
       ? [`Words ${alternatives} leave the same words playing and have measured quiet at both edges.`] : [])].join(" ")) : decided;
@@ -455,17 +457,15 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const i = sorted.indexOf(c);
     if (join.status === "snapped" && (!i || sorted[i-1]!.end <= join.start) && (i === sorted.length - 1 || join.end <= sorted[i+1]!.start))
       return adjust({ ...base, start: join.start, end: join.end }, join.reason ?? "");
-    if (join.status === "snapped") return adjust({ ...base, review: true,
-      reason: c.reason + " The nearest silence at an edge overlaps the neighboring range. Audition that edge." },
+    if (join.status === "snapped") return adjust({ ...base, review: true, held: "The nearest silence at an edge overlaps the neighboring range." },
       "The nearest silence at an edge overlaps the neighboring range.");
     // A production aside keeps its verified quote range. Without measured silence at its edges it waits for audition.
-    if (c.kind === "coaching") return adjust({ ...base, review: true,
-      reason: c.reason + " Check the words on both sides of this production aside before removing it." }, join.reason ?? "");
+    if (c.kind === "coaching") return adjust({ ...base, review: true, held: join.reason ?? "No measured silence at an edge of this production aside." }, join.reason ?? "");
     // The editor can restore the whole proposal. An edge may also move outward into a pause, so the range covers both.
     return adjust({ ...base, start: join.start, end: join.end, review: true,
       originalRange: join.status === "adjusted" || join.status === "partial"
         ? { start: Math.min(c.start, join.start), end: Math.max(c.end, join.end) } : undefined,
-      reason: c.reason + " " + join.reason }, join.reason ?? "");
+      ...(join.reason && { held: join.reason }) }, join.reason ?? "");
   });
   // The submitted ranges don't overlap, but an edge Scarlet moved can reach into the range beside it: two cuts that
   // meet at one instant, and the first one's end moved out into the pause the second removes. The engine rejects

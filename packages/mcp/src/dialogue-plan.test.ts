@@ -381,6 +381,9 @@ describe("dialogue plan", () => {
       const through = await plan(level);
       expect(through.decision.review).toBe(true);
       expect(through.gate.evidence).toContain("No measured silence between “recognized” and “that”");
+      // What Scarlet measured is its own field. The reason stays the sentence the agent wrote for the editor.
+      expect(through.decision.held).toContain("The recording has speech at this edge");
+      expect(through.decision.reason).not.toContain("The recording has speech");
     }
   });
 
