@@ -459,5 +459,47 @@
 .composer-style-guide-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-muted); }
 /* The template lit in that list, over the player's picture until the list closes. */
 .template-on-picture { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+/* The $ list's groups: graphics, then transitions, with a rule between them. */
+.composer-template-group + .composer-template-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--color-line); }
+/* A transition between two pictures. Still, it stands halfway through, which says what it is; playing, it loops,
+   holding on each picture between runs. Each kind moves the two pictures as the render does. */
+.transition-picture { position: absolute; inset: 0; overflow: hidden; background: #000; }
+.transition-picture > span { position: absolute; inset: 0; }
+.transition-picture img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Over the player it sits where the picture does, letterboxed as the video is. */
+.template-on-picture > .transition-picture img { object-fit: contain; }
+.transition-picture .transition-veil { background: var(--transition-color, #000); opacity: 0; }
+/* With no footage to show it on (a skill's page), two plain pictures stand in: a dark one with a round shape, and a
+   light one with a square, so each kind of move reads. */
+.transition-picture .transition-from:empty { background: radial-gradient(circle at 50% 45%, #9a9a9a 0 22%, transparent 23%), #3a3a3a; }
+.transition-picture .transition-to:empty { background: linear-gradient(#ececec, #ececec) center / 50% 50% no-repeat, #8c8c8c; }
+.transition-picture > span { animation-duration: var(--transition-seconds, 1.2s); animation-timing-function: ease-in-out; animation-iteration-count: infinite;
+  animation-play-state: paused; animation-delay: calc(var(--transition-seconds, 1.2s) * -0.5); }
+.transition-picture.is-playing > span { animation-play-state: running; animation-delay: 0s; }
+.transition-picture.is-push .transition-from, .transition-picture.is-whip .transition-from { animation-name: transition-leave; }
+.transition-picture.is-push .transition-to, .transition-picture.is-whip .transition-to, .transition-picture.is-slide .transition-to { animation-name: transition-arrive; }
+.transition-picture.is-whip > span.transition-from { animation-name: transition-leave, transition-smear; }
+.transition-picture.is-whip > span.transition-to { animation-name: transition-arrive, transition-smear; }
+.transition-picture.is-dissolve .transition-to { animation-name: transition-show; }
+.transition-picture.is-dip .transition-to { animation-name: transition-swap; }
+.transition-picture.is-dip .transition-veil { animation-name: transition-dip; }
+/* Halfway through, a dip is all colour: still, it stands a little before, on the picture going down into it. */
+.transition-picture.is-dip:not(.is-playing) > span { animation-delay: calc(var(--transition-seconds, 1.2s) * -0.36); }
+.transition-picture.to-right { --transition-x: -1; }
+.transition-picture.to-up { --transition-y: 1; --transition-x: 0; }
+.transition-picture.to-down { --transition-y: -1; --transition-x: 0; }
+@keyframes transition-leave {
+  0%, 25% { transform: translate(0, 0); }
+  75%, 100% { transform: translate(calc(var(--transition-x, 1) * -100%), calc(var(--transition-y, 0) * -100%)); }
+}
+@keyframes transition-arrive {
+  0%, 25% { transform: translate(calc(var(--transition-x, 1) * 100%), calc(var(--transition-y, 0) * 100%)); }
+  75%, 100% { transform: translate(0, 0); }
+}
+@keyframes transition-smear { 0%, 30%, 70%, 100% { filter: blur(0); } 50% { filter: blur(6px); } }
+@keyframes transition-show { 0%, 25% { opacity: 0; } 75%, 100% { opacity: 1; } }
+@keyframes transition-swap { 0%, 49.9% { opacity: 0; } 50%, 100% { opacity: 1; } }
+@keyframes transition-dip { 0%, 25%, 75%, 100% { opacity: 0; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .transition-picture.is-playing > span { animation-play-state: paused; animation-delay: calc(var(--transition-seconds, 1.2s) * -0.5); } }
 /* A rail on the right of the player is resized from its left edge. */
 .chat-divider.is-left { right: auto; left: -5px; }

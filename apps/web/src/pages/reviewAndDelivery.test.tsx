@@ -83,6 +83,7 @@ const show = (element: ReactNode) => act(async () => root.render(element));
 const click = (element: HTMLElement) => act(async () => element.click());
 const labeled = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
 const exportButton = () => container.querySelector<HTMLButtonElement>('button[form="export-working-cut"]');
+const buttonByText = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === text);
 const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
 
 function sizeWaveformLane(width: number) {
@@ -1201,7 +1202,7 @@ it("asks for the file's name once, in the system's Save dialog, which opens on t
   vi.spyOn(desktop, "finishVideoExport").mockRejectedValue(new Error("Disk full"));
   await show(<ExportSheet hasCut onClose={() => {}} />);
   // The sheet has no box for the name and no row for the folder: what to export, the video's options, and one button.
-  expect([...container.querySelectorAll("form label")].filter(label => !label.closest("details")).map(label => label.textContent)).toEqual(["Format", "Range"]);
+  expect([...container.querySelectorAll("form label")].filter(label => !label.closest("details")).map(label => label.textContent)).toEqual(["Range"]);
   // The range starts on the whole video, by that name.
   expect(container.querySelector("#export-range")!.textContent).toBe("Whole video");
   expect(container.querySelector("form input, #export-folder")).toBeNull();
@@ -1215,9 +1216,39 @@ it("asks for the file's name once, in the system's Save dialog, which opens on t
   expect(container.textContent).toContain("Disk full");
   expect(exportButton()!.textContent).toBe("Retry");
   expect(exportButton()!.disabled).toBe(false);
-  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /\.otio/);
+  // Advanced export saves a folder, named for the project, for finishing the edit in another app.
+  await click(buttonByText("Advanced export")!);
   await click(exportButton()!);
-  expect(choose).toHaveBeenLastCalledWith(`${data.project.name}.otio`);
+  expect(choose).toHaveBeenLastCalledWith(data.project.name);
+});
+
+it("offers a folder for another app under Advanced export, saying what it holds and what doesn't carry over", async () => {
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 7, path: "/Users/me/Exports/Interview" });
+  const handoff = vi.spyOn(api, "handoff").mockResolvedValue({ files: [{ path: "Interview.fcpxml", text: "<fcpxml/>" }], mediaBytes: 0 });
+  const save = vi.spyOn(desktop, "finishFolderExport").mockResolvedValue("/Users/me/Exports/Interview");
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await click(buttonByText("Advanced export")!);
+  // The video's own settings go; the folder's contents come instead.
+  expect(container.querySelector("#export-range")).toBeNull();
+  expect(container.querySelector("details")).toBeNull();
+  expect(container.textContent).toContain("A folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro.");
+  expect(container.textContent).toContain("A copy of the footage");
+  expect(buttonByText("Back")).toBeTruthy();
+  await click(exportButton()!);
+  expect(choose).toHaveBeenCalledExactlyOnceWith(data.project.name);
+  expect(handoff).toHaveBeenCalledExactlyOnceWith(PRJ, data.project.head, "/Users/me/Exports/Interview");
+  expect(save).toHaveBeenCalledExactlyOnceWith(7, [{ path: "Interview.fcpxml", text: "<fcpxml/>" }]);
+  expect(container.textContent).toContain("Interview");
+  expect(buttonByText("Show in folder")).toBeTruthy();
+});
+
+it("goes back from Advanced export to the video's settings", async () => {
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await click(buttonByText("Advanced export")!);
+  await click(buttonByText("Back")!);
+  expect(container.querySelector("#export-range")).not.toBeNull();
+  expect(buttonByText("Advanced export")).toBeTruthy();
 });
 
 it("says an export is waiting to start or finishing, with no percent that would sit still", async () => {

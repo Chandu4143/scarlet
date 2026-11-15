@@ -18,7 +18,7 @@ import { FloatingScrubLoupe, type ScrubLens } from "./FloatingScrubLoupe";
 import { LOUPE_PX_PER_FRAME, rangeEdges, useRangeSelect } from "./TimelineRange";
 import { useArrival, useLaneHold, wavePhase } from "./laneLoading";
 import type { ProgressFocus } from "../player/SimpleProgress";
-import { editUnder, layoutEdits, type EditLayout, type TimelineEdit } from "./timelineEdits";
+import { countLabel, editUnder, layoutEdits, type EditLayout, type TimelineEdit } from "./timelineEdits";
 
 /** Hovering a chat row lights its marker without re-rendering the workspace. */
 export const EditHoverContext = createContext(createStore<number | undefined>(() => undefined));
@@ -607,7 +607,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   // Every applied edit, under the marks. The playhead re-renders the strip every frame, so these are built only when
   // the edits or the view change.
   const editLayout = useMemo(() => edits?.length ? layoutEdits(edits, from, span, width,
-    markLayout.filter(mark => !mark.quiet).map(mark => ({ x: mark.at / 100 * width, w: mark.width }))) : [], [edits, from, span, width, markLayout]);
+    markLayout.filter(mark => !mark.quiet).map(mark => ({ x: mark.at / 100 * width, w: mark.width })), { start, end }) : [], [edits, from, span, width, markLayout, start, end]);
   const [hotEdit, setHotEdit] = useState<string>();
   const editNodes = useMemo(() => <>{editLayout.map(mark => {
     const hot = mark.key === hotEdit;
@@ -630,7 +630,10 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   </span>;
   const hotEditMark = hotEdit === undefined ? undefined : editLayout.find(mark => mark.key === hotEdit);
   const editNote = hotEditMark && <span className="simple-timeline-tip is-joined">
-    {hotEditMark.shape === "count" && hotEditMark.edits.length > 1 ? <span>
+    {hotEditMark.edge ? <span>
+      <b>{countLabel(hotEditMark.edits)}</b>
+      <small>{hotEditMark.edge === "before" ? `Before ${playbackClock(from)}` : `After ${playbackClock(from + span)}`} · Click to go there</small>
+    </span> : hotEditMark.shape === "count" && hotEditMark.edits.length > 1 ? <span>
       <b>{hotEditMark.label}</b>
       <small>{playbackClock(hotEditMark.start)}–{playbackClock(hotEditMark.end)} · Click to zoom in</small>
     </span> : hotEditMark.edits.map((dot, i) => <span key={i}>
@@ -676,9 +679,10 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   // Hovering a tick still lights its number.
   const [aimed, setAimed] = useState(false);
   const pressable = useMemo(() => markLayout.filter(mark => !mark.quiet), [markLayout]);
-  // A count opens into its edits: a press zooms to its stretch. Zoomed in as far as the timeline goes, it opens its first.
-  // A count of one cut opens it.
+  // A count opens into its edits: a press zooms to its stretch, where each is a mark of its own. Zoomed in as far as the
+  // timeline goes, it opens its first. A count of one cut opens it. A count at an edge moves to the stretch beyond it.
   const openEdits = (mark: EditLayout) => {
+    if (mark.edge) return () => fitRange(mark.start, mark.end);
     if (mark.shape !== "count" || mark.edits.length === 1) return mark.edits[0]!.open;
     if (span > minSpan * 1.05) return () => {
       const pad = Math.max(.5, (mark.end - mark.start) * .15);

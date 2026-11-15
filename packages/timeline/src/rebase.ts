@@ -201,7 +201,7 @@ export function indexClipsAt(timeline: Timeline) {
 
 /** `fade` is how far each fade has come at the sample, 0 to 1 (video in, video
  * out, audio in, audio out), and absent while the clip plays at full level. */
-interface LayerSample { content: string; source: number; fade?: number[] }
+interface LayerSample { content: string; source: number; fade?: number[]; transition?: string }
 
 // Compare fade levels by distance, not by rounding each to a step. A cut on
 // another track often splits a crossfade in half, which puts the sample on an
@@ -228,7 +228,7 @@ function fadeLevels(c: MediaClip, t: number, end: number): number[] | undefined 
 function sameLayers(a: LayerSample[], b: LayerSample[], fps: number) {
   return a.length === b.length && a.every((left, i) => {
     const right = b[i]!;
-    if (left.content !== right.content || !sameFrame(left.source, right.source, fps)) return false;
+    if (left.content !== right.content || left.transition !== right.transition || !sameFrame(left.source, right.source, fps)) return false;
     if (!left.fade && !right.fade) return true;
     const other = right.fade ?? FULL_LEVEL;
     return (left.fade ?? FULL_LEVEL).every((level, k) => Math.abs(level - other[k]!) <= FADE_TOLERANCE);
@@ -247,7 +247,8 @@ function indexedLayers(timeline: Timeline) {
       let key = keys.get(c);
       if (key !== undefined) return key;
       if (c.kind === "media") {
-        const { id, timelineIn, sourceIn, sourceOut, label, audioFadeIn, audioFadeOut, videoFadeIn, videoFadeOut, ...rest } = c;
+        // A transition changes the picture only around its join; `transitionAt` samples it there.
+        const { id, timelineIn, sourceIn, sourceOut, label, audioFadeIn, audioFadeOut, videoFadeIn, videoFadeOut, transitionIn, ...rest } = c;
         // Splitting a clip shifts its local keyframe times while retaining the
         // same animation at each source frame.
         key = stableStringify(rest.keyframes?.length ? { ...rest, keyframes: rest.keyframes.map(k => ({
@@ -265,6 +266,16 @@ function indexedLayers(timeline: Timeline) {
   });
 }
 
+/**
+ * The transition a clip's picture is in at `t`: its own into it for the first half of that transition, or the next
+ * clip's out of it for the half before that clip starts. Elsewhere none, so a transition is a change only at its join.
+ */
+function transitionAt(candidates: (start: number, end: number) => Clip[], c: MediaClip, t: number, end: number): string | undefined {
+  if (c.transitionIn && t < c.timelineIn + c.transitionIn.duration / 2) return `in|${stableStringify(c.transitionIn)}`;
+  const next = candidates(end - EPS, end + EPS).find(n => n !== c && n.kind === "media" && n.transitionIn && Math.abs(n.timelineIn - end) <= EPS);
+  if (next?.kind === "media" && next.transitionIn && t >= end - next.transitionIn.duration / 2) return `out|${stableStringify(next.transitionIn)}`;
+}
+
 function signature(tracks: ReturnType<typeof indexedLayers>, t: number) {
   const video: LayerSample[] = [];
   const captions: LayerSample[] = [];
@@ -278,7 +289,7 @@ function signature(tracks: ReturnType<typeof indexedLayers>, t: number) {
       if (!(c.timelineIn <= t + EPS && t < end - EPS)) continue;
       if (c.kind === "media") {
         const part = { content: `${track.id}|m|${c.mediaId}|${keyFor(c)}`, source: srcAt(c, t), fade: fadeLevels(c, t, end) };
-        if (visible) video.push(part);
+        if (visible) video.push({ ...part, transition: transitionAt(candidates, c, t, end) });
         if (audible && c.volume > 0) audio.push(part);
       } else if (c.kind === "caption") {
         if (track.kind === "caption" && !track.hidden) captions.push({ content: keyFor(c), source: 0 });
@@ -302,6 +313,8 @@ function boundaries(tl: Timeline): number[] {
       if (c.kind === "media") {
         for (const f of [c.videoFadeIn, c.audioFadeIn]) if (f > 0) out.push(c.timelineIn + f);
         for (const f of [c.videoFadeOut, c.audioFadeOut]) if (f > 0) out.push(end - f);
+        // A transition changes the picture either side of its join.
+        if (c.transitionIn) out.push(Math.max(0, c.timelineIn - c.transitionIn.duration / 2), c.timelineIn + c.transitionIn.duration / 2);
       }
       if (c.kind === "caption" && c.words) for (const w of c.words) out.push(w.start, w.end);
     }
@@ -755,7 +768,7 @@ export function independentCutSpots(base: Timeline, ops: TimelineOp[], differenc
       if (clip.kind !== "media" || clip.mediaId !== first.mediaId || clip.sourceOut <= clip.sourceIn || clip.sourceIn < previousSourceOut ||
           Math.abs(clip.timelineIn - end) > EPS || !clip.enabled || clip.speed !== 1 ||
           clip.effects.length || clip.keyframes?.length || clip.audioFadeIn || clip.audioFadeOut ||
-          clip.videoFadeIn || clip.videoFadeOut) return;
+          clip.videoFadeIn || clip.videoFadeOut || clip.transitionIn) return;
       end = clipEnd(clip);
       previousSourceOut = clip.sourceOut;
     }
@@ -860,7 +873,7 @@ const propertyGroups = new Map<string, string>([
   ["text", "caption"], ["words", "caption"], ["style", "style"],
   ["transform", "transform"], ["keyframes", "transform"], ["color", "color"],
   ["volume", "volume"], ["audioFadeIn", "audioFadeIn"], ["audioFadeOut", "audioFadeOut"],
-  ["opacity", "opacity"], ["videoFadeIn", "videoFadeIn"], ["videoFadeOut", "videoFadeOut"],
+  ["opacity", "opacity"], ["videoFadeIn", "videoFadeIn"], ["videoFadeOut", "videoFadeOut"], ["transitionIn", "transitionIn"],
 ]);
 
 const roundedTime = (t: number) => Math.round(t / EPS);

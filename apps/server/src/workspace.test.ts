@@ -1940,6 +1940,49 @@ it("keeps the voice roles saved on a recording while its import is still being f
   } finally { finish(); provider.mockRestore(); }
 });
 
+it("lets go of a paused project's import waiting to be fingerprinted, and keeps fingerprints in turn", async () => {
+  const { ctx } = workspace;
+  const other = ctx.repos.projects.insert(createProject("Other"));
+  const originalHash = ctx.render.hashFile;
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  const hash = vi.spyOn(ctx.render, "hashFile").mockImplementation(async (...args) => { await gate; return originalHash(...args); });
+  vi.spyOn(ctx.render, "probeMedia").mockResolvedValue({ kind: "audio", duration: 10, hasAudio: true });
+  const add = async (projectId: string, name: string) => {
+    const source = join(directory, name);
+    writeFileSync(source, name);
+    const result = await api("POST", `/projects/${projectId}/media/import`, { path: source });
+    expect(result.status).toBe(201);
+    return (await result.json()).media as { id: string; path: string };
+  };
+  const row = (id: string) => ctx.db.prepare("SELECT status, ingest_pid FROM media WHERE id = ?").get(id);
+  const hashed = () => hash.mock.calls.map(([file]) => basename(file));
+  const activity = async () => ((await (await api("GET", "/projects")).json()).projects as Array<{ id: string; activity?: unknown }>)
+    .find(p => p.id === other.id)?.activity;
+  try {
+    const x = await add(project.id, "x.wav");
+    await vi.waitFor(() => expect(hashed()).toEqual([x.path]));
+    const y = await add(other.id, "y.wav");
+    const z = await add(project.id, "z.wav");
+    await api("PATCH", `/projects/${other.id}`, { mediaPaused: true });
+    // y waits behind x, and lets go at once rather than when x is fingerprinted.
+    await vi.waitFor(async () => {
+      expect(row(y.id)).toEqual({ status: "ingesting", ingest_pid: null });
+      expect(await activity()).toEqual([{ kind: "importing", count: 1, paused: true }]);
+    });
+    // z, queued behind y, still waits for x.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(hashed()).toEqual([x.path]);
+    finish();
+    await Promise.all(ctx.pending);
+    expect(hashed()).toEqual([x.path, z.path]);
+    expect([row(x.id), row(z.id)]).toMatchObject([{ status: "ready" }, { status: "ready" }]);
+    await api("PATCH", `/projects/${other.id}`, { mediaPaused: false });
+    await vi.waitFor(() => expect(row(y.id)).toMatchObject({ status: "ready" }));
+    expect(hashed()).toEqual([x.path, z.path, y.path]);
+  } finally { finish(); }
+});
+
 it("prepares a complete proxy for imported footage only when the GPU can encode it", async () => {
   for (const gpu of [true, false]) {
     await workspace.ctx.close();
@@ -6115,6 +6158,35 @@ it("reads an edit's range that runs past the timeline's end as reaching the end,
   expect(JSON.stringify(await past.json())).toContain("120.000 s long");
   const over = (await (await propose({ start: 110, end: 120.5 })).json()).change;
   expect(over.timelineEdits).toEqual([{ label: "outro", range: { start: 110, end: 120 } }]);
+});
+
+it("lets a request withdraw its own options still waiting for the editor, and nothing else", async () => {
+  const { ctx } = workspace;
+  ctx.repos.projects.putMedia(project.id, { id: "camera", name: "Interview", kind: "video", path: "camera.mov" }, "ready");
+  const base = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 120 }]), { parent: null });
+  ctx.repos.projects.update(project.id, { head: base.version });
+  const request = (instruction: string) => createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction, createdBy: { type: "human", name: "Editor" } });
+  const task = request("Give me options for a cold open");
+  const other = request("Suggest a dimmer opening");
+  const propose = (taskId: string, opacity: number, extra: object = {}) => api("POST", projectsPath() + "/changes?summary=true", { taskId,
+    intent: "alternative", description: `Opening at ${opacity}`, skipRender: true, fromVersion: base.version,
+    ops: [{ op: "updateClip", clipId: base.tracks[0]!.clips[0]!.id, patch: { opacity } }], ...extra });
+  const draft = (await (await propose(task.id, 0.9)).json()).change;
+  const elsewhere = (await (await propose(other.id, 0.7)).json()).change;
+  // Another request's option isn't this one's to take back.
+  const refused = await propose(task.id, 0.8, { withdraws: [elsewhere.id] });
+  expect(refused.status).toBe(400);
+  expect((await refused.json()).error.code).toBe("invalid_withdrawal");
+  const final = (await (await propose(task.id, 0.8, { withdraws: [draft.id] })).json()).change;
+  expect(ctx.repos.changes.get(draft.id)).toMatchObject({ state: "rejected", rejectedFrom: "ready", replacedBy: final.id });
+  expect(ctx.repos.changes.get(final.id)!.state).toBe("ready");
+  expect(ctx.repos.changes.get(elsewhere.id)!.state).toBe("ready");
+  // Once withdrawn, it can't be withdrawn again.
+  expect((await propose(task.id, 0.6, { withdraws: [draft.id] })).status).toBe(400);
+  // An option still waiting for the editor isn't in the video to flag: the run is told how to carry its doubt.
+  const flag = await api("POST", projectsPath() + "/edit-flags", { taskId: task.id, check: "Room tone rises at the join", changeId: final.id, spot: 0 });
+  expect(flag.status).toBe(400);
+  expect(await flag.json()).toMatchObject({ error: { code: "not_applied" } });
 });
 
 it("revises an edit saved with an empty list of named edits by its range, as one saved with no list", async () => {

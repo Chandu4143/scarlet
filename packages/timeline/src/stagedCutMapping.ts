@@ -69,6 +69,7 @@ function passageReader(timeline: Timeline) {
         // A split elsewhere can reset a distant fade. Only its active part belongs to the passage.
         for (const key of ["audioFadeIn", "videoFadeIn"] as const) if (start >= c.timelineIn + c[key] - EPS) part[key] = 0;
         for (const key of ["audioFadeOut", "videoFadeOut"] as const) if (end <= clipEnd(c) - c[key] + EPS) part[key] = 0;
+        if (start > c.timelineIn + EPS) delete part.transitionIn;
         return { ...part, fadeStart: part.audioFadeIn || part.videoFadeIn ? c.timelineIn - start : undefined,
           fadeEnd: part.audioFadeOut || part.videoFadeOut ? clipEnd(c) - start : undefined };
       });
