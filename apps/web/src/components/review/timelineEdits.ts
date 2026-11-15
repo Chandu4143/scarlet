@@ -1,9 +1,10 @@
 import type { TimelineDot } from "./TimelineScrubber";
 
 /**
- * Every applied edit on the working cut, drawn under what needs the editor: a cut is a thin red line at its join, a
- * graphic or other overlay a bar as long as it is on screen, a zoom, a reframe or a caption a dimmer bar, anything else a
- * small tick. Marks that would touch at this zoom gather into one count ("11 cuts · 2 graphics").
+ * Every applied edit on the working cut, drawn under what needs the editor: a graphic or other overlay a bar as long as
+ * it is on screen, a zoom, a reframe or a caption a dimmer bar, anything else a small tick. Marks that would touch at this
+ * zoom gather into one count ("11 cuts · 2 graphics"). A cut has no line of its own: cuts are only ever counted, so a
+ * lone one is a count of one ("1 cut").
  */
 export interface TimelineEdit extends TimelineDot {
   /** Names the edit among the others. */
@@ -32,7 +33,7 @@ const ORDER = [...Object.keys(KINDS), "other"];
 
 const kindOf = (edit: Pick<TimelineEdit, "kind">) => edit.kind && KINDS[edit.kind] ? edit.kind : "other";
 
-/** A bar has length. A cut, and any other edit that sits at one point, draws as a line. */
+/** A bar has length. A cut is only counted. Any other edit that sits at one point draws as a tick. */
 export function editShape(edit: Pick<TimelineEdit, "kind" | "time" | "end">): EditShape {
   const shape = (KINDS[kindOf(edit)] ?? OTHER).shape;
   if (shape === "bar" || shape === "dim") return edit.end > edit.time ? shape : "tick";
@@ -54,7 +55,7 @@ export function countLabel(edits: readonly Pick<TimelineEdit, "kind">[]) {
 
 export interface EditLayout {
   key: string;
-  /** A count of several edits, or one edit drawn for what it is. */
+  /** A count of edits (one cut is a count too), or one edit drawn for what it is. */
   shape: EditShape | "count";
   edits: TimelineEdit[];
   /** Where it starts, and a bar's end, in percent of what the timeline shows. A count is centred on `at`. */
@@ -111,12 +112,15 @@ export function layoutEdits(edits: readonly TimelineEdit[], from: number, span: 
   }
   const single = (p: Placed): EditLayout => ({ key: p.edit.key, shape: p.shape, edits: [p.edit], at: percent(Math.max(from, p.edit.time)),
     to: percent(Math.min(to, p.shape === "cut" || p.shape === "tick" ? p.edit.time : p.edit.end)), start: p.edit.time, end: p.edit.end, width: 0 });
-  if (!(width > 0)) return [...lines, ...bars].map(single).sort((a, b) => a.at - b.at);
+  // Before the track is measured a count can't be placed, and a cut is drawn only as a count.
+  if (!(width > 0)) return [...lines, ...bars].filter(p => p.shape !== "cut").map(single).sort((a, b) => a.at - b.at);
   lines.sort((a, b) => a.x0 - b.x0);
   bars.sort((a, b) => a.x0 - b.x0);
   // A mark is crowded when it would touch another of its row: lines along the strip, bars along the top of it.
   const crowded = new Set<Placed>();
   for (let i = 1; i < lines.length; i++) if (lines[i]!.x0 - lines[i - 1]!.x0 < LINE_ROOM) { crowded.add(lines[i]!); crowded.add(lines[i - 1]!); }
+  // A cut is never a line: every cut gathers into a count.
+  for (const line of lines) if (line.shape === "cut") crowded.add(line);
   // Bars that touch run in lanes along the top of the strip, one under another, so a graphic over a zoom or under a
   // caption that runs the whole video is still drawn. A run of bars that needs more lanes than there are, or that holds
   // a bar too short to read beside the others, gathers.
@@ -201,18 +205,18 @@ export function layoutEdits(edits: readonly TimelineEdit[], from: number, span: 
     }
   });
   const gathered = merged.map((count): EditLayout => {
-    // A count left with one edit draws it for what it is.
-    if (count.items.length === 1) return single(count.items[0]!);
+    // A count left with one edit draws it for what it is, except a cut, which is only ever counted.
+    if (count.items.length === 1 && count.items[0]!.shape !== "cut") return single(count.items[0]!);
     const groupEdits = count.items.map(i => i.edit).sort((a, b) => a.time - b.time);
     return { key: `count:${groupEdits[0]!.key}`, shape: "count", edits: groupEdits, at: count.centre / width * 100, to: count.centre / width * 100,
       start: groupEdits[0]!.time, end: Math.max(...count.items.map(i => i.shape === "cut" || i.shape === "tick" ? i.edit.time : i.edit.end)), label: count.label, width: count.w };
   });
-  return loose.map(item => item.shape === "cut" || item.shape === "tick" ? single(item) : { ...single(item), lane: lane.get(item) ?? 0 })
+  return loose.map(item => item.shape === "tick" ? single(item) : { ...single(item), lane: lane.get(item) ?? 0 })
     .concat(gathered).sort((a, b) => a.at - b.at);
 }
 
 /**
- * The mark a press or hover at `percent` is on, if any: a count under the pointer first, then the nearest line within
+ * The mark a press or hover at `percent` is on, if any: a count under the pointer first, then the nearest tick within
  * reach, then the shortest bar under it, so a short edit inside a long one can still be reached.
  */
 export function editUnder(layout: readonly EditLayout[], percent: number, width: number) {
@@ -223,7 +227,7 @@ export function editUnder(layout: readonly EditLayout[], percent: number, width:
     const a = mark.at / 100 * width, b = mark.to / 100 * width;
     if (mark.shape === "count") {
       if (Math.abs(x - a) <= mark.width / 2 + 2) return mark;
-    } else if (mark.shape === "cut" || mark.shape === "tick") {
+    } else if (mark.shape === "tick") {
       const d = Math.abs(x - a);
       if (d <= LINE_REACH && d < near) { line = mark; near = d; }
     } else if (x >= a - 2 && x <= b + 2 && b - a < shortest) { bar = mark; shortest = b - a; }

@@ -136,11 +136,11 @@ describe("layoutEdits", () => {
     expect(countLabel([edit(1, "text", 2), edit(3, "text", 4), edit(5, "overlay", 6), edit(7, "audio")])).toBe("2 captions · 1 overlay · 1 more");
   });
 
-  it("draws each edit for what it is when it has room", () => {
-    // 100 s across 1000 px.
+  it("draws each edit for what it is when it has room, and only counts a cut", () => {
+    // 100 s across 1000 px. A cut is never a line of its own: a lone one is a count of one.
     const layout = layoutEdits([edit(10, "cut"), edit(20, "graphic", 25), edit(40, "overlay", 44), edit(50, "zoom", 60), edit(70, "reframe", 72),
       edit(80, "audio"), edit(90, "text", 95), edit(96, "sparkle", 97)], 0, 100, 1000);
-    expect(shapes(layout)).toEqual(["cut:cut", "bar:graphic", "bar:overlay", "dim:zoom", "dim:reframe", "tick:audio", "dim:text", "tick:sparkle"]);
+    expect(shapes(layout)).toEqual(["1 cut", "bar:graphic", "bar:overlay", "dim:zoom", "dim:reframe", "tick:audio", "dim:text", "tick:sparkle"]);
     // A bar is as long as its edit is on screen.
     expect(layout[1]).toMatchObject({ at: 20, to: 25 });
     // A bar-like edit at one point is a tick.
@@ -153,12 +153,14 @@ describe("layoutEdits", () => {
     expect(layout[0]).toMatchObject({ at: 0, to: 50 });
   });
 
-  it("gathers marks that would touch into one count and keeps one with room apart", () => {
+  it("gathers cuts near each other into one count and counts one far from the rest apart", () => {
     const layout = layoutEdits([edit(10, "cut"), edit(10.3, "cut"), edit(10.5, "cut"), edit(50, "cut")], 0, 100, 1000);
-    expect(shapes(layout)).toEqual(["3 cuts", "cut:cut"]);
+    expect(shapes(layout)).toEqual(["3 cuts", "1 cut"]);
     expect(layout[0]).toMatchObject({ start: 10, end: 10.5 });
-    // Zoomed in, the count opens into its lines.
-    expect(shapes(layoutEdits([edit(10, "cut"), edit(10.3, "cut"), edit(10.5, "cut")], 9, 3, 1000))).toEqual(["cut:cut", "cut:cut", "cut:cut"]);
+    // Zoomed in, the count opens into smaller counts, never into lines.
+    expect(shapes(layoutEdits([edit(10, "cut"), edit(12, "cut"), edit(14, "cut")], 9, 6, 1000))).toEqual(["1 cut", "1 cut", "1 cut"]);
+    // Before the track is measured nothing can be counted, so no cut is drawn.
+    expect(shapes(layoutEdits([edit(10, "cut"), edit(20, "graphic", 25)], 0, 100, 0))).toEqual(["bar:graphic"]);
   });
 
   it("runs bars that overlap in lanes, and gathers them when there are too many or they are too short to tell apart", () => {
@@ -168,10 +170,10 @@ describe("layoutEdits", () => {
     expect(shapes(layoutEdits([edit(10, "text", 90), edit(20, "graphic", 30), edit(25, "zoom", 40), edit(28, "overlay", 35)], 0, 100, 1000)))
       .toEqual(["1 graphic · 1 overlay · 2 more"]);
     expect(shapes(layoutEdits([edit(10, "graphic", 10.5), edit(10.6, "graphic", 11)], 0, 100, 1000))).toEqual(["2 graphics"]);
-    // A short bar under a count joins it, which would hide it. A line with room runs on beneath it.
-    expect(shapes(layoutEdits([edit(10, "cut"), edit(10.3, "cut"), edit(11, "graphic", 12), edit(11.5, "cut")], 0, 100, 1000))).toEqual(["2 cuts · 1 graphic", "cut:cut"]);
-    // A cut inside one graphic's bar has room: the two are drawn apart.
-    expect(shapes(layoutEdits([edit(10, "graphic", 20), edit(15, "cut")], 0, 100, 1000))).toEqual(["bar:graphic", "cut:cut"]);
+    // A short bar under a count joins it, which would hide it.
+    expect(shapes(layoutEdits([edit(10, "cut"), edit(10.3, "cut"), edit(11, "graphic", 12), edit(11.5, "cut")], 0, 100, 1000))).toEqual(["3 cuts · 1 graphic"]);
+    // A cut inside one graphic's long bar: the bar runs on, the cut is counted over it.
+    expect(shapes(layoutEdits([edit(10, "graphic", 20), edit(15, "cut")], 0, 100, 1000))).toEqual(["bar:graphic", "1 cut"]);
   });
 
   it("keeps hundreds of cuts across the whole video to a few counts that never touch", () => {
@@ -198,10 +200,11 @@ describe("layoutEdits", () => {
     expect(moved!.at * 10).toBeCloseTo(505 - 8.5 - 25 - 6);
   });
 
-  it("picks a count under the pointer, else the nearest line, else the shortest bar", () => {
-    const layout = layoutEdits([edit(10, "cut"), edit(10.2, "cut"), edit(30, "graphic", 60), edit(40, "zoom", 45), edit(50, "cut")], 0, 100, 1000);
+  it("picks a count under the pointer, else the nearest tick, else the shortest bar", () => {
+    const layout = layoutEdits([edit(10, "cut"), edit(10.2, "cut"), edit(30, "graphic", 60), edit(40, "zoom", 45), edit(70, "audio"), edit(85, "cut")], 0, 100, 1000);
     expect(editUnder(layout, 10.1, 1000)?.shape).toBe("count");
-    expect(editUnder(layout, 50.3, 1000)?.shape).toBe("cut");
+    expect(editUnder(layout, 85.3, 1000)).toMatchObject({ shape: "count", label: "1 cut" });
+    expect(editUnder(layout, 70.3, 1000)?.shape).toBe("tick");
     expect(editUnder(layout, 42, 1000)?.edits[0]!.kind).toBe("zoom");
     expect(editUnder(layout, 35, 1000)?.edits[0]!.kind).toBe("graphic");
     expect(editUnder(layout, 80, 1000)).toBeUndefined();
