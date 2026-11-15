@@ -56,9 +56,8 @@ it("labels token counts at a glance and breaks them down without cost", () => {
     `${(1200).toLocaleString()} input · ${(3000).toLocaleString()} output · ${(44_000).toLocaleString()} cache read · 5 cache write · 2 runs`);
 });
 
-it("keeps tokens out of the chat until the editor turns them on", () => {
-  expect(localStorage.getItem("scarlet.runTokens")).toBeNull();
-  expect(useUiStore.getState().showRunTokens).toBe(false);
+it("shows tokens in the chat until the editor turns them off", () => {
+  act(() => useUiStore.getState().setShowRunTokens(false));
   openProject({ [task.id]: totals() });
   const view = render(<RunBundle task={task} events={[]} changes={[]} />);
   // One row: what the run amounts to. A finished request has no time on it and no steps to open.
@@ -162,15 +161,15 @@ it("lists tokens by project, provider and model in Settings", async () => {
   expect(text).not.toMatch(/agent/i);
   expect(text).not.toMatch(/\$|cost/i);
 
-  // The switch is off by default and remembers the editor's choice.
+  // The switch reflects the editor's choice and remembers it.
   const toggle = view.host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Show tokens in the chat"]')!;
   expect(toggle.getAttribute("aria-checked")).toBe("false");
   act(() => toggle.click());
   expect(toggle.getAttribute("aria-checked")).toBe("true");
   expect(useUiStore.getState().showRunTokens).toBe(true);
-  expect(localStorage.getItem("scarlet.runTokens")).toBe("shown");
-  act(() => toggle.click());
   expect(localStorage.getItem("scarlet.runTokens")).toBeNull();
+  act(() => toggle.click());
+  expect(localStorage.getItem("scarlet.runTokens")).toBe("hidden");
   view.unmount();
 });
 
