@@ -131,6 +131,61 @@ describe("audio_sync", () => {
   });
 });
 
+describe("timeline_transition", () => {
+  let first: MediaClip, second: MediaClip;
+  beforeEach(() => {
+    // Two pieces of the talk on the picture track, cut together at 2 s.
+    first = makeMediaClip("m1", 1, 3, 0);
+    second = makeMediaClip("m1", 10, 14, 2);
+    const tl = emptyTimeline("prj_test");
+    tl.version = "cut";
+    tl.tracks[0]!.clips = [first, second];
+    mock.state.timeline = tl;
+  });
+  const proposed = () => sent("/projects/prj_test/changes").map(r => r.body as { ops: Array<{ op: string; clipId: string; patch: Record<string, unknown> }>; description: string });
+  const swipe = { id: "tpl_swipe", kind: "transition", name: "swipe", title: "Swipe", description: "", fields: [], previewVersion: "1", createdAt: "2026-11-01T00:00:00.000Z",
+    updatedAt: "2026-11-01T00:00:00.000Z", html: "", sample: {}, width: 1920, height: 1080, duration: 0.4, previewAt: 0, transition: { type: "push", duration: 0.4, direction: "left" } };
+
+  it("puts a saved transition on the join it names by time, and says what the join got", async () => {
+    mock.state.extra = (req, res) => {
+      if (req.method === "GET" && req.path === "/templates/swipe") return reply(res, { template: swipe });
+      return false;
+    };
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const result = textOf(await ok(c, "timeline_transition", { joins: [{ at: 2 }], template: "$swipe" }));
+      expect(proposed()[0]!.ops).toEqual([{ op: "updateClip", clipId: second.id, patch: { transitionIn: { type: "push", duration: 0.4, direction: "left", template: "swipe" } } }]);
+      expect(result).toContain("Joins:\n0:02.00: push over 0.40 s");
+    } finally { await c.close(); }
+  });
+
+  it("takes a type without a template, says where the nearest join is when none is at the time given, and takes a transition off", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      expect(textOf(await call(c, "timeline_transition", { joins: [{ at: 1 }], type: "dissolve" }))).toContain("No join on v1 at 0:01.00. The nearest is at 0:02.00 (2.000 s).");
+      await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], type: "dip", duration: 0.6 });
+      expect(proposed()[0]!.ops[0]!.patch).toEqual({ transitionIn: { type: "dip", duration: 0.6, direction: "left" } });
+      await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], none: true });
+      expect(proposed()[1]!.ops[0]!.patch).toEqual({ transitionIn: null });
+    } finally { await c.close(); }
+  });
+
+  it("won't put a graphic template on a join", async () => {
+    mock.state.extra = (req, res) => {
+      if (req.method === "GET" && req.path === "/templates/lower-third") return reply(res, { template: { ...swipe, kind: "graphic", name: "lower-third", transition: undefined } });
+      return false;
+    };
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      expect(textOf(await call(c, "timeline_transition", { joins: [{ at: 2 }], template: "lower-third" }))).toContain("$lower-third is a graphic template, not a transition.");
+      expect(proposed()).toEqual([]);
+    } finally { await c.close(); }
+  });
+});
+
 describe("timeline_crossfade_audio", () => {
   let left: MediaClip, right: MediaClip, tl: Timeline;
   beforeEach(() => {
@@ -357,7 +412,7 @@ describe("review notes", () => {
 describe("tool annotations", () => {
   // Every tool that saves an edit, a recommendation, a file or a message to the editor. A harness may retry or
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
-  const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
+  const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
     "graphic_render", "template_save", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);

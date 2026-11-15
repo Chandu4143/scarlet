@@ -9,6 +9,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - Export › Advanced export saves a folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro: the timeline with its cuts, tracks, zooms, volume and fades, a copy of the footage, the captions, and a Read me that lists anything that doesn't carry over.
 - In the project library, a project whose caching you paused says Importing paused instead of still importing its files.
 - Recordings of your spoken notes are no longer deleted the day after you save them.
+- Transitions: type $ to pick one, like a swipe, whip pan, dissolve or dip to black, and see it play on your own footage before you ask for it. Each transition Scarlet adds is an edit you can revise or undo.
+- Write a transition into a skill, like "every time I go to the screen recording, use $swipe": $ lists your templates in a skill's page too, and the templates and skills a skill names are marked so you can tell them from plain words.
 - Type a timestamp like 1:42 in a new edit request to mark it on the timeline. Click it to jump there, or send the note about that moment.
 - The tokens a request has used now show in the chat by default; turn them off in Settings › Usage.
 - Codex installed through Homebrew can start editing on macOS while keeping its sandbox.

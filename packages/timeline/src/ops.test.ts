@@ -213,3 +213,17 @@ describe("clip pieces", () => {
     expect(shiftClip(line, -3.5)).toMatchObject({ timelineIn: 0, timelineOut: 1.5, text: "two three", words: [{ text: "two", start: 0, end: 0.5 }, { text: "three", start: 0.5, end: 1.5 }] });
   });
 });
+
+describe("transitions on clips", () => {
+  const timeline = () => {
+    const tl = emptyTimeline("prj");
+    tl.tracks[0]!.clips = [makeMediaClip("m", 0, 2, 0, { id: "a" }), makeMediaClip("m", 5, 9, 2, { id: "b", transitionIn: { type: "push", duration: 0.4, direction: "left" } })];
+    return tl;
+  };
+  it("stays at the join it was put on when its clip is split, and comes off with null", () => {
+    const split = applyOps(timeline(), [{ op: "splitClip", clipId: "b", at: 3, newId: "c" }]);
+    expect(split.tracks[0]!.clips.map(c => c.kind === "media" && c.transitionIn?.type)).toEqual([undefined, "push", undefined]);
+    const off = applyOps(timeline(), [{ op: "updateClip", clipId: "b", patch: { transitionIn: null } }]);
+    expect(off.tracks[0]!.clips[1]).not.toHaveProperty("transitionIn");
+  });
+});

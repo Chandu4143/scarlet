@@ -169,6 +169,29 @@ export const Effect = z.object({
 });
 export type Effect = z.infer<typeof Effect>;
 
+/**
+ * How the picture moves from the clip before to this one, centred on the join between them. A dip passes through a
+ * colour; the others play the incoming picture over the outgoing one, using the footage either side of the join,
+ * so with little footage to spare they run shorter (the render reports it). Sound is untouched: the join's audio stays
+ * as it was.
+ */
+export const TransitionType = z.enum(["dissolve", "dip", "push", "slide", "whip"]);
+export type TransitionType = z.infer<typeof TransitionType>;
+export const TransitionDirection = z.enum(["left", "right", "up", "down"]);
+export type TransitionDirection = z.infer<typeof TransitionDirection>;
+export const Transition = z.object({
+  type: TransitionType,
+  /** Seconds, centred on the join. */
+  duration: z.number().positive().max(10),
+  /** push, slide and whip: the way the picture travels ("left" brings the next picture in from the right). */
+  direction: TransitionDirection.default("left"),
+  /** dip: the colour it passes through (default black). */
+  color: RenderColor.optional(),
+  /** The saved template it came from, by the name the editor types after $ ("swipe"). */
+  template: z.string().max(64).optional(),
+});
+export type Transition = z.infer<typeof Transition>;
+
 const ClipBase = z.object({
   id: Id,
   /** Timeline position (seconds). */
@@ -199,6 +222,8 @@ export const MediaClip = ClipBase.extend({
   videoFadeIn: Seconds.default(0),
   videoFadeOut: Seconds.default(0),
   effects: z.array(Effect).default([]),
+  /** The transition into this clip from the one before it on its track. Absent: a straight cut. */
+  transitionIn: Transition.optional(),
 });
 export type MediaClip = z.infer<typeof MediaClip>;
 

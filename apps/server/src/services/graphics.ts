@@ -11,7 +11,7 @@ import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, graphicCoverage, graphicOver, renderPdfDocument, renderGraphic, renderGraphicStill, renderTimelineFrame, type MissingFont } from "@scarlet/render";
-import { GraphicTemplate, type GraphicRenderRequest, type GraphicRenderResponse, type GraphicTemplateSummary, type SaveStyleGuideRequest, type SaveTemplateRequest, type TaskAttachment, type User } from "@scarlet/shared";
+import { GraphicTemplate, type TransitionStyle, type GraphicRenderRequest, type GraphicRenderResponse, type GraphicTemplateSummary, type SaveStyleGuideRequest, type SaveTemplateRequest, type TaskAttachment, type User } from "@scarlet/shared";
 import { newId, type MediaAsset, type Project, type StyleGuide } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
 import { now } from "../db.js";
@@ -244,7 +244,12 @@ export const TEMPLATE_PREVIEW_WIDTH = 640;
  * Save a template, or replace the one with the same name. Its page and the files it links to go in its library folder,
  * and its preview is drawn with the sample values.
  */
-export async function saveTemplate(ctx: Ctx, body: SaveTemplateRequest, user: User | null, signal?: AbortSignal): Promise<{ template: GraphicTemplate; missingFonts: MissingFont[]; problems: string[]; preview: string }> {
+export async function saveTemplate(ctx: Ctx, body: SaveTemplateRequest, user: User | null, signal?: AbortSignal): Promise<{ template: GraphicTemplate; missingFonts: MissingFont[]; problems: string[]; preview?: string }> {
+  if (body.transition) {
+    if (body.html !== undefined) throw badRequest("page_or_transition", "A template is a graphic's page or a transition, not both.");
+    return { template: await saveTransitionTemplate(ctx, { ...body, transition: body.transition }, user), missingFonts: [], problems: [] };
+  }
+  if (body.html === undefined) throw badRequest("missing_page", "Send the graphic's page as html, or a transition.");
   const fields = [...new Set(body.fields)];
   const found = placeholders(body.html);
   const unused = fields.filter(f => !found.includes(f));
@@ -294,10 +299,58 @@ export async function saveTemplate(ctx: Ctx, body: SaveTemplateRequest, user: Us
   }
 }
 
+type TransitionTemplateRequest = SaveTemplateRequest & { transition: TransitionStyle };
+
+/** A transition template has no page: what it is, is how the picture moves. */
+async function saveTransitionTemplate(ctx: Ctx, body: TransitionTemplateRequest, user: User | null): Promise<GraphicTemplate> {
+  if (body.fields.length) throw badRequest("template_fields", "A transition has no fields.");
+  const existing = ctx.repos.templates.select("name = ?", [body.name])[0];
+  // A graphic of the same name kept its page in the library folder; the transition that replaces it has none.
+  if (existing) await rm(ctx.paths.template(existing.id), { recursive: true, force: true });
+  const template = putTransitionTemplate(ctx, body, existing);
+  logActivity(ctx, { projectId: body.projectId ?? null, actor: actorFor(user), type: "template.saved",
+    summary: `${existing ? "Replaced" : "Saved"} the transition template $${template.name}`, data: { templateId: template.id } });
+  return template;
+}
+
+function putTransitionTemplate(ctx: Ctx, body: TransitionTemplateRequest, existing?: GraphicTemplate) {
+  const stamp = now();
+  const template = GraphicTemplate.parse({
+    id: existing?.id ?? newId("tpl"), kind: "transition", transition: body.transition, name: body.name, title: body.title, description: body.description,
+    fields: [], previewVersion: randomUUID().slice(0, 8), createdAt: existing?.createdAt ?? stamp, updatedAt: stamp,
+    html: "", sample: {}, width: 1920, height: 1080, duration: body.transition.duration, previewAt: 0,
+  });
+  ctx.repos.templates.put(template);
+  return template;
+}
+
+/** Transitions every library starts with. One the editor deletes stays deleted. */
+export const STOCK_TRANSITIONS: TransitionTemplateRequest[] = ([
+  { name: "swipe", title: "Swipe", description: "The next picture pushes the last one off to the left.", transition: { type: "push", duration: 0.4, direction: "left" } },
+  { name: "whip-pan", title: "Whip pan", description: "A fast push with a sideways blur, like a whip of the camera.", transition: { type: "whip", duration: 0.3, direction: "left" } },
+  { name: "slide", title: "Slide", description: "The next picture slides in from the right over the last one.", transition: { type: "slide", duration: 0.4, direction: "left" } },
+  { name: "dissolve", title: "Dissolve", description: "One picture fades into the next.", transition: { type: "dissolve", duration: 0.5, direction: "left" } },
+  { name: "dip-to-black", title: "Dip to black", description: "Fades down to black and up into the next picture.", transition: { type: "dip", duration: 0.6, direction: "left", color: "#000000" } },
+] satisfies Omit<TransitionTemplateRequest, "fields" | "sample">[]).map(t => ({ ...t, fields: [], sample: {} }));
+
+export function seedStockTransitions(ctx: Ctx): number {
+  let seeded = 0;
+  for (const stock of STOCK_TRANSITIONS) {
+    if (ctx.repos.templates.select("name = ?", [stock.name])[0]) continue;
+    const deleted = ctx.db.prepare("SELECT 1 FROM activity WHERE type = 'template.deleted' AND json_extract(json, '$.data.name') = ? LIMIT 1").get(stock.name);
+    if (deleted) continue;
+    putTransitionTemplate(ctx, stock);
+    seeded++;
+  }
+  return seeded;
+}
+
 export async function deleteTemplate(ctx: Ctx, template: GraphicTemplate, user: User | null) {
   ctx.repos.templates.remove(template.id);
   await rm(ctx.paths.template(template.id), { recursive: true, force: true });
-  logActivity(ctx, { projectId: null, actor: actorFor(user), type: "template.deleted", summary: `Deleted the graphic template $${template.name}`, data: { templateId: template.id } });
+  // The name stays in the record, so a transition Scarlet comes with isn't brought back once the editor deletes it.
+  logActivity(ctx, { projectId: null, actor: actorFor(user), type: "template.deleted", summary: `Deleted the ${template.kind === "transition" ? "transition" : "graphic"} template $${template.name}`,
+    data: { templateId: template.id, name: template.name } });
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +390,7 @@ export async function renderProjectGraphic(ctx: Ctx, project: Project, input: Gr
   const templateRef = o.template ?? (input.html === undefined ? based?.media.graphic?.templateId : undefined);
   const template = templateRef ? findTemplate(ctx, templateRef) : null;
   if (templateRef && !template) throw notFound(`template ${templateRef}`);
+  if (template?.kind === "transition") throw badRequest("transition_template", `$${template.name} is a transition: put it on a join with timeline_transition.`);
   if (input.html !== undefined && o.template) throw badRequest("page_or_template", "Send a page or name a template, not both.");
   if (input.html === undefined && !template) throw badRequest("missing_page", "Send the graphic's page as html, or name a template to fill.");
   const fields = template ? (o.fields ?? (based?.media.graphic?.templateId === template.id ? based.media.graphic.fields : undefined) ?? {}) : undefined;

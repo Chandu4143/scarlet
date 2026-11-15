@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { api } from "../lib/client";
-import { buildDb } from "../lib/mock/fixtures";
+import { buildDb, sampleTemplates } from "../lib/mock/fixtures";
+import { useTemplatesStore } from "../stores/templates";
 import { useHostsStore } from "../stores/hosts";
 import { useSkillsStore } from "../stores/skills";
 import { useUiStore } from "../stores/ui";
@@ -798,5 +799,52 @@ it("holds Restore while a skill revision runs and shows its saved words when it 
     await act(async () => named(view.el, "Stop")!.click());
     expect(markdown(view.el).value).toContain("Keep the laugh.");
     expect(view.el.querySelector(".unit-state")?.textContent).toBe("Stopped");
+  } finally { await view.close(); }
+});
+
+it("lists the templates with $ at the cursor in a skill's instructions and in its chat, and marks each $template and /skill of the editor's", async () => {
+  const db = buildDb();
+  const skill = { ...db.skills[0]!, content: "---\nname: frame-screen\ndescription: Frame the screen.\n---\n\nKeep $9 and the price.\n" };
+  vi.spyOn(api, "skill").mockImplementation(async () => ({ skill, versions: db.skillVersions[skill.id] ?? [] }));
+  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: sampleTemplates() });
+  vi.spyOn(api, "skills").mockResolvedValue({ skills: [{ ...db.skills[0]!, name: "dialogue-pass" }] } as never);
+  useTemplatesStore.setState(useTemplatesStore.getInitialState());
+  const view = await open(`/settings/skills/${skill.id}`);
+  const { el } = view;
+  const body = markdown(el);
+  const type = (field: HTMLTextAreaElement, value: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")!.set!.call(field, value);
+    field.setSelectionRange(value.length, value.length);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const key = (field: HTMLTextAreaElement, name: string) => act(async () => { field.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })); });
+  const titles = () => [...el.querySelectorAll(".composer-templates .composer-template-title")].map(t => t.textContent);
+  const marked = () => [...el.querySelectorAll(".skill-instructions-text .skill-keyword")].map(k => k.textContent);
+  try {
+    await act(async () => {});
+    // A $ that isn't the editor's template is plain words.
+    expect(marked()).toEqual([]);
+    await act(async () => body.focus());
+    // $ at the end of a line lists the templates there, graphics and then transitions, as the message box does.
+    await type(body, `${body.value}Every time I go from my camera to the screen recording, use $`);
+    expect([...el.querySelectorAll(".composer-templates .eyebrow")].map(e => e.textContent)).toEqual(["Graphics", "Transitions"]);
+    expect(titles()).toEqual(["Lower third", "Title card", "Pull quote", "Swipe", "Dip to black"]);
+    expect(el.querySelector(".skill-instructions .composer-style-guide")).toBeNull();
+    await type(body, `${body.value}sw`);
+    expect(titles()).toEqual(["Swipe"]);
+    await key(body, "Enter");
+    expect(body.value).toMatch(/use \$swipe $/);
+    expect(el.querySelector(".composer-templates")).toBeNull();
+    // The template's name and a skill's have a faint fill in the text drawn under the field.
+    await type(body, `${body.value}after /dialogue-pass, and $nothing.`);
+    expect(marked()).toEqual(["$swipe", "/dialogue-pass"]);
+    expect(el.querySelector(".skill-instructions-text")!.textContent).toBe(`${body.value}​`);
+    // The skill's own message box lists templates with $ and has no list for /.
+    const ask = el.querySelector<HTMLTextAreaElement>('[aria-label="Tell Scarlet what to change in this skill"]')!;
+    await act(async () => ask.focus());
+    await type(ask, "/dial");
+    expect(el.querySelector(".skill-chat [role='listbox']")).toBeNull();
+    await type(ask, "Every time we cut to the screen, use $sw");
+    expect([...el.querySelectorAll(".skill-chat .composer-template-title")].map(t => t.textContent)).toEqual(["Swipe"]);
   } finally { await view.close(); }
 });

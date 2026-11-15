@@ -1406,7 +1406,7 @@ it("asks for a new edit, with the skills and templates it takes, in an empty box
   expect(NEW_EDIT_HINT).toBe("Describe an edit, / skills, $ templates");
 });
 
-it("lists the graphic templates with $, as / lists the skills, and puts the chosen one's name in the box", async () => {
+it("lists the templates with $, graphics and then transitions, as / lists the skills, and puts the chosen one's name in the box", async () => {
   const templates = sampleTemplates();
   const list = vi.spyOn(api, "listTemplates").mockResolvedValue({ templates });
   await show();
@@ -1417,10 +1417,14 @@ it("lists the graphic templates with $, as / lists the skills, and puts the chos
   await type("$");
   expect(list).toHaveBeenCalledTimes(1);
   const box = container.querySelector('[role="listbox"]')!;
-  expect(box.getAttribute("aria-label")).toBe("Graphic templates");
+  expect(box.getAttribute("aria-label")).toBe("Templates");
   expect(box.classList.contains("composer-skills")).toBe(true);
-  expect(box.querySelector(".eyebrow")?.textContent).toBe("Templates");
-  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Lower third", "Title card", "Pull quote"]);
+  expect([...box.querySelectorAll(".eyebrow")].map(e => e.textContent)).toEqual(["Graphics", "Transitions"]);
+  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Lower third", "Title card", "Pull quote", "Swipe", "Dip to black"]);
+  // A transition's row moves between the pictures either side of a cut, and says how many frames it lasts.
+  const swipe = rows()[3]!;
+  expect(swipe.querySelector(".composer-template-thumb .transition-picture")?.className).toBe("transition-picture is-push to-left");
+  expect(swipe.querySelector(".composer-template-fields")?.textContent).toBe(`${Math.round(0.4 * project.settings.fps)} frames`);
   // Each row: its picture over the frame under the playhead, its title, and its fields under it.
   expect(rows()[0]!.querySelectorAll(".composer-template-thumb img")).toHaveLength(2);
   expect(rows()[0]!.querySelector(".composer-template-fields")?.textContent).toBe("Name, Title");
@@ -1431,6 +1435,10 @@ it("lists the graphic templates with $, as / lists the skills, and puts the chos
   await key("ArrowDown");
   expect(rows()[1]!.getAttribute("aria-selected")).toBe("true");
   expect(useTemplatesStore.getState().lit?.id).toBe("tpl_title");
+  // A lit transition plays over the player's picture.
+  await key("ArrowDown");
+  await key("ArrowDown");
+  expect([useTemplatesStore.getState().lit?.id, useTemplatesStore.getState().lit?.transition?.type]).toEqual(["tpl_swipe", "push"]);
   await key("Escape");
   expect(container.querySelector('[role="listbox"]')).toBeNull();
   expect(useTemplatesStore.getState().lit).toBeNull();

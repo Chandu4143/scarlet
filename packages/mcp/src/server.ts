@@ -57,6 +57,7 @@ import {
   type CaptionClip,
   type MediaClip,
   Transform,
+  Transition,
   type Track,
   type TranscriptWord,
 } from "@scarlet/timeline";
@@ -77,6 +78,7 @@ import {
   summarizeTimeline,
 } from "./analysis.js";
 import { toolAnnotations } from "./annotations.js";
+import { transitionOps } from "./transition.js";
 import { MediaPreparing, describeError, errorResult, errorText, formatZodError, json, noteUnmeasured, text, toolRefusal, unavailable, unmeasured, unmeasuredLine, type ToolResult } from "./tool-result.js";
 import { registerPerception } from "./perception-tools.js";
 import { sourceRangeToTimeline, sourceToTimeline, timelineWords } from "./timeline-perception.js";
@@ -90,7 +92,7 @@ const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
-const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
+const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
 const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this footage after fromVersion. Read that passage on currentVersion and make the edit again there.";
@@ -2506,6 +2508,42 @@ ${OPS_DOC}`,
   );
 
   tool(
+    "timeline_transition",
+    "Put a transition on joins between clips on a video track, or take it off (none). A transition is how the picture moves from one clip to the next, centred on the join: dissolve, dip (through a colour), push, slide or whip (a push with a sideways blur). The sound at the join is not changed. Name a saved transition template with template (what the editor typed after $, such as swipe), or give type and duration; either way type, duration, direction and color you pass win over the template's. Find a join by the clip it leads into (clipId) or by its time on the track (at, timeline seconds; the bottom video track unless trackId). A transition shows a little more footage either side of the join, from each clip's own source; with less footage than half its length on a side it runs shorter, and with none it stays a straight cut: the result says what each join got. All joins form one proposal.",
+    {
+      intent: intentInput,
+      joins: z.array(z.object({ clipId: z.string().optional(), at: z.number().finite().nonnegative().optional(), trackId: z.string().optional() })).min(1),
+      template: z.string().min(1).optional().describe("A saved transition template, by name or id"),
+      type: z.enum(["dissolve", "dip", "push", "slide", "whip"]).optional(),
+      duration: z.number().finite().positive().max(10).optional().describe("Seconds, centred on the join"),
+      direction: z.enum(["left", "right", "up", "down"]).optional().describe("push, slide and whip: the way the picture travels; left brings the next picture in from the right"),
+      color: z.string().optional().describe("dip: the colour it passes through, default black"),
+      none: z.boolean().optional().describe("Take the transition off: the join is a straight cut again"),
+      description: z.string().min(1).default("Transition between clips"),
+      noteIds: z.array(z.string()).optional(),
+    },
+    async ({ intent, joins, template, type, duration, direction, color, none, description, noteIds }) => {
+      const base = lastTimeline?.version;
+      const { project } = await getProject();
+      const before = await getTimeline(base);
+      if (!before) throw new Error("There is no timeline to put a transition on yet.");
+      let style: Transition | null = null;
+      if (!none) {
+        const saved = template ? (await client.get<{ template: GraphicTemplate }>(`/templates/${encodeURIComponent(template.replace(/^\$/, ""))}`)).template : undefined;
+        if (saved && saved.kind !== "transition") throw new Error(`$${saved.name} is a graphic template, not a transition. graphic_render draws it.`);
+        const from = saved?.transition;
+        const kind = type ?? from?.type;
+        if (!kind) throw new Error("Name a transition template, or give its type and duration.");
+        style = Transition.parse({ ...from, type: kind, duration: duration ?? from?.duration ?? 0.5, ...(direction && { direction }), ...(color && { color }),
+          ...(saved && { template: saved.name }) });
+      }
+      const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
+      const result = await propose({ intent, ops, description, noteIds }, before);
+      return { ...result, content: [...result.content, { type: "text" as const, text: `Joins:\n${report.join("\n")}` }] };
+    },
+  );
+
+  tool(
     "timeline_first_cut",
     "Replace the whole timeline with SOURCE keeps in the supplied playback order. For dialogue, {fromWord,toWord} keeps those inclusive transcript_get word indices and places their edges in measured quiet. Split adjacent words into separate keeps to tighten their pause. For picture, reordered jumps, or a boundary that needs review, supply exact source seconds as start/end on the affected keeps. {start,end} alone keeps an exact passage. The first and last source words keep the recording head and tail unless you give those handles. With synced A1 audio or audible layer sound, word indices belong to the recording that is heard. `layer` adds a second recording of the same event (a camera beside a screen capture) on a video track above V1, in sync at the offset audio_sync measured with mediaId as the reference: each keep range plays the same moment of both, wherever the layer has footage, as an inset (the preset quarter-size bottom-right, or `framing`). One recording is heard: mediaId's, or the layer's with `sound`. `audioMediaId` places a separate audio recording on A1 with the same ranges and mutes the video clips; use it only when it shares mediaId's timebase. `crossfade` adds that many seconds of audio fade in/out on each clip (about 2 frames, 0.066 s at 30 fps). For centered audio joins, leave crossfade unset. After the assembly is applied, timeline_get returns its clip IDs for timeline_crossfade_audio, which uses a two-frame overlap by default and keeps this assembly separately reviewable. Each keep edge is measured on the recording that is heard: one that would leave a piece of a sound playing moves onto the quiet that ends it, 0.12 s away at most, and comes back in `movedEdges`; one inside a sounding word saves nothing and is named with what was measured.",
     {
@@ -2925,17 +2963,18 @@ ${OPS_DOC}`,
 
   tool(
     "template_list",
-    "List the graphic templates saved in the editor's library, for every project: id, name (what the editor types after $), title, description and fields. template_get reads one.",
+    "List the templates saved in the editor's library, for every project: id, kind, name (what the editor types after $), title and description, with a graphic's fields and a transition's movement. template_get reads one; timeline_transition puts a transition on joins.",
     {},
     async () => {
       const { templates } = await client.get<{ templates: GraphicTemplateSummary[] }>("/templates");
-      return json(templates.map(t => ({ id: t.id, name: t.name, title: t.title, description: t.description, fields: t.fields })));
+      return json(templates.map(t => ({ id: t.id, kind: t.kind, name: t.name, title: t.title, description: t.description,
+        ...(t.kind === "transition" ? { transition: t.transition } : { fields: t.fields }) })));
     },
   );
 
   tool(
     "template_get",
-    "Read a saved graphic template by id or name: its page with a {{Field}} placeholder wherever a field's value goes, its fields, the sample values its preview shows, the frame it was designed in, its usual duration and the moment its preview shows. graphic_render with template and fields draws it.",
+    "Read a saved template by id or name. A transition's is how it moves (timeline_transition puts it on joins). A graphic's is its page with a {{Field}} placeholder wherever a field's value goes, its fields, the sample values its preview shows, the frame it was designed in, its usual duration and the moment its preview shows. graphic_render with template and fields draws it.",
     { template: z.string().min(1).describe("Id or name") },
     async ({ template }) => {
       const { template: t } = await client.get<{ template: GraphicTemplate }>(`/templates/${encodeURIComponent(template.replace(/^\$/, ""))}`);
@@ -2945,20 +2984,32 @@ ${OPS_DOC}`,
 
   tool(
     "template_save",
-    `Save a graphic as a template in the editor's library, for every project, or replace the template with the same name. The page has a {{Field}} placeholder wherever a field's value goes (the values are put in as text); fields lists them in the order the editor reads them, and sample gives each a value for the template's preview, which Scarlet draws at previewAt. basedOn names a graphic of this project whose files (fonts, pictures) the page links to, and absolute links to files of this project are kept with the template. The editor picks a template by typing $ and its name. Returns the template's id${caps.images ? " and its preview" : ""}, and any font the preview couldn't find.`,
+    `Save a graphic or a transition as a template in the editor's library, for every project, or replace the template with the same name. A transition sends transition (how the picture moves, as timeline_transition takes it) and no page or fields. A graphic's page has a {{Field}} placeholder wherever a field's value goes (the values are put in as text); fields lists them in the order the editor reads them, and sample gives each a value for the template's preview, which Scarlet draws at previewAt. basedOn names a graphic of this project whose files (fonts, pictures) the page links to, and absolute links to files of this project are kept with the template. The editor picks a template by typing $ and its name. Returns the template's id${caps.images ? " and its preview" : ""}, and any font the preview couldn't find.`,
     {
       name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).max(64).describe("Lowercase words joined by hyphens, e.g. lower-third"),
       title: z.string().trim().min(1).max(120),
       description: z.string().max(2000).default("").describe("When to use it, in a line"),
-      fields: z.array(z.string().trim().min(1).max(60)).max(20),
+      fields: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
       html: z.string().min(1).max(500_000).optional(),
       ...(caps.files ? { path: z.string().optional().describe("Or an HTML file in the task artifact directory") } : {}),
-      sample: z.record(z.string()),
+      sample: z.record(z.string()).default({}),
+      transition: z.object({
+        type: z.enum(["dissolve", "dip", "push", "slide", "whip"]),
+        duration: z.number().finite().positive().max(10).describe("Seconds, centred on the join"),
+        direction: z.enum(["left", "right", "up", "down"]).default("left"),
+        color: z.string().optional().describe("dip: the colour it passes through"),
+      }).optional(),
       basedOn: z.string().optional().describe("mediaId of the graphic it was made from"),
       duration: z.number().positive().max(600).optional().describe("Seconds a use lasts by default"),
       previewAt: z.number().nonnegative().optional().describe("Seconds into the graphic the preview shows; default halfway"),
     },
     async (args) => {
+      if (args.transition) {
+        if (args.html || (args as { path?: string }).path) return errorText("A transition template has no page: send transition alone.");
+        const { template } = await client.post<{ template: GraphicTemplate }>("/templates", {
+          name: args.name, title: args.title, description: args.description, transition: args.transition, projectId: ctx.projectId });
+        return json({ templateId: template.id, name: template.name, kind: template.kind, transition: template.transition });
+      }
       const path = (args as { path?: string }).path;
       if (!args.html === !path) return errorText("Send the page as html or path.");
       const html = path ? (await readArtifact(await artifactDir(), path)).toString("utf8") : args.html!;

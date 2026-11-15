@@ -27,6 +27,7 @@ const KINDS: Record<string, { shape: EditShape; one: string; many: string }> = {
   zoom: { shape: "dim", one: "zoom", many: "zooms" },
   reframe: { shape: "dim", one: "reframe", many: "reframes" },
   audio: { shape: "tick", one: "audio edit", many: "audio edits" },
+  transition: { shape: "tick", one: "transition", many: "transitions" },
 };
 const OTHER = { shape: "tick" as EditShape, one: "other edit", many: "other edits" };
 /** The order kinds are named in when a count holds as many of each. */

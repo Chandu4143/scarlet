@@ -302,6 +302,8 @@ function boundaries(tl: Timeline): number[] {
       if (c.kind === "media") {
         for (const f of [c.videoFadeIn, c.audioFadeIn]) if (f > 0) out.push(c.timelineIn + f);
         for (const f of [c.videoFadeOut, c.audioFadeOut]) if (f > 0) out.push(end - f);
+        // A transition changes the picture either side of its join.
+        if (c.transitionIn) out.push(Math.max(0, c.timelineIn - c.transitionIn.duration / 2), c.timelineIn + c.transitionIn.duration / 2);
       }
       if (c.kind === "caption" && c.words) for (const w of c.words) out.push(w.start, w.end);
     }
@@ -755,7 +757,7 @@ export function independentCutSpots(base: Timeline, ops: TimelineOp[], differenc
       if (clip.kind !== "media" || clip.mediaId !== first.mediaId || clip.sourceOut <= clip.sourceIn || clip.sourceIn < previousSourceOut ||
           Math.abs(clip.timelineIn - end) > EPS || !clip.enabled || clip.speed !== 1 ||
           clip.effects.length || clip.keyframes?.length || clip.audioFadeIn || clip.audioFadeOut ||
-          clip.videoFadeIn || clip.videoFadeOut) return;
+          clip.videoFadeIn || clip.videoFadeOut || clip.transitionIn) return;
       end = clipEnd(clip);
       previousSourceOut = clip.sourceOut;
     }
@@ -860,7 +862,7 @@ const propertyGroups = new Map<string, string>([
   ["text", "caption"], ["words", "caption"], ["style", "style"],
   ["transform", "transform"], ["keyframes", "transform"], ["color", "color"],
   ["volume", "volume"], ["audioFadeIn", "audioFadeIn"], ["audioFadeOut", "audioFadeOut"],
-  ["opacity", "opacity"], ["videoFadeIn", "videoFadeIn"], ["videoFadeOut", "videoFadeOut"],
+  ["opacity", "opacity"], ["videoFadeIn", "videoFadeIn"], ["videoFadeOut", "videoFadeOut"], ["transitionIn", "transitionIn"],
 ]);
 
 const roundedTime = (t: number) => Math.round(t / EPS);
