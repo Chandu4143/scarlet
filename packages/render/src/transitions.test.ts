@@ -59,8 +59,14 @@ describe("transitions", () => {
 
   it("dissolves one picture into the other and dips through black, and leaves the cut straight without one", async () => {
     expect(at(await frameAt(join({ type: "dissolve", duration: 1, direction: "left" }), 2), 32)).toBe("m");
-    expect(at(await frameAt(join({ type: "dip", duration: 1, direction: "left" }), 1.98), 32)).toBe(".");
-    expect(at(await frameAt(join({ type: "dip", duration: 1, direction: "left" }), 1.6), 32)).toBe("r");
+    const dip = join({ type: "dip", duration: 1, direction: "left" });
+    expect(at(await frameAt(dip, 1.98), 32)).toBe(".");
+    // Halfway into the dip the red channel is about half-bright. Allow for rounding to a video frame.
+    const middle = (32 * 64 + 32) * 3;
+    const [red, green, blue] = (await frameAt(dip, 1.75)).subarray(middle, middle + 3);
+    expect(red).toBeGreaterThan(95);
+    expect(red).toBeLessThan(160);
+    expect(Math.max(green!, blue!)).toBeLessThan(15);
     expect(at(await frameAt(join(), 1.98), 32)).toBe("r");
     expect(at(await frameAt(join(), 2), 32)).toBe("b");
   });
