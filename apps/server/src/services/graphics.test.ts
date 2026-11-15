@@ -78,7 +78,8 @@ it("puts a staged folder in place, and keeps the one there when the new one can'
   expect(readdirSync(directory).filter(n => n.startsWith("guide"))).toEqual(["guide"]);
 });
 
-it.skipIf(process.getuid?.() === 0)("leaves no staging folder and keeps the guide there when its file can't be copied", async () => {
+// Windows ignores a file mode of 0, and root reads through it, so neither can make the copy fail this way.
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("leaves no staging folder and keeps the guide there when its file can't be copied", async () => {
   const { ctx } = workspace;
   const attachment = join(ctx.paths.attachments(project.id), "att_guide");
   mkdirSync(attachment, { recursive: true });
