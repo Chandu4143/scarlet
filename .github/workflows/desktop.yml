@@ -73,6 +73,7 @@ jobs:
     needs: [version, build, ci]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (needs.version.outputs.signing == 'true' || needs.version.outputs.signing == 'updater-signed')
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     # Each push has its own version. Only repeat attempts for that version share a lock.
@@ -83,6 +84,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -91,6 +93,22 @@ jobs:
           pattern: scarlet-desktop-*
           merge-multiple: true
           path: installers
+      - name: Install the pinned updater signer
+        run: pnpm --filter @scarlet/desktop install --frozen-lockfile --ignore-scripts
+      - name: Sign the verified update packages
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          set -euo pipefail
+          : "${TAURI_SIGNING_PRIVATE_KEY:?Set the updater signing key in the main-only release environment}"
+          for suffix in macOS-Apple-Silicon.app.tar.gz macOS-Intel.app.tar.gz Windows-x64-Setup.exe Windows-x64.msi; do
+            package="$GITHUB_WORKSPACE/installers/Scarlet-$RELEASE_VERSION-$suffix"
+            test -s "$package"
+            pnpm --filter @scarlet/desktop exec tauri signer sign --app-version "$RELEASE_VERSION" "$package" > /dev/null
+            test -s "$package.sig"
+          done
       - name: Verify the update signatures and assemble the public feed
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}

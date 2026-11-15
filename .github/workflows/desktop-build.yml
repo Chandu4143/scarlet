@@ -26,7 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     if: ${{ !inputs.release || (!inputs.early_access && github.event_name == 'push' && github.ref == 'refs/heads/main') }}
-    environment: ${{ inputs.release && 'release' || 'desktop-build' }}
+    environment: ${{ inputs.release && inputs.platform_signing && 'release' || 'desktop-build' }}
     strategy:
       fail-fast: false
       matrix:
@@ -276,26 +276,6 @@ jobs:
         if: ${{ !inputs.early_access }}
         # On Windows, native pwsh starts the engine with the same environment used by the desktop shell.
         run: node apps/desktop/scripts/smoke-engine-public.mjs "${{ runner.temp }}/scarlet-installers" "${{ runner.temp }}/scarlet-media-tools"
-
-      - name: Sign the verified update packages for this version
-        if: inputs.release
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
-        run: |
-          set -euo pipefail
-          : "${TAURI_SIGNING_PRIVATE_KEY:?Set the updater signing key in the protected release environment}"
-          packages="$RUNNER_TEMP/scarlet-installers"
-          if [ "$RUNNER_OS" = Windows ]; then
-            files=("$packages"/*-Setup.exe "$packages"/*.msi)
-          else
-            files=("$packages"/*.app.tar.gz)
-          fi
-          for package in "${files[@]}"; do
-            pnpm --filter @scarlet/desktop exec tauri signer sign --app-version "$RELEASE_VERSION" "$package" > /dev/null
-            test -s "$package.sig"
-          done
 
       - name: Download the previous Early Access installer for the upgrade test
         if: inputs.early_access

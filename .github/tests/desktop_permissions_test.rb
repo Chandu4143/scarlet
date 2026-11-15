@@ -59,13 +59,18 @@ class DesktopPermissionsTest < Minitest::Test
     refute @jobs.fetch("build").key?("secrets")
     assert_equal "${{ #{STABLE_RELEASE} }}", @jobs.dig("build", "with", "release")
     assert_equal "${{ !inputs.release || (!inputs.early_access && #{MAIN_PUSH}) }}", @build.fetch("if")
-    assert_equal "${{ inputs.release && 'release' || 'desktop-build' }}", @build.fetch("environment")
+    assert_equal "${{ inputs.release && inputs.platform_signing && 'release' || 'desktop-build' }}", @build.fetch("environment")
     secret_steps = @build.fetch("steps").select { |step| step.to_s.include?("secrets.APPLE_") }
     assert_equal ["inputs.release && inputs.platform_signing && runner.os == 'macOS'"], secret_steps.map { |step| step.fetch("if") }
     assert_equal "${{ needs.version.outputs.signing == 'true' }}", @jobs.dig("build", "with", "platform_signing")
-    updater_steps = @build.fetch("steps").select { |step| step.to_s.include?("secrets.TAURI_SIGNING_PRIVATE_KEY") }
-    assert_equal ["inputs.release"], updater_steps.map { |step| step.fetch("if") }
-    assert_includes updater_steps.first.fetch("run"), 'signer sign --app-version "$RELEASE_VERSION"'
+    refute_includes @build.to_s, "secrets.TAURI_SIGNING_PRIVATE_KEY"
+    publish = @jobs.fetch("publish")
+    assert_equal "release", publish.fetch("environment")
+    updater_steps = publish.fetch("steps").select { |step| step.to_s.include?("secrets.TAURI_SIGNING_PRIVATE_KEY") }
+    assert_equal 1, updater_steps.length
+    signing = updater_steps.first
+    assert_includes signing.fetch("run"), 'signer sign --app-version "$RELEASE_VERSION"'
+    assert_operator publish.fetch("steps").index(signing), :<, publish.fetch("steps").index { |step| step.fetch("name", "").start_with?("Verify the update signatures") }
     [@jobs.fetch("version"), @build, @jobs.fetch("publish")].each do |job|
       assert_equal false, job.fetch("steps").first.fetch("with").fetch("persist-credentials")
     end
