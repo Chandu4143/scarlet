@@ -1,6 +1,6 @@
 import { WindowActions } from "../components/shell/WorkspaceNavigation";
 import { PreferenceSelect } from "../components/ui/PreferenceSelect";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
 import type { Skill, SkillVersion, Task } from "@scarlet/shared";
 import { useAgentAvailability } from "../components/agent/AgentChip";
@@ -14,6 +14,8 @@ import { useSkillsStore } from "../stores/skills";
 import { useUiStore } from "../stores/ui";
 import { ConfirmDialog, ErrorState, Icon, InlineError, Loading, Modal, Spinner, Toggle } from "../components/ui/primitives";
 import { Said } from "../components/review/RunBundle";
+import { SkillCommandInput } from "../components/agent/SkillCommandInput";
+import { MarkedKeywords, SkillInstructions } from "../components/agent/SkillInstructions";
 // The conversation beside the skill is built from the pieces of a project's chat, and the page's plain text links are the chat's.
 import "../simple.css";
 
@@ -90,6 +92,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   const setEdit = (task: Task) => setEdits(all => all.some(t => t.id === task.id) ? all.map(t => t.id === task.id ? task : t) : [...all, task]);
   const thread = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  const askId = useId();
   const [ask, setAsk] = useState("");
   const [sending, setSending] = useState(false);
   const [askErr, setAskErr] = useState<string | null>(null);
@@ -444,7 +447,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
                 return <div key={e.id} className="unit">
                   <div className="unit-msg">
                     <span className="simple-who">You</span>
-                    <Said text={e.instruction} />
+                    <Said text={e.instruction}><MarkedKeywords text={e.instruction} /></Said>
                     <span className="unit-state">{standing}</span>
                     {active && <button type="button" className="simple-link unit-stop"
                       onClick={() => void api.cancelTask(e.id).then(({ task }) => showFinished(task)).catch(err => setAskErr(errorMessage(err)))}>Stop</button>}
@@ -453,7 +456,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
                       <p className="req-say">{e.question}<button type="button" className="simple-link is-warn" onClick={() => box.current?.focus()}>Answer</button></p>
                     </div></div>
                     : active ? <div className="req" data-state="working" aria-busy><div className="req-row req-status"><span role="status" className="working-text">Revising the skill…</span></div></div>
-                    : e.state === "done" ? <div className="req" data-state="done"><div className="req-said"><Said className="req-say" text={e.summary?.trim() || "Done."} /></div></div>
+                    : e.state === "done" ? <div className="req" data-state="done"><div className="req-said"><Said className="req-say" text={e.summary?.trim() || "Done."}><MarkedKeywords text={e.summary?.trim() || "Done."} /></Said></div></div>
                     : e.state === "failed" && e.error ? <div className="req" data-state="failed"><div className="req-said"><p className="req-say is-note is-bad">{e.error}</p></div></div>
                     : null}
                 </div>;
@@ -464,21 +467,10 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
               <div className="composer-input">
                 <div className="composer-box">
                   <div className="composer-row">
-                    <div className="composer-message">
-                      <span aria-hidden="true">{ask}{"\u200b"}</span>
-                      <textarea ref={box} rows={1} className="placeholder:text-dim" value={ask} disabled={boxOff}
-                        aria-label={question ? "Answer Scarlet" : "Tell Scarlet what to change in this skill"}
-                        placeholder={question ? "Answer Scarlet…" : "Tell Scarlet what to change…"}
-                        onChange={e => { setAsk(e.target.value); setAskErr(null); }}
-                        onKeyDown={e => {
-                          if (isComposing(e)) return;
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            void send();
-                          }
-                          if (e.key === "Escape") e.currentTarget.blur();
-                        }} />
-                    </div>
+                    <SkillCommandInput inputRef={box} value={ask} skills={[]} templatesOnly id={askId} disabled={boxOff}
+                      ariaLabel={question ? "Answer Scarlet" : "Tell Scarlet what to change in this skill"}
+                      placeholder={question ? "Answer Scarlet…" : "Tell Scarlet what to change…"}
+                      onChange={text => { setAsk(text); setAskErr(null); }} onSubmit={() => void send()} />
                     {sending && <Spinner className="size-3.5 shrink-0" />}
                     {typed && <button ref={sendButton} type="button" className="btn-primary composer-send shrink-0" aria-label="Send" title="Send"
                       disabled={sending || (working && !question)} onClick={() => void send()}>
@@ -527,15 +519,13 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
           {shownVersion ? <div ref={changesPane} className="flex-1 min-h-0 w-full overflow-y-auto bg-bg p-3 font-mono text-[12.5px] leading-5 skill-version-text max-md:min-h-[250px]"
             aria-label={`Skill markdown, v${picked!.version}`}>
             <ChangedText lines={shownVersion.body} />
-          </div> : <textarea
+          </div> : <SkillInstructions
             className="flex-1 w-full bg-bg p-3 font-mono text-[12.5px] leading-5 resize-none max-md:min-h-[250px]"
             value={body}
-            aria-describedby={isNew ? "skill-style-help" : undefined}
+            describedBy={isNew ? "skill-style-help" : undefined}
             placeholder={isNew ? "For interviews, leave a beat after a difficult question." : undefined}
             readOnly={working}
-            onChange={(e) => mark(setBody)(e.target.value)}
-            aria-label="Skill markdown"
-            spellCheck={false}
+            onChange={mark(setBody)}
           />}
         </div>
       </div>

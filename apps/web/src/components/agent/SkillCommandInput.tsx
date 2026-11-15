@@ -6,6 +6,7 @@ import type { MessageTimestamp } from "../../lib/messageTimestamps";
 import { isComposing } from "../../lib/hotkeys";
 import { skillCommands, useSkillsStore } from "../../stores/skills";
 import { templatePreview, templateTokens, useTemplatesStore } from "../../stores/templates";
+import { joinFrames, templateMatches as matchTemplates, TemplateMenu } from "./TemplateMenu";
 import { useProjectStore } from "../../stores/project";
 import { usePlayerStore } from "../../stores/player";
 import { interactiveFrameUrl, thumbUrl } from "../review/thumbs";
@@ -21,6 +22,10 @@ interface Props {
   onTimestamp?(time: number): void;
   onChange(value: string): void;
   onSubmit(): void;
+  /** Only `$` opens a list: a skill's own page has no skills to pick. */
+  templatesOnly?: boolean;
+  disabled?: boolean;
+  ariaLabel?: string;
 }
 
 /** What "Make a template" puts in the box, for the editor to say what the template is. */
@@ -28,11 +33,11 @@ export const MAKE_TEMPLATE = "Make a template ";
 
 /**
  * The message box's text, with two lists that open over it as the editor types: `/` lists the editing skills and `$`
- * the graphic templates. Both read and behave the same: what follows the sign filters the list, ↑ ↓ light a row, Enter
+ * the templates, graphics and transitions. Both read and behave the same: what follows the sign filters the list, ↑ ↓ light a row, Enter
  * or Tab puts its name in the box and Esc puts the list away. A template's row shows its picture over the frame under
  * the playhead, and while it is lit the player shows it over the picture too.
  */
-export function SkillCommandInput({ inputRef, value, skills, id, placeholder, timestamps, onTimestamp, onChange, onSubmit }: Props) {
+export function SkillCommandInput({ inputRef, value, skills, id, placeholder, timestamps, onTimestamp, onChange, onSubmit, templatesOnly, disabled, ariaLabel }: Props) {
   const [focused, setFocused] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const [index, setIndex] = useState<number | "create">(0);
@@ -47,7 +52,7 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   const setLit = useTemplatesStore(s => s.setLit);
   const styleGuide = useProjectStore(s => s.current?.project.styleGuide);
   const [caret, setCaret] = useState<number | null>(null);
-  const command = caret === null ? undefined : skillCommands(value).find(token => token.start < caret && caret <= token.end);
+  const command = caret === null || templatesOnly ? undefined : skillCommands(value).find(token => token.start < caret && caret <= token.end);
   const template = caret === null || command ? undefined : templateTokens(value).find(token => token.start < caret && caret <= token.end);
   const token = command ?? template;
   const open = focused && !dismissed && !!token;
@@ -56,8 +61,7 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   const query = token && caret !== null ? value.slice(token.start + 1, caret).toLowerCase() : "";
   const skillMatches = skillsOpen ? skills.filter(s => s.name.includes(query) || s.description.toLowerCase().includes(query))
     .sort((a, b) => Number(b.name.startsWith(query)) - Number(a.name.startsWith(query))) : [];
-  const templateMatches = templatesOpen ? templates.filter(t => t.name.includes(query) || t.title.toLowerCase().includes(query))
-    .sort((a, b) => Number(b.name.startsWith(query)) - Number(a.name.startsWith(query))) : [];
+  const templateMatches = templatesOpen ? matchTemplates(templates, query) : [];
   const matches: ReadonlyArray<Skill | GraphicTemplateSummary> = skillsOpen ? skillMatches : templateMatches;
   const activeIndex = index === "create" ? matches.length : Math.min(index, matches.length - 1);
   const active = matches[activeIndex];
@@ -76,16 +80,22 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   useEffect(() => {
     activeRow.current?.scrollIntoView?.({ block: "nearest" });
   }, [activeId]);
-  // The frame under the playhead as the list opened: each template's row draws its picture over it.
-  const frame = useMemo(() => {
-    if (!templatesOpen) return undefined;
+  // The frame under the playhead as the list opened: each graphic's row draws its picture over it. A transition's row
+  // moves between the pictures either side of the next cut, which is where the player plays it while it is lit.
+  const { frame, joins, large } = useMemo(() => {
+    if (!templatesOpen) return {};
     const timeline = useProjectStore.getState().current?.timeline ?? null;
-    return interactiveFrameUrl(thumbUrl(timeline, usePlayerStore.getState().time, 160));
+    const time = usePlayerStore.getState().time;
+    return { frame: interactiveFrameUrl(thumbUrl(timeline, time, 160)), joins: joinFrames(timeline, time, 160), large: joinFrames(timeline, time, 960) };
   }, [templatesOpen]);
+  const fps = useProjectStore(s => s.current?.project.settings.fps);
   // The lit template is drawn over the player's picture, and goes when the list closes.
   const litTemplate = templatesOpen && index !== "create" && active && "fields" in active ? active : undefined;
-  const litUrl = litTemplate && templatePreview(litTemplate);
-  useEffect(() => { setLit(litTemplate && litUrl ? { id: litTemplate.id, url: litUrl } : null); }, [litTemplate?.id, litUrl, setLit]); // eslint-disable-line react-hooks/exhaustive-deps
+  const litUrl = litTemplate && litTemplate.kind !== "transition" ? templatePreview(litTemplate) : undefined;
+  useEffect(() => {
+    if (litTemplate?.kind === "transition" && litTemplate.transition) setLit({ id: litTemplate.id, transition: litTemplate.transition, from: large?.from, to: large?.to });
+    else setLit(litTemplate && litUrl ? { id: litTemplate.id, url: litUrl } : null);
+  }, [litTemplate?.id, litUrl, large, setLit]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => setLit(null), [setLit]);
 
   function syncCaret(input: HTMLTextAreaElement) {
@@ -148,8 +158,8 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   return <>
     <div className="composer-message">
       <span aria-hidden="true">{value || placeholder}{"​"}</span>
-      <textarea id={id} ref={inputRef} rows={1} className="placeholder:text-dim"
-        placeholder={placeholder} aria-description="Type / to choose an editing skill, or $ for a graphic template."
+      <textarea id={id} ref={inputRef} rows={1} className="placeholder:text-dim" disabled={disabled} aria-label={ariaLabel}
+        placeholder={placeholder} aria-description="Type / to choose an editing skill, or $ for a graphic or transition template."
         aria-autocomplete="list" aria-haspopup="listbox" aria-controls={open ? listId : undefined}
         aria-activedescendant={activeId} value={value}
         onScroll={e => { if (overlay.current) overlay.current.scrollTop = e.currentTarget.scrollTop; }}
@@ -226,36 +236,11 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
         </button>
       </div>
     </div>}
-    {templatesOpen && <div className="composer-skills composer-templates" role="listbox" id={listId} aria-label="Graphic templates" data-shortcut-overlay>
-      <div className="eyebrow px-2 py-1">Templates</div>
-      <div className="composer-skill-list">
-        {templateMatches.map(row => <button key={row.id} type="button" role="option" tabIndex={-1} className="composer-template"
-          id={`${listId}-template-${row.name}`} aria-selected={row === active} ref={row === active ? activeRow : undefined} title={`$${row.name}`}
-          onMouseDown={e => e.preventDefault()} onMouseEnter={() => setIndex(templateMatches.indexOf(row))} onClick={() => choose(row)}>
-          <span className="composer-template-thumb" aria-hidden="true">
-            {frame && <img src={frame} alt="" loading="lazy" />}
-            <img src={templatePreview(row)} alt="" loading="lazy" />
-          </span>
-          <span className="composer-template-words">
-            <span className="composer-template-title">{row.title}</span>
-            {row.fields.length > 0 && <span className="composer-template-fields">{row.fields.join(", ")}</span>}
-          </span>
-        </button>)}
-      </div>
-      {!templateMatches.length && <div role="status" className="px-2 py-1 text-muted text-[12px]">
-        {templateStatus === "error" ? <>Couldn’t load templates. <button type="button" className="underline" onMouseDown={e => e.preventDefault()} onClick={() => void loadTemplates()} title="Press Enter to retry">Retry</button></>
-          : templateStatus !== "ready" ? "Loading templates…" : query && templates.length ? "No matching templates."
-          : "No templates yet. Ask Scarlet to make one, or save a graphic from its card."}
-      </div>}
-      <div className="composer-skill-footer">
-        <button type="button" role="option" tabIndex={-1} id={`${listId}-create-action`} aria-selected={index === "create"}
-          onMouseDown={e => e.preventDefault()} onClick={makeTemplate}>
-          <Icon name="plus" size={14} /> Make a template
-        </button>
-      </div>
-      {styleGuide && <div className="composer-style-guide" title={`Scarlet follows this project’s style guide for every graphic: ${styleGuide.name}`}>
+    {templatesOpen && <TemplateMenu listId={listId} rows={templateMatches} active={index === "create" ? undefined : active as GraphicTemplateSummary | undefined}
+      makeActive={index === "create"} activeRow={activeRow} frame={frame} joins={joins} fps={fps} status={templateStatus} query={query} empty={!templates.length}
+      onHover={row => setIndex(templateMatches.indexOf(row))} onChoose={choose} onMake={makeTemplate} onRetry={() => void loadTemplates()}
+      footer={styleGuide && <div className="composer-style-guide" title={`Scarlet follows this project’s style guide for every graphic: ${styleGuide.name}`}>
         <span>Style guide</span><span className="composer-style-guide-name">{styleGuide.name}</span>
-      </div>}
-    </div>}
+      </div>} />}
   </>;
 }

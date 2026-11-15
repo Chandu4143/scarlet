@@ -734,15 +734,19 @@ export function buildDb(chatLayouts = false): MockDb {
   };
 }
 
-/** Two graphics saved to reuse, as Scarlet would after the editor saved them from their cards. */
+/** Graphics saved to reuse, as Scarlet would after the editor saved them from their cards, and transitions. */
 export function sampleTemplates(): GraphicTemplateSummary[] {
+  const transition = (id: string, name: string, title: string, description: string, transition: NonNullable<GraphicTemplateSummary["transition"]>): GraphicTemplateSummary =>
+    ({ id, kind: "transition", transition, name, title, description, fields: [], previewVersion: "1", createdAt: minutesAgo(60 * 24 * 7), updatedAt: minutesAgo(60 * 24 * 7) });
   return [
-    { id: "tpl_lower", name: "lower-third", title: "Lower third", description: "A name and a title in the lower left.", fields: ["Name", "Title"],
+    { kind: "graphic", id: "tpl_lower", name: "lower-third", title: "Lower third", description: "A name and a title in the lower left.", fields: ["Name", "Title"],
       previewVersion: "1", createdAt: minutesAgo(60 * 24 * 6), updatedAt: minutesAgo(60 * 24 * 6) },
-    { id: "tpl_title", name: "title-card", title: "Title card", description: "A chapter title across the middle.", fields: ["Title", "Subtitle"],
+    { kind: "graphic", id: "tpl_title", name: "title-card", title: "Title card", description: "A chapter title across the middle.", fields: ["Title", "Subtitle"],
       previewVersion: "1", createdAt: minutesAgo(60 * 24 * 4), updatedAt: minutesAgo(60 * 24 * 4) },
-    { id: "tpl_quote", name: "pull-quote", title: "Pull quote", description: "A line the guest said, in large type.", fields: ["Quote", "Speaker"],
+    { kind: "graphic", id: "tpl_quote", name: "pull-quote", title: "Pull quote", description: "A line the guest said, in large type.", fields: ["Quote", "Speaker"],
       previewVersion: "1", createdAt: minutesAgo(60 * 24 * 2), updatedAt: minutesAgo(60 * 24 * 2) },
+    transition("tpl_swipe", "swipe", "Swipe", "The next picture pushes the last one off to the left.", { type: "push", duration: 0.4, direction: "left" }),
+    transition("tpl_dip", "dip-to-black", "Dip to black", "Fades down to black and up into the next picture.", { type: "dip", duration: 0.6, direction: "left", color: "#000000" }),
   ];
 }
 

@@ -153,6 +153,7 @@ import {
   WritableTimeline,
   TimelineOp,
   TimeRange,
+  Transition,
 } from "@scarlet/timeline";
 
 // ---------------------------------------------------------------------------
@@ -1149,12 +1150,24 @@ export type UsageResponse = z.infer<typeof UsageResponse>;
 /** Template names are what the editor types after $, so they follow the same rule as skill names. */
 export const TemplateSlug = SkillSlug;
 
+/** What a template makes: a graphic over the picture, or a transition between two clips. */
+export const TemplateKind = z.enum(["graphic", "transition"]);
+export type TemplateKind = z.infer<typeof TemplateKind>;
+
+/** A transition template: how the picture moves at a join, without the name of the template it is. */
+export const TransitionStyle = Transition.omit({ template: true });
+export type TransitionStyle = z.infer<typeof TransitionStyle>;
+
 /**
- * A graphic the editor can reuse: an HTML/CSS page with named fields that Scarlet fills in and renders over the
- * picture. Saved library-wide, like skills.
+ * Something the editor can reuse by typing its name after $. A graphic is an HTML/CSS page with named fields that
+ * Scarlet fills in and renders over the picture; a transition is how the picture moves from one clip to the next.
+ * Saved library-wide, like skills.
  */
 export const GraphicTemplateSummary = z.object({
   id: Id,
+  kind: TemplateKind.default("graphic"),
+  /** A transition template's movement. */
+  transition: TransitionStyle.optional(),
   /** What follows $ in a message, e.g. "lower-third". */
   name: TemplateSlug,
   /** How the list names it, e.g. "Lower third". */
@@ -1174,8 +1187,8 @@ export const TemplateFields = z.record(z.string().max(2000));
 
 /** A saved template as the agent reads it: its page with `{{Field}}` placeholders and what it was drawn with. */
 export const GraphicTemplate = GraphicTemplateSummary.extend({
-  /** The page, with a `{{Field}}` placeholder wherever a field's value goes. */
-  html: z.string().min(1).max(500_000),
+  /** The page, with a `{{Field}}` placeholder wherever a field's value goes. Empty for a transition. */
+  html: z.string().max(500_000),
   /** The values its preview is drawn with. */
   sample: TemplateFields,
   /** The frame it was designed in. A use renders at the project's size. */
@@ -1188,14 +1201,15 @@ export const GraphicTemplate = GraphicTemplateSummary.extend({
 });
 export type GraphicTemplate = z.infer<typeof GraphicTemplate>;
 
-/** POST /templates: save a template, or replace the one with the same name. */
+/** POST /templates: save a template, or replace the one with the same name. A transition sends `transition` and no page. */
 export const SaveTemplateRequest = z.object({
   name: TemplateSlug.max(64),
   title: z.string().trim().min(1).max(120),
   description: z.string().max(2000).default(""),
-  fields: z.array(z.string().trim().min(1).max(60)).max(20),
-  html: z.string().min(1).max(500_000),
-  sample: TemplateFields,
+  fields: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
+  html: z.string().min(1).max(500_000).optional(),
+  sample: TemplateFields.default({}),
+  transition: TransitionStyle.optional(),
   /** A graphic of this project whose files (fonts, pictures) the page links to. */
   projectId: Id.optional(),
   basedOn: Id.optional(),
