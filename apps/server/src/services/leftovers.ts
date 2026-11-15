@@ -9,8 +9,8 @@ function temporaryAudio(name: string) {
   return /^(?:recording|chunk)_[a-z0-9]{12}\.wav$/.test(name) ||
     /^wcpp_[a-z0-9]{12}\.(?:wav|json)$/.test(name) || /^speech_[a-z0-9]{12}\.[^./\\]*$/.test(name) ||
     /^(?:recording-)?[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.wav$/.test(name) ||
-    // The frames a screen-text read was working through.
-    /^screen-text-[0-9a-f-]{36}\.rgb$/.test(name) ||
+    // The frames a screen-text or face read was working through.
+    /^(?:screen-text|faces)-[0-9a-f-]{36}\.rgb$/.test(name) ||
     // The sound a hole reread cut out, and a word alignment's answer written beside its audio.
     /^holes_[A-Za-z0-9_-]+\.wav$/.test(name) ||
     /\.wav\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.align\.json$/.test(name);
@@ -71,7 +71,7 @@ export function sweepLeftovers(ctx: Ctx, now = Date.now()): number {
     // An export or a full preview cut off while its parts were joined: a whole video under a name nothing uses again.
     sweep(ctx.paths.renders(id), name => name.endsWith(".assembly.mp4"));
     sweep(ctx.paths.segments(id), name => /\.part\.(mp4|m4a)$/.test(name));
-    sweep(ctx.paths.waveforms(id), name => name.endsWith(".part") || /^speakers-.*\.tmp$/.test(name) || /\.screen-text\.json\.[0-9a-f-]{36}\.tmp$/.test(name));
+    sweep(ctx.paths.waveforms(id), name => name.endsWith(".part") || /^speakers-.*\.tmp$/.test(name) || /\.(?:screen-text|faces)\.json\.[0-9a-f-]{36}\.tmp$/.test(name));
   }
   if (removed) ctx.log(`[storage] removed ${removed} leftover working ${removed === 1 ? "file" : "files"} from an earlier session`);
   return removed;
