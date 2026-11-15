@@ -10557,26 +10557,40 @@ it("puts a marked stretch on the message beside the edit that's open, which stay
   expect((useUiStore.getState().agentContext as AgentContext).changeId).toBeUndefined();
 });
 
-it("keeps one list of every edit open at a time, and names the request the timeline marks above the ruler", async () => {
+it("keeps one list of every edit open at a time, and puts a request's edits on the timeline when its band is pressed", async () => {
   earlierRequestOnly(false);
   const later = laterRequest("chg_later", false);
   const intro = { changeId: "chg_later", spot: 1, label: "intro fade", range: { start: 0, end: 1 }, previous: [] };
   later.lists.chg_later = [{ changeId: "chg_later", spot: 0, label: "outro fade", range: { start: 13, end: 15 }, previous: [] }, intro];
-  const change = { ...later.change, timelineEdits: [{ label: "outro fade", range: { start: 13, end: 15 } }, { label: "intro fade", range: intro.range }] };
-  data = { ...data, changes: [...data.changes, change] };
+  // Each request has its band: the zooms asked for first, then the fades.
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const request = (id: string, instruction: string, changeId: string) => Task.parse({ id, projectId: PRJ, kind: "edit", agent: "claude",
+    instruction, state: "done", createdBy: { type: "human", name: "Editor" }, changeIds: [changeId], createdAt: at, finishedAt: at });
+  const change = { ...later.change, taskId: "task_fades", timelineEdits: [{ label: "outro fade", range: { start: 13, end: 15 } }, { label: "intro fade", range: intro.range }] };
+  data = { ...data, changes: [...data.changes.map(c => c.id === "chg_approved_2" ? { ...c, taskId: "task_zooms" } : c), change],
+    tasks: [request("task_zooms", "Frame the screen", "chg_approved_2"), request("task_fades", "Fade both ends", "chg_later")] };
+  later.lists[threadWith("chg_later").id] = later.lists.chg_later!;
+  later.lists[threadWith("chg_approved_2").id] = later.lists[later.earlier]!;
   useProjectStore.setState({ current: data });
   await showFolded();
   await act(async () => {});
-  // The latest request has the timeline. The line above the ruler says whose dots they are, and how many.
-  const heading = () => container.querySelector<HTMLElement>(".timeline-heading");
-  expect(heading()?.querySelector(".timeline-whose")?.textContent).toBe(threadWith("chg_later").title);
-  expect(heading()?.querySelector(".timeline-whose-count")?.textContent).toBe("· 2 edits");
-  // Its name brings the request into view in the chat.
-  const scrolled = vi.fn();
-  turnFor("chg_later").querySelector<HTMLElement>(".simple-pass")!.scrollIntoView = scrolled;
-  await click(heading()!.querySelector<HTMLElement>(".timeline-whose")!);
-  await act(async () => { await new Promise(resolve => requestAnimationFrame(() => resolve(undefined))); });
-  expect(scrolled).toHaveBeenCalled();
+  // Nothing above the ruler says whose dots they are: the latest request's band does, a shade lighter.
+  expect(container.querySelector(".timeline-heading")).toBeNull();
+  const band = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".unit-msg")!;
+  expect(band("chg_later").classList.contains("is-marked")).toBe(true);
+  expect(band("chg_approved_2").classList.contains("is-marked")).toBe(false);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
+  // Pressing the earlier request's band puts its three edits on the timeline, and its band takes the shade.
+  await click(band("chg_approved_2"));
+  await act(async () => {});
+  expect(band("chg_approved_2").classList.contains("is-marked")).toBe(true);
+  expect(band("chg_later").classList.contains("is-marked")).toBe(false);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2", "3"]);
+  // And the latest's band brings its own back.
+  await click(band("chg_later"));
+  await act(async () => {});
+  expect(band("chg_later").classList.contains("is-marked")).toBe(true);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
   // Opening one request's list of every edit closes another's, so two "Hide" links never stand for one timeline.
   const toggle = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".simple-pass-toggle")!;
   await click(toggle("chg_approved_2"));
@@ -10585,14 +10599,16 @@ it("keeps one list of every edit open at a time, and names the request the timel
   expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("true");
   expect(toggle("chg_approved_2").getAttribute("aria-expanded")).toBe("false");
   expect([...container.querySelectorAll(".simple-pass-toggle")].filter(t => t.textContent === "Hide")).toHaveLength(1);
-  // An open card names its own edit: the line waits while it is open.
+  // A request's band with an edit of it open leaves the card and shows that request's edits.
   await click(editRows("chg_later")[0]!);
   await act(async () => {});
   expect(container.querySelector(".edit-card")).not.toBeNull();
-  expect(heading()).toBeNull();
-  await press("Escape");
+  await click(band("chg_approved_2"));
   await act(async () => {});
-  expect(heading()?.querySelector(".timeline-whose")?.textContent).toBe(threadWith("chg_later").title);
+  expect(container.querySelector(".edit-card")).toBeNull();
+  expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("false");
+  expect(band("chg_approved_2").classList.contains("is-marked")).toBe(true);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2", "3"]);
 });
 
 it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flagged edit, when it comes next in the list", () => {
