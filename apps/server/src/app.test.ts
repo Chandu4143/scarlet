@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Change, MediaAsset, Note, Project, Timeline } from "@scarlet/timeline";
 import type { ActivityEntry, AgentHost, Learning, Render, Skill, SkillVersion, Task, TaskEvent, User } from "@scarlet/shared";
@@ -1269,7 +1270,9 @@ describe("scarlet server", () => {
   });
 
   it("lists the folder for finishing the edit in another app, linked where it will be saved", async () => {
-    const r = await api<import("@scarlet/shared").HandoffResponse>("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder: "/Users/me/Exports/Test Cut" } });
+    const folder = join(fixtureDir, "Exports", "Test Cut");
+    const mediaUrl = pathToFileURL(join(folder, "Media", "test.mp4")).href;
+    const r = await api<import("@scarlet/shared").HandoffResponse>("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder } });
     expect(r.status).toBe(200);
     const paths = r.json.files.map((f) => f.path);
     expect(paths).toEqual(expect.arrayContaining(["Test Cut.fcpxml", "Test Cut.otio", "Read me.txt", "Media/test.mp4"]));
@@ -1278,9 +1281,9 @@ describe("scarlet server", () => {
     expect(copy.size).toBe(testMp4.length);
     expect(r.json.mediaBytes).toBe(testMp4.length);
     const fcpxml = (r.json.files.find((f) => f.path === "Test Cut.fcpxml") as { text: string }).text;
-    expect(fcpxml).toContain('src="file:///Users/me/Exports/Test%20Cut/Media/test.mp4"');
+    expect(fcpxml).toContain(`src="${mediaUrl}"`);
     const otio = (r.json.files.find((f) => f.path === "Test Cut.otio") as { text: string }).text;
-    expect(otio).toContain("file:///Users/me/Exports/Test%20Cut/Media/test.mp4");
+    expect(otio).toContain(mediaUrl);
     expect((await api("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder: "relative/folder" } })).status).toBe(400);
   });
 
