@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createProject, emptyTimeline, exactRate, fromOtio, handoffFileNames, handoffLosses, handoffReadMe, makeMediaClip,
-  makeTrack, timecodeFrames, toFcpxml, toOtio, toSrt, timelineFromKeepRanges, type HandoffSource, type Timeline,
+  makeTrack, timecodeFrames, toFcpxml, toOtio, toSrt, timelineFromKeepRanges, trackLayers, type HandoffSource, type Timeline,
 } from "./index.js";
 
 const source = (over: Partial<HandoffSource> = {}): HandoffSource => ({
@@ -31,6 +31,11 @@ describe("rates and timecode", () => {
 
   it("names the copies so two files can't take one name", () => {
     expect(handoffFileNames(["cam.mov", "Cam.mov", "a/b:c.wav", ""])).toEqual(["cam.mov", "Cam 2.mov", "a b c.wav", "Media"]);
+  });
+
+  it("names the copies as Windows will write them: no trailing dots or spaces, no device names", () => {
+    expect(handoffFileNames(["take.mov. ", "notes. . ", "CON.mov", "nul", "Com1.tar.gz", "lpt9.wav", "console.mov", "aux.mov"]))
+      .toEqual(["take.mov", "notes", "CON_.mov", "nul_", "Com1_.tar.gz", "lpt9_.wav", "console.mov", "aux_.mov"]);
   });
 });
 
@@ -126,6 +131,57 @@ describe("FCPXML", () => {
     expect(Number(clip[1]) / Number(clip[2] ?? 1)).toBeCloseTo(300 * 1001 / 30000 / 2, 9);
     expect(Number(clip[3]) / Number(clip[4])).toBeCloseTo(2, 2);
   });
+
+  it("starts a retimed clip on a whole frame, and maps its clock at the speed its length was counted at", () => {
+    const project = createProject("Interview", { fps: 30 });
+    project.media.push({ id: "cam", kind: "video", name: "cam.mov", path: "cam.mov", duration: 600, fps: 30, hasAudio: true });
+    const tl = emptyTimeline(project.id);
+    tl.tracks[0]!.clips = [makeMediaClip("cam", 101 / 30, 101 / 30 + 3, 0, { speed: 1.5 }), makeMediaClip("cam", 20, 22.0015, 2, { speed: 1.0005 })];
+    const xml = toFcpxml(project, tl, new Map([["cam", source({ rate: { num: 30, den: 1 } })]]));
+    const clips = [...xml.matchAll(/<asset-clip [^>]*start="(\d+)(?:\/(\d+))?s"[^>]*>\s*<timeMap>\s*<timept [^>]*\/>\s*<timept time="(\d+)(?:\/(\d+))?s" value="(\d+)(?:\/(\d+))?s"/g)];
+    expect(clips).toHaveLength(2);
+    const [first, second] = clips.map(m => m.slice(1).map(v => Number(v ?? 1)) as number[]);
+    // 101 frames into the footage at 1.5x is 67.33 frames on the clip's clock: it starts on frame 67, not at 101/45 s.
+    const startFrames = first![0]! * 30 / first![1]!;
+    expect(startFrames).toBe(67);
+    // The time map's speed is the clip's own, exactly.
+    expect((first![4]! / first![5]!) / (first![2]! / first![3]!)).toBe(1.5);
+    expect((second![4]! / second![5]!) / (second![2]! / second![3]!)).toBeCloseTo(1.0005, 9);
+    for (const [, n, d] of xml.matchAll(/(?:start|offset|duration|time)="(\d+)\/(\d+)s"/g)) expect((Number(n) * 30 / Number(d)) % 1).toBe(0);
+  });
+
+  it("plays only the sound of a hidden picture track that is heard, and turns off one that isn't", () => {
+    const project = project30();
+    const tl: Timeline = emptyTimeline(project.id);
+    tl.tracks[0]!.clips = [makeMediaClip("cam", 0, 10, 0, { id: "main" })];
+    const heard = { ...makeTrack("video", "Heard", "v2"), hidden: true, clips: [makeMediaClip("cam", 20, 24, 2, { label: "heard" })] };
+    const silent = { ...makeTrack("video", "Silent", "v3"), hidden: true, clips: [makeMediaClip("cam", 30, 34, 2, { label: "silent", volume: 0 })] };
+    const muted = { ...makeTrack("video", "Muted", "v4"), hidden: true, muted: true, clips: [makeMediaClip("cam", 40, 44, 2, { label: "muted" })] };
+    tl.tracks.splice(1, 0, heard, silent, muted);
+    const xml = toFcpxml(project, tl, new Map([["cam", source()]]));
+    const clip = (name: string) => new RegExp(`<asset-clip [^>]*name="${name}"[^>]*>`).exec(xml)![0];
+    expect(clip("heard")).toContain('srcEnable="audio"');
+    expect(clip("heard")).not.toContain('enabled="0"');
+    for (const name of ["silent", "muted"]) expect(clip(name)).toContain('enabled="0"');
+    // A hidden main track is heard but not seen too.
+    tl.tracks[0]!.hidden = true;
+    const hiddenMain = /<asset-clip [^>]*name="cam.mov"[^>]*>/.exec(toFcpxml(project, tl, new Map([["cam", source()]])))![0];
+    expect(hiddenMain).toContain('srcEnable="audio"');
+  });
+
+  it("places a still image as a video on a format with no frame rate", () => {
+    const project = project30();
+    project.media.push({ id: "logo", kind: "image", name: "logo.png", path: "logo.png", duration: 0, width: 800, height: 600 });
+    const tl = emptyTimeline(project.id);
+    tl.tracks[0]!.clips = [makeMediaClip("cam", 0, 10, 0)];
+    tl.tracks.splice(1, 0, { ...makeTrack("video", "Logo", "v2"), clips: [makeMediaClip("logo", 0, 3, 2, { label: "Logo" })] });
+    const still = source({ url: "file:///m/logo.png", fileName: "logo.png", still: true, hasAudio: false, rate: undefined, width: 800, height: 600, duration: 0 });
+    const xml = toFcpxml(project, tl, new Map([["cam", source()], ["logo", still]]));
+    expect(xml).toMatch(/<format id="(r\d+)" name="FFVideoFormatRateUndefined" width="800" height="600"\/>/);
+    expect(xml).toMatch(/<asset id="r\d+" name="logo.png" start="0s" duration="0s" hasVideo="1"/);
+    expect(xml).toMatch(/<video ref="r\d+" lane="1" offset="[^"]+" name="Logo" duration="90\/30000s|<video ref="r\d+" lane="1" offset="[^"]+" name="Logo" duration="\d+\/\d+s"/);
+    expect(xml).not.toMatch(/<asset-clip [^>]*name="Logo"/);
+  });
 });
 
 describe("OTIO for a hand-off", () => {
@@ -172,5 +228,44 @@ describe("what doesn't carry over", () => {
       captionFiles: ["Captions.srt"], losses, warnings: [] });
     expect(readMe).toContain("File > Import > Timeline…, then choose Interview.fcpxml.");
     expect(readMe).toContain("0:05  Rounded corners on “cam.mov”");
+  });
+
+  it("lists each transition, where it is, since it comes in as a straight cut", () => {
+    const project = project30();
+    const tl = emptyTimeline(project.id);
+    tl.tracks[0]!.clips = [
+      makeMediaClip("cam", 0, 5, 0),
+      makeMediaClip("cam", 10, 14, 5, { label: "Answer", transitionIn: { type: "dissolve", duration: 1, direction: "left" } }),
+      makeMediaClip("cam", 20, 24, 9, { transitionIn: { type: "push", duration: 0.5, direction: "left" } }),
+    ];
+    expect(handoffLosses(project, tl)).toEqual([
+      { at: 5, what: "The dissolve into “Answer” (it comes in as a straight cut)" },
+      { at: 9, what: "The push into “cam.mov” (it comes in as a straight cut)" },
+    ]);
+  });
+});
+
+describe("overlapping clips on one track", () => {
+  const clip = (id: string, at: number, length: number) => makeMediaClip("cam", 0, length, at, { id });
+  const ids = (layers: Array<Array<{ id: string }>>) => layers.map(l => l.map(c => c.id));
+
+  it("alternates a run of sound crossfades between two layers instead of climbing one a join", () => {
+    const run = [clip("a", 0, 10), clip("b", 9, 10), clip("c", 18, 10), clip("d", 27, 10), clip("e", 40, 5)];
+    expect(ids(trackLayers(run, false, true))).toEqual([["a", "c", "e"], ["b", "d"]]);
+  });
+
+  it("keeps clips that don't overlap on one layer, and draws a picture over the earlier ones it overlaps", () => {
+    expect(ids(trackLayers([clip("a", 0, 5), clip("b", 5, 5), clip("c", 10, 5)], false, true))).toEqual([["a", "b", "c"]]);
+    expect(ids(trackLayers([clip("a", 0, 10), clip("b", 9, 10), clip("c", 18, 10)]))).toEqual([["a"], ["b"], ["c"]]);
+  });
+
+  it("lays a chain of crossfaded sound on two lanes in Final Cut", () => {
+    const project = project30();
+    const tl = emptyTimeline(project.id);
+    tl.tracks[0]!.clips = [makeMediaClip("cam", 0, 40, 0)];
+    tl.tracks[1]!.clips = [0, 9, 18, 27].map((at, i) => makeMediaClip("cam", at, at + 10, at, { id: `s${i}`, label: `s${i}` }));
+    const xml = toFcpxml(project, tl, new Map([["cam", source()]]));
+    const lanes = new Set([...xml.matchAll(/<asset-clip [^>]*lane="(-\d+)"/g)].map(m => m[1]));
+    expect([...lanes].sort()).toEqual(["-1", "-2"]);
   });
 });

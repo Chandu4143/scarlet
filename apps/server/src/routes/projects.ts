@@ -43,7 +43,7 @@ export function projectRoutes(ctx: Ctx) {
     const body = await jsonBody(c, MakeShortsRequest);
     const project = requireProjectHeader(ctx, c.req.param("id"));
     if (body.agent === "api") throw badRequest("agent_unavailable", "Choose Claude, Codex or Gemini to make shorts.");
-    return c.json(await makeShorts(ctx, c.var.user, project.id, body), 201);
+    return c.json(await makeShorts(ctx, c.var.user, project.id, body, c.req.raw.signal), 201);
   });
 
   // The first short's run saves the moments it chose, and the other shorts start with theirs.

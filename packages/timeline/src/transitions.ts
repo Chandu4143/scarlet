@@ -9,8 +9,8 @@
  * A transition can only use footage the sources have, so with less than half its length either side it runs shorter
  * there, and with almost none it stays a straight cut. `joins` says what each join got, for the tool to report.
  */
-import { clipEnd } from "./time.js";
-import type { MediaAsset, MediaClip, Timeline, Transition, TransitionDirection, TransitionType } from "./schema.js";
+import { clipEnd, JOIN_SLACK, meets } from "./time.js";
+import type { Clip, ColorClip, MediaAsset, MediaClip, Timeline, Transition, TransitionDirection, TransitionType } from "./schema.js";
 
 /** A clip's movement across one transition, in timeline seconds. */
 export interface TransitionMotion {
@@ -48,23 +48,23 @@ export interface TransitionPlan {
   joins: TransitionJoin[];
 }
 
-/** A join is two clips that meet within this much. */
-const JOIN_SLACK = 1e-3;
 /** Suffixes of the layers a transition adds. Clip ids never contain them. */
 export const LEAD_IN = "~transition-in";
 export const RUN_ON = "~transition-out";
 
 const seconds = (n: number) => `${Math.round(n * 100) / 100} s`;
 
-/** How much footage a clip has before its first frame and after its last, in timeline seconds. */
-function footage(clip: MediaClip, asset: MediaAsset | undefined) {
+/** How much footage a clip has before its first frame and after its last, in timeline seconds. A colour has no end. */
+function footage(clip: MediaClip | ColorClip, asset: MediaAsset | undefined) {
+  if (clip.kind === "color") return { before: Infinity, after: Infinity };
   if (!asset || asset.kind === "image" || (asset.kind === "graphic" && !asset.duration)) return { before: Infinity, after: Infinity };
   const speed = clip.speed || 1;
   return { before: clip.sourceIn / speed, after: asset.duration ? Math.max(0, asset.duration - clip.sourceOut) / speed : 0 };
 }
 
 /** A picture-only copy of `clip` from `start` for `length` timeline seconds, `offset` seconds after the clip's own start. */
-function layer(clip: MediaClip, id: string, start: number, length: number, offset: number): MediaClip {
+function layer(clip: MediaClip | ColorClip, id: string, start: number, length: number, offset: number): MediaClip | ColorClip {
+  if (clip.kind === "color") return { ...clip, id, timelineIn: start, timelineOut: start + length, label: undefined };
   const speed = clip.speed || 1;
   const sourceIn = clip.sourceIn + offset * speed;
   return {
@@ -83,17 +83,29 @@ export function planTransitions(timeline: Timeline, media: ReadonlyMap<string, M
   let changed = false;
   const tracks = timeline.tracks.map(track => {
     if (track.kind !== "video" || !track.clips.some(c => c.kind === "media" && c.transitionIn && c.enabled !== false)) return track;
-    const before = new Map<string, MediaClip>();
-    const after = new Map<string, MediaClip>();
+    const before = new Map<string, Clip>();
+    const after = new Map<string, Clip>();
     const clips = track.clips.filter(c => c.enabled !== false);
-    for (const [i, clip] of clips.entries()) {
+    // The clip a transition moves from is the picture that ends at its join, wherever it is stored: footage or a colour.
+    const pictures = clips.map((c, i) => ({ c, i, end: clipEnd(c) })).filter(p => p.c.kind !== "caption").sort((a, b) => a.end - b.end);
+    const endingAt = (at: number, clip: Clip) => {
+      let lo = 0, hi = pictures.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (pictures[mid]!.end < at - JOIN_SLACK) lo = mid + 1; else hi = mid; }
+      let found: { c: Clip; i: number } | undefined;
+      for (let k = lo; k < pictures.length && meets(pictures[k]!.end, at); k++) {
+        const p = pictures[k]!;
+        // Of two that end there, the one drawn on top, which is the one seen.
+        if (p.c !== clip && p.c.timelineIn < at - JOIN_SLACK && (!found || p.i > found.i)) found = p;
+      }
+      return found?.c as MediaClip | ColorClip | undefined;
+    };
+    for (const clip of clips) {
       if (clip.kind !== "media" || !clip.transitionIn) continue;
       const t = clip.transitionIn;
       const at = clip.timelineIn;
       const color = t.color ?? "#000000";
       const direction = t.direction ?? "left";
-      const prior = clips.slice(0, i).reverse().find(c => Math.abs(clipEnd(c) - at) <= JOIN_SLACK);
-      const outgoing = prior?.kind === "media" ? prior : undefined;
+      const outgoing = endingAt(at, clip);
       const join = { clipId: clip.id, trackId: track.id, at, transition: t };
       const half = t.duration / 2;
       if (t.type === "dip") {
@@ -112,7 +124,7 @@ export function planTransitions(timeline: Timeline, media: ReadonlyMap<string, M
         continue;
       }
       const incoming = footage(clip, media.get(clip.mediaId));
-      const leaving = footage(outgoing, media.get(outgoing.mediaId));
+      const leaving = footage(outgoing, outgoing.kind === "media" ? media.get(outgoing.mediaId) : undefined);
       // The incoming picture starts early by its own lead-in, the outgoing one runs on with its own footage.
       const lead = Math.max(0, Math.min(half, incoming.before, at - outgoing.timelineIn));
       const run = Math.max(0, Math.min(half, leaving.after, clipEnd(clip) - at));

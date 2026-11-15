@@ -20,7 +20,7 @@ import { fileInDirectory } from "./assetPath.js";
 import { FfmpegError, failureReason, fnum, runFfmpeg, LOCAL_MEDIA_INPUT } from "./exec.js";
 import { outputSize, renderRange, type RenderOptions, type RenderQuality } from "./render.js";
 
-import { resolveEncoding, withRenderEncoder } from "./encoder.js";
+import { withRenderEncoder } from "./encoder.js";
 
 /** Preserve compositing order while visiting each clip only in segments it intersects. */
 function segmentTimelines(timeline: Timeline, ranges: TimeRange[]): Timeline[] {
@@ -550,9 +550,13 @@ export interface PlaybackSegmentResult {
 export async function renderPlaybackSegment(project: Project, timeline: Timeline, range: TimeRange, cacheDir: string, output: string, opts: RenderOptions): Promise<PlaybackSegmentResult | void> {
   const quality = "preview";
   const size = outputSize(project.settings, quality, opts.height, opts.exportHeight);
+  // A hardware encoder that fails here retries the section with the next one, and finally with x264.
+  if (!opts.videoEncoder) {
+    return withRenderEncoder({ ...size, fps: project.settings.fps }, { ...opts, quality },
+      attempt => renderPlaybackSegment(project, timeline, range, cacheDir, output, attempt) as Promise<PlaybackSegmentResult>);
+  }
   const warnings: string[] = [];
-  const videoEncoder = await resolveEncoding(opts.hwaccel, opts.ffmpegPath, { ...size, fps: project.settings.fps }, quality,
-    reason => warnings.push(reason));
+  const videoEncoder = opts.videoEncoder;
   const encoder = videoEncoder.cacheKey;
   await fs.mkdir(cacheDir, { recursive: true });
   const [part] = segmentTimelines(timeline, [range]);

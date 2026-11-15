@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Ctx } from "../context.js";
 import { ffmpeg } from "../render/ffmpeg.js";
-import { pictureReader, withFrames, type VideoMedia } from "./pictureReading.js";
+import { pictureReader, rememberLast, withFrames, type VideoMedia } from "./pictureReading.js";
 
 let root: string;
 let live: AbortController, media: AbortController;
@@ -102,5 +102,27 @@ describe("decoding frames for a reading", () => {
     expect(handed.map(h => h.bytes)).toEqual([4, 4, 1].map(n => n * 160 * 90 * 3));
     expect(results).toEqual([4, 4, 1]);
     expect(existsSync(join(root, "tmp")) ? readdirSync(join(root, "tmp")) : []).toEqual([]);
+  });
+});
+
+describe("what a reader keeps in memory", () => {
+  it("keeps the 32 recordings asked about last, and reads one let go back from what it saved", async () => {
+    const { reads, reader } = counting();
+    for (let i = 0; i < 40; i++) await reader.read(ctx(), video({ id: `med_${i}`, duration: 30 }), {});
+    expect(reader.kept()).toBe(32);
+    expect(reads).toHaveLength(40);
+    // The first was let go, and comes back from disk without reading its picture again.
+    expect((await reader.read(ctx(), video({ id: "med_0", duration: 30 }), {})).done).toBe(true);
+    expect(reads).toHaveLength(40);
+    expect(reader.kept()).toBe(32);
+  });
+
+  it("lets go of the least recently used entry first, and never one in use", () => {
+    const map = new Map<string, { busy: boolean }>();
+    for (const key of ["a", "b", "c"]) rememberLast(map, key, { busy: key === "a" }, 3, v => v.busy);
+    rememberLast(map, "b", map.get("b")!, 3);
+    rememberLast(map, "d", { busy: false }, 3, v => v.busy);
+    // "a" is in use, so "c", now the least recently used of the rest, goes.
+    expect([...map.keys()]).toEqual(["a", "b", "d"]);
   });
 });

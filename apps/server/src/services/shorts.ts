@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { copyFile, cp, mkdir, readdir, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import { ASPECT_PRESETS, createProject, newId, timelineDuration, type MediaAsset, type Project, type Timeline } from "@scarlet/timeline";
@@ -11,14 +10,10 @@ import { actorFor, logActivity, quote } from "./activity.js";
 import { createTask } from "./tasks.js";
 import { resolveTimeline, storeVersion } from "./timeline.js";
 import { recoverSourcePreviews } from "./sourcePreviews.js";
+import { cloneOrSteadyCopy } from "./steadyCopy.js";
+import { discardProjects } from "./trash.js";
 
 const run = promisify(execFile);
-
-/** A copy that shares the original's blocks where the disk allows it: an APFS clone on a Mac, a reflink elsewhere. */
-async function cloneFile(from: string, to: string) {
-  if (process.platform === "darwin") await run("/bin/cp", ["-c", from, to]);
-  else await copyFile(from, to, constants.COPYFILE_FICLONE);
-}
 
 async function cloneDirectory(from: string, to: string) {
   if (!(await stat(from).catch(() => null))?.isDirectory()) return;
@@ -50,11 +45,15 @@ function shortsSkillIds(ctx: Ctx): string[] | undefined {
  * Copy one file of the long video into a short's project: the recording itself, its transcript and the caches made
  * from it, so the short neither imports nor transcribes it again. Caches are best effort: anything missing is made
  * again when it is needed.
+ *
+ * A recording without a transcript yet doesn't carry the request to transcribe it on import: at the next launch that
+ * would start one transcription per short, unasked, beside the long video's own. A short's run that needs its words
+ * waits for them, and the copy it reads is transcribed then.
  */
-async function copyMedia(ctx: Ctx, from: Project, to: string, asset: MediaAsset): Promise<MediaAsset> {
+async function copyMedia(ctx: Ctx, from: Project, to: string, asset: MediaAsset, signal?: AbortSignal): Promise<MediaAsset> {
   const id = newId("med");
   const path = id + extname(asset.path);
-  await cloneFile(join(ctx.paths.media(from.id), asset.path), join(ctx.paths.media(to), path));
+  await cloneOrSteadyCopy(join(ctx.paths.media(from.id), asset.path), join(ctx.paths.media(to), path), signal);
   // The clone is byte for byte the file that was fingerprinted, so the fingerprint holds for it: its previews can be
   // shared under the recording's hash.
   const info = await stat(join(ctx.paths.media(to), path));
@@ -65,20 +64,21 @@ async function copyMedia(ctx: Ctx, from: Project, to: string, asset: MediaAsset)
     transcriptId = newId("trs");
     ctx.repos.transcripts.put({ ...transcript, id: transcriptId, mediaId: id, projectId: to });
   }
-  const copy: MediaAsset = { ...asset, id, path, importId: undefined, fingerprintStamp, transcriptId, preparation: undefined, status: undefined };
+  const copy: MediaAsset = { ...asset, id, path, importId: undefined, fingerprintStamp, transcriptId, preparation: undefined, status: undefined,
+    transcriptionOnImport: undefined, transcriptionRevisionOnImport: undefined };
   ctx.repos.projects.putMedia(to, copy, "ready");
   // Kept ready to play in the long video, it is kept ready in the short.
   if (ctx.db.prepare("SELECT 1 FROM source_cache_requests WHERE media_id = ?").get(asset.id))
     ctx.db.prepare("INSERT OR IGNORE INTO source_cache_requests (media_id) VALUES (?)").run(id);
   await Promise.all([
-    copyCaches(ctx.paths.waveforms(from.id), ctx.paths.waveforms(to), asset.id, id),
-    copyCaches(ctx.paths.proxies(from.id), ctx.paths.proxies(to), asset.id, id),
+    copyCaches(ctx.paths.waveforms(from.id), ctx.paths.waveforms(to), asset.id, id, signal),
+    copyCaches(ctx.paths.proxies(from.id), ctx.paths.proxies(to), asset.id, id, signal),
   ]).catch(error => ctx.log(`[shorts] caches for ${asset.id} weren't copied: ${(error as Error).message}`));
   return copy;
 }
 
 /** Files named for the recording take the copy's id. Files named for their content are shared as they are. */
-async function copyCaches(from: string, to: string, oldId: string, newMediaId: string) {
+async function copyCaches(from: string, to: string, oldId: string, newMediaId: string, signal?: AbortSignal) {
   const names = await readdir(from).catch(() => [] as string[]);
   await mkdir(to, { recursive: true });
   await Promise.all(names.map(async name => {
@@ -86,7 +86,7 @@ async function copyCaches(from: string, to: string, oldId: string, newMediaId: s
     if (!own && !name.startsWith("cached-") && !name.startsWith("emissions-")) return;
     const target = join(to, own ? newMediaId + name.slice(oldId.length) : name);
     if (await stat(target).catch(() => null)) return;
-    if ((await stat(join(from, name))).isFile()) await cloneFile(join(from, name), target);
+    if ((await stat(join(from, name))).isFile()) await cloneOrSteadyCopy(join(from, name), target, signal);
   }));
 }
 
@@ -101,8 +101,12 @@ function remapMedia(timeline: Timeline, ids: Map<string, string>, projectId: str
  * Make shorts: one new project per short, each starting as the long video's finished edit on the shape the editor
  * chose, with the same footage, transcripts and style guide. The long video isn't changed. The first short's run
  * chooses every short's moment and starts the others (`planShorts`).
+ *
+ * Only the files the edit plays come along: a short is cut from the finished edit, and a file the edit doesn't use
+ * would be copied once per short for nothing. `signal` stops the copying, as when the request that asked goes away;
+ * shorts made part-way are then removed with their files.
  */
-export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: MakeShortsRequest): Promise<{ projects: Project[]; task: Task }> {
+export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: MakeShortsRequest, signal?: AbortSignal): Promise<{ projects: Project[]; task: Task }> {
   const source = ctx.repos.projects.get(sourceId);
   if (!source) throw notFound("project");
   if (source.source) throw badRequest("already_a_short", "This project is a short. Make shorts from the video it was made from.");
@@ -122,12 +126,14 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
     ctx.paths.ensureProject(project.id);
     projects.push(project);
   }
+  const stop = signal ? AbortSignal.any([signal, ctx.shutdown]) : ctx.shutdown;
   try {
     for (const project of projects) {
       const ids = new Map<string, string>();
-      for (const asset of media.filter(m => m.status === "ready")) {
+      for (const asset of media.filter(m => used.has(m.id))) {
+        stop.throwIfAborted();
         const { status: _s, error: _e, ...plain } = asset;
-        ids.set(asset.id, (await copyMedia(ctx, source, project.id, plain)).id);
+        ids.set(asset.id, (await copyMedia(ctx, source, project.id, plain, stop)).id);
       }
       await cloneDirectory(ctx.paths.graphics(source.id), ctx.paths.graphics(project.id));
       if (source.styleGuide) {
@@ -140,7 +146,9 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
       ctx.repos.projects.update(project.id, { head: first.version });
     }
   } catch (error) {
-    for (const project of projects) ctx.repos.projects.softDelete(project.id);
+    // The editor never saw these projects: they go with their copied footage, not to the Trash.
+    await discardProjects(ctx, projects.map(p => p.id), `as making shorts from ${source.id} failed`)
+      .catch(cleanup => ctx.log(`[shorts] the unfinished shorts weren't all removed: ${(cleanup as Error).message}`));
     throw error;
   }
 

@@ -1,11 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { flushSync } from "react-dom";
 import type { GraphicTemplateSummary, Skill } from "@scarlet/shared";
 import { isComposing } from "../../lib/hotkeys";
 import { useSkillsStore } from "../../stores/skills";
 import { templatePreview, templateTokens, useTemplatesStore } from "../../stores/templates";
 import { MAKE_TEMPLATE } from "./SkillCommandInput";
 import { templateDetail, templateMatches, TemplateMenu, TransitionPicture } from "./TemplateMenu";
+import { useTokenList } from "./useTokenList";
 
 /** A `$template` or `/skill` the library has, where it is in the text. Words the library has no template or skill for stay plain. */
 export function keywordSpans(text: string, templates: readonly Pick<GraphicTemplateSummary, "name">[], skills: readonly Pick<Skill, "name">[]) {
@@ -74,11 +74,10 @@ export function SkillInstructions({ value, onChange, readOnly, placeholder, desc
   const skills = useSkillsStore(s => s.skills);
   const skillStatus = useSkillsStore(s => s.status);
   const loadSkills = useSkillsStore(s => s.load);
-  const [caret, setCaret] = useState<number | null>(null);
-  const [focused, setFocused] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
-  const [index, setIndex] = useState<number | "create">(0);
-  const [hover, setHover] = useState<{ sign: "$" | "/"; name: string; left: number; top: number } | null>(null);
+  const list = useTokenList(box, value, onChange);
+  const { caret, index } = list;
+  // The keyword under the pointer: `at` tells two of the same name apart, so the note follows the one pointed at.
+  const [hover, setHover] = useState<{ sign: "$" | "/"; name: string; at: number; left: number; top: number } | null>(null);
   const [place, setPlace] = useState<CSSProperties>();
 
   // Keywords are known by the library's templates and skills, so both are read as the page opens.
@@ -86,10 +85,10 @@ export function SkillInstructions({ value, onChange, readOnly, placeholder, desc
   useEffect(() => { if (skillStatus === "idle") void loadSkills(); }, [skillStatus, loadSkills]);
 
   const token = caret === null ? undefined : templateTokens(value).find(t => t.start < caret && caret <= t.end);
-  const open = focused && !dismissed && !readOnly && !!token;
+  const open = list.focused && !list.dismissed && !readOnly && !!token;
   const query = token && caret !== null ? value.slice(token.start + 1, caret).toLowerCase() : "";
   const rows = open ? templateMatches(templates, query) : [];
-  const activeIndex = index === "create" ? rows.length : Math.min(index, rows.length - 1);
+  const activeIndex = list.activeIndex(rows.length);
   const active = index === "create" ? undefined : rows[activeIndex];
 
   useEffect(() => { activeRow.current?.scrollIntoView?.({ block: "nearest" }); }, [active?.id]);
@@ -101,25 +100,8 @@ export function SkillInstructions({ value, onChange, readOnly, placeholder, desc
     setPlace(top > 320 ? { inset: "auto", left, bottom: field.clientHeight - top + 4, width: 400 } : { inset: "auto", left, top: top + 24, width: 400 });
   }, [open, caret, value]);
 
-  const syncCaret = (field: HTMLTextAreaElement) => {
-    const next = field.selectionStart === field.selectionEnd ? field.selectionStart : null;
-    if (next !== caret) { setIndex(0); setDismissed(false); setCaret(next); }
-  };
-
-  /** Put `words` in the place of the `$…` being typed, with a space after them, and the cursor after that. */
-  function replaceToken(words: string) {
-    const field = box.current;
-    if (!field || !token) return;
-    const suffix = value.slice(token.end), prefix = value.slice(0, token.start) + words;
-    const next = prefix + (suffix || words.endsWith(" ") ? "" : " ") + suffix;
-    const position = words.endsWith(" ") ? prefix.length : prefix.length + 1;
-    flushSync(() => onChange(next));
-    field.focus();
-    field.setSelectionRange(position, position);
-    setCaret(position);
-  }
-  const choose = (row: GraphicTemplateSummary) => replaceToken("$" + row.name);
-  const make = () => { setIndex(0); setDismissed(true); replaceToken(MAKE_TEMPLATE); };
+  const choose = (row: GraphicTemplateSummary) => list.replaceToken(token, "$" + row.name);
+  const make = () => { list.close(); list.replaceToken(token, MAKE_TEMPLATE); };
 
   // The text drawn under the field: the same words, with each keyword's fill, and a mark where the cursor is so the
   // list can open there.
@@ -135,7 +117,7 @@ export function SkillInstructions({ value, onChange, readOnly, placeholder, desc
   };
   for (const k of keywordSpans(value, templates, skills)) {
     cut(k.start);
-    marked.push(<span key={k.start} className={`skill-keyword${hover?.name === k.name && hover.sign === k.sign ? " is-hover" : ""}`} data-keyword={k.sign + k.name}>{value.slice(k.start, k.end)}</span>);
+    marked.push(<span key={k.start} className={`skill-keyword${hover?.at === k.start ? " is-hover" : ""}`} data-keyword={k.sign + k.name} data-at={k.start}>{value.slice(k.start, k.end)}</span>);
     at = k.end;
   }
   cut(value.length);
@@ -146,7 +128,7 @@ export function SkillInstructions({ value, onChange, readOnly, placeholder, desc
       for (const r of el.getClientRects()) {
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
           const word = el.dataset.keyword!, outer = backdrop.current!.parentElement!.getBoundingClientRect();
-          return { sign: word[0] as "$" | "/", name: word.slice(1), left: r.left - outer.left, top: r.top - outer.top };
+          return { sign: word[0] as "$" | "/", name: word.slice(1), at: Number(el.dataset.at), left: r.left - outer.left, top: r.top - outer.top };
         }
       }
     }
@@ -160,31 +142,26 @@ export function SkillInstructions({ value, onChange, readOnly, placeholder, desc
       aria-autocomplete="list" aria-haspopup="listbox" aria-controls={open ? listId : undefined}
       aria-activedescendant={open ? (index === "create" ? `${listId}-create-action` : active && `${listId}-template-${active.name}`) : undefined}
       onScroll={e => { if (backdrop.current) backdrop.current.scrollTop = e.currentTarget.scrollTop; setHover(null); }}
-      onSelect={e => syncCaret(e.currentTarget)}
-      onFocus={e => { syncCaret(e.currentTarget); setFocused(true); setDismissed(false); }}
-      onBlur={() => setFocused(false)}
+      onSelect={e => list.syncCaret(e.currentTarget)}
+      onFocus={e => list.focus(e.currentTarget)}
+      onBlur={() => list.setFocused(false)}
       onMouseMove={e => {
+        // Another keyword, or the same one in another place or on another line of it, moves the note there.
         const next = pointAt(e.clientX, e.clientY);
-        if (next?.name !== hover?.name || next?.sign !== hover?.sign) setHover(next);
+        if (next?.at !== hover?.at || next?.name !== hover?.name || next?.left !== hover?.left || next?.top !== hover?.top) setHover(next);
       }}
       onMouseLeave={() => setHover(null)}
-      onChange={e => { syncCaret(e.currentTarget); setIndex(0); setDismissed(false); onChange(e.target.value); }}
+      onChange={e => { list.typed(e.currentTarget); onChange(e.target.value); }}
       onKeyDown={e => {
         if (isComposing(e) || !open || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
-        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissed(true); return; }
-        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-          e.preventDefault();
-          const count = rows.length + 1, next = (activeIndex + (e.key === "ArrowDown" ? 1 : -1) + count) % count;
-          setIndex(next === rows.length ? "create" : next);
-          return;
-        }
+        if (list.navigate(e, rows.length)) return;
         if (e.key === "Enter" || (e.key === "Tab" && (active || index === "create"))) {
           if (index === "create") { e.preventDefault(); if (!e.repeat) make(); }
           else if (active) { e.preventDefault(); choose(active); }
         }
       }} />
     {open && <TemplateMenu listId={listId} rows={rows} active={active} makeActive={index === "create"} activeRow={activeRow} status={templateStatus} query={query}
-      empty={!templates.length} style={place} onHover={row => setIndex(rows.indexOf(row))} onChoose={choose} onMake={make} onRetry={() => void loadTemplates()} />}
+      empty={!templates.length} style={place} onHover={row => list.setIndex(rows.indexOf(row))} onChoose={choose} onMake={make} onRetry={() => void loadTemplates()} />}
     {hover && !open && <div className="skill-keyword-note" role="tooltip" style={{ left: hover.left - 6, top: hover.top - 6 }}>
       <KeywordNote keyword={hover} templates={templates} skills={skills} />
     </div>}

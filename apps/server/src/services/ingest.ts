@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants, existsSync, statSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { copyFile, readFile, realpath, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
-import { promisify } from "node:util";
 import { downloadImport } from "./importUrl.js";
 import { hasInitialTimeline, newId, ProjectSettings, videoFormat, type MediaAsset, type MediaKind, type Project, type Transcript, type TranscriptSegment } from "@scarlet/timeline";
 import { engineIsAlive, type Ctx } from "../context.js";
@@ -27,10 +25,9 @@ import { actorFor, logActivity, quote } from "./activity.js";
 import { matchesSpeakerStream, savedSpeakerTurns } from "./recordingSpeakers.js";
 import { emissionStore, emissionStorePaths } from "./recordingAudio.js";
 import { prepareSourceProxies, sourcePreviews } from "./sourcePreviews.js";
-import { steadyCopy } from "./steadyCopy.js";
+import { cloneOrSteadyCopy } from "./steadyCopy.js";
 
 const WAVEFORM_POINTS_PER_SECOND = 50;
-const runFile = promisify(execFile);
 const GiB = 1024 ** 3;
 const URL_IMPORT_BYTES = 64 * GiB;
 const DOWNLOAD_RESERVE = GiB;
@@ -236,19 +233,8 @@ export async function ingestMedia(
     if (!info?.isFile()) throw badRequest("path_not_found", `no file at ${source.path}`);
     if (!opts.name) name = basename(source.path);
     const destination = join(mediaDir, mediaId + safeExt(name));
-    try {
-      if (process.platform === "darwin" && info.size >= 16 * 1024 * 1024) {
-        // macOS cp uses clonefile on APFS and copies normally across volumes. The project owns an independent file.
-        await runFile("/bin/cp", ["-c", await realpath(source.path), destination], { signal });
-      } else if (process.platform === "win32" && info.size >= 64 * 1024 * 1024) {
-        await steadyCopy(source.path, destination, signal);
-      } else {
-        await copyFile(source.path, destination, constants.COPYFILE_FICLONE);
-      }
-    } catch (error) {
-      await rm(destination, { force: true });
-      throw error;
-    }
+    // The project owns an independent file: a clone where the disk allows it, a throttled copy otherwise.
+    await cloneOrSteadyCopy(source.path, destination, signal);
     const { importId } = source;
     if (importId && info.size > 0) {
       let lastReport = -Infinity;

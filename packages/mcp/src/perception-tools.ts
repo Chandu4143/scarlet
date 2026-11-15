@@ -9,6 +9,7 @@ import { timelineDuration, type Project, type Timeline, type TranscriptWord } fr
 import { auditJoin, formatTimelineTranscript, newJoins, timelineJoins, timelineWords, type JoinAudit, type TimelineJoin } from "./timeline-perception.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, text } from "./tool-result.js";
+import { OTHER_INPUT } from "./analysis.js";
 
 type ToolRegistrar = <Shape extends z.ZodRawShape>(name: ScarletToolName, description: string, shape: Shape,
   handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<CallToolResult>) => void;
@@ -127,7 +128,7 @@ export function registerPerception(deps: PerceptionDeps) {
         const asked = [...new Set(shown.filter(w => w.mediaId === mediaId).map(w => w.index))].map(index => ({ index, start: source[index]!.start, end: source[index]!.end }));
         marked.set(mediaId, await deps.otherInputWords(mediaId, asked).catch(() => new Set<number>()));
       }
-      shown = shown.map(w => marked.get(w.mediaId)?.has(w.index) ? { ...w, text: `[other input] ${w.text}` } : w);
+      shown = shown.map(w => marked.get(w.mediaId)?.has(w.index) ? { ...w, text: `${OTHER_INPUT} ${w.text}` } : w);
     }
     if (shown.length) deps.readPassage(tl.version, { start: Math.max(0, range.start),
       end: shown.length < words.length ? shown.at(-1)!.end : Math.min(duration, range.end) });
@@ -138,7 +139,7 @@ export function registerPerception(deps: PerceptionDeps) {
   }
 
   tool("timeline_transcript",
-    "What the audience hears on a timeline version (default head): transcript words in playback order with TIMELINE seconds, and a ‖ line at every join between kept source ranges showing the source jump and the words either side. Each mediaId line identifies the source of the #indices that follow. Use this mediaId and those transcript_get indices in dialogue_check_join or dialogue_apply_cuts. lines groups words between pauses and joins (`time #firstIndex text`); words lists `start-end #index word` for exact edges. Read it after an edit to check that sentences still read naturally across each join. A word heard only on the input a recording's dialogue isn't on (a producer on a call, playback) reads [other input]: it is not the speaker.",
+    "What the audience hears on a timeline version (default head): transcript words in playback order with TIMELINE seconds, and a ‖ line at every join between kept source ranges showing the source jump and the words either side. Each mediaId line identifies the source of the #indices that follow. Use this mediaId and those transcript_get indices in dialogue_check_join or dialogue_apply_cuts. lines groups words between pauses and joins (`time #firstIndex text`); words lists `start-end #index word` for exact edges. Read it after an edit to check that sentences still read naturally across each join. A word heard only on the input a recording's dialogue isn't on (a producer on a call, playback) reads " + OTHER_INPUT + ": it is not the speaker.",
     { version: z.string().optional(), from: z.number().min(0).optional().describe("Timeline seconds"), to: z.number().min(0).optional().describe("Timeline seconds"),
       detail: z.enum(["lines", "words"]).default("lines") }, readTranscript);
 

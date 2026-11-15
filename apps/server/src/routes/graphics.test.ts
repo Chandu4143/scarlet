@@ -9,7 +9,7 @@ import type { GraphicRenderResponse, GraphicTemplate, GraphicTemplateSummary, Ta
 import { createApp, type ScarletApp } from "../app.js";
 import { seedStockTransitions } from "../services/graphics.js";
 import { accessToken } from "../auth.js";
-import { createTask } from "../services/tasks.js";
+import { createTask, saveTask } from "../services/tasks.js";
 import { createSkill } from "../services/skills.js";
 import { purgeTrash } from "../services/trash.js";
 
@@ -209,6 +209,30 @@ describe.skipIf(!hasChrome())("graphics and templates", () => {
     expect((await api("DELETE", `/templates/${template.id}`)).status).toBe(200);
     expect((await api("GET", `/templates/${template.id}/preview`)).status).toBe(404);
     expect(existsSync(workspace.ctx.paths.template(template.id))).toBe(false);
+  });
+});
+
+describe("what a run may change", () => {
+  it("keeps a skill's run, and a run that has ended, from adding attachments or deleting a template", async () => {
+    const editor = { type: "human", name: "Ed" } as const;
+    const skill = createTask(workspace.ctx, { projectId: project.id, kind: "skill_edit", agent: "claude", instruction: "Shorter pauses", state: "running", createdBy: editor });
+    const edit = createTask(workspace.ctx, { projectId: project.id, kind: "edit", agent: "claude", instruction: "Tighten it", state: "running", createdBy: editor });
+    const startedAt = new Date().toISOString();
+    for (const task of [skill, edit]) saveTask(workspace.ctx, { ...task, startedAt });
+    const as = (taskId: string, started: string) => ({ "X-Scarlet-Task": taskId, "X-Scarlet-Task-Started-At": started });
+    const send = (method: string, path: string, headers: Record<string, string>, body?: FormData) =>
+      workspace.app.request("/api" + path, { method, body, headers: { ...auth(), ...headers } });
+    const form = () => { const f = new FormData(); f.append("file", new Blob(["notes"], { type: "text/plain" }), "notes.txt"); return f; };
+    const swipe = (await (await api("GET", "/templates")).json() as { templates: GraphicTemplateSummary[] }).templates.find(t => t.name === "swipe")!;
+
+    expect((await send("POST", `/projects/${project.id}/attachments`, as(skill.id, startedAt), form())).status).toBe(403);
+    expect((await send("POST", `/projects/${project.id}/attachments`, as(edit.id, "2020-01-01T00:00:00.000Z"), form())).status).toBe(409);
+    expect((await send("DELETE", `/templates/${swipe.id}`, as(skill.id, startedAt))).status).toBe(403);
+    expect((await api("GET", `/templates/${swipe.id}`)).status).toBe(200);
+    // The edit's own live run, and the editor, may.
+    expect((await send("POST", `/projects/${project.id}/attachments`, as(edit.id, startedAt), form())).status).toBe(201);
+    expect((await send("DELETE", `/templates/${swipe.id}`, as(edit.id, startedAt))).status).toBe(200);
+    expect((await send("POST", `/projects/${project.id}/attachments`, {}, form())).status).toBe(201);
   });
 });
 

@@ -52,7 +52,25 @@ interface Recording<W> {
   error?: string;
 }
 
-const r3 = (n: number) => Math.round(n * 1000) / 1000;
+/** Seconds or a fraction to the thousandth, as readings report them. */
+export const r3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Recordings whose reading state a reader keeps. */
+const MAX_RECORDINGS = 32;
+
+/**
+ * Put `value` in a map kept to `limit` entries as the most recently used, letting go of the least recently used first.
+ * An entry `busy` says is in use stays, even past the limit.
+ */
+export function rememberLast<K, V>(map: Map<K, V>, key: K, value: V, limit: number, busy: (value: V) => boolean = () => false): V {
+  map.delete(key);
+  for (const [other, old] of map) {
+    if (map.size < limit) break;
+    if (!busy(old)) map.delete(other);
+  }
+  map.set(key, value);
+  return value;
+}
 
 /** A reader for one kind of reading. `read` answers a range of a video, reading what hasn't been read yet. */
 export function pictureReader<W>(spec: PictureReading<W>) {
@@ -77,8 +95,10 @@ export function pictureReader<W>(spec: PictureReading<W>) {
 
   function recordingFor(ctx: Ctx, media: VideoMedia) {
     const key = `${ctx.paths.root}\0${media.id}\0${spec.identity(media)}`;
-    let state = recordings.get(key);
-    if (!state) recordings.set(key, state = { queue: [], asked: new Set(), waiters: new Set() });
+    // What was read is kept on disk, so a recording let go is read back from there when it is asked for again. One
+    // being read, or waited for, stays.
+    const state = rememberLast<string, Recording<W>>(recordings, key, recordings.get(key) ?? { queue: [], asked: new Set(), waiters: new Set() }, MAX_RECORDINGS,
+      other => !!other.reading || other.waiters.size > 0);
     state.kept ??= loadKept(ctx, media);
     return state;
   }
@@ -170,7 +190,10 @@ export function pictureReader<W>(spec: PictureReading<W>) {
       ...(state.error && ready.length < wanted.length && { error: state.error }) };
   }
 
-  return { read };
+  /** How many recordings the reader keeps in memory. */
+  const kept = () => recordings.size;
+
+  return { read, kept };
 }
 
 /**

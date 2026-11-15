@@ -1,5 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import { flushSync } from "react-dom";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { GraphicTemplateSummary, Skill } from "@scarlet/shared";
 import type { MessageTimestamp } from "../../lib/messageTimestamps";
@@ -11,6 +10,7 @@ import { useProjectStore } from "../../stores/project";
 import { usePlayerStore } from "../../stores/player";
 import { interactiveFrameUrl, thumbUrl } from "../review/thumbs";
 import { Icon } from "../ui/primitives";
+import { useTokenList } from "./useTokenList";
 
 interface Props {
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -38,9 +38,8 @@ export const MAKE_TEMPLATE = "Make a template ";
  * the playhead, and while it is lit the player shows it over the picture too.
  */
 export function SkillCommandInput({ inputRef, value, skills, id, placeholder, timestamps, onTimestamp, onChange, onSubmit, templatesOnly, disabled, ariaLabel }: Props) {
-  const [focused, setFocused] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
-  const [index, setIndex] = useState<number | "create">(0);
+  const list = useTokenList(inputRef, value, onChange);
+  const { caret, index } = list;
   const [, setSearch] = useSearchParams();
   const listId = useId();
   const activeRow = useRef<HTMLButtonElement>(null);
@@ -51,11 +50,10 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   const loadTemplates = useTemplatesStore(s => s.load);
   const setLit = useTemplatesStore(s => s.setLit);
   const styleGuide = useProjectStore(s => s.current?.project.styleGuide);
-  const [caret, setCaret] = useState<number | null>(null);
   const command = caret === null || templatesOnly ? undefined : skillCommands(value).find(token => token.start < caret && caret <= token.end);
   const template = caret === null || command ? undefined : templateTokens(value).find(token => token.start < caret && caret <= token.end);
   const token = command ?? template;
-  const open = focused && !dismissed && !!token;
+  const open = list.focused && !list.dismissed && !!token;
   const skillsOpen = open && !!command;
   const templatesOpen = open && !!template;
   const query = token && caret !== null ? value.slice(token.start + 1, caret).toLowerCase() : "";
@@ -63,7 +61,7 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
     .sort((a, b) => Number(b.name.startsWith(query)) - Number(a.name.startsWith(query))) : [];
   const templateMatches = templatesOpen ? matchTemplates(templates, query) : [];
   const matches: ReadonlyArray<Skill | GraphicTemplateSummary> = skillsOpen ? skillMatches : templateMatches;
-  const activeIndex = index === "create" ? matches.length : Math.min(index, matches.length - 1);
+  const activeIndex = list.activeIndex(matches.length);
   const active = matches[activeIndex];
   const activeId = index === "create" ? `${listId}-create-action` : active && `${listId}-${skillsOpen ? "skill" : "template"}-${active.name}`;
   const hasCommand = !!command;
@@ -98,34 +96,10 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   }, [litTemplate?.id, litUrl, large, setLit]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => setLit(null), [setLit]);
 
-  function syncCaret(input: HTMLTextAreaElement) {
-    const next = input.selectionStart === input.selectionEnd ? input.selectionStart : null;
-    if (next !== caret) {
-      setIndex(0);
-      setDismissed(false);
-      setCaret(next);
-    }
-  }
-
-  /** Put `words` in the place of the `/…` or `$…` being typed, with a space after them, and the caret after that. */
-  function replaceToken(words: string) {
-    const input = inputRef.current;
-    if (!input || !token) return;
-    const suffix = value.slice(token.end);
-    const prefix = value.slice(0, token.start) + words;
-    const next = prefix + (suffix || words.endsWith(" ") ? "" : " ") + suffix;
-    const position = words.endsWith(" ") ? prefix.length : prefix.length + 1;
-    flushSync(() => onChange(next));
-    input.focus();
-    input.setSelectionRange(position, position);
-    setCaret(position);
-  }
-
-  const choose = (row: Skill | GraphicTemplateSummary) => replaceToken(("fields" in row ? "$" : "/") + row.name);
+  const choose = (row: Skill | GraphicTemplateSummary) => list.replaceToken(token, ("fields" in row ? "$" : "/") + row.name);
 
   function createSkill() {
-    setIndex(0);
-    setDismissed(true);
+    list.close();
     setSearch(previous => {
       const next = new URLSearchParams(previous);
       next.set("createSkill", "1");
@@ -134,9 +108,8 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
   }
 
   function makeTemplate() {
-    setIndex(0);
-    setDismissed(true);
-    replaceToken(MAKE_TEMPLATE);
+    list.close();
+    list.replaceToken(token, MAKE_TEMPLATE);
   }
 
   const create = skillsOpen ? createSkill : makeTemplate;
@@ -163,34 +136,19 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
         aria-autocomplete="list" aria-haspopup="listbox" aria-controls={open ? listId : undefined}
         aria-activedescendant={activeId} value={value}
         onScroll={e => { if (overlay.current) overlay.current.scrollTop = e.currentTarget.scrollTop; }}
-        onSelect={e => { syncCaret(e.currentTarget); }}
-        onFocus={e => { syncCaret(e.currentTarget); setFocused(true); setDismissed(false); }}
-        onBlur={() => setFocused(false)}
+        onSelect={e => { list.syncCaret(e.currentTarget); }}
+        onFocus={e => list.focus(e.currentTarget)}
+        onBlur={() => list.setFocused(false)}
         onChange={e => {
           // WebKit can return the caret from a native dialog before the textarea receives another focus event.
-          setFocused(document.activeElement === e.currentTarget);
-          syncCaret(e.currentTarget);
-          setIndex(0);
-          setDismissed(false);
+          list.setFocused(document.activeElement === e.currentTarget);
+          list.typed(e.currentTarget);
           onChange(e.target.value);
         }}
         onKeyDown={e => {
           if (isComposing(e)) return;
           if (open && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              e.stopPropagation();
-              setDismissed(true);
-              return;
-            }
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              e.preventDefault();
-              const direction = e.key === "ArrowDown" ? 1 : -1;
-              const count = matches.length + 1;
-              const next = (activeIndex + direction + count) % count;
-              setIndex(next === matches.length ? "create" : next);
-              return;
-            }
+            if (list.navigate(e, matches.length)) return;
             if (e.key === "Enter" || (e.key === "Tab" && active)) {
               e.preventDefault();
               if (index === "create") {
@@ -238,7 +196,7 @@ export function SkillCommandInput({ inputRef, value, skills, id, placeholder, ti
     </div>}
     {templatesOpen && <TemplateMenu listId={listId} rows={templateMatches} active={index === "create" ? undefined : active as GraphicTemplateSummary | undefined}
       makeActive={index === "create"} activeRow={activeRow} frame={frame} joins={joins} fps={fps} status={templateStatus} query={query} empty={!templates.length}
-      onHover={row => setIndex(templateMatches.indexOf(row))} onChoose={choose} onMake={makeTemplate} onRetry={() => void loadTemplates()}
+      onHover={row => list.setIndex(templateMatches.indexOf(row))} onChoose={choose} onMake={makeTemplate} onRetry={() => void loadTemplates()}
       footer={styleGuide && <div className="composer-style-guide" title={`Scarlet follows this project’s style guide for every graphic: ${styleGuide.name}`}>
         <span>Style guide</span><span className="composer-style-guide-name">{styleGuide.name}</span>
       </div>} />}

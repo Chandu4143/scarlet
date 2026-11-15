@@ -178,6 +178,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       return false;
     }
     if (!effective) throw new Error(unavailableReason);
+    let context: Parameters<typeof createTask>[1]["context"];
     if (replying) {
       if (anchor?.changeId && ![...thread.changes, ...thread.flagged ?? []].some(c => c.id === anchor.changeId)) throw new Error("This suggestion is unavailable. Select the edit again.");
       const position = anchor && requestPosition(anchor);
@@ -185,26 +186,26 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       if (revising && !attachments) {
         await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),
           effort: effective.effort, serviceTier: effective.serviceTier, ...(position && { position }) });
-      } else {
-        await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context: { skillIds, version: head, ...position, threadId: thread.id, ...carried } });
+        recordEditReview(project.id, anchor, "revise");
+        return true;
       }
-      recordEditReview(project.id, anchor, "revise");
+      context = { skillIds, version: head, ...position, threadId: thread.id, ...carried };
     } else if (anchor?.mediaId) {
-      const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript,
-        context: { skillIds, version: anchor.version ?? head, mediaId: anchor.mediaId, time: anchor.time, end: anchor.end, ...carried } });
-      onCreated?.(task);
+      context = { skillIds, version: anchor.version ?? head, mediaId: anchor.mediaId, time: anchor.time, end: anchor.end, ...carried };
     } else if (anchor && attachments) {
       // A note at a moment takes no files, so a message that carries some is a request about that moment.
-      const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript,
-        context: { skillIds, version: anchor.version ?? head, time: anchor.time, end: anchor.end, clipIds: anchor.clipIds, markedRange: anchor.markedRange, ...carried } });
-      onCreated?.(task);
+      context = { skillIds, version: anchor.version ?? head, time: anchor.time, end: anchor.end, clipIds: anchor.clipIds, markedRange: anchor.markedRange, ...carried };
     } else if (anchor) {
       const { task } = await createNote(project.id, { skillIds, time: anchor.time, end: anchor.end, clipIds: anchor.clipIds, text, voiceTranscript, version: anchor.version ?? head, assignTo: agentTarget(effective.agent, effective.model), effort: effective.effort, serviceTier: effective.serviceTier });
       if (task) onCreated?.(task);
+      return true;
     } else {
-      const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context: { skillIds, version: head, ...carried } });
-      onCreated?.(task);
+      context = { skillIds, version: head, ...carried };
     }
+    const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context });
+    // A reply stays in its thread; anything else is a new request the page goes to.
+    if (replying) recordEditReview(project.id, anchor, "revise");
+    else onCreated?.(task);
     return true;
   };
   /** The files ready to go with a message, once any still being added have landed, and taking them off the line once it's out. */
@@ -304,19 +305,22 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   // A new note uses the first timestamp in its text. Replies, selected transcript words and marked ranges already
   // have a destination. A saved point stays on its original source/version even if the editor browses elsewhere.
   const typedPoint = context && context !== "whole" && context.fromMessage ? context : undefined;
+  // Only a message the editor hasn't aimed takes its place from its words. A moment they picked stays where it is
+  // whatever times are typed, and once they took the aim off with × ("whole") a typed time doesn't put it back.
+  const aimsByText = !context || !!typedPoint;
   const inputClock = !replying && !rewording && (!displayAnchor || pointOf(displayAnchor)) ? messageClock : undefined;
   const sameClock = !typedPoint || (typedPoint.version === inputClock?.version && typedPoint.mediaId === inputClock?.mediaId);
   const duration = inputClock?.duration ?? 0;
   const times = useMemo(() => messageTimestamps(value, duration), [value, duration]);
   const firstTime = times[0]?.time;
   useLayoutEffect(() => {
-    if (rewording || replying) return;
+    if (rewording || replying || !aimsByText) return;
     if (typedPoint && !sameClock && messageTimestamps(value, Infinity).some(t => t.time === typedPoint.time)) return;
     if (inputClock && firstTime !== undefined) {
       if (sameClock && firstTime === typedPoint?.time) return;
       setContext({ ...editTargetAt(firstTime, inputClock.version, inputClock.timeline, inputClock.mediaId), fromMessage: true });
     } else if (typedPoint) setContext(null);
-  }, [value, firstTime, inputClock, typedPoint, sameClock, rewording, replying, setContext]);
+  }, [value, firstTime, inputClock, typedPoint, sameClock, rewording, replying, aimsByText, setContext]);
   const tagWords = targetTag && `${targetTag.charAt(0).toLowerCase()}${targetTag.slice(1)}`;
   // What the tag's message does, for its hover note: a cut or an edit is revised, a question answered, an edit replied to.
   const tagAct = !targetTag ? undefined : question && targetTag === "Answer" ? "Answering Scarlet’s question"
@@ -397,7 +401,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
         }}>
         <label htmlFor={inputId} className="composer-destination sr-only">{rewording ? "Changing the words of a queued request" : <>{mode}{editTitle && ` ${editTitle}`}</>}</label>
         <div className="composer-row">
-          {aimItems.length > 0 && <ComposerAim items={aimItems} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
+          {/* Mounted with nothing aimed too, so the first thing added to an empty box arrives: it draws nothing until then. */}
+          {!rewording && <ComposerAim items={aimItems}disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
           {wordTag && <span className="composer-tag" title={tagAct}>
             <span className="composer-tag-name">{wordTag}</span>
             {/* A spoken message stays where it was said until it is out: aiming the box elsewhere would drop it. */}

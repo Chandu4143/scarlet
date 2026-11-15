@@ -50,17 +50,10 @@ export async function wavLevels(path: string, signal?: AbortSignal): Promise<Gap
   } finally { await wav.close(); }
 }
 
-/**
- * The stretches of a recording that hold sound at speaking level between two transcript words a second or more
- * apart, before the first word or after the last. Word times must be the aligned ones: Whisper's own stretch a word
- * across the wait beside it, which hides exactly these.
- */
-export function transcriptHoles(segments: TranscriptSegment[], levels: GapLevels): TimeRange[] {
-  const words = segments.flatMap(s => s.words).filter(spoken).sort((a, b) => a.start - b.start);
-  const step = levels.rms.length ? (levels.to - levels.from) / levels.rms.length : 0;
-  if (!step) return [];
+/** The level speech sits at around a time, from the LEVEL_CHUNK of the recording it falls in, each chunk worked out once. */
+function speakingLevels(levels: GapLevels, step: number): (t: number) => number {
   const speech = new Map<number, number>();
-  const speechAt = (t: number) => {
+  return t => {
     const chunk = Math.floor(t / LEVEL_CHUNK);
     let db = speech.get(chunk);
     if (db === undefined) {
@@ -70,6 +63,18 @@ export function transcriptHoles(segments: TranscriptSegment[], levels: GapLevels
     }
     return db;
   };
+}
+
+/**
+ * The stretches of a recording that hold sound at speaking level between two transcript words a second or more
+ * apart, before the first word or after the last. Word times must be the aligned ones: Whisper's own stretch a word
+ * across the wait beside it, which hides exactly these.
+ */
+export function transcriptHoles(segments: TranscriptSegment[], levels: GapLevels): TimeRange[] {
+  const words = segments.flatMap(s => s.words).filter(spoken).sort((a, b) => a.start - b.start);
+  const step = levels.rms.length ? (levels.to - levels.from) / levels.rms.length : 0;
+  if (!step) return [];
+  const speechAt = speakingLevels(levels, step);
   const holes: TimeRange[] = [];
   const consider = (start: number, end: number) => {
     if (end - start < HOLE_GAP) return;
@@ -103,17 +108,8 @@ const MIN_WORD = 0.05;
 export function wordsOnSound(segments: TranscriptSegment[], levels: GapLevels): { segments: TranscriptSegment[]; moved: number } {
   const step = levels.rms.length ? (levels.to - levels.from) / levels.rms.length : 0;
   if (!step) return { segments, moved: 0 };
-  const speech = new Map<number, number>();
-  const quietBelow = (t: number) => {
-    const chunk = Math.floor(t / LEVEL_CHUNK);
-    let db = speech.get(chunk);
-    if (db === undefined) {
-      const from = Math.max(0, Math.floor((chunk * LEVEL_CHUNK - levels.from) / step)), to = Math.min(levels.rms.length, Math.ceil(((chunk + 1) * LEVEL_CHUNK - levels.from) / step));
-      db = speakingLevel({ from: 0, to: 1, rms: levels.rms.slice(from, to) });
-      speech.set(chunk, db);
-    }
-    return Math.min(db - BELOW_SPEECH_QUIET_DB, WORD_QUIET_DBFS);
-  };
+  const speechAt = speakingLevels(levels, step);
+  const quietBelow = (t: number) => Math.min(speechAt(t) - BELOW_SPEECH_QUIET_DB, WORD_QUIET_DBFS);
   const quiet = (i: number, floor: number) => 20 * Math.log10(Math.max(levels.rms[i]!, 1e-10)) < floor;
   let moved = 0;
   const out = segments.map(seg => {
