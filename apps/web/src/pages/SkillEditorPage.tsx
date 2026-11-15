@@ -6,7 +6,9 @@ import type { Skill, SkillVersion, Task } from "@scarlet/shared";
 import { useAgentAvailability } from "../components/agent/AgentChip";
 import { api, errorMessage } from "../lib/client";
 import { isComposing } from "../lib/hotkeys";
-import { relTime } from "../lib/format";
+import { clockTime, dayName } from "../lib/format";
+import { diffLines, type DiffLine } from "../lib/textDiff";
+import { useAuthStore } from "../stores/auth";
 import { composeSkill, slugify, splitFrontmatter, type SplitSkill } from "../lib/frontmatter";
 import { useSkillsStore } from "../stores/skills";
 import { useUiStore } from "../stores/ui";
@@ -69,7 +71,11 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   const [nameErr, setNameErr] = useState<string | null>(null);
   const nameField = useRef<HTMLInputElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The skill as it stands, to edit, or a version picked from the history, shown with what it changed.
   const [viewVersion, setViewVersion] = useState<number | "current">("current");
+  // The history lists the latest versions until the editor asks for the older ones.
+  const [allVersions, setAllVersions] = useState(false);
+  const me = useAuthStore(s => s.user?.id);
   // Something on the page was changed since it was loaded or saved. It is unsaved unless the change was put back.
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(() => pageOf(name, description, body, enabled));
@@ -224,18 +230,38 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   }, [skillId, isNew, loadAttempt]);
 
   const content = useMemo(() => composeSkill({ name: slugify(name) || name, description }, body, original), [original, name, description, body]);
-  const editorBody = viewVersion === "current" ? body : splitFrontmatter(loaded?.versions.find((v) => v.version === viewVersion)?.content ?? "").body;
-  // The history lists each version once, newest first. The newest is the skill as it stands: it is the one marked
-  // current, and only the ones before it can be restored. A skill with one version has nothing to go back to.
+  // The history, newest first, by day: what each version changed, who saved it and when. The newest is the skill as
+  // it stands. Picking one shows what it changed from the one before; the page goes back to editing with Done.
   const versionChoices = useMemo(() => {
     if (!loaded) return [];
-    const line = (v: SkillVersion) => `v${v.version} · ${v.author?.name ?? "unknown"} · ${relTime(v.createdAt)}`;
-    const newest = loaded.versions.find(v => v.version === loaded.skill.version);
-    return [
-      { value: "current" as const, label: `${newest ? line(newest) : `v${loaded.skill.version}`} · current` },
-      ...loaded.versions.filter(v => v !== newest).reverse().map(v => ({ value: v.version, label: line(v) })),
-    ];
-  }, [loaded]);
+    const newest = loaded.skill.version;
+    return [...loaded.versions].reverse().map(v => ({
+      value: v.version,
+      label: v.from === "request" ? `“${v.note}”` : v.note ?? `v${v.version}`,
+      detail: [savedBy(v, me), v.createdAt && clockTime(v.createdAt), `v${v.version}`].filter(Boolean).join(" · "),
+      tag: v.version === newest ? "Now" : undefined,
+      group: v.createdAt ? dayName(v.createdAt) : undefined,
+    }));
+  }, [loaded, me]);
+  const shownChoices = allVersions ? versionChoices : versionChoices.slice(0, LATEST_VERSIONS);
+  const older = versionChoices.length - shownChoices.length;
+  const picked = viewVersion === "current" ? undefined : loaded?.versions.find(v => v.version === viewVersion);
+  const pickedBefore = picked && loaded?.versions.filter(v => v.version < picked.version).at(-1);
+  // A version picked from the history, as it read and with what it changed from the one before marked in it.
+  const shownVersion = useMemo(() => {
+    if (!picked) return null;
+    const now = splitFrontmatter(picked.content), was = pickedBefore ? splitFrontmatter(pickedBefore.content) : now;
+    return {
+      description: diffLines(was.frontmatter.description ?? "", now.frontmatter.description ?? ""),
+      body: diffLines(was.body, now.body),
+    };
+  }, [picked, pickedBefore]);
+  const changesPane = useRef<HTMLDivElement>(null);
+  // The picked version opens at its first change.
+  useEffect(() => {
+    const pane = changesPane.current, first = pane?.querySelector<HTMLElement>("[data-changed]");
+    if (pane && first) pane.scrollTop = Math.max(0, first.offsetTop - pane.offsetTop - 60);
+  }, [shownVersion]);
 
   // The page isn't on the project's live feed, so it asks how the request is going. When it ends, the skill it
   // changed and its outcome arrive together.
@@ -376,17 +402,11 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
         <input id="sk-name" ref={nameField} className="skill-name" aria-label="Name" aria-invalid={nameErr ? true : undefined} value={name} disabled={working} placeholder="new-skill" spellCheck={false}
           style={{ width: `calc(${Math.max(name.length, 9) + 1}ch + 18px)` }} onChange={(e) => { setNameErr(null); mark(setName)(e.target.value); }} />
         {nameErr && <span role="alert" className="text-bad text-[12px]">{nameErr}</span>}
-        {loaded && <span className="text-dim text-[11.5px]">v{loaded.skill.version}</span>}
         {unsaved && <span className="chip bg-warn/15 text-warn">Unsaved</span>}
         <div className="flex-1" />
         {versionChoices.length > 1 && (
-          <PreferenceSelect compact label="Version history" value={viewVersion} onChange={setViewVersion} options={versionChoices}
-            valueLabel={viewVersion === "current" ? "Current version" : undefined} />
-        )}
-        {viewVersion !== "current" && loaded && (
-          <button className="btn-ghost" disabled={working} onClick={() => restore(loaded.versions.find((v) => v.version === viewVersion)!)}>
-            Restore v{viewVersion}
-          </button>
+          <PreferenceSelect compact label="Version history" value={viewVersion} onChange={setViewVersion} options={shownChoices} valueLabel="History"
+            more={older > 0 ? { label: `Show ${older} older ${older === 1 ? "version" : "versions"}`, onPick: () => setAllVersions(true) } : undefined} />
         )}
         {/* Delete is plain beside Save, and red only under the pointer: the dialog it opens is where the red is. */}
         {!isNew && (
@@ -470,15 +490,23 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
               <span>Enabled</span>
               <Toggle checked={enabled} onChange={mark(setEnabled)} label="Enabled" disabled={working} />
             </div>
-            <div className="skill-when">
-              <span className="field" aria-hidden="true">{description}{"\u200b"}</span>
-              <textarea id="sk-desc" className="field" rows={1} value={description} disabled={working} onChange={(e) => mark(setDescription)(e.target.value)} />
-            </div>
+            {shownVersion ? <div className="field skill-version-text" aria-label="When to use it, in this version"><ChangedText lines={shownVersion.description} /></div>
+              : <div className="skill-when">
+                <span className="field" aria-hidden="true">{description}{"\u200b"}</span>
+                <textarea id="sk-desc" className="field" rows={1} value={description} disabled={working} onChange={(e) => mark(setDescription)(e.target.value)} />
+              </div>}
             <InlineError>{err}</InlineError>
           </div>
           <div className="skill-instructions-head">
             <span className="eyebrow">Instructions</span>
-            {kept[0] && loaded && <span className="skill-kept" role="status">
+            {picked ? <>
+              <span className="skill-version-said">{changedIn(picked, me)}</span>
+              <span className="flex-1" />
+              {picked.version === loaded?.skill.version
+                ? pickedBefore && <button type="button" className="simple-link" disabled={working} onClick={() => restore(pickedBefore)}>Undo this change</button>
+                : <button type="button" className="simple-link" disabled={working} onClick={() => restore(picked)}>Restore v{picked.version}</button>}
+              <button type="button" className="simple-link" onClick={() => setViewVersion("current")}>Done</button>
+            </> : kept[0] && loaded && <span className="skill-kept" role="status">
               {/* Edits set aside when others were brought back were made on the version that is saved now. */}
               {kept[0].version === loaded.skill.version ? "You have unsaved changes set aside." : `You have unsaved changes from before v${loaded.skill.version}.`}
               <button type="button" className="simple-link" disabled={working} onClick={bringBack}>Bring them back</button>
@@ -488,16 +516,19 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
           {isNew && <p id="skill-style-help" className="px-4 pt-3 text-[13px] leading-5 text-muted">
             A skill tells Scarlet how you like to edit your videos. Describe what to keep, cut, or change in your own words.
           </p>}
-          <textarea
+          {shownVersion ? <div ref={changesPane} className="flex-1 min-h-0 w-full overflow-y-auto bg-bg p-3 font-mono text-[12.5px] leading-5 skill-version-text max-md:min-h-[250px]"
+            aria-label={`Skill markdown, v${picked!.version}`}>
+            <ChangedText lines={shownVersion.body} />
+          </div> : <textarea
             className="flex-1 w-full bg-bg p-3 font-mono text-[12.5px] leading-5 resize-none max-md:min-h-[250px]"
-            value={editorBody}
+            value={body}
             aria-describedby={isNew ? "skill-style-help" : undefined}
             placeholder={isNew ? "For interviews, leave a beat after a difficult question." : undefined}
-            readOnly={viewVersion !== "current" || working}
+            readOnly={working}
             onChange={(e) => mark(setBody)(e.target.value)}
             aria-label="Skill markdown"
             spellCheck={false}
-          />
+          />}
         </div>
       </div>
 
@@ -527,4 +558,32 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
       />
     </div>
   );
+}
+
+/** How many versions the history lists before "Show N older versions". */
+const LATEST_VERSIONS = 8;
+
+/** Who saved a version: "You", a teammate by name, or Scarlet, with what asked it to when Scarlet wrote it. */
+function savedBy(v: SkillVersion, me?: string): string {
+  if (!v.author) return "";
+  if (v.author.type === "human") return v.author.id === me ? "You" : v.author.name;
+  return v.from === "request" ? "Scarlet, from your request" : v.from === "learning" ? "Scarlet, from Learnings" : "Scarlet";
+}
+
+/** The line over a picked version: whose change it is, and when. */
+function changedIn(v: SkillVersion, me?: string): string {
+  const who = savedBy(v, me);
+  const [name, from] = who.startsWith("Scarlet, ") ? ["Scarlet", who.slice("Scarlet, ".length)] : [who === "You" ? "you" : who, ""];
+  const when = v.createdAt ? ` · ${dayName(v.createdAt)}, ${clockTime(v.createdAt)}` : "";
+  if (v.version === 1) return `v1, the first version${when}`;
+  return `What ${name || "was"} changed in v${v.version}${from ? `, ${from}` : ""}${when}`;
+}
+
+/** Text with what changed marked in it: a bar beside each changed line, taken-out words struck, added ones tinted. */
+function ChangedText({ lines }: { lines: DiffLine[] }) {
+  return <>{lines.map((line, i) => <div key={i} data-changed={line.changed ? "" : undefined}>
+    {line.pieces.map((piece, k) => piece.kind === "add" ? <ins key={k}>{piece.text}</ins> : piece.kind === "del" ? <del key={k}>{piece.text}</del> : piece.text)}
+    {/* An empty line keeps its height. */}
+    {!line.pieces.some(piece => piece.text) && "\u200b"}
+  </div>)}</>;
 }

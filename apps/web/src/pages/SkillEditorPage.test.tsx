@@ -156,7 +156,9 @@ it("sends the editor's words to Scarlet and shows the revision it saved", async 
     expect(body.value).toContain("Never cut laughter.");
     expect(body.readOnly).toBe(false);
     expect(box.disabled).toBe(false);
-    expect(el.textContent).toContain(`v${skill.version}`);
+    // The history leads with the version Scarlet saved, as the skill stands now.
+    await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Version history"]')!.click());
+    expect(document.querySelector('[role="option"]')!.textContent).toMatch(new RegExp(`v${skill.version}Now$`));
   } finally {
     await act(async () => root.unmount());
     el.remove();
@@ -237,7 +239,7 @@ const write = async (field: HTMLInputElement | HTMLTextAreaElement, text: string
 const named = (el: Element, text: string) => [...el.querySelectorAll("button")].find(b => b.textContent?.trim() === text);
 const markdown = (el: Element) => el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
 
-it("lists each version once with the newest marked current, and offers Restore only for an older one", async () => {
+it("lists what each version changed, newest first, and shows a picked one with its changes until Done", async () => {
   const db = buildDb();
   const skill = db.skills.find(s => s.version === 2)!;
   const versions = db.skillVersions[skill.id]!;
@@ -246,28 +248,57 @@ it("lists each version once with the newest marked current, and offers Restore o
   const { el } = view;
   const picker = () => el.querySelector<HTMLButtonElement>('[aria-label="Version history"]')!;
   const choices = () => [...document.querySelectorAll<HTMLElement>('[role="option"]')];
-  const restore = () => [...el.querySelectorAll("button")].find(b => b.textContent?.trim().startsWith("Restore"));
-  const body = el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
+  const pick = async (i: number) => { await act(async () => picker().click()); await act(async () => choices()[i]!.click()); };
+  const said = () => el.querySelector(".skill-version-said")?.textContent;
   try {
-    // Closed, the picker says the page shows the current version. Open, the newest version is that one, listed once.
-    expect(picker().textContent).toBe("Current version");
+    // Closed, the picker is the history. Open, each version says what it changed, who saved it and when, by day.
+    expect(picker().textContent).toBe("History");
     await act(async () => picker().click());
     expect(choices()).toHaveLength(2);
-    expect(choices()[0]!.textContent).toMatch(/^v2 · Claude Code · .+ · current$/);
-    expect(choices()[0]!.getAttribute("aria-selected")).toBe("true");
-    expect(choices()[1]!.textContent).toMatch(/^v1 · Demo Editor · /);
-    expect(choices()[1]!.textContent).not.toContain("current");
-    // The older one reads as it was, with the way to put it back.
-    await act(async () => choices()[1]!.click());
-    expect(body.readOnly).toBe(true);
-    expect(body.value).toContain("(v1)");
-    expect(restore()?.textContent?.trim()).toBe("Restore v1");
-    // Back on the newest there is nothing to restore: it is the skill as it stands.
+    expect(choices()[0]!.textContent).toMatch(/^Changed the openingScarlet · .+ · v2Now$/);
+    expect(choices()[1]!.textContent).toMatch(/^First versionDemo Editor · .+ · v1$/);
+    expect(document.querySelectorAll(".preference-group").length).toBeGreaterThan(0);
+    // While the skill is being edited, no version is picked.
+    expect(choices().some(c => c.getAttribute("aria-selected") === "true")).toBe(false);
     await act(async () => picker().click());
-    await act(async () => choices()[0]!.click());
-    expect(picker().textContent).toBe("Current version");
-    expect(body.readOnly).toBe(false);
-    expect(restore()).toBeUndefined();
+    // An older one reads as it was, with the way to put it back, and can't be edited.
+    await pick(1);
+    expect(markdown(el)).toBeNull();
+    expect(el.querySelector('[aria-label="Skill markdown, v1"]')!.textContent).toContain("(v1)");
+    expect(said()).toMatch(/^v1, the first version/);
+    expect(named(el, "Restore v1")).toBeDefined();
+    // The newest shows what it changed from the one before, with the way to undo it.
+    await pick(0);
+    expect(said()).toMatch(/^What Scarlet changed in v2/);
+    expect(el.querySelector('[aria-label="Skill markdown, v2"] [data-changed] del')!.textContent).toContain("(v1)");
+    expect(named(el, "Undo this change")).toBeDefined();
+    expect(named(el, "Restore v2")).toBeUndefined();
+    // Done goes back to editing the skill as it stands.
+    await act(async () => named(el, "Done")!.click());
+    expect(markdown(el).readOnly).toBe(false);
+    expect(said()).toBeUndefined();
+  } finally {
+    await view.close();
+  }
+});
+
+it("lists the latest eight versions until the older ones are asked for", async () => {
+  const db = buildDb();
+  const first = db.skills.find(s => s.version === 2)!;
+  const versions = Array.from({ length: 12 }, (_, i) => ({ version: i + 1, content: `${first.content}\n${i}`, note: `Change ${i + 1}`,
+    author: { type: "human" as const, id: "usr_other", name: "Sam" }, createdAt: new Date(Date.now() - (12 - i) * 3_600_000).toISOString() }));
+  const skill = { ...first, version: 12, content: versions.at(-1)!.content };
+  vi.spyOn(api, "skill").mockImplementation(async () => ({ skill, versions }));
+  const view = await open(`/settings/skills/${skill.id}`);
+  const choices = () => [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  try {
+    await act(async () => view.el.querySelector<HTMLButtonElement>('[aria-label="Version history"]')!.click());
+    expect(choices()).toHaveLength(9);
+    expect(choices().at(-1)!.textContent).toBe("Show 4 older versions");
+    await act(async () => choices().at(-1)!.click());
+    // The rest join the list, which stays open.
+    expect(choices()).toHaveLength(12);
+    expect(choices().at(-1)!.textContent).toMatch(/^Change 1Sam · /);
   } finally {
     await view.close();
   }
@@ -454,7 +485,7 @@ it("takes an answer to Scarlet's question whichever version is showing, and a ne
   const showOlder = async () => {
     await act(async () => view.el.querySelector<HTMLElement>('[aria-label="Version history"]')!.click());
     await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')][1]!.click());
-    expect(markdown(view.el).value).toContain("(v1)");
+    expect(view.el.querySelector('[aria-label="Skill markdown, v1"]')!.textContent).toContain("(v1)");
   };
   let view = await open(`/settings/skills/${skill.id}`);
   try {
@@ -472,7 +503,7 @@ it("takes an answer to Scarlet's question whichever version is showing, and a ne
     await write(box(), "A quarter.");
     await act(async () => box().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     expect(answer).toHaveBeenCalledWith("task_q", "A quarter.");
-    expect(markdown(view.el).value).toContain("(v1)");
+    expect(view.el.querySelector('[aria-label="Skill markdown, v1"]')!.textContent).toContain("(v1)");
     // With the answer sent, Scarlet has the request again and the box waits.
     expect(box().disabled).toBe(true);
   } finally {

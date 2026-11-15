@@ -785,6 +785,8 @@ describe("scarlet server", () => {
     await api("POST", `/tasks/${task.id}/complete`, { body: { state: "done", summary: "Added a rule to keep laughter." } });
     const detail = (await api<{ skill: Skill; versions: SkillVersion[]; edits: Task[] }>("GET", `/skills/${skill.id}`)).json;
     expect(detail.versions.map(v => v.author?.type)).toEqual(["human", "agent"]);
+    // The history says what each version changed: Scarlet's carries the words that asked for it.
+    expect(detail.versions.map(v => [v.note, v.from])).toEqual([["First version", undefined], ["Never cut laughter.", "request"]]);
     expect(detail.edits).toMatchObject([{ id: task.id, state: "done", resultSkillId: skill.id, summary: "Added a rule to keep laughter." }]);
     expect((await api("POST", endpoint, { body: draft })).status).toBe(403);
     // One that ends without a revision says so in its own words. It is not a failure.
