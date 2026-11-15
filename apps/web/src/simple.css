@@ -93,15 +93,6 @@
 .simple-decide-text small { display: block; font-size: 11.5px; color: var(--color-dim); }
 
 /* The simple view's highlight and change dots, drawn over the classic timeline. */
-/* Above the ruler, whose edits the dots are: the request's words, which bring it into view in the chat, and how many.
-   It keeps clear of the zoom control at the right. */
-.timeline-heading { display: flex; align-items: baseline; gap: 6px; min-width: 0; height: 24px; padding: 6px var(--timeline-tools-space) 0 0;
-  font-size: 11.5px; line-height: 16px; color: var(--color-muted); white-space: nowrap; }
-.timeline-whose { min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0; border: 0; background: none; font: inherit; color: var(--color-fg);
-  text-decoration: underline; text-decoration-color: rgba(255, 255, 255, .35); text-underline-offset: 2px; cursor: pointer; }
-.timeline-whose:is(:hover, :focus-visible) { text-decoration-color: currentColor; }
-.timeline-whose:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
-.timeline-whose-count { flex: none; font-variant-numeric: tabular-nums; }
 .simple-timeline-band { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; min-width: 2px; pointer-events: none; border-radius: 3px;
   background: repeating-linear-gradient(135deg, rgba(255, 160, 156, .30) 0 5px, rgba(255, 160, 156, .12) 5px 10px);
   border: 1px solid rgba(255, 160, 156, .7); overflow: hidden; }
@@ -131,6 +122,25 @@
 .simple-timeline-cut { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; width: 2px; margin-left: -1px; pointer-events: none; background: rgba(255, 160, 156, .9); }
 .simple-timeline-cut span { position: absolute; left: 6px; top: 3px; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(255, 160, 156, .55);
   background: rgba(40, 22, 21, .9); font-size: 10.5px; line-height: 14px; color: var(--color-fg); white-space: nowrap; }
+/* Every applied edit on the working cut, under what needs the editor and quieter than it: a cut a thin red line at its
+   join, a graphic or overlay a bar along the top of the strip as long as it is on screen, a zoom, reframe or caption a
+   dimmer bar, anything else a small tick. Where they would touch they gather into a count. */
+.simple-timeline-edit { position: absolute; z-index: 1; pointer-events: none; font-style: normal; }
+/* A line runs on beneath a count. */
+.simple-timeline-edit.is-cut, .simple-timeline-edit.is-tick { z-index: 0; }
+.simple-timeline-edit.is-cut { top: var(--ruler-height); bottom: 0; width: 1px; margin-left: -.5px; background: rgba(255, 140, 136, .55); }
+.simple-timeline-edit.is-bar, .simple-timeline-edit.is-dim { top: calc(var(--ruler-height) + 3px + var(--edit-lane, 0) * 4px); height: 3px; min-width: 3px; border-radius: 2px;
+  background: rgba(244, 241, 233, .78); box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); }
+.simple-timeline-edit.is-dim { background: rgba(244, 241, 233, .32); }
+.simple-timeline-edit.is-tick { top: var(--ruler-height); width: 1px; height: 7px; margin-left: -.5px; background: #8a8782; }
+.simple-timeline-edit.is-count { top: calc(var(--ruler-height) - 8px); height: 16px; box-sizing: border-box; display: grid; place-items: center;
+  border: 1px solid #4a4845; border-radius: 8px; background: rgba(24, 23, 22, .92); box-shadow: 0 0 0 1px #1a1918; }
+.simple-timeline-edit.is-count span { white-space: nowrap; font-size: 10px; font-weight: 500; line-height: 1; color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.simple-timeline-edit.is-cut.is-hot { width: 2px; margin-left: -1px; background: rgba(255, 160, 156, .95); }
+.simple-timeline-edit.is-bar.is-hot, .simple-timeline-edit.is-dim.is-hot { background: var(--color-fg); }
+.simple-timeline-edit.is-tick.is-hot { background: var(--color-fg); }
+.simple-timeline-edit.is-count.is-hot { border-color: var(--color-muted); }
+.simple-timeline-edit.is-count.is-hot span { color: var(--color-fg); }
 .simple-timeline-mark { position: absolute; z-index: 1; pointer-events: none; }
 /* Each edit is a thin tick where they crowd, so none hides another. Kept ticks are white, ones asking for a look amber. */
 .simple-timeline-mark.is-tick { top: calc(var(--ruler-height) - 6px); width: 2px; height: 12px; margin-left: -1px; border-radius: 1px;
@@ -437,6 +447,12 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit > .unit-msg { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0 calc(-1 * var(--chat-gutter, 18px)); padding: 8px var(--chat-gutter, 18px);
   border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); background: rgba(255, 255, 255, .04); }
 .unit > .req { padding-top: 6px; }
+/* A request that applied edits puts them on the timeline when its band is pressed. The band whose edits are marked is a
+   shade lighter, its words brighter, with a white rule at its left. */
+.unit > .unit-msg.is-markable { cursor: pointer; }
+.unit > .unit-msg.is-markable:hover { background: rgba(255, 255, 255, .06); }
+.unit > .unit-msg.is-marked { background: rgba(255, 255, 255, .11); box-shadow: inset 3px 0 0 rgba(255, 255, 255, .85); }
+.unit > .unit-msg.is-marked p { color: var(--color-fg); }
 /* Where the request stands: a dot while Scarlet asks, a word once it stopped early or left a suggestion. A finished
    request has nothing here. While Scarlet has the request, Stop follows as the heading's last word. */
 .unit-state { flex: none; align-self: center; display: inline-flex; align-items: center; font-size: 12.5px; line-height: 19px; color: var(--color-muted); white-space: nowrap; }
@@ -684,3 +700,6 @@ button.queue-head:hover { color: var(--color-fg); }
 .composer-send.is-save svg { transform: none; }
 /* A pass's list sits under its line without a rule, its rows in line with the text above. */
 .req .simple-pass-list { margin: 0 -8px 4px; border-top: 0; }
+/* A file that needs the editor marks the header's Media button, as a row's mark does in the menu. */
+.simple-media.needs-you { display: inline-flex; align-items: center; gap: 6px; color: var(--color-fg); }
+.simple-media .menu-dot { margin-left: 0; }
