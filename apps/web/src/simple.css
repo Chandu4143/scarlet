@@ -481,6 +481,17 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit-stop { flex: none; align-self: center; font-size: 12.5px; line-height: 19px; }
 .unit-state:not(:empty) + .unit-stop { margin-left: -2px; }
 .unit-tokens { flex: none; align-self: baseline; font-size: 12.5px; line-height: 19px; white-space: nowrap; }
+/* A request's tokens open every part of the count on hover, in a note under the count at its right edge. The empty
+   title keeps the heading's own (the editor's whole message) from showing over it. */
+.run-tokens { position: relative; cursor: default; outline: none; }
+.run-tokens:hover, .run-tokens:focus-visible { color: var(--color-muted); }
+.tokens-tip { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; display: flex; flex-direction: column; gap: 3px; width: max-content; min-width: 11rem;
+  padding: 7px 10px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); box-shadow: 0 3px 12px rgb(0 0 0 / 35%);
+  font-size: 12px; line-height: 1.35; font-weight: 400; color: var(--color-muted); text-align: left; white-space: nowrap; pointer-events: none; }
+.tokens-tip > span { display: flex; justify-content: space-between; gap: 16px; }
+.tokens-tip b { font-weight: 500; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+.tokens-tip > .tokens-tip-total { margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--color-line); color: var(--color-fg); }
+.tokens-tip > .tokens-tip-total b { font-weight: 600; }
 .unit:has(> .unit-msg > .unit-stop) .simple-pass-need { right: 42px; }
 .unit:has(.simple-pass-need):has(> .unit-msg > .unit-stop) > .unit-msg { padding-right: var(--chat-gutter, 18px); }
 .unit:has(.simple-pass-need) > .unit-msg > .unit-stop { margin-left: 96px; }
@@ -619,9 +630,11 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .said.is-clipped, .said.is-open { cursor: pointer; }
 .req-say.is-note { font-size: 12.5px; color: var(--color-dim); }
 .req-say.is-bad { color: var(--color-bad); }
-/* The editor's answer is their message: it keeps to two lines, as their request does, and its title has the rest. */
+/* The editor's answer is their message: it keeps to two lines, as their request does, and opens on a click. */
 .req-say.is-yours { padding-left: 10px; border-left: 2px solid var(--color-line); color: var(--color-muted);
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* The editor's own words fold and open the same way, wherever they are clamped. */
+.said.is-open, .unit-msg p.said.is-open, .simple-pin .unit-msg p.said.is-open, .simple-turn > .simple-msg.from-you p.said.is-open, .req-say.is-yours.said.is-open { display: block; }
 .req-say .simple-link { margin-left: 10px; }
 /* Answer sits on its own line under Scarlet's question. */
 .req-say .simple-link.is-warn { display: flex; margin: 5px 0 0; }

@@ -7,6 +7,11 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 15, 2026
 
 - A file you add from a link is named as it is, without %20 and other codes.
+- In the project library, a project whose caching you paused says Importing paused instead of still importing its files.
+- Recordings of your spoken notes are no longer deleted the day after you save them.
+- Type a timestamp like 1:42 in a new edit request to mark it on the timeline. Click it to jump there, or send the note about that moment.
+- The tokens a request has used now show in the chat by default; turn them off in Settings › Usage.
+- Codex installed through Homebrew can start editing on macOS while keeping its sandbox.
 
 ## November 14, 2026
 

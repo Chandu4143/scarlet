@@ -30,7 +30,7 @@ import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
 import { ignorePageShortcut, useHotkeys } from "../lib/hotkeys";
-import { LiveTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
+import { RequestTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
 import { ExportButton, ExportMenuItem, useExportWarning } from "../components/review/ExportMenuItem";
@@ -54,6 +54,7 @@ import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
 import { canPreviewMedia } from "../lib/upload";
 import { useProjectStore } from "../stores/project";
+import { messageTimestamps, type MessageClock } from "../lib/messageTimestamps";
 import { markedRangeOf, playheadPoints, pointOf, useUiStore, withMarkedRange, type AgentContext, type MarkedRange } from "../stores/ui";
 import { CutPreview } from "./WatchPage";
 import { EditHoverContext, type TimelineDot, type TimelineGap } from "../components/review/TimelineScrubber";
@@ -786,12 +787,12 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   /** Something that belongs to no run: a note left on a change, a decision the engine recorded. Part of the request's own conversation. */
   const loose = (entry: ThreadEntry, i: number) => {
     switch (entry.kind) {
-      // The editor's words keep to two lines, as a request's do, and the whole message is in its title.
+      // The editor's words keep to two lines, as a request's do, and a click opens the rest.
       case "request":
-        return <div key={i} className="simple-msg from-you" title={entry.text}><span className="simple-who">You</span>
-          {entry.revisionLabel && <span className="simple-revising">{tagOf(tagFor(entry) ?? entry.revisionLabel)}</span>}<p>{entry.text}</p></div>;
+        return <div key={i} className="simple-msg from-you"><span className="simple-who">You</span>
+          {entry.revisionLabel && <span className="simple-revising">{tagOf(tagFor(entry) ?? entry.revisionLabel)}</span>}<Said text={entry.text} /></div>;
       case "answer":
-        return <div key={i} className="simple-msg from-you" title={entry.text}><span className="simple-who">You</span><p>{entry.text}</p></div>;
+        return <div key={i} className="simple-msg from-you"><span className="simple-who">You</span><Said text={entry.text} /></div>;
       case "agent":
         return <div key={i} className="simple-msg from-scarlet"><span className="simple-who">Scarlet</span><Said text={entry.fullText ?? entry.text} /></div>;
       case "change":
@@ -895,8 +896,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
       if (e.kind === "agent") { if (!quiet && !(e.onNote && closed)) { told = true; if (!listing) said.push(<Said key={i} className="req-say" text={e.fullText ?? e.text} />); } }
       else if (e.kind === "question") said.push(<p key={i} className={e.answered ? "req-say is-quiet" : "req-say"}>{e.text}
         {!e.answered && <button type="button" className="simple-link is-warn" onClick={() => actions.reply(thread)}>Answer</button>}</p>);
-      // The editor's answer is their message: two lines at most, and the whole of it in its title.
-      else if (e.kind === "answer") said.push(<p key={i} className="req-say is-yours" title={e.text}>{e.text}</p>);
+      // The editor's answer is their message: two lines at most, and a click opens the rest.
+      else if (e.kind === "answer") said.push(<Said key={i} className="req-say is-yours" text={e.text} />);
       // An applied change is on the card's last row. A suggestion still says what it is and how to play it. A pass's
       // own proposals are its line, except a suggestion it left that isn't cuts to call: nothing else would show it.
       else if (e.kind === "change" && e.change.state !== "approved" && !isOpenPass(e.change, allTasks)
@@ -955,8 +956,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time. Each has its own Stop.`}>Working on {atOnce} at once</span> : null);
     // One way to stop each request: Stop in its heading once Scarlet has it, the tray's × while it still waits there.
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
-    // The tokens it has used so far sit before Stop, and climb while Scarlet works.
-    const stopLink = stop && <><LiveTokens taskId={task.id} /><button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button></>;
+    // The tokens the request has used sit in its heading, before Stop, climb while Scarlet works and stay once it's done.
+    const headingEnd = <><RequestTokens taskId={task.id} />{stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>}</>;
     const bundle = <RunBundle task={task} events={events[task.id] ?? []} changes={thread.changes} finalChange={final} banded={!!request} callNumber={actions.callNumber}
         say={said.length ? <div className="req-said">{said}</div> : undefined} told={told} result={rows} recovery={recovery}
         // Under its call's row, that row is the cut it saved, with Scarlet's note: the note isn't said again under it.
@@ -973,8 +974,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     // Inside another request's block, under the row it is about: its tag and the editor's words, with where it stands
     // at their right, as in a block's heading, and its work. Under its row the row names it, and the tag is hidden.
     if (inside) return <div key={run.root} className="subunit" data-run={run.root}>
-      {request && <div className="subunit-msg" title={request.text}><span className="simple-who">You</span>
-        <p><span className="simple-revising">{about ?? "Revision"}</span>{request.text}</p><span className="unit-state">{standing}</span>{stopLink}</div>}
+      {request && <div className="subunit-msg"><span className="simple-who">You</span>
+        <Said lead={<span className="simple-revising">{about ?? "Revision"}</span>} text={request.text} /><span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
@@ -985,14 +986,15 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const marked = markable && actions.marked === thread.id;
     const pressable = markable || !!actions.fitTimeline;
     const block = <div key={run.root} className="unit" data-run={run.root} data-pinned={isPinned || undefined}>
-      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
+      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`}
         aria-current={marked || undefined} onClick={pressable ? e => {
-          if ((e.target as Element).closest("button, a, input, textarea") || window.getSelection()?.toString()) return;
+          // A press on long words opens or folds them, and leaves the timeline as it is.
+          if ((e.target as Element).closest("button, a, input, textarea, .said.is-clipped, .said.is-open") || window.getSelection()?.toString()) return;
           if (markable) actions.mark!(thread.id);
           actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
-        <p>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}{request.text}</p>
-        <span className="unit-state">{standing}</span>{stopLink}</div>}
+        <Said lead={(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>} text={request.text} />
+        <span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
@@ -2909,7 +2911,7 @@ export function SimpleWorkspace() {
   // Only a point attached to the draft appears as its target. An offered point never reaches the request.
   const point = replyTo ? undefined : pointOf(agentContext);
   const written = useUiStore(s => !!s.agentDraft.trim());
-  const pointTag = point && `At ${clockLabel(point.time)}`;
+  const pointTag = point && !point.fromMessage ? `At ${clockLabel(point.time)}` : undefined;
   // A message being written keeps the box aimed where it was while the editor moves on to another cut or edit. Once
   // they delete it, nothing is being written: the box talks to what is open again, as an empty box does. Left on the
   // cut they came from, the next note typed would revise that one with another cut's card on screen.
@@ -3005,6 +3007,16 @@ export function SimpleWorkspace() {
   const rewordingItem = rewording && queuedItems.find(item => item.id === rewording.id);
   const previewVersion = appliedCut ? beforeCut!.version : pinnedCallVersion ?? draftVersion;
   const playerVersion = previewVersion ?? timeline?.version ?? head ?? undefined;
+  const seekFromMessage = useRef<((time: number) => void) | null>(null);
+  const previewTimeline = appliedCut ? beforeTimeline : pinnedCallVersion ? callTimeline : draft;
+  const messageTimeline = previewVersion ? previewTimeline : timeline?.version === head ? timeline : undefined;
+  const messageDuration = useMemo(() => source ? source.duration ?? 0 : messageTimeline ? timelineDuration(messageTimeline) : 0, [source, messageTimeline]);
+  const messageClock: MessageClock | undefined = messageDuration > 0 && !replyTo && !rewordingItem
+    ? { duration: messageDuration, timeline: messageTimeline, version: playerVersion, mediaId: source?.id, seek: time => seekFromMessage.current?.(time) }
+    : undefined;
+  const markTypedTimes = !!messageClock && !!point?.fromMessage && point.version === playerVersion && point.mediaId === source?.id;
+  const typedTimes = useUiStore(useShallow(s => markTypedTimes
+    ? [...new Set(messageTimestamps(s.agentDraft, messageDuration).map(stamp => stamp.time))] : []));
   const canOfferPoint = !replyTo && !rewordingItem && !speaking && !aimed;
   // Leave a picked moment behind when playback or a seek takes the editor away. Once a message is being
   // written or recorded, its explicit target stays with it. N can attach while the player's pause is settling.
@@ -3101,6 +3113,7 @@ export function SimpleWorkspace() {
     onCreated={() => { follow.current = true; }} onSent={sentUnder(aims.current)}
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
+    messageClock={messageClock}
     editHere={offeredPoint && canOfferPoint ? { time: clockLabel(offeredPoint.time), onSelect: () => pickPoint(offeredPoint, "attach") } : undefined}
     targetTag={boxTag} targetIsPoint={!!pointTag && boxTag === pointTag} onClearTarget={() => settleAim.current("new")}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
@@ -3192,7 +3205,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
+          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
             gaps: cutKey ? gaps : undefined, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? audition)?.skips,
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
@@ -3203,7 +3216,7 @@ export function SimpleWorkspace() {
                   beforeWindow: preparedCall?.before.window, afterWindow: preparedCall?.after.window,
                   beforeFile: preparedCall?.before.file, afterFile: preparedCall?.after.file } : undefined,
             onGap: hearInBefore, onBand, onPick: pickPoint, onRange: markRange, holdPassage: cutWaits, writeRequest, heard: heardPick, quiet: quietOpen }} threadView={playerView}
-            workingCache={workingCache} draftVersion={previewVersion} draft={appliedCut ? beforeTimeline : pinnedCallVersion ? callTimeline : draft}
+            workingCache={workingCache} draftVersion={previewVersion} draft={previewTimeline}
             openingJoin={openingJoin && !source && !appliedCut}
             draftFailed={openingJoin ? !!single.error || (!!single.preview && !listenJoined) : pinnedCallVersion ? !!savedBefore.error : !appliedCut && !!draftVersion && draftState?.version === draftVersion && !!draftState.failed}
             onRetryDraft={openingJoin ? single.retry : pinnedCallVersion ? savedBefore.retry : () => setDraftAttempt(n => n + 1)} source={source} autoPlaySource={sourceChoice.play && source === chosenSource} hasCut={hasCut}

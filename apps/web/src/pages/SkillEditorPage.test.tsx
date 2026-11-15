@@ -499,9 +499,21 @@ it("draws each request as a project's chat does: its words in a band with where 
   try {
     // The editor's words head each request, with where it stands at their right: a word once it stopped early, nothing once done.
     expect(units().map(u => [...u.querySelector(".unit-msg")!.children].map(c => c.className))).toEqual([
-      ["simple-who", "", "unit-state"], ["simple-who", "", "unit-state"], ["simple-who", "", "unit-state"], ["simple-who", "", "unit-state", "simple-link unit-stop"]]);
+      ["simple-who", "said", "unit-state"], ["simple-who", "said", "unit-state"], ["simple-who", "said", "unit-state"], ["simple-who", "said", "unit-state", "simple-link unit-stop"]]);
     expect(units().map(u => u.querySelector(".unit-msg p")!.textContent)).toEqual(["Keep the cold open.", "Cut every breath.", "Be stricter about filler.", "Tighten the pauses."]);
     expect(units().map(u => u.querySelector(".unit-state")!.textContent)).toEqual(["", "Stopped", "Couldn’t finish", ""]);
+    // Words longer than two lines open in full on a click and fold on the next, as a reply does (2026-11-15: a long request
+    // couldn't be read once sent). There's no button, only the pointer.
+    await view.quit();
+    const tooLong = vi.spyOn(Element.prototype, "scrollHeight", "get").mockReturnValue(900);
+    view = await open(`/settings/skills/${skill.id}`);
+    const words = () => units()[0]!.querySelector<HTMLElement>(".unit-msg > p")!;
+    expect([words().className, words().getAttribute("aria-expanded"), words().title]).toEqual(["said is-clipped", "false", "Show all of it"]);
+    await act(async () => words().click());
+    expect([words().className, words().getAttribute("aria-expanded")]).toEqual(["said is-open", "true"]);
+    await act(async () => words().click());
+    expect(words().className).toBe("said is-clipped");
+    tooLong.mockRestore();
     // Under the heading: Scarlet's reply, nothing for a request that was stopped, why one couldn't finish, what Scarlet is doing.
     expect(units().map(u => u.querySelector(".req")?.textContent)).toEqual(["Added a rule for the cold open.", undefined, "stalled: no output for 10 minutes", "Revising the skill…"]);
     expect(units()[2]!.querySelector(".req-say")!.className).toBe("req-say is-note is-bad");

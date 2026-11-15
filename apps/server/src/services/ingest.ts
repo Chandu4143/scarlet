@@ -385,9 +385,14 @@ async function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) 
   try {
     signal.throwIfAborted();
     if (preparation?.stage === "fingerprint" && !asset.hash) {
+      // A pause ends the wait for its turn at once, and the next file still waits for the one ahead.
       const previous = hashQueue.get(ctx);
       const job = (async () => {
-        await previous;
+        if (previous) await new Promise<void>((resolve, reject) => {
+          const stop = () => reject(signal.reason);
+          signal.addEventListener("abort", stop, { once: true });
+          previous.then(resolve).finally(() => signal.removeEventListener("abort", stop));
+        });
         signal.throwIfAborted();
         const { size, mtimeMs, ctimeMs } = await stat(src);
         const report = reportStage("fingerprint");
@@ -396,7 +401,7 @@ async function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) 
         if (latest.size !== size || latest.mtimeMs !== mtimeMs || latest.ctimeMs !== ctimeMs) throw new Error("Source changed while fingerprinting. Reimport the recording.");
         asset.fingerprintStamp = {size,mtimeMs,ctimeMs};
       })();
-      hashQueue.set(ctx, job.catch(() => {}));
+      hashQueue.set(ctx, Promise.all([previous, job.catch(() => {})]).then(() => {}));
       await job;
     }
     if (asset.kind === "video" && !asset.previewMode && !(preparation?.stage === "waveform" && existsSync(proxy))) {

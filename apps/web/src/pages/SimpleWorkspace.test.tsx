@@ -39,6 +39,7 @@ const it = partedIt(vitestIt);
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
 type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void;
   editHere?: { time: string; onSelect(): void };
+  messageClock?: import("../lib/messageTimestamps").MessageClock;
   rewording?: { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void } };
 const composer = vi.hoisted(() => ({ props: undefined as BoxProps | undefined }));
 vi.mock("../components/agent/Composer", () => ({ Composer: (props: BoxProps) => { composer.props = props; return props.tray ?? null; } }));
@@ -1851,12 +1852,13 @@ it("keeps the editor's answer and a note of theirs to two lines, with the whole 
   };
   await show();
   await act(async () => {});
-  // A long message keeps to two lines everywhere, and the whole message is in its title (2026-11-10: an answer and a
-  // loose note showed in full, however long, with no title).
+  // A long message keeps to two lines everywhere (2026-11-10: an answer and a loose note showed in full, however long),
+  // and a click opens the rest, as a reply does (2026-11-15: the editor had no way to read a long request once sent).
   const answer = container.querySelector<HTMLElement>(".req-say.is-yours")!;
-  expect([answer.textContent, answer.getAttribute("title"), foldsAt(answer)]).toEqual([ANSWER, ANSWER, 2]);
+  expect([answer.textContent, foldsAt(answer), answer.classList.contains("said")]).toEqual([ANSWER, 2, true]);
   const note = [...container.querySelectorAll<HTMLElement>(".simple-turn > .simple-msg.from-you")].find(m => m.textContent?.includes(NOTE))!;
-  expect([note.getAttribute("title"), foldsAt(note.querySelector("p")!)]).toEqual([NOTE, 2]);
+  expect([foldsAt(note.querySelector("p")!), note.querySelector("p")!.classList.contains("said")]).toEqual([2, true]);
+  for (const words of container.querySelectorAll<HTMLElement>(".unit-msg > p, .subunit-msg > p")) expect(words.classList.contains("said")).toBe(true);
 });
 
 it("stops aiming the message box at a request that is no longer in the project", async () => {
@@ -6212,7 +6214,8 @@ it("leaves a finished request as its heading and what it made: no time on it, an
   expect(words.lastChild?.textContent).toBe(requestTextFor("task_done"));
   // It was sent about a moment on the timeline. The box said which while it was written; the heading doesn't.
   expect(words.querySelector(".simple-revising")).toBeNull();
-  expect(unit.querySelector(".unit-msg")?.getAttribute("title")).toBe(requestTextFor("task_done"));
+  // Long words fold to two lines and open on a click, as a reply does: the band has no title to read them in.
+  expect([words.classList.contains("said"), unit.querySelector(".unit-msg")?.getAttribute("title")]).toEqual([true, null]);
   expect(unit.querySelector(".simple-msg.from-you")).toBeNull();
   expect(run.querySelector(".req-time, .run-list, .req-steps, .simple-pass-chevron, .run-chevron")).toBeNull();
   // Diagnostic lines with clip ids stay out of the editor's view.
@@ -8999,12 +9002,15 @@ it("says in a suggestion's request why the video moved on from it, queues the re
   await act(async () => useProjectStore.setState(st => ({ current: { ...st.current!, taskUsage: { task_redo: { runs: 1, inputTokens: 2_000, outputTokens: 10_000,
     cacheReadTokens: 200_000, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 212_000, firstAt: null, lastAt: null } } } })));
   expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens", "Stop"]);
-  useUiStore.getState().setShowRunTokens(false);
   // The suggestion comes back made again: the line gives way to it, and it plays from the same block.
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_redo" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString(), changeIds: ["chg_redone"],
       summary: "Trimmed the pause where it sits now." } : t),
     changes: [...d.changes, { ...ready, id: "chg_redone", taskId: "task_redo", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }] }));
   expect(unit().closest(".simple-chat")).not.toBeNull();
+  // Done, its tokens stay in its heading, and none of its rows repeat them.
+  expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens"]);
+  expect(unit().querySelectorAll(".run-tokens").length).toBe(1);
+  useUiStore.getState().setShowRunTokens(false);
   expect(unit().querySelector(".unit-state")?.textContent).toBe("Suggestion");
   expect(unit().querySelector(".simple-suggest")?.textContent).toBe("Trimmed the pause where it sits now.");
   expect(unit().textContent).not.toMatch(/The video changed|Redo on the current edit|Sent back/);
@@ -10846,3 +10852,21 @@ it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flag
   expect(keepGoesTo([[edit(13, undefined, true)], [edit(21)]], 1, still, [])).toBeUndefined();
 });
 
+
+it("shows draft timestamps on the player timeline, with seeking reserved for the timestamp click", async () => {
+  idle();
+  await show();
+  const clock = composer.props!.messageClock!;
+  const start = usePlayerStore.getState().time;
+  await act(() => {
+    useUiStore.getState().setAgentContext({ time: 5, version: clock.version, clipIds: [], fromMessage: true });
+    useUiStore.getState().setAgentDraft("Compare 0:05, 0:08 and 0:05");
+  });
+  const marks = () => Array.from(container.querySelectorAll<HTMLElement>(".timeline-message-time")).map(mark => mark.dataset.time);
+  expect(marks()).toEqual(["5", "8"]);
+  expect(usePlayerStore.getState().time).toBe(start);
+  await act(() => clock.seek(8));
+  expect(usePlayerStore.getState().time).toBe(8);
+  await act(() => useUiStore.getState().setAgentDraft(""));
+  expect(marks()).toEqual([]);
+});
