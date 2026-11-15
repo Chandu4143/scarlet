@@ -263,7 +263,7 @@ def execute(args):
     checkouts = [p.expanduser().resolve() for p in (args.baseline, args.candidate)]
     versions = [checkout_version(c) for c in checkouts]
     build_checkouts(checkouts)
-    settings = (args.baseline_leave, args.candidate_leave)
+    settings = [args.baseline_leave, args.candidate_leave]
     if (settings[0] is None) != (settings[1] is None):
         raise ValueError("Specify both pause durations, or omit both to compare word cuts at engine defaults.")
     if any(v is not None and (not math.isfinite(v) or v < 0) for v in settings):

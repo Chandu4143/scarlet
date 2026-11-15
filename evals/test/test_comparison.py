@@ -3,8 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import compare
 from compare import arm_score, encoded, pause_ms, private_path, rate, seal
 from listen import choices
 from score_audio_reference import Piece, timeline_pieces, verified_keeps
@@ -71,6 +75,28 @@ class ComparisonTests(unittest.TestCase):
             (Path(directory) / ".git").mkdir()
             with self.assertRaises(ValueError):
                 private_path(path)
+
+    def test_accepted_result_reproduces_after_reading_the_pinned_settings_from_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = {"media/presenter.mp4": "frozen"}
+            (root / "episode.lock.json").write_bytes(encoded({"schema": 1, "case": "sample", "files": files}))
+            args = SimpleNamespace(episode=root, freeze=None, baseline=root, candidate=root,
+                                   baseline_leave=.25, candidate_leave=.15, accept_baseline=True, check_baseline=False)
+            with (patch.object(compare, "inventory", return_value=files), patch.object(compare, "checkout_version", return_value={}),
+                  patch.object(compare, "build_checkouts"), patch.object(compare, "replay"),
+                  patch.object(compare, "assemble", side_effect=lambda *args: {"case": "sample"}),
+                  patch.object(compare, "score_text", return_value="sample"), patch("builtins.print")):
+                compare.execute(args)
+                original = (root / "expected.json").read_bytes()
+                args.accept_baseline, args.check_baseline = False, True
+                args.baseline_leave = args.candidate_leave = None
+                compare.execute(args)
+                self.assertEqual((root / "expected.json").read_bytes(), original)
+                self.assertEqual(json.loads(original)["leaveSeconds"], [.25, .15])
+                args.candidate_leave = .10
+                with self.assertRaisesRegex(ValueError, "differs from the accepted baseline"):
+                    compare.execute(args)
 
     def test_examples_only_use_changed_matched_joins(self):
         left = [{"index": i, "start": 1, "end": 2, "errorMs": 100} for i in range(4)]
