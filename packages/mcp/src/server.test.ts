@@ -44,11 +44,12 @@ let textOf: (r: CallToolResult) => string;
 /** A result's answer, before any line that says what it was answered without. */
 const firstJson = (r: CallToolResult) => JSON.parse((r.content[0] as { text: string }).text);
 
-async function connect(taskId?: string, workDir?: string, task?: Task, editingTools?: EditingTools, alignmentWaitMs?: number, agent = "claude") {
+async function connect(taskId?: string, workDir?: string, task?: Task, editingTools?: EditingTools, alignmentWaitMs?: number, agent = "claude", joinWaitMs?: number) {
   const sc = new ScarletClient({ baseUrl: mock.url, token: "tok" });
   const server = createScarletMcpServer(sc, {
     projectId: "prj_test",
     alignmentWaitMs,
+    joinWaitMs,
     editingTools,
     taskId,
     taskStartedAt: taskId ? "2026-04-01T12:00:00.000Z" : undefined,
@@ -3441,6 +3442,51 @@ it("measures the sound beside an edge once, also within a second of where a reco
   } finally {
     Object.assign(mock.state, original);
     await editor.close();
+  }
+});
+
+it("returns progress for a cold 12-cut batch and collects the same measurements on retry", async () => {
+  const original = { timeline: mock.state.timeline, transcripts: mock.state.transcripts, waveform: mock.state.waveform };
+  const editor = await connect(undefined, undefined, undefined, undefined, undefined, "codex", 20);
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "slow-batch";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 52, 0)];
+  mock.state.timeline = tl;
+  const words = Array.from({ length: 150 }, (_, i) => ({ text: "voz", start: i / 3 + .05, end: i / 3 + .25 }));
+  mock.state.transcripts = { m1: { id: "spanish", mediaId: "m1", segments: [{ id: "s", start: 0, end: 50, text: "", words }] } };
+  mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, words);
+  let release!: () => void, started!: () => void;
+  const hold = new Promise<void>(r => { release = r; });
+  const reading = new Promise<void>(r => { started = r; });
+  const detections = vi.spyOn(ScarletClient.prototype, "dialogueDetections").mockImplementation(async (_id, { from, to }) => {
+    started();
+    await hold;
+    return { acoustic: [], segments: [{ id: "kept", start: from, end: to, text: "", words: words.filter(w => w.start >= from && w.end <= to) }] };
+  });
+  const cuts = Array.from({ length: 12 }, (_, i) => ({ start: 1 + i * 4, end: 2 + i * 4 }));
+  const check = async (version: string) => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version, cuts } }) as CallToolResult);
+  try {
+    const first = check("head");
+    await reading;
+    const waiting = await first;
+    expect(waiting).toMatchObject({ status: "measuring", version: tl.version, retryAfterSeconds: 5 });
+    expect(waiting.pendingCuts).toEqual(cuts.map((_, index) => index));
+    expect(waiting.joins).toEqual(cuts.map(() => ({ status: "pending" })));
+    const calls = detections.mock.calls.length;
+    expect(await check(waiting.version)).toEqual(waiting);
+    expect(detections).toHaveBeenCalledTimes(calls);
+    release();
+    await vi.waitFor(async () => {
+      const result = await check(waiting.version);
+      expect(result.status).toBeUndefined();
+      expect(result.joins).toHaveLength(12);
+      expect(result.joins.every((join: { originalRange?: unknown }) => join.originalRange)).toBe(true);
+    });
+  } finally {
+    release();
+    await editor.close();
+    detections.mockRestore();
+    Object.assign(mock.state, original);
   }
 });
 
