@@ -1,4 +1,7 @@
 import { MaxFileSizeExceededError, MaxPartsExceededError, MaxTotalSizeExceededError, MultipartParseError, parseMultipartRequest } from "@remix-run/multipart-parser/future";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { basename, isAbsolute } from "node:path";
 import { Hono } from "hono";
 import { z } from "zod/v3";
 import { GraphicRenderRequest, SaveStyleGuideRequest, SaveTemplateRequest } from "@scarlet/shared";
@@ -7,7 +10,7 @@ import type { Ctx } from "../context.js";
 import { badRequest, HttpError, notFound } from "../errors.js";
 import { serveFile } from "../files.js";
 import { requestAttempt, requireLocalPauseTarget, requireProjectEditAttempt } from "../services/taskAttempt.js";
-import { assetPath, deleteTemplate, findAttachment, findTemplate, graphicSource, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_PAGES, readDocument, removeStyleGuide, renderProjectGraphic,
+import { assetPath, deleteTemplate, findAttachment, findTemplate, mimeFor, graphicSource, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_PAGES, readDocument, removeStyleGuide, renderProjectGraphic,
   saveAttachment, saveStyleGuide, saveTemplate, templatePreviewPath, templateSummary } from "../services/graphics.js";
 import { jsonBody, requireProject, requireProjectHeader } from "./util.js";
 
@@ -55,6 +58,15 @@ export function graphicRoutes(ctx: Ctx) {
   r.post("/projects/:id/attachments", async (c) => {
     const project = requireProjectHeader(ctx, c.req.param("id"));
     ctx.paths.ensureProject(project.id);
+    // The desktop app's own drops arrive as paths, as /media/import's do: the engine copies the file in.
+    if (c.req.header("content-type")?.startsWith("application/json")) {
+      const { path } = await jsonBody(c, z.object({ path: z.string().min(1).max(4096) }));
+      const info = isAbsolute(path) ? await stat(path).catch(() => null) : null;
+      if (!info?.isFile()) throw notFound("file");
+      if (info.size > MAX_ATTACHMENT_BYTES) throw new HttpError(413, "attachment_too_large", `An attachment can be up to ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`);
+      const attachment = await saveAttachment(ctx, project.id, basename(path), createReadStream(path), mimeFor(path), c.req.raw.signal);
+      return c.json({ attachment }, 201);
+    }
     if (Number(c.req.header("content-length")) > MAX_ATTACHMENT_BYTES + 64 * 1024) throw new HttpError(413, "attachment_too_large", `An attachment can be up to ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`);
     try {
       for await (const part of parseMultipartRequest(c.req.raw, { maxFileSize: MAX_ATTACHMENT_BYTES, maxParts: 8 })) {

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -45,6 +45,17 @@ const LOWER_THIRD = `<!doctype html><html><head><style>html,body{margin:0;width:
 @keyframes in{from{opacity:0;transform:translateY(40%)}}</style></head><body><div class="lt">{{Name}}<br><small>{{Title}}</small></div></body></html>`;
 
 describe("attachments", () => {
+  it("copies in a file the desktop app names by its path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "att-"));
+    const source = join(dir, "Style Guide.txt");
+    writeFileSync(source, "Teal is the one accent.");
+    const res = await api("POST", `/projects/${project.id}/attachments`, { path: source });
+    expect(res.status).toBe(201);
+    const { attachment } = await res.json();
+    expect(attachment).toMatchObject({ name: "Style Guide.txt", size: 23 });
+    expect(readFileSync(join(workspace.ctx.paths.attachments(project.id), attachment.id, "Style Guide.txt"), "utf8")).toBe("Teal is the one accent.");
+    expect((await api("POST", `/projects/${project.id}/attachments`, { path: "relative.txt" })).status).toBe(404);
+  });
   it("keeps a file in the project's folder, gives a request its path and refuses one from another project", async () => {
     const guide = await attach("Brand Guide.md", "# Our style\nUse red.", "text/markdown");
     expect(guide).toMatchObject({ name: "Brand Guide.md", size: 20, mime: "text/markdown" });
