@@ -5935,8 +5935,11 @@ it("marks the menu while a rule waits in Learnings, and lists each with its skil
   await show();
   expect(moreButton().querySelector(".needs-you")).not.toBeNull();
   expect(moreButton().getAttribute("aria-description")).toBe("2 rules to review in Learnings");
-  // Nothing about it is in the chat or the message box.
-  expect(container.querySelector(".simple-thread")!.textContent).not.toMatch(/punchline|Learn/);
+  // Each is said once in the chat, under the request it came from.
+  const from = container.querySelector<HTMLElement>(`.unit[data-run="${data.tasks[0]!.id}"]`)!;
+  expect([...from.querySelectorAll(".simple-learned")].map(l => l.textContent))
+    .toEqual(["Learned for dialogue-pass: “Leave the breath before a punchline.” Review", "Learned for frame-screen: “Keep a laugh in.” Review"]);
+  expect(container.querySelectorAll(".simple-learned")).toHaveLength(2);
   await openMenu();
   expect(menuRow("Learnings").querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("2 rules to review");
   await click(menuRow("Learnings"));
@@ -5974,6 +5977,30 @@ it("marks the menu while a rule waits in Learnings, and lists each with its skil
   // Esc closes the list and leaves the rest as it was.
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
   expect(container.querySelector('[role="dialog"][aria-label="Learnings"]')).toBeNull();
+});
+
+it("opens Learnings at a rule from Review on its line in the chat, and takes the line away once the rule is decided", async () => {
+  useSkillsStore.setState({ skills: [skillNamed("skl_dialogue", "dialogue-pass")], status: "ready", error: null });
+  data = { ...data, learnings: [learning("lrn_a"), learning("lrn_b", { rule: "Keep a laugh in.", said: "Don’t cut the laugh." })] };
+  useProjectStore.setState({ current: data });
+  await show();
+  const line = () => [...container.querySelectorAll<HTMLElement>(".simple-learned")].find(l => l.textContent?.includes("laugh"));
+  await click(buttonIn(line()!, "Review")!);
+  const panel = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Learnings"]')!;
+  // The rule it came from is the one marked in the list.
+  expect([...panel.querySelectorAll(".learn-item[aria-current=true] .learn-rule")].map(r => r.textContent)).toEqual(["Keep a laugh in."]);
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  // Opened from the menu, no rule is singled out.
+  await openMenu();
+  await click(menuRow("Learnings"));
+  expect(container.querySelector(".learn-item[aria-current=true]")).toBeNull();
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  // Approved (saving) or declined, it has left the chat.
+  await act(async () => {
+    data = { ...data, learnings: [learning("lrn_a", { state: "saving" }), learning("lrn_b", { rule: "Keep a laugh in.", state: "declined" })] };
+    useProjectStore.setState({ current: data });
+  });
+  expect(container.querySelector(".simple-learned")).toBeNull();
 });
 
 it("names a rule's skill in full on hover, and moves the decisions under it together where the panel is too narrow for both", async () => {

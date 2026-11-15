@@ -7,7 +7,7 @@ import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
-import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestText, REVISED_CHECK, threadEditList, type EditRef, type Task, type ThreadEdit } from "@scarlet/shared";
+import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { needNumbers } from "../lib/needNumbers";
@@ -55,6 +55,7 @@ import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
 import { canPreviewMedia } from "../lib/upload";
 import { useProjectStore } from "../stores/project";
+import { useSkillsStore } from "../stores/skills";
 import { messageTimestamps, type MessageClock } from "../lib/messageTimestamps";
 import { markedRangeOf, playheadPoints, pointOf, useUiStore, withMarkedRange, type AgentContext, type MarkedRange } from "../stores/ui";
 import { CutPreview } from "./WatchPage";
@@ -234,6 +235,26 @@ interface ChatActions {
   cutName?(about: { changeId?: string; cutIndex?: number; editIndex?: number }): string | undefined;
   /** The number a call of the waiting pass goes by, for a line that names it ("Listening to Cut 2"). */
   callNumber?(changeId: string, cutIndex: number): number | undefined;
+  /** Open Learnings with this rule in view, from the line under the request it came from. */
+  reviewLearning?(learningId: string): void;
+}
+
+/**
+ * A rule Scarlet picked up from this request, under what the request did: the skill it is for and the rule in quotes,
+ * then Review, which opens Learnings at it. Nothing is decided here; the line goes once the editor decides in Learnings.
+ */
+function LearnedLine({ learning, onReview }: { learning: Learning; onReview?(id: string): void }) {
+  const skill = useSkillsStore(s => s.skills.find(k => k.id === learning.skillId)?.name);
+  // The line names the skill, so the library is read once if nothing has read it yet. A read that failed isn't asked
+  // again from here: the line says "Learned:" without the name, and Learnings tries again as it opens.
+  const loadSkills = useSkillsStore(s => s.load);
+  useEffect(() => { if (useSkillsStore.getState().status === "idle") void loadSkills(); }, [loadSkills]);
+  return <p className="simple-learned">
+    <Icon name="bulb" size={13} />
+    <span>{skill ? `Learned for ${skill}: ` : "Learned: "}<span className="simple-learned-rule">“{learning.rule}”</span>
+      {onReview && <> <button type="button" className="simple-learned-review" onClick={() => onReview(learning.id)}
+        title="Approve, revise or decline it in Learnings">Review</button></>}</span>
+  </p>;
 }
 
 /**
@@ -798,6 +819,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   }, [thread]);
   const runs = useMemo(() => threadRuns(thread), [thread]);
   const runOf = new Map(runs.flatMap(run => run.attempts.map(t => [t.id, run] as const)));
+  // The rules this thread's requests taught Scarlet that still wait on the editor's call.
+  const learned = useProjectStore(useShallow(s => (s.current?.learnings ?? []).filter(l => l.state === "suggested" && runOf.has(l.taskId))));
   // The thread's edits list on the card of the run that made them: the dialogue pass, else the first request. A
   // request about one cut never holds the pass: when its revision is the latest proposal, the pass stays on the card
   // of the request that asked for it, and the revision's card says what it did to its cut.
@@ -899,6 +922,12 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const key = run !== owner && aboutOne(run) && !settled(run) ? rowOf(run) : undefined;
     return key ? [[run.root, key] as const] : [];
   }) : []);
+  // A rule reads at the end of the block of the request it came from. A request about one cut or edit that has left the
+  // chat, or sits under its row inside another block, hands its rule to the block it belongs to.
+  const learnedIn = (run: Run) => learned.filter(l => {
+    const from = runOf.get(l.taskId)!;
+    return from === run || (run === owner && (settled(from) || nested.has(from.root)));
+  });
 
   const unit = (run: Run, inside = false): ReactElement => {
     const { task } = run;
@@ -1026,6 +1055,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
         <Said lead={(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>} text={request.text} />
         <span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
+      {learnedIn(run).map(l => <LearnedLine key={l.id} learning={l} onReview={actions.reviewLearning} />)}
       {wrong}
     </div>;
     // Scarlet's closing words on what it applied read under the block and go where it goes: above the message box
@@ -1091,6 +1121,8 @@ export function SimpleWorkspace() {
   // A new project opens on Media, and an old link to History opens that drawer: both arrive as
   // ?panel=. It is read once and taken off the address, so a reload or the way back doesn't open the drawer again.
   const [search, setSearch] = useSearchParams();
+  // The rule a line in the chat opened Learnings at.
+  const [learnFocus, setLearnFocus] = useState<string>();
   const [panel, setPanel] = useState<Panel>(() => { const asked = search.get("panel"); return asked === "media" || asked === "history" ? asked : null; });
   // The cut, edit or call that was open when Scarlet last closed arrives the same way, as ?open=, and is read once too.
   const [reopen, setReopen] = useState(() => search.get("open") ?? undefined);
@@ -1830,6 +1862,7 @@ export function SimpleWorkspace() {
   // when the editor opens it again. A card that only reloads under them, as when a new working cut lands, keeps both.
   const startVisit = () => { setCutSide(undefined); setScriptFor(undefined); };
   const actions: ChatActions = {
+    reviewLearning(id) { setLearnFocus(id); setPanel("learnings"); },
     atOnce: tasks.filter(t => isWorking(t.state) && t.kind !== "transcribe" && !isAsideTask(t)
       && !!t.context.changeId && (t.context.cutIndex !== undefined || t.context.editIndex !== undefined)).length,
     pass: undefined,
@@ -3200,7 +3233,7 @@ export function SimpleWorkspace() {
                 button={<span className={`btn-icon simple-more${needsYou.length ? " needs-you" : ""}`} title={menuSays || "More"}>
                   <Icon name="more" /></span>}>
                 {close => <>
-                  <MenuItem onClick={() => { close(); setPanel("learnings"); }} title={toLearn ? `${plural(toLearn, "rule")} to review` : undefined}>
+                  <MenuItem onClick={() => { close(); setLearnFocus(undefined); setPanel("learnings"); }} title={toLearn ? `${plural(toLearn, "rule")} to review` : undefined}>
                     <Icon name="bulb" />Learnings{toLearn > 0 && <span className="menu-dot" role="img" aria-label={`${plural(toLearn, "rule")} to review`} />}</MenuItem>
                   <CachingMenuItem close={close} />
                   <MenuItem onClick={() => { close(); setTranscript(v => !v); }}><Icon name="diff" />{transcript ? "Hide transcript" : "Transcript"}</MenuItem>
@@ -3215,7 +3248,7 @@ export function SimpleWorkspace() {
               </Dropdown>
             </div>
           </header>
-          {panel === "learnings" && <LearningsPanel onClose={() => setPanel(null)} />}
+          {panel === "learnings" && <LearningsPanel focus={learnFocus} onClose={() => { setPanel(null); setLearnFocus(undefined); }} />}
           {/* A pause of caching isn't said here: the editor chose it, and the menu's Resume caching row says it. */}
           {(importFailed || menuError) && <div className="simple-banner" role="status">
             <span>{menuError || "Some files need attention."}</span>
