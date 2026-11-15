@@ -2158,7 +2158,7 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
   const links = ctx.repos.versions.links(projectId);
   // Every applied edit on the working cut, as its own request lists it, so a revision is flagged and not what it replaced.
   const edits = threads.filter(t => t.changes.some(c => c.state === "approved")).flatMap(thread =>
-    threadTimeline({ ...thread, flagged: undefined }, head, links, read, project.settings.fps).filter(e => !e.elsewhere).map(edit => ({ edit, thread })));
+    threadTimeline({ ...thread, flagged: undefined }, head, links, read, project.settings.fps, project.media).filter(e => !e.elsewhere).map(edit => ({ edit, thread })));
   const named = (e: { edit: ThreadEdit; thread: { title: string } }): FlaggedEdit => ({ changeId: e.edit.changeId, spot: e.edit.spot,
     label: e.edit.label, request: e.thread.title, range: e.edit.range, ...(e.edit.at !== undefined && { at: e.edit.at }) });
   let found: (typeof edits)[number] | undefined;
