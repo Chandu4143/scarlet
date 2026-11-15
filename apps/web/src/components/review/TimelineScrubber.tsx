@@ -686,7 +686,9 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   }, [start, end]);
   // Where a marked range's end lands when it comes near: the edges of the open edit, of footage cuts took out, and each marked edit.
   const edges = useMemo(() => rangeEdges(highlight?.band, gaps, marks), [highlight?.band, gaps, marks]);
-  const marking = useRangeSelect({ slider, drag, from, span, start, end, fps, edges, frameAt, pictureAspect, range, onRange: onRange ?? noRange, onSeek,
+  // The close-up's strip loads a run of frames per request from the same cache as the filmstrip.
+  const sheet = useMemo(() => previewStrip ? { fps: previewStrip.fps, url: (frames: number[]) => stripUrl(previewStrip, frames) } : undefined, [previewStrip]);
+  const marking = useRangeSelect({ slider, drag, from, span, start, end, fps, edges, frameAt, sheet, pictureAspect, range, onRange: onRange ?? noRange, onSeek,
     onScrubStart, onPress: selectPosition, beforeGesture: stopZoom });
   const zoomControls = <div className="timeline-zoom-row" role="group" aria-label="Timeline zoom">
     <button type="button" className="timeline-zoom-step" aria-label="Zoom out" title="Zoom out (−)" disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
