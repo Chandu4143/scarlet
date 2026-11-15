@@ -1940,6 +1940,49 @@ it("keeps the voice roles saved on a recording while its import is still being f
   } finally { finish(); provider.mockRestore(); }
 });
 
+it("lets go of a paused project's import waiting to be fingerprinted, and keeps fingerprints in turn", async () => {
+  const { ctx } = workspace;
+  const other = ctx.repos.projects.insert(createProject("Other"));
+  const originalHash = ctx.render.hashFile;
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  const hash = vi.spyOn(ctx.render, "hashFile").mockImplementation(async (...args) => { await gate; return originalHash(...args); });
+  vi.spyOn(ctx.render, "probeMedia").mockResolvedValue({ kind: "audio", duration: 10, hasAudio: true });
+  const add = async (projectId: string, name: string) => {
+    const source = join(directory, name);
+    writeFileSync(source, name);
+    const result = await api("POST", `/projects/${projectId}/media/import`, { path: source });
+    expect(result.status).toBe(201);
+    return (await result.json()).media as { id: string; path: string };
+  };
+  const row = (id: string) => ctx.db.prepare("SELECT status, ingest_pid FROM media WHERE id = ?").get(id);
+  const hashed = () => hash.mock.calls.map(([file]) => basename(file));
+  const activity = async () => ((await (await api("GET", "/projects")).json()).projects as Array<{ id: string; activity?: unknown }>)
+    .find(p => p.id === other.id)?.activity;
+  try {
+    const x = await add(project.id, "x.wav");
+    await vi.waitFor(() => expect(hashed()).toEqual([x.path]));
+    const y = await add(other.id, "y.wav");
+    const z = await add(project.id, "z.wav");
+    await api("PATCH", `/projects/${other.id}`, { mediaPaused: true });
+    // y waits behind x, and lets go at once rather than when x is fingerprinted.
+    await vi.waitFor(async () => {
+      expect(row(y.id)).toEqual({ status: "ingesting", ingest_pid: null });
+      expect(await activity()).toEqual([{ kind: "importing", count: 1, paused: true }]);
+    });
+    // z, queued behind y, still waits for x.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(hashed()).toEqual([x.path]);
+    finish();
+    await Promise.all(ctx.pending);
+    expect(hashed()).toEqual([x.path, z.path]);
+    expect([row(x.id), row(z.id)]).toMatchObject([{ status: "ready" }, { status: "ready" }]);
+    await api("PATCH", `/projects/${other.id}`, { mediaPaused: false });
+    await vi.waitFor(() => expect(row(y.id)).toMatchObject({ status: "ready" }));
+    expect(hashed()).toEqual([x.path, z.path, y.path]);
+  } finally { finish(); }
+});
+
 it("prepares a complete proxy for imported footage only when the GPU can encode it", async () => {
   for (const gpu of [true, false]) {
     await workspace.ctx.close();
