@@ -735,3 +735,38 @@ describe("screen_text", () => {
     expect(await description(await connect({ editingTools: { pictures: false } }))).not.toContain("media_frame");
   });
 });
+
+describe("faces", () => {
+  const span = (track: number, start: number) => ({ track, start, end: start + 1, box: [0.4, 0.3, 0.58, 0.72], yaw: 0, confidence: 0.94 });
+  it("lists where the faces are as compact JSON in source seconds and fractions, says how much is read, and pages", async () => {
+    const c = await connect();
+    const spans = [...Array.from({ length: 203 }, (_, i) => span(1, i)), span(2, 10), span(2, 50)].sort((a, b) => a.start - b.start || a.track - b.track);
+    const tracks = [{ track: 1, start: 0, end: 203, seconds: 203, box: [0.4, 0.3, 0.58, 0.72], confidence: 0.94 },
+      { track: 2, start: 10, end: 51, seconds: 2, box: [0.78, 0.81, 0.8, 0.86], confidence: 0.62 }];
+    mock.state.extra = (req, res) => req.path.endsWith("/media/m1/faces")
+      ? reply(res, { mediaId: "m1", from: 0, to: 240, width: 3840, height: 2160, tracks, spans, readSeconds: 180, done: false }) : false;
+    const first = JSON.parse(textOf(await ok(c, "faces", { mediaId: "m1", from: 0, to: 240 })));
+    expect(first).toMatchObject({ mediaId: "m1", from: 0, to: 240, frame: [3840, 2160], tracks, spanCount: 205,
+      reading: "180 of 240 s read so far, still reading: call again for the rest", next: "offset 200 for the next 5" });
+    expect(first.spans).toHaveLength(200);
+    expect(first.spans[0]).toEqual(span(1, 0));
+    expect(sent("/projects/prj_test/media/m1/faces", "GET").at(-1)?.query.get("to")).toBe("240");
+    const rest = JSON.parse(textOf(await ok(c, "faces", { mediaId: "m1", offset: 200 })));
+    expect(rest.spans).toHaveLength(5);
+    expect(rest.next).toBeUndefined();
+    // One track's spans, with every track still listed.
+    const second = JSON.parse(textOf(await ok(c, "faces", { mediaId: "m1", track: 2 })));
+    expect(second).toMatchObject({ spanCount: 2, spans: [span(2, 10), span(2, 50)], tracks });
+    expect(toolAnnotations("faces").readOnlyHint).toBe(true);
+  });
+
+  it("says what to do when there is nothing to look in or no such track", async () => {
+    const c = await connect();
+    mock.state.extra = (req, res) => req.path.endsWith("/media/m1/faces")
+      ? reply(res, { mediaId: "m1", from: 0, to: 60, tracks: [{ track: 1, start: 0, end: 60, seconds: 60, box: [0.4, 0.3, 0.6, 0.7], confidence: 0.9 }],
+        spans: [span(1, 0)], readSeconds: 60, done: true }) : false;
+    expect(textOf(await call(c, "faces", { mediaId: "m1", track: 3 }))).toContain("No track 3 in 0.0-60.0 s; this range has tracks 1.");
+    expect(textOf(await call(c, "faces", { mediaId: "m2" }))).toContain("only a video has faces to find");
+    expect(textOf(await call(c, "faces", { mediaId: "nope" }))).toContain("Use project_get for media ids");
+  });
+});

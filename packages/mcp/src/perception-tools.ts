@@ -246,6 +246,32 @@ export function registerPerception(deps: PerceptionDeps) {
       return text([head, ...lines, ...more].join("\n"));
     });
 
+  tool("faces",
+    "Where the faces are in a video's frame over time, found from its picture. Each face is followed as a track, numbered by when it first appears: a track follows position from frame to frame, not who it is, so two people who swap places swap tracks, and a face that leaves and comes back over the same place keeps its number. `spans` split each track's time where its face moves or turns: `start`-`end` in SOURCE seconds; `box` [left, top, right, bottom] as fractions of the frame, holding the face throughout the span (the detector's box runs from about the hairline to just under the chin, inside the ears: the hair above and the shoulders below are outside it); `yaw`, roughly where it looks, in degrees from facing the camera, positive toward the frame's right, to the nearest 5; and the detector's `confidence` (0..1). `tracks` gives each track's first and last second in the range, its seconds on screen, its usual box and the detector's usual confidence (a face in a picture or a pattern on a shelf can be found too, usually less surely), and `frame` the video's width and height in pixels, for a box's shape; `track` lists one track's spans. Frames are looked at twice a second, and four times where faces move; a face under about 2% of the frame's width, turned past profile or seen only for a moment can be missed. A video is read once and kept: a range not read yet is read now, and the answer says how much was read when it returns, while track numbers can still change; call again for the rest. Spans are listed in time order, 200 at a time; `offset` pages on. timeline_at maps source seconds to the edit." +
+      (deps.seesFrames ? " media_frame at a span's start second shows the frame its box was measured on." : ""),
+    { mediaId: z.string(), from: z.number().min(0).optional(), to: z.number().min(0).optional(),
+      track: z.number().int().min(1).optional().describe("Only this track's spans"),
+      offset: z.number().int().min(0).default(0) },
+    async ({ mediaId, from, to, track, offset }) => {
+      const { project } = await deps.getProject();
+      const asset = project.media.find(m => m.id === mediaId);
+      if (!asset) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
+      if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has faces to find.`);
+      const qs = new URLSearchParams({ ...(from !== undefined && { from: String(from) }), ...(to !== undefined && { to: String(to) }) }).toString();
+      const read = await client.get<{ from: number; to: number; width?: number; height?: number; readSeconds: number; done: boolean; error?: string;
+        tracks: Array<{ track: number }>; spans: Array<{ track: number }> }>(
+        `/projects/${encodeURIComponent(deps.projectId)}/media/${encodeURIComponent(mediaId)}/faces${qs ? `?${qs}` : ""}`);
+      if (track !== undefined && read.done && !read.tracks.some(t => t.track === track)) {
+        throw new Error(`No track ${track} in ${read.from.toFixed(1)}-${read.to.toFixed(1)} s; this range has ${read.tracks.length ? `tracks ${read.tracks.map(t => t.track).join(", ")}` : "no faces"}.`);
+      }
+      const spans = track === undefined ? read.spans : read.spans.filter(s => s.track === track);
+      const page = spans.slice(offset, offset + 200), left = spans.length - offset - page.length;
+      return json({ mediaId, from: read.from, to: read.to, ...(read.width && read.height && { frame: [read.width, read.height] }),
+        ...(!read.done && { reading: `${read.readSeconds.toFixed(0)} of ${(read.to - read.from).toFixed(0)} s read so far${read.error ? `, stopped: ${read.error}` : ", still reading: call again for the rest"}` }),
+        tracks: read.tracks, spanCount: spans.length, spans: page,
+        ...(left > 0 && { next: `offset ${offset + page.length} for the next ${Math.min(200, left)}` }) });
+    });
+
   return {
     readTranscript,
     /** Audit the joins at timeline times `at` on a version (e.g. a staged cut's join on its toVersion). */
