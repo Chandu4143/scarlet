@@ -71,3 +71,15 @@ it("points its controls' button at the controls only while they are open", async
   await act(async () => button.click());
   expect(document.getElementById(button.getAttribute("aria-controls")!)).not.toBeNull();
 });
+
+it("reveals a typed timestamp outside the zoomed window without seeking the player", async () => {
+  const render = (times: number[]) => act(async () => root.render(
+    <TimelineScrubber duration={3000} playhead={100} frameAt={() => undefined} onSeek={t => seeks.push(t)}
+      highlight={{ view: { start: 90, end: 110 } }} typedTimes={times} />));
+  await render([]);
+  await render([500]);
+  await zoomed();
+  expect(container.querySelector(".timeline-message-time")?.getAttribute("data-time")).toBe("500");
+  expect(container.querySelector(".timeline-slider")?.getAttribute("aria-valuenow")).toBe("100");
+  expect(seeks).toEqual([]);
+});

@@ -209,6 +209,8 @@ interface TimelineScrubberProps {
    * with them it draws no diamond for a caption clip or an edit.
    */
   marks?: TimelineDot[];
+  /** Times mentioned in the unsent message, on this timeline. */
+  typedTimes?: number[];
   /**
    * Every other applied edit on the working cut, drawn under the marks, quieter: a line, a bar or a tick each, gathered
    * into counts where they would touch. A press opens the edit, or zooms to a count's stretch.
@@ -493,7 +495,7 @@ export function TimelineScrubber(props: TimelineScrubberProps) {
 }
 
 function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, subject, kept,
-  pictureAspect = 16 / 9, frameAt, previewStrip, hoverVideo, onSeek, onSelectTime, onScrubStart, highlight, marks, edits, gaps, skippedRanges, onGap, onBand, fit, range, onRange, fps = 30 }:
+  pictureAspect = 16 / 9, frameAt, previewStrip, hoverVideo, onSeek, onSelectTime, onScrubStart, highlight, marks, typedTimes, edits, gaps, skippedRanges, onGap, onBand, fit, range, onRange, fps = 30 }:
   TimelineScrubberProps & { subject: string; kept: RefObject<KeptView | undefined> }) {
   const litMark = useStore(useContext(EditHoverContext));
   // The message box's icon is open: the passage the message is about lights up.
@@ -550,6 +552,15 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     fitAsked.current = fit;
     fitRange();
   }, [fit]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Reveal a newly mentioned time even when the ruler is zoomed in. Typing more words, scrubbing, and zooming
+  // by hand keep the editor's view. Revealing the marker never seeks the player.
+  const previousTimes = useRef<number[] | undefined>(undefined);
+  useLayoutEffect(() => {
+    const previous = previousTimes.current;
+    previousTimes.current = typedTimes;
+    const outside = typedTimes?.find(time => !previous?.includes(time) && (time < shownFrom || time > shownFrom + shownSpan));
+    if (outside !== undefined) fitRange(outside - shownSpan / 2, outside + shownSpan / 2);
+  }, [typedTimes, shownFrom, shownSpan, fitRange]);
   const mediaWindows = target && (target.from !== samples.from || target.span !== samples.span)
     ? [samples, target] : [samples];
   const to = from + span;
@@ -832,6 +843,8 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       {(markLayout.length > 0 || editLayout.length > 0) && <div aria-hidden="true" className={aimed ? "simple-timeline-hover is-aimed" : "simple-timeline-hover"}
         onPointerMove={hoverMark} onPointerLeave={() => { setHotMark(undefined); setHotEdit(undefined); setAimed(false); }} onPointerDown={pressMark} />}
       {markNodes}
+      {typedTimes?.filter(time => time >= from && time <= to).map(time =>
+        <span key={time} className="timeline-message-time" aria-hidden="true" data-time={time} style={{ left: `${percent(time)}%` }} />)}
       {marking.layer}
       {position >= from && position <= to && <>
         <span aria-hidden="true" className={gliding ? "timeline-playhead-time is-gliding" : "timeline-playhead-time"}
