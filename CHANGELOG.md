@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- A file you add from a link is named as it is, without %20 and other codes.
 - Drag up from the picture strip or waveform to see neighboring frames, then move sideways to scrub one frame at a time.
 - The timeline hover preview keeps its picture in view while the next frame loads.
 - Export › Advanced export saves a folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro: the timeline with its cuts, tracks, zooms, volume and fades, a copy of the footage, the captions, and a Read me that lists anything that doesn't carry over.
