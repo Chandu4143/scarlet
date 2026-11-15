@@ -35,13 +35,15 @@ function requireExternalMediaTools(names, description) {
 }
 
 const runtimeNotices = ["node.txt", "javascript.txt", "rust.txt", "rust-standard-library.html", "whisper-audio-dependencies.txt",
-  "sherpa-dependencies.txt", "speaker-onnxruntime-1.28.2-third-party.txt"];
+  "sherpa-dependencies.txt", "speaker-onnxruntime-1.28.2-third-party.txt", "chrome-headless-shell.txt"];
+// Motion graphics render in the bundled headless browser, with its own copy of its notices beside it.
+const chromeFiles = ["chrome-headless-shell.exe", "LICENSE.headless_shell", "icudtl.dat"];
 
 function verifyWindowsPayload(names, description) {
   requireExternalMediaTools(names, description);
   // MSI returns short|long file names; NSIS returns paths.
   const files = new Set(names.map(name => name.split(/[\\/|]/).pop().toLowerCase()));
-  for (const required of [...runtimeNotices, "scarlet.txt", "uhm.txt", "uhm-model-license.txt", "ThirdPartyNotices.txt", "LICENSE-CODE.txt", "LICENSE-LLVM.txt", "nsis-3.13.txt"]) {
+  for (const required of [...runtimeNotices, ...chromeFiles, "scarlet.txt", "uhm.txt", "uhm-model-license.txt", "ThirdPartyNotices.txt", "LICENSE-CODE.txt", "LICENSE-LLVM.txt", "nsis-3.13.txt"]) {
     if (!files.has(required.toLowerCase())) throw new Error(`${description} is missing ${required}`);
   }
 }
@@ -66,6 +68,13 @@ function verifyDmg(dmg, productName, identifier, expected, arch, updateArchive) 
     if (stamp("CFBundleIdentifier") !== identifier) throw new Error(`${dmg} has the wrong bundle identifier, expected ${identifier}`);
     const slices = output("lipo", ["-archs", join(contents, "MacOS", "scarlet-desktop")]).split(/\s+/);
     if (!slices.includes(arch)) throw new Error(`${dmg} contains ${slices.join(" ")}, expected ${arch}`);
+    const chrome = join(contents, "Resources", "chrome-headless-shell");
+    for (const name of chromeFiles.slice(1)) requireFile(join(chrome, name));
+    const browser = join(chrome, "chrome-headless-shell");
+    requireFile(browser);
+    if (!(statSync(browser).mode & 0o111)) throw new Error(`${dmg} has a headless browser that isn't executable`);
+    const browserSlices = output("lipo", ["-archs", browser]).split(/\s+/);
+    if (!browserSlices.includes(arch)) throw new Error(`${dmg} has a ${browserSlices.join(" ")} headless browser, expected ${arch}`);
     if (updateArchive) {
       // Take the exact application that passed verification, including its code signature, from the final disk image.
       output("tar", ["-czf", updateArchive, "-C", mount, `${productName}.app`], { ...process.env, COPYFILE_DISABLE: "1" });

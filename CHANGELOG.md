@@ -7,6 +7,12 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 14, 2026
 
 - Codex installed through Homebrew can start editing on macOS while keeping its sandbox.
+- Ask Scarlet for a motion graphic, like a lower third or a title, and it makes one in your style and lays it over the picture as an edit you can revise.
+- Type $ in the message box to pick a saved graphic template, with a preview of each on your picture.
+- Save a graphic as a template with the bookmark on its card.
+- Drop a style guide in the chat and say so: Scarlet follows it for every graphic in that project, and asks when a font it names isn't installed.
+- Files dropped on the message box ride with your next message.
+- The timeline shows every edit in the stretch you're looking at, and gathers them into counts like "9 cuts" on the whole video.
 - After a dialogue pass, joins Scarlet couldn't listen to in a recording in another language are no longer counted as checked.
 - A spoken note still being cleaned up when its project goes to the Trash is no longer saved into that project.
 - A pause Scarlet trims on a sped-up or slowed-down clip plays as long as asked.
