@@ -176,7 +176,7 @@ def decode(batch, response_file, output):
 def score(decoded, labels, tier):
     """Count each source pair once. Two presentations test stability of the same decision."""
     if len({row["runtimeSha256"] for row in decoded}) != 1:
-        raise ValueError("Compare one model and decoder run at a time.")
+        raise ValueError("Compare one model runtime at a time.")
     gold = {row["id"]: row for row in labels}
     if len(gold) != len(labels) or set(gold) != {row["trial"] for row in decoded}:
         raise ValueError("Label every source pair once, including unresolved pairs.")
@@ -191,7 +191,8 @@ def score(decoded, labels, tier):
         if label[tier]["targetChoice"] is not None and label[tier]["targetChoice"] not in row["options"].values():
             raise ValueError(f"Reference choice missing from candidates: {row['trial']}")
         groups[key][row["order"]] = row["choice"]
-    arms = {(guide, modality) for _, guide, modality, _ in groups}
+    guides = {guide for _, guide, _, _ in groups}
+    arms = [(guide, modality) for guide in guides for modality in ("text", "audio")]
     if any((label["split"], guide, modality, tid) not in groups
            for tid, label in gold.items() for guide, modality in arms):
         raise ValueError("Missing an arm for one or more passages.")

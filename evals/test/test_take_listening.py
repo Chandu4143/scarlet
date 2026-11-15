@@ -62,6 +62,8 @@ class TakeListeningTests(unittest.TestCase):
             self.assertEqual(score(rows, labels, "exact")[0]["scorable"], 0)
             with self.assertRaisesRegex(ValueError, "Missing a presentation"):
                 score(rows[:-1], labels, "exact")
+            with self.assertRaisesRegex(ValueError, "Missing an arm"):
+                score([r for r in rows if r["modality"] == "text"], labels, "exact")
             answers[1]["audio_sha256"].reverse()
             responses.write_text("\n".join(map(json.dumps, answers)))
             with self.assertRaisesRegex(ValueError, "Sealed batch"):
