@@ -39,6 +39,7 @@ const it = partedIt(vitestIt);
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
 type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void;
   editHere?: { time: string; onSelect(): void };
+  messageClock?: import("../lib/messageTimestamps").MessageClock;
   rewording?: { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void } };
 const composer = vi.hoisted(() => ({ props: undefined as BoxProps | undefined }));
 vi.mock("../components/agent/Composer", () => ({ Composer: (props: BoxProps) => { composer.props = props; return props.tray ?? null; } }));
@@ -8999,12 +9000,15 @@ it("says in a suggestion's request why the video moved on from it, queues the re
   await act(async () => useProjectStore.setState(st => ({ current: { ...st.current!, taskUsage: { task_redo: { runs: 1, inputTokens: 2_000, outputTokens: 10_000,
     cacheReadTokens: 200_000, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 212_000, firstAt: null, lastAt: null } } } })));
   expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens", "Stop"]);
-  useUiStore.getState().setShowRunTokens(false);
   // The suggestion comes back made again: the line gives way to it, and it plays from the same block.
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_redo" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString(), changeIds: ["chg_redone"],
       summary: "Trimmed the pause where it sits now." } : t),
     changes: [...d.changes, { ...ready, id: "chg_redone", taskId: "task_redo", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }] }));
   expect(unit().closest(".simple-chat")).not.toBeNull();
+  // Done, its tokens stay in its heading, and none of its rows repeat them.
+  expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens"]);
+  expect(unit().querySelectorAll(".run-tokens").length).toBe(1);
+  useUiStore.getState().setShowRunTokens(false);
   expect(unit().querySelector(".unit-state")?.textContent).toBe("Suggestion");
   expect(unit().querySelector(".simple-suggest")?.textContent).toBe("Trimmed the pause where it sits now.");
   expect(unit().textContent).not.toMatch(/The video changed|Redo on the current edit|Sent back/);
@@ -10846,3 +10850,21 @@ it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flag
   expect(keepGoesTo([[edit(13, undefined, true)], [edit(21)]], 1, still, [])).toBeUndefined();
 });
 
+
+it("shows draft timestamps on the player timeline, with seeking reserved for the timestamp click", async () => {
+  idle();
+  await show();
+  const clock = composer.props!.messageClock!;
+  const start = usePlayerStore.getState().time;
+  await act(() => {
+    useUiStore.getState().setAgentContext({ time: 5, version: clock.version, clipIds: [], fromMessage: true });
+    useUiStore.getState().setAgentDraft("Compare 0:05, 0:08 and 0:05");
+  });
+  const marks = () => Array.from(container.querySelectorAll<HTMLElement>(".timeline-message-time")).map(mark => mark.dataset.time);
+  expect(marks()).toEqual(["5", "8"]);
+  expect(usePlayerStore.getState().time).toBe(start);
+  await act(() => clock.seek(8));
+  expect(usePlayerStore.getState().time).toBe(8);
+  await act(() => useUiStore.getState().setAgentDraft(""));
+  expect(marks()).toEqual([]);
+});
