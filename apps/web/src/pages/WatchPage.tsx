@@ -37,6 +37,7 @@ import { useNotePositions } from "../lib/useNotePositions";
 import type { ProgressFocus } from "../components/player/SimpleProgress";
 import { editFocus } from "../lib/editKind";
 import { editKey } from "../lib/keptEdits";
+import { useTemplatesStore } from "../stores/templates";
 
 const noop = () => {};
 const documentVisible = () => !document.hidden;
@@ -670,6 +671,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
           {atSelectedFrame && selectedTime !== undefined && selectedFrameUrl &&
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
+          <TemplateOnPicture />
           {playingBefore && originalChange && selectedEdit ? <EditBeforePreview key={threadView?.request}
             change={originalChange} original={original} passage={selectedEdit.range} active={active} loading={loading}
             clock={<PlayerTime end={duration} coarse />} playbackRef={beforeClip} />
@@ -708,4 +710,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       </div>}
     </section>
   );
+}
+
+/** The template lit in the message box's $ list, drawn over the picture as it would sit there, until the list closes. */
+function TemplateOnPicture() {
+  const lit = useTemplatesStore(s => s.lit);
+  return lit ? <img key={lit.id} className="template-on-picture" src={lit.url} alt="" data-template={lit.id} /> : null;
 }

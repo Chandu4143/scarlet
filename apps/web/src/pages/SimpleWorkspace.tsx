@@ -8,7 +8,7 @@ import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestText, REVISED_CHECK, threadEditList, type EditRef, type Task, type ThreadEdit } from "@scarlet/shared";
-import { EditBadge, editGroups, EditVersion, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
+import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { needNumbers } from "../lib/needNumbers";
 import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/chat/QueueTray";
@@ -2615,6 +2615,9 @@ export function SimpleWorkspace() {
           : <span ref={setCompareHost} className="review-compare" />}
       </span>
       <span className="edit-card-acts">
+        {/* A graphic can be saved to use again, as a template the editor picks with $ in the message box. */}
+        {undoTarget && reviewingEdit.kind === "graphic" && <SaveAsTemplate key={`template ${openEditKey}`} projectId={current.id} thread={focusThread} target={undoTarget}
+          onSent={() => { follow.current = true; }} />}
         {/* Each edit has its own Undo edit: one on its way for the edit before doesn't hold this one's back. */}
         {undoTarget && <UndoEdit key={openEditKey} projectId={current.id} thread={focusThread} target={undoTarget} onSent={() => {
           // The edit closes, and the box follows the chat from there; a message being written keeps its own aim.
