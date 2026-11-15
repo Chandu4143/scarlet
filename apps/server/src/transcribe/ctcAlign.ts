@@ -16,7 +16,8 @@ export const SEPARATOR = 4;
 export const WILDCARD = -1;
 // facebook/wav2vec2-base-960h vocabulary: <pad>=0 (CTC blank), <s>, </s>, <unk>, "|"=4, then these from 5.
 export const CTC_LETTERS = "ETAONIHSRDLUMWCFGYPBVK'XJQZ";
-const APOSTROPHE = 5 + CTC_LETTERS.indexOf("'");
+// Both models use blank=0, separator=4 and character IDs starting at 5.
+export const SPANISH_CTC_LETTERS = "'-ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÑÓÖÚÜ";
 
 /** Frames the model emits for `samples` of audio. */
 export function framesFor(samples: number): number {
@@ -28,20 +29,21 @@ export function framesFor(samples: number): number {
  * tags). A single WILDCARD when the word is spoken but cannot be spelled in A–Z (its own times are kept,
  * but it still occupies audio between its neighbors).
  */
-export function wordLabels(text: string): number[] | null {
+export function wordLabels(text: string, letters = CTC_LETTERS): number[] | null {
   const raw = text.trim();
   if (!raw || /^[[(*♪].*[\])*♪]$/u.test(raw)) return null;
-  const s = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[‘’ʼ`´]/g, "'").toUpperCase();
+  const normalized = letters === CTC_LETTERS ? raw.normalize("NFKD").replace(/\p{M}/gu, "") : raw.normalize("NFC");
+  const s = normalized.replace(/[‘’ʼ`´]/g, "'").toUpperCase();
   const out: number[] = [];
-  const letter = (ch: string | undefined) => !!ch && ch !== "'" && CTC_LETTERS.includes(ch);
+  const letter = (ch: string | undefined) => !!ch && ch !== "'" && ch !== "-" && letters.includes(ch);
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]!;
-    if (letter(ch)) out.push(5 + CTC_LETTERS.indexOf(ch));
+    if (letter(ch)) out.push(5 + letters.indexOf(ch));
     else if (ch === "'") {
       // Contractions keep their apostrophe; quotes around a word do not.
-      if (letter(s[i - 1]) && letter(s[i + 1])) out.push(APOSTROPHE);
+      if (letter(s[i - 1]) && letter(s[i + 1])) out.push(5 + letters.indexOf(ch));
     } else if (/[-–—/]/.test(ch)) {
-      if (out.length && out.at(-1) !== SEPARATOR && letter(s[i + 1])) out.push(SEPARATOR);
+      if (out.length && out.at(-1) !== SEPARATOR && letter(s[i + 1])) out.push(ch === "-" && letters.includes("-") ? 5 + letters.indexOf("-") : SEPARATOR);
     } else if (/[\p{L}\p{N}$%&@+#=€£]/u.test(ch)) return [WILDCARD];
   }
   return out.length ? out : null;
@@ -57,12 +59,12 @@ export interface WordTiming { start: number; end: number; score: number }
 
 /** Labels for a run of words, a word separator after each spoken word. The model emits the separator as
  * the word's sound ends, so it marks word ends better than the last letter's emission spike. */
-export function groupLabels(words: readonly AlignWord[]) {
+export function groupLabels(words: readonly AlignWord[], letters = CTC_LETTERS) {
   const tokens: number[] = [];
   const owner: number[] = [];
   let spoken = 0, spelled = 0;
   words.forEach((w, i) => {
-    const labels = wordLabels(w.text);
+    const labels = wordLabels(w.text, letters);
     if (!labels) return;
     spoken++;
     if (labels[0] !== WILDCARD) spelled++;
@@ -78,7 +80,7 @@ export function groupLabels(words: readonly AlignWord[]) {
  * repeated labels) over frames [from, to) of a (frames × CLASSES) log-probability matrix.
  * Returns each label's first and last frame, or null when the frames cannot hold the labels.
  */
-export function ctcAlign(logProbs: Float32Array, from: number, to: number, tokens: readonly number[]): Array<[number, number]> | null {
+export function ctcAlign(logProbs: Float32Array, from: number, to: number, tokens: readonly number[], classes = CLASSES): Array<[number, number]> | null {
   const T = to - from, L = tokens.length, S = 2 * L + 1;
   let required = L;
   for (let k = 1; k < L; k++) if (tokens[k] === tokens[k - 1] && tokens[k] !== WILDCARD) required++;
@@ -87,13 +89,13 @@ export function ctcAlign(logProbs: Float32Array, from: number, to: number, token
   if (wild) {
     for (let t = 0; t < T; t++) {
       let best = -Infinity;
-      for (let c = 5; c < CLASSES; c++) best = Math.max(best, logProbs[(from + t) * CLASSES + c]!);
+      for (let c = 5; c < classes; c++) best = Math.max(best, logProbs[(from + t) * classes + c]!);
       wild[t] = best;
     }
   }
   const emit = (t: number, s: number) => {
     const token = s % 2 === 0 ? BLANK : tokens[(s - 1) / 2]!;
-    return token === WILDCARD ? wild![t]! : logProbs[(from + t) * CLASSES + token]!;
+    return token === WILDCARD ? wild![t]! : logProbs[(from + t) * classes + token]!;
   };
   // A label can be entered from the previous blank, or directly from the previous label when they differ.
   const skip = new Uint8Array(S);
@@ -135,9 +137,9 @@ export function ctcAlign(logProbs: Float32Array, from: number, to: number, token
 }
 
 /** Peak probability of a label within its aligned frames. */
-function peak(logProbs: Float32Array, token: number, [first, last]: [number, number]) {
+function peak(logProbs: Float32Array, token: number, [first, last]: [number, number], classes: number) {
   let best = -Infinity;
-  for (let t = first; t <= last; t++) best = Math.max(best, logProbs[t * CLASSES + token]!);
+  for (let t = first; t <= last; t++) best = Math.max(best, logProbs[t * classes + token]!);
   return Math.exp(best);
 }
 
@@ -153,15 +155,16 @@ export interface Emissions {
  * Align one run of words inside the window [start, end) seconds. A word's score is the mean peak probability
  * of its letters; wildcard and unspoken words get no timing.
  */
-export function alignGroup(em: Emissions, words: readonly AlignWord[], start: number, end: number): Array<WordTiming | undefined> {
+export function alignGroup(em: Emissions, words: readonly AlignWord[], start: number, end: number, alphabet = CTC_LETTERS): Array<WordTiming | undefined> {
   const out: Array<WordTiming | undefined> = new Array(words.length).fill(undefined);
-  const { tokens, owner, spoken, spelled } = groupLabels(words);
+  const classes = 5 + alphabet.length;
+  const { tokens, owner, spoken, spelled } = groupLabels(words, alphabet);
   // Mostly unspellable text (another language, numbers) gives the aligner too little to anchor on.
   if (!spelled || spelled < 0.6 * spoken) return out;
   const from = Math.max(0, Math.floor((start - em.origin) / FRAME_SECONDS));
   const to = Math.min(em.frames, Math.ceil((end - em.origin) / FRAME_SECONDS));
   if (to <= from) return out;
-  const spans = ctcAlign(em.logProbs, from, to, tokens);
+  const spans = ctcAlign(em.logProbs, from, to, tokens, classes);
   if (!spans) return out;
   const time = (frame: number) => em.origin + frame * FRAME_SECONDS;
   let k = 0, previousEnd = -Infinity;
@@ -171,7 +174,7 @@ export function alignGroup(em: Emissions, words: readonly AlignWord[], start: nu
     const first = k;
     let total = 0, letters = 0;
     for (; k < tokens.length && owner[k] === word; k++) {
-      if (tokens[k]! >= 5) { total += peak(em.logProbs, tokens[k]!, spans[k]!); letters++; }
+      if (tokens[k]! >= 5) { total += peak(em.logProbs, tokens[k]!, spans[k]!, classes); letters++; }
     }
     if (!letters) continue;
     // A letter is emitted shortly after its sound begins. The lead never reaches back past zero, where the caller's
@@ -212,26 +215,26 @@ export function planChunks(samples: number, size = 30 * SAMPLE_RATE, overlap = 2
 }
 
 /** Join per-window model outputs ((frames × CLASSES) each) into one matrix for the planned range. */
-export function stitchChunks(chunks: ReturnType<typeof planChunks>, outputs: readonly Float32Array[]): Float32Array {
+export function stitchChunks(chunks: ReturnType<typeof planChunks>, outputs: readonly Float32Array[], classes = CLASSES): Float32Array {
   const frames = chunks.length ? chunks.at(-1)!.keep[1] : 0;
-  const out = new Float32Array(frames * CLASSES);
+  const out = new Float32Array(frames * classes);
   chunks.forEach((chunk, i) => {
     const first = chunk.start / FRAME_SAMPLES;
     const [from, to] = chunk.keep;
-    out.set(outputs[i]!.subarray((from - first) * CLASSES, (to - first) * CLASSES), from * CLASSES);
+    out.set(outputs[i]!.subarray((from - first) * classes, (to - first) * classes), from * classes);
   });
   return out;
 }
 
 /** In-place log-softmax over each frame's classes. */
-export function logSoftmax(logits: Float32Array): Float32Array {
-  for (let at = 0; at < logits.length; at += CLASSES) {
+export function logSoftmax(logits: Float32Array, classes = CLASSES): Float32Array {
+  for (let at = 0; at < logits.length; at += classes) {
     let max = -Infinity;
-    for (let c = 0; c < CLASSES; c++) max = Math.max(max, logits[at + c]!);
+    for (let c = 0; c < classes; c++) max = Math.max(max, logits[at + c]!);
     let sum = 0;
-    for (let c = 0; c < CLASSES; c++) sum += Math.exp(logits[at + c]! - max);
+    for (let c = 0; c < classes; c++) sum += Math.exp(logits[at + c]! - max);
     const norm = max + Math.log(sum);
-    for (let c = 0; c < CLASSES; c++) logits[at + c] = logits[at + c]! - norm;
+    for (let c = 0; c < classes; c++) logits[at + c] = logits[at + c]! - norm;
   }
   return logits;
 }

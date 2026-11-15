@@ -7,6 +7,7 @@ import type { Ctx } from "../context.js";
 import { badRequest, notFound } from "../errors.js";
 import { FFMPEG, ffmpegPosition } from "../render/ffmpeg.js";
 import { AnalysisCache } from "../services/analysisCache.js";
+import { faces } from "../services/faces.js";
 import { screenText } from "../services/screenText.js";
 import { optionalNumberParam, requireMedia } from "./util.js";
 
@@ -90,6 +91,20 @@ export function perceptionRoutes(ctx: Ctx) {
         waitMs: Math.max(0, Math.min(60, wait ?? 30)) * 1000, signal: c.req.raw.signal }));
     } catch (error) {
       throw badRequest("screen_text", error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  // Where the faces are in a range of a video, found once and kept. A range not read yet is read now, as screen text is.
+  r.get("/projects/:projectId/media/:mediaId/faces", async c => {
+    const media = requireMedia(ctx, c.req.param("mediaId"), c.req.param("projectId"));
+    if (media.kind !== "video") throw badRequest("no_picture", "Only a video has a picture to read.");
+    const number = (name: string) => optionalNumberParam(c.req.query(name), name);
+    const from = number("from"), to = number("to"), wait = number("wait");
+    requireSourceRange(from, to);
+    try {
+      return c.json(await faces(ctx, media, { from, to }, { waitMs: Math.max(0, Math.min(60, wait ?? 30)) * 1000, signal: c.req.raw.signal }));
+    } catch (error) {
+      throw badRequest("faces", error instanceof Error ? error.message : String(error));
     }
   });
 

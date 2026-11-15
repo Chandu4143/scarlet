@@ -112,6 +112,24 @@ interface RangeSelect {
  */
 export interface LoupeSheet { fps: number; url(frames: number[]): string }
 
+/** A frame from the cached filmstrip, or its exact still if the sheet is unavailable. */
+export function LoupePicture({ frame, last, fps, frameAt, sheet, foreground }: {
+  frame: number; last: number; fps: number; frameAt?: RangeSelect["frameAt"]; sheet?: LoupeSheet; foreground?: boolean;
+}) {
+  const [failed, setFailed] = useState<string>();
+  if (sheet?.fps === fps) {
+    const first = Math.floor(frame / LOUPE_SHEET) * LOUPE_SHEET;
+    const count = Math.min(LOUPE_SHEET, last - first + 1);
+    const src = sheet.url(Array.from({ length: count }, (_, i) => first + i));
+    if (failed !== src) return <img src={src} alt="" draggable={false} decoding="async" onError={() => setFailed(src)}
+      style={{ width: `${count * 100}%`, left: `${(first - frame) * 100}%` }} />;
+  }
+  const src = frameAt?.(frame / fps, true);
+  if (!src) return null;
+  if (foreground) return <img src={src} alt="" draggable={false} decoding="async" />;
+  return <QueuedImg src={src} alt="" draggable={false} decoding="async" />;
+}
+
 export function useRangeSelect({ slider, drag, from, span, start, end, fps, edges, frameAt, sheet, pictureAspect = 16 / 9, range, onRange, onSeek, onScrubStart, onPress, beforeGesture }: RangeSelect) {
   const [live, setLive] = useState<{ range: TimeRange; moving: "start" | "end"; at: number; snapped: boolean; precise?: number }>();
   const gesture = useRef<Gesture>(undefined);
@@ -263,7 +281,7 @@ export function useRangeSelect({ slider, drag, from, span, start, end, fps, edge
       {live && live.precise === undefined && <span aria-hidden="true" className="timeline-range-time" style={{ left: `${(left + right) / 2}%` }}>
         {clockRange(live.range.start, live.range.end)} · {lengthLabel(live.range.end - live.range.start)}</span>}
       {handle("start")}{handle("end")}
-      {live?.precise !== undefined && edgeTime !== undefined && <RangeLoupe time={edgeTime} at={live.precise} fps={fps} last={Math.floor(end * fps + 1e-7)}
+      {live?.precise !== undefined && edgeTime !== undefined && <RangeLoupe time={edgeTime} at={live.precise} fps={fps} last={Math.max(0, Math.ceil(end * fps - 1e-6) - 1)}
         inside={live.moving === "end" ? "before" : "after"} snapped={live.snapped} edges={edges} frameAt={frameAt} sheet={sheet} pictureAspect={pictureAspect} />}
     </>;
   }
@@ -283,21 +301,13 @@ function RangeLoupe({ time, at, fps, last, inside, snapped, edges, frameAt, shee
   // Where the strip started: pictures keep their places in it, and it slides by whole frames, so each picture loads once.
   const [origin] = useState(frame);
   const reach = (LOUPE_PICTURES - 1) / 2 + LOUPE_SPARE;
-  const sheets = sheet && sheet.fps === fps ? sheet : undefined;
   const pictures = [];
   for (let f = Math.max(0, frame - reach); f <= Math.min(last, frame + reach); f++) {
     const edge = snapTime(f / fps, edges, .5 / fps) !== undefined;
     const second = f % Math.round(fps) === 0;
-    let still: ReactNode = null;
-    if (sheets) {
-      const first = Math.floor(f / LOUPE_SHEET) * LOUPE_SHEET;
-      const count = Math.min(LOUPE_SHEET, last - first + 1);
-      const src = sheets.url(Array.from({ length: count }, (_, i) => first + i));
-      still = <img src={src} alt="" draggable={false} decoding="async" style={{ width: `${count * 100}%`, left: `${(first - f) * 100}%` }} />;
-    } else if (frameAt) still = <QueuedImg src={frameAt(f / fps, true)} alt="" draggable={false} decoding="async" />;
     pictures.push(<span key={f} className={`timeline-range-loupe-picture${f === frame ? " is-now" : ""}`} data-frame={f}
       style={{ left: (f - origin) * LOUPE_PICTURE_PX }}>
-      <span className="timeline-range-loupe-still">{still}</span>
+      <span className="timeline-range-loupe-still"><LoupePicture frame={f} last={last} fps={fps} frameAt={frameAt} sheet={sheet} /></span>
       <i className={`timeline-range-loupe-tick${second ? " is-second" : ""}${edge ? " is-edge" : ""}`} />
       {second && <small>{playbackClock(f / fps).replace(/\.\d+$/, "")}</small>}
     </span>);

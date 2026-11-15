@@ -81,6 +81,8 @@ class Browser {
   private constructor(private readonly child: ChildProcess, private readonly profile: string, private readonly stderr: string[]) {
     const out = child.stdio[4] as Readable;
     out.on("data", (chunk: Buffer) => this.read(chunk));
+    out.on("error", error => this.fail(error));
+    (child.stdio[3] as Writable).on("error", error => this.fail(error));
     child.on("exit", (code, sig) => this.fail(new Error(`Chrome exited (${sig ?? code}) while drawing the graphic${this.stderr.length ? `: ${this.stderr.join("").slice(-600)}` : ""}`)));
     child.on("error", error => this.fail(error));
   }

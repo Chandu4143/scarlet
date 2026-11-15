@@ -483,9 +483,14 @@ function graphicsContext(ctx: Ctx, project: Project, task: Task) {
   if (task.kind === "skill_from_change" || isAsideTask(task)) return {};
   const attachments = (task.context.attachments ?? []).map(a => ({ ...a, mime: a.mime ?? mimeFor(a.name), path: join(ctx.paths.attachments(project.id), a.id, a.name) }));
   const said = task.context.message ?? task.instruction;
-  const names = [...new Set([...said.matchAll(/(?:^|[^\w$])\$([a-z0-9][a-z0-9-]*)/g)].map(m => m[1]!))];
+  const named = (text: string) => [...text.matchAll(/(?:^|[^\w$])\$([a-z0-9][a-z0-9-]*)/g)].map(m => m[1]!);
+  // A skill the editor chose can name templates too ("every time we go to the screen recording, use $swipe").
+  const chosen = (task.context.skillIds ?? []).map(id => ctx.repos.skills.get(id)).filter(s => !!s && s.enabled);
+  const fromSkill = new Map(chosen.flatMap(skill => named(skill!.content).map(name => [name, skill!.name] as const)).reverse());
+  const names = [...new Set([...named(said), ...fromSkill.keys()])];
   const pickedTemplates = names.map(name => ctx.repos.templates.select("name = ?", [name])[0]).filter(t => !!t)
-    .map(t => ({ id: t.id, name: t.name, title: t.title, fields: t.fields }));
+    .map(t => ({ id: t.id, name: t.name, title: t.title, fields: t.fields, kind: t.kind, ...(t.transition && { transition: t.transition }),
+      ...(!named(said).includes(t.name) && fromSkill.has(t.name) && { skill: fromSkill.get(t.name) }) }));
   const guide = project.styleGuide;
   const guidePath = styleGuidePath(ctx, project.id, guide);
   return {
@@ -536,7 +541,8 @@ export function followUpInstruction(ctx: Ctx, projectId: string, threadId: strin
 export function aboutStagedCut(ctx: Ctx, projectId: string, context: Task["context"]): string {
   const { changeId, cutIndex, time } = context;
   const pass = changeId && cutIndex !== undefined && time !== undefined ? ctx.repos.changes.get(changeId) : undefined;
-  return pass?.projectId === projectId ? cutRevisionReference(pass, { cutIndex, time: time!, end: context.end, clipIds: context.clipIds ?? [] }) : "";
+  return pass?.projectId === projectId ? cutRevisionReference(pass, { cutIndex, time: time!, end: context.end, clipIds: context.clipIds ?? [],
+    version: context.version, mediaId: context.mediaId, markedRange: context.markedRange }) : "";
 }
 
 /** How long a hold for rewording lasts unless the app renews it, so a closed app can't keep a request from ever starting. */

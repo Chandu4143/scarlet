@@ -59,9 +59,18 @@ jobs:
         shell: bash
         run: |
           node apps/desktop/scripts/fetch-chrome.mjs
-          chrome="$GITHUB_WORKSPACE/apps/desktop/src-tauri/binaries/chrome-headless-shell/chrome-headless-shell"
-          if [ "$RUNNER_OS" = Windows ]; then chrome="$chrome.exe"; fi
-          echo "SCARLET_CHROME=$chrome" >> "$GITHUB_ENV"
+          folder="$GITHUB_WORKSPACE/apps/desktop/src-tauri/binaries/chrome-headless-shell"
+          executable=chrome-headless-shell
+          if [ "$RUNNER_OS" = Linux ]; then
+            # Ubuntu grants the browser its sandbox at the path the Debian package installs.
+            sudo install -d /usr/lib/Scarlet
+            sudo cp -R "$folder" /usr/lib/Scarlet/
+            sudo apparmor_parser -r apps/desktop/src-tauri/linux/scarlet-chrome-headless-shell.apparmor
+            folder=/usr/lib/Scarlet/chrome-headless-shell
+          elif [ "$RUNNER_OS" = Windows ]; then
+            executable=chrome-headless-shell.exe
+          fi
+          echo "SCARLET_CHROME=$folder/$executable" >> "$GITHUB_ENV"
 
       - name: Build (the desktop package's build script is a no-op here)
         run: pnpm -r build

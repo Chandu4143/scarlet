@@ -1,4 +1,6 @@
+import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
+import { UNFRAMED_NEXT, unframedBeside } from "./clip-framing.js";
 import { matchAudio, syncRate } from "./audio-sync.js";
 /**
  * The Scarlet MCP server: the tools an AI editor uses to read a project and
@@ -58,6 +60,7 @@ import {
   type CaptionClip,
   type MediaClip,
   Transform,
+  Transition,
   type Track,
   type TranscriptWord,
 } from "@scarlet/timeline";
@@ -78,6 +81,7 @@ import {
   summarizeTimeline,
 } from "./analysis.js";
 import { toolAnnotations } from "./annotations.js";
+import { transitionOps } from "./transition.js";
 import { MediaPreparing, describeError, errorResult, errorText, formatZodError, json, noteUnmeasured, text, toolRefusal, unavailable, unmeasured, unmeasuredLine, type ToolResult } from "./tool-result.js";
 import { registerPerception } from "./perception-tools.js";
 import { sourceRangeToTimeline, sourceToTimeline, timelineWords } from "./timeline-perception.js";
@@ -91,7 +95,7 @@ const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
-const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
+const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
 const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this footage after fromVersion. Read that passage on currentVersion and make the edit again there.";
@@ -112,6 +116,8 @@ export interface ScarletMcpContext {
   editingTools?: EditingTools;
   /** How long a cut or an edge check waits for word alignment to reach it. Tests shorten it. */
   alignmentWaitMs?: number;
+  /** Time budget for each collection of slow join measurements. */
+  joinWaitMs?: number;
   /** Agent task this session is running for; enables task_log/task_question and tags changes. */
   taskId?: string;
   /** Claim that launched this MCP session, including when a provider reconnects. */
@@ -200,6 +206,7 @@ const OPS_DOC = `Op types (all times are seconds; timeline times are positions i
 
 Clip fields:
 - volume is linear gain (1 = unchanged, 0 = mute). Fades (audioFadeIn/Out, videoFadeIn/Out) are seconds.
+- speed plays a media clip faster (above 1) or slower, its sound kept at pitch. A speed change keeps sourceIn and sourceOut, so the clip gets shorter or longer and the clips after it don't move. To play a stretch of the edit faster with every track in sync: splitClip each clip that plays through it at both ends, set speed on each middle piece, then rippleDelete from the stretch's start plus its new length to its old end.
 - transform: A patch replaces the whole transform, so include the framing you want to keep. x and y are offsets from the center as fractions of the canvas width and height, scale 1 fits the cropped source to the canvas, rotation is degrees clockwise, cropLeft/Right/Top/Bottom are fractions of the source. cornerRadius rounds the cropped layer's corners (0–0.5 of its shorter side, 0 for square). keyframes: [{time, transform, ease}] animate x, y and scale, with time in seconds from the clip's start and ease linear | easeIn | easeOut | easeInOut | hold.
 - effects: [{type, params, enabled}]. A patch replaces the whole array, so include the stages you keep. Audio types: denoise {amount dB, noiseFloor dBFS}, expander {thresholdDb, rangeDb, ratio, attack ms, release ms}, eq {highpass Hz, lowpass Hz, bands [{frequency, gain dB, width Q}]}, compressor {thresholdDb, ratio, attack ms, release ms, makeupDb}, limiter {limitDb, attack ms, release ms}, loudnorm {i LUFS, tp dBTP, lra LU}.
 - A later video track composites on top of an earlier one. A caption clip can carry a title or label.`;
@@ -216,14 +223,6 @@ const EDGE_WAIT_MS = 40_000;
  * for the transcript instead of starting another request.
  */
 const DIALOGUE_FAILURE_LIMIT = 2;
-
-/**
- * The longest list of checked joins dialogue_check_join returns whole, in characters. Claude Code withholds a tool
- * result over 25,000 tokens, and a run has no tool to read it back with: lists of 24 to 35 cuts, 57,000 characters
- * and more, came back to real passes as "exceeds maximum allowed tokens", and each was checked again a few at a time
- * or saved unchecked.
- */
-const JOIN_LIST_CHARS = 40_000;
 
 /** Buckets for a waveform window read at 20 ms a bucket, ten at least. */
 const levelPoints = (from: number, to: number) => Math.max(10, Math.ceil((to - from) * 50));
@@ -310,6 +309,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
   const scanScopes = new Map<string, number>();
   const acousticRetakePages = new Map<string, AcousticRetakePage>();
+  const joinChecks = new JoinChecks();
   const pendingDetections = new Map<string, Promise<DialogueDetections>>();
   /** Dialogue analysis requests that failed in a row, per recording, and the last reason. */
   const dialogueFailures = new Map<string, { count: number; error: string }>();
@@ -701,8 +701,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return found;
   }
 
-  async function measureAround(points: Array<{ mediaId: string; t: number }>) {
-    const { media } = await client.media(ctx.projectId);
+  async function measureAround(points: Array<{ mediaId: string; t: number }>, knownMedia?: ProjectDetail["project"]["media"]) {
+    const media = knownMedia ?? (await client.media(ctx.projectId)).media;
     await Promise.all(points.map(({ mediaId, t }) => {
       const asset = media.find(m => m.id === mediaId);
       // A source with no sound has no levels to read: the engine refuses it, and the join check leaves it out anyway.
@@ -876,6 +876,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     if (change.state === "approved" || notApplied) lastTimeline = undefined;
     const action = change.state === "approved" ? "Applied" : "Proposed";
     const lines = diffDescription ?? (before && timeline ? describeDiff(diffTimelines(before, timeline), undefined, clipById) : []);
+    // The summary leaves the saved timeline out, so the edit is laid on its base here, as it was checked before saving.
+    const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
+    const unframed = made && !notApplied ? unframedBeside(before, made) : [];
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -892,6 +895,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       diff: lines,
       ...(onWholeFrames.length && { onWholeFrames }),
       ...(notApplied && { notApplied: { ...notApplied, next: NOT_APPLIED_NEXT } }),
+      ...(unframed.length && { unframedBeside: unframed, next: UNFRAMED_NEXT }),
     };
     return json(result);
   }
@@ -1674,91 +1678,86 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const repeatedPhrase = z.string().trim().min(1);
   const resumeWith = z.string().trim().min(1).max(240).optional().describe("For a retake, quote the first consecutive words to keep immediately after the removal. Include the continuation that distinguishes this delivery.");
   tool("dialogue_check_join",
-    `Check proposed dialogue removals on a timeline version before submitting them. Give one range, or list up to 100 as \`cuts\` to check them in one call; each is given the same way. ${cutCoordinates} Where two words run together with no pause, the edge goes at the lowest level between them if that is down at room tone (${DIP_DBFS} dBFS or lower) and the removal's other edge has a pause, and the result says what was measured. A word reference keeps its exact performance. alternativeWordRanges lists other indices that leave the same transcript text, with measured edge problems and dips. Submit the indices of the performance you choose. This changes nothing. Returns status (unchanged = both edges quiet; snapped = an edge moved a few frames onto silence and applies as given; adjusted/partial = a larger move that narrows the removal and goes to review; review = no safe edge), the resulting range, per edge the source second, sound (quiet | valley | sound), RMS dBFS in 20 ms steps from 0.3 s before to 0.3 s after the edge (\`|\` marks it) and the nearest quiet points either side, and nearbyWords as [timeline start, timeline end, text] from the scan. The kept audio is independently read for up to ${JOIN_WORD_SECONDS} source seconds on each side of the proposed removal. unreadJoinAudio names a reading that was unavailable. repeatAtJoin identifies a word or phrase that the proposed join would play twice, with both occurrences in timeline seconds. partialWordRepeat identifies a fragment of a word beside another complete delivery, including sound inside the audio crossfade. Its side and ranges locate the fragment on the input timeline. pickupRepeats lists a doubled word or phrase opening or ending the kept take, with each occurrence and the side of the removal. When a prior scan measured an immediate restart, acousticRetakeContinuity reports which delivery the original range removes and whether the word following the second delivery stays connected to the retained take. Its source word times are approximate. An optional resumeWith quote is checked at the original end. With \`cuts\`, the result has \`joins\` in the same order, and a range that cannot be checked carries its own \`error\`. A list too long to return whole leaves out nearbyWords, per-edge readings (\`audio\`) and alternativeWordRanges, on unchanged joins first and then on the others from the end of the list. If needed, it then omits acousticRetakeContinuity and partialWordRepeat details. Every join keeps its status and range, and \`evidenceLeftOut\` lists the indices of the joins that came back without some of it: check the ones you need again in a shorter list.`,
+    `Check proposed dialogue removals on a timeline version before submitting them. Give one range, or list up to 100 as \`cuts\` to check them in one call; each is given the same way. ${cutCoordinates} Where two words run together with no pause, the edge goes at the lowest level between them if that is down at room tone (${DIP_DBFS} dBFS or lower) and the removal's other edge has a pause, and the result says what was measured. A word reference keeps its exact performance. alternativeWordRanges lists other indices that leave the same transcript text, with measured edge problems and dips. Submit the indices of the performance you choose. Slow checks return status "measuring", the completed readings and the zero-based pendingCuts. Repeat the same arguments on the returned version after retryAfterSeconds to collect the full readings. This changes nothing. Returns status (unchanged = both edges quiet; snapped = an edge moved a few frames onto silence and applies as given; adjusted/partial = a larger move that narrows the removal and goes to review; review = no safe edge), the resulting range, per edge the source second, sound (quiet | valley | sound), RMS dBFS in 20 ms steps from 0.3 s before to 0.3 s after the edge (\`|\` marks it) and the nearest quiet points either side, and nearbyWords as [timeline start, timeline end, text] from the scan. The kept audio is independently read for up to ${JOIN_WORD_SECONDS} source seconds on each side of the proposed removal. unreadJoinAudio names a reading that was unavailable. repeatAtJoin identifies a word or phrase that the proposed join would play twice, with both occurrences in timeline seconds. partialWordRepeat identifies a fragment of a word beside another complete delivery, including sound inside the audio crossfade. Its side and ranges locate the fragment on the input timeline. pickupRepeats lists a doubled word or phrase opening or ending the kept take, with each occurrence and the side of the removal. When a prior scan measured an immediate restart, acousticRetakeContinuity reports which delivery the original range removes and whether the word following the second delivery stays connected to the retained take. Its source word times are approximate. An optional resumeWith quote is checked at the original end. With \`cuts\`, the result has \`joins\` in the same order, and a range that cannot be checked carries its own \`error\`. A list too long to return whole leaves out nearbyWords, per-edge readings (\`audio\`) and alternativeWordRanges, on unchanged joins first and then on the others from the end of the list. If needed, it then omits acousticRetakeContinuity and partialWordRepeat details. Every join keeps its status and range, and \`evidenceLeftOut\` lists the indices of the joins that came back without some of it: check the ones you need again in a shorter list.`,
     { version: z.string(), crossfadeFrames, ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith,
       cuts: z.array(z.object({ ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith }))
         .min(1).max(100).optional().describe("Several removals to check in one call, instead of start/end or a word reference"),
       ...audioOption("Attach about two seconds of the original recording around each edge as WAV, for a single range") },
     async ({ version, includeAudio, resumeWith, cuts, crossfadeFrames = 0, ...cut }) => {
-      const [tl, { project }] = await Promise.all([getTimeline(version), getProject()]);
-      const resolve = async (c: typeof cut, label: string) => {
-        const resolved = await resolveCutRange(tl, c, label, planSources, true);
-        if (resolved.start >= resolved.end || resolved.end > timelineDuration(tl)) {
-          throw new Error(`${label} ${resolved.start}–${resolved.end} s is not a nonempty range inside version ${tl.version} (0–${timelineDuration(tl).toFixed(2)} s).`);
+      const tl = await getTimeline(version);
+      const snapshot = tl.version === "draft" ? createHash("sha256").update(JSON.stringify(tl)).digest("hex") : tl.version;
+      const key = JSON.stringify([snapshot, cuts, cut, resumeWith, crossfadeFrames, !!includeAudio]);
+      return joinChecks.collect(key, tl.version, cuts?.length ?? 1, async publish => {
+        const { project } = await getProject();
+        const resolve = async (c: typeof cut, label: string) => {
+          const resolved = await resolveCutRange(tl, c, label, planSources, true);
+          if (resolved.start >= resolved.end || resolved.end > timelineDuration(tl)) {
+            throw new Error(`${label} ${resolved.start}–${resolved.end} s is not a nonempty range inside version ${tl.version} (0–${timelineDuration(tl).toFixed(2)} s).`);
+          }
+          return resolved;
+        };
+        const report = async (resolved: Awaited<ReturnType<typeof resolve>>, quote: string | undefined) => {
+          const range = { start: resolved.start, end: resolved.end };
+          // Edges placed beside the named words stand as placed, here as in dialogue_apply_cuts.
+          const pages = joinPages();
+          const checked = "dips" in resolved && !resolved.problems.length
+            ? { ...range, status: "unchanged" as const, reason: resolved.dips.length ? resolved.dips.join(" ") : "Scarlet placed both edges in the measured silence beside the words." }
+            : checkDialogueJoin(tl, project, range, pages, "spoken" in resolved ? resolved.spoken : undefined);
+          const played = frameAligned(checked, project.settings.fps);
+          const nearbyWords = dialogueJoinWords(tl, project, played, pages);
+          const continuity = acousticRetakeJoin(tl, project, range, acousticRetakePages.values());
+          const { repeatAtJoin, partialWordRepeat, pickupRepeats, unread } = await checkKeptWords(tl, project, played, nearbyWords, planSources.readKeptWords,
+            undefined, undefined, { at: played.start, preview: () => dialogueCutPreview(tl, project.media, [played], crossfadeFrames / project.settings.fps) });
+          const audio = joinAudio(tl, project, range, pages);
+          const inspected = audio.some(edge => edge.levels || edge.words) ? () => {
+            readPassage(tl.version, range, true);
+            readPassage(tl.version, checked, true);
+          } : undefined;
+          return { inspected, reading: { originalRange: range,
+            ...("wordRef" in resolved && { words: resolved.words, sourceRange: resolved.source, ...(resolved.problems.length && { wordEdgeProblems: resolved.problems }) }),
+            ...("notes" in resolved && resolved.notes.length && { notes: resolved.notes }),
+            ...("alternativeWordRanges" in resolved && { alternativeWordRanges: resolved.alternativeWordRanges }),
+            ...checked, audio, nearbyWords, ...(partialWordRepeat && { partialWordRepeat }), ...(continuity.length && { acousticRetakeContinuity: continuity }), ...(unread.length && { unreadJoinAudio: unread }), ...(repeatAtJoin && { repeatAtJoin }), ...(pickupRepeats.length && { pickupRepeats }),
+            ...(quote && { resumeAtOriginalEnd: checkResumeQuote(tl, project, range.end, evidence.scans, quote) }) } };
+        };
+        if (cuts) {
+          if (Object.values(cut).some(value => value !== undefined) || resumeWith) {
+            throw new Error("Give either one range or a cuts list, not both.");
+          }
+          const checkedRanges = await Promise.all(cuts.map(async ({ resumeWith: quote, ...c }, i) => {
+            try {
+              const resolved = await resolve(c, `cuts[${i}]`);
+              await measureAround(audibleSourcePoints(tl, [resolved.start, resolved.end]), project.media);
+              const { reading, inspected } = await report(resolved, quote);
+              publish(i, reading, inspected);
+              return [resolved];
+            } catch (err) {
+              publish(i, { error: describeError(err) });
+              return [];
+            }
+          }));
+          await reportChecked(tl, checkedRanges.flat());
+          return;
         }
-        return resolved;
-      };
-      const report = async (resolved: Awaited<ReturnType<typeof resolve>>, quote: string | undefined) => {
-        const range = { start: resolved.start, end: resolved.end };
-        // Edges placed beside the named words stand as placed, here as in dialogue_apply_cuts.
-        const pages = joinPages();
-        const checked = "dips" in resolved && !resolved.problems.length
-          ? { ...range, status: "unchanged" as const, reason: resolved.dips.length ? resolved.dips.join(" ") : "Scarlet placed both edges in the measured silence beside the words." }
-          : checkDialogueJoin(tl, project, range, pages, "spoken" in resolved ? resolved.spoken : undefined);
-        const played = frameAligned(checked, project.settings.fps);
-        const nearbyWords = dialogueJoinWords(tl, project, played, pages);
-        const continuity = acousticRetakeJoin(tl, project, range, acousticRetakePages.values());
-        const { repeatAtJoin, partialWordRepeat, pickupRepeats, unread } = await checkKeptWords(tl, project, played, nearbyWords, planSources.readKeptWords,
-          undefined, undefined, { at: played.start, preview: () => dialogueCutPreview(tl, project.media, [played], crossfadeFrames / project.settings.fps) });
-        const audio = joinAudio(tl, project, range, pages);
-        if (audio.some(edge => edge.levels || edge.words)) {
-          readPassage(tl.version, range, true);
-          readPassage(tl.version, checked, true);
-        }
-        return { originalRange: range,
-          ...("wordRef" in resolved && { words: resolved.words, sourceRange: resolved.source, ...(resolved.problems.length && { wordEdgeProblems: resolved.problems }) }),
-          ...("notes" in resolved && resolved.notes.length && { notes: resolved.notes }),
-          ...("alternativeWordRanges" in resolved && { alternativeWordRanges: resolved.alternativeWordRanges }),
-          ...checked, audio, nearbyWords, ...(partialWordRepeat && { partialWordRepeat }), ...(continuity.length && { acousticRetakeContinuity: continuity }), ...(unread.length && { unreadJoinAudio: unread }), ...(repeatAtJoin && { repeatAtJoin }), ...(pickupRepeats.length && { pickupRepeats }),
-          ...(quote && { resumeAtOriginalEnd: checkResumeQuote(tl, project, range.end, evidence.scans, quote) }) };
-      };
-      if (cuts) {
-        if (Object.values(cut).some(value => value !== undefined) || resumeWith) {
-          throw new Error("Give either one range or a cuts list, not both.");
-        }
-        const resolved = await Promise.all(cuts.map(({ resumeWith: _quote, ...c }, i) => resolve(c, `cuts[${i}]`).catch((err: Error) => err)));
-        // One measurement pass covers every edge in the list.
-        await measureTimeline(tl, resolved.flatMap(r => r instanceof Error ? [] : [r.start, r.end]));
-        await reportChecked(tl, resolved.flatMap(r => r instanceof Error ? [] : [r]));
-        const joins: Array<Record<string, unknown>> = await Promise.all(resolved.map((r, i) => r instanceof Error ? { error: r.message } : report(r, cuts[i]!.resumeWith).catch((err: Error) => ({ error: describeError(err) }))));
-        const whole = JSON.stringify({ version: tl.version, joins });
-        if (whole.length <= JOIN_LIST_CHARS) return text(whole);
-        // A longer list would not reach the model at all, so it gives up its bulk: the words around each join, then
-        // the readings at its edges. Joins with both edges on quiet give theirs up first, since nothing about them is
-        // left to judge, then the others from the end of the list. Every join keeps its status and its range, and the
-        // result names each one that came back without some of it, for the agent to check again in a shorter list.
-        const short = new Set<number>();
-        // Counted as if every join were named, so what goes back is never longer than this.
-        let size = JSON.stringify({ version: tl.version, joins, evidenceLeftOut: joins.map((_, i) => i) }).length;
-        for (const [field, quiet] of [["nearbyWords", true], ["audio", true], ["alternativeWordRanges", true], ["nearbyWords", false], ["audio", false], ["alternativeWordRanges", false], ["acousticRetakeContinuity", true], ["acousticRetakeContinuity", false], ["partialWordRepeat", true], ["partialWordRepeat", false]] as const) {
-          for (let i = joins.length - 1; i >= 0 && size > JOIN_LIST_CHARS; i--) {
-            const join = joins[i]!;
-            if (!(field in join) || (join.status === "unchanged") !== quiet) continue;
-            // The value, its name in quotes, the colon and the comma.
-            size -= JSON.stringify(join[field]).length + field.length + 4;
-            delete join[field];
-            short.add(i);
+        const resolved = await resolve(cut, "Range");
+        await measureTimeline(tl, [resolved.start, resolved.end]);
+        await reportChecked(tl, [resolved]);
+        const { reading: checked, inspected } = await report(resolved, resumeWith);
+        publish(0, checked, inspected);
+        const result = json({ version: tl.version, ...checked });
+        if (!includeAudio || !hearing) return result;
+        for (const edge of checked.audio) {
+          const from = Math.max(0, edge.at - 1);
+          try {
+            const { wav } = await client.sourceAudio(ctx.projectId, { mediaId: edge.mediaId, from, to: edge.at + 1 });
+            result.content.push({ type: "text", text: `Original ${edge.edge} edge of ${edge.mediaId}: the boundary is ${(edge.at - from).toFixed(2)} s into this clip (source ${edge.at} s).` },
+              { type: "audio", mimeType: "audio/wav", data: wav });
+          } catch (err) {
+            result.content.push({ type: "text", text: `Audio for the ${edge.edge} edge is unavailable: ${describeError(err)}. Judge it from the levels.` });
           }
         }
-        return json({ version: tl.version, joins, evidenceLeftOut: [...short].sort((a, b) => a - b) });
-      }
-      const resolved = await resolve(cut, "Range");
-      await measureTimeline(tl, [resolved.start, resolved.end]);
-      await reportChecked(tl, [resolved]);
-      const checked = await report(resolved, resumeWith);
-      const result = json({ version: tl.version, ...checked });
-      if (!includeAudio || !hearing) return result;
-      for (const edge of checked.audio) {
-        const from = Math.max(0, edge.at - 1);
-        try {
-          const { wav } = await client.sourceAudio(ctx.projectId, { mediaId: edge.mediaId, from, to: edge.at + 1 });
-          result.content.push({ type: "text", text: `Original ${edge.edge} edge of ${edge.mediaId}: the boundary is ${(edge.at - from).toFixed(2)} s into this clip (source ${edge.at} s).` },
-            { type: "audio", mimeType: "audio/wav", data: wav });
-        } catch (err) {
-          result.content.push({ type: "text", text: `Audio for the ${edge.edge} edge is unavailable: ${describeError(err)}. Judge it from the levels.` });
-        }
-      }
-      return result;
+        return result;
+      }, ctx.joinWaitMs ?? 40_000);
     });
 
   /** Silences of two seconds or more inside this part that none of its decisions covers, on the version it was planned on. */
@@ -2423,9 +2422,10 @@ ${OPS_DOC}`,
       timelineEdits: z.array(z.object({ label: z.string().min(1).max(180).describe("Short editor-facing title, at most 50 characters"), range: z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).describe("Seconds in the resulting timeline. A cut: the point where it joins, start equal to end. Any other edit, such as footage kept or changed: all of that footage as it plays, from its first second to its last"), check: z.string().trim().min(1).max(120).optional().describe("A few words naming a doubt the editor must settle by listening or looking. Marks this edit as needing the editor until they keep it; omit when nothing is in doubt"), summary: z.string().trim().min(1).max(SUMMARY_MAX).optional().describe("One sentence on what this edit did, including anything else it changed and what check points at. The edit's card shows only this sentence"), replaces: z.object({ changeId: z.string(), spot: z.number().int().nonnegative() }).optional() })).optional().describe("List each distinct edit with a short editor-facing phrase from your reply and its range. Keep overlapping edits separate. For a revision set replaces to the original change ID and zero-based edit index; give the full updated range."),
       ...(!ctx.taskId && { autoApprove: z.boolean().optional().describe("Apply a standalone edit authored directly by the editor") }),
       skipRender: z.boolean().optional().describe("Skip before/after renders (metadata-only changes like markers)"),
+      withdraws: z.array(z.string()).max(20).optional().describe("Change IDs of this request's own suggestions or alternatives, still waiting for the editor, that this one replaces, such as a draft or a test. They leave the editor's review when this one is saved."),
       layeredSound: z.boolean().optional().describe("The editor asked to hear the same moment of a recording on two clips at once. Leave it out otherwise"),
     },
-    async ({ ops, timeline, description, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, layeredSound }) => {
+    async ({ ops, timeline, description, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws, layeredSound }) => {
       // Every clip edge the edit makes is measured on its recording, however the edit makes it: a ripple, a clip added
       // or trimmed, a whole new timeline. One pass built its video from added clips, which nothing measured, and began
       // a clip inside the end of an “uh”; the revision the editor then asked for trimmed that join by one frame, into
@@ -2441,7 +2441,8 @@ ${OPS_DOC}`,
       const before = base ? await getTimeline(base) : await headTimelineOrNull();
       if (range && (typeof pictureLayout === "object" || !before || !ops || ops.some(o => o.op !== "rippleDelete" || o.trackIds)))
         throw new Error("A bounded ripple edit takes only rippleDelete ops across all tracks on the existing timeline.");
-      const body: ProposeChangeRequest = { description, noteIds, intent, fromVersion: base, autoApprove: !ctx.taskId && autoApprove === true ? true : undefined, timelineEdits, skipRender };
+      const body: ProposeChangeRequest = { description, noteIds, intent, fromVersion: base, autoApprove: !ctx.taskId && autoApprove === true ? true : undefined, timelineEdits, skipRender,
+        ...(withdraws?.length && { withdraws }) };
       const frameChanges: FrameAdjustment[] = [];
       const inset = typeof pictureLayout === "object" ? pictureLayout : undefined;
       if (ops) {
@@ -2543,6 +2544,42 @@ ${OPS_DOC}`,
       const before = await getTimeline(base);
       const ops = audioCrossfadeOps(before, project.media, joins, duration ?? 2 / project.settings.fps);
       return propose({ intent, ops, description, noteIds }, before);
+    },
+  );
+
+  tool(
+    "timeline_transition",
+    "Put a transition on joins between clips on a video track, or take it off (none). A transition is how the picture moves from one clip to the next, centred on the join: dissolve, dip (through a colour), push, slide or whip (a push with a sideways blur). The sound at the join is not changed. Name a saved transition template with template (what the editor typed after $, such as swipe), or give type and duration; either way type, duration, direction and color you pass win over the template's. Find a join by the clip it leads into (clipId) or by its time on the track (at, timeline seconds; the bottom video track unless trackId). A transition shows a little more footage either side of the join, from each clip's own source; with less footage than half its length on a side it runs shorter, and with none it stays a straight cut: the result says what each join got. All joins form one proposal.",
+    {
+      intent: intentInput,
+      joins: z.array(z.object({ clipId: z.string().optional(), at: z.number().finite().nonnegative().optional(), trackId: z.string().optional() })).min(1),
+      template: z.string().min(1).optional().describe("A saved transition template, by name or id"),
+      type: z.enum(["dissolve", "dip", "push", "slide", "whip"]).optional(),
+      duration: z.number().finite().positive().max(10).optional().describe("Seconds, centred on the join"),
+      direction: z.enum(["left", "right", "up", "down"]).optional().describe("push, slide and whip: the way the picture travels; left brings the next picture in from the right"),
+      color: z.string().optional().describe("dip: the colour it passes through, default black"),
+      none: z.boolean().optional().describe("Take the transition off: the join is a straight cut again"),
+      description: z.string().min(1).default("Transition between clips"),
+      noteIds: z.array(z.string()).optional(),
+    },
+    async ({ intent, joins, template, type, duration, direction, color, none, description, noteIds }) => {
+      const base = lastTimeline?.version;
+      const { project } = await getProject();
+      const before = await getTimeline(base);
+      if (!before) throw new Error("There is no timeline to put a transition on yet.");
+      let style: Transition | null = null;
+      if (!none) {
+        const saved = template ? (await client.get<{ template: GraphicTemplate }>(`/templates/${encodeURIComponent(template.replace(/^\$/, ""))}`)).template : undefined;
+        if (saved && saved.kind !== "transition") throw new Error(`$${saved.name} is a graphic template, not a transition. graphic_render draws it.`);
+        const from = saved?.transition;
+        const kind = type ?? from?.type;
+        if (!kind) throw new Error("Name a transition template, or give its type and duration.");
+        style = Transition.parse({ ...from, type: kind, duration: duration ?? from?.duration ?? 0.5, ...(direction && { direction }), ...(color && { color }),
+          ...(saved && { template: saved.name }) });
+      }
+      const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
+      const result = await propose({ intent, ops, description, noteIds }, before);
+      return { ...result, content: [...result.content, { type: "text" as const, text: `Joins:\n${report.join("\n")}` }] };
     },
   );
 
@@ -2966,17 +3003,18 @@ ${OPS_DOC}`,
 
   tool(
     "template_list",
-    "List the graphic templates saved in the editor's library, for every project: id, name (what the editor types after $), title, description and fields. template_get reads one.",
+    "List the templates saved in the editor's library, for every project: id, kind, name (what the editor types after $), title and description, with a graphic's fields and a transition's movement. template_get reads one; timeline_transition puts a transition on joins.",
     {},
     async () => {
       const { templates } = await client.get<{ templates: GraphicTemplateSummary[] }>("/templates");
-      return json(templates.map(t => ({ id: t.id, name: t.name, title: t.title, description: t.description, fields: t.fields })));
+      return json(templates.map(t => ({ id: t.id, kind: t.kind, name: t.name, title: t.title, description: t.description,
+        ...(t.kind === "transition" ? { transition: t.transition } : { fields: t.fields }) })));
     },
   );
 
   tool(
     "template_get",
-    "Read a saved graphic template by id or name: its page with a {{Field}} placeholder wherever a field's value goes, its fields, the sample values its preview shows, the frame it was designed in, its usual duration and the moment its preview shows. graphic_render with template and fields draws it.",
+    "Read a saved template by id or name. A transition's is how it moves (timeline_transition puts it on joins). A graphic's is its page with a {{Field}} placeholder wherever a field's value goes, its fields, the sample values its preview shows, the frame it was designed in, its usual duration and the moment its preview shows. graphic_render with template and fields draws it.",
     { template: z.string().min(1).describe("Id or name") },
     async ({ template }) => {
       const { template: t } = await client.get<{ template: GraphicTemplate }>(`/templates/${encodeURIComponent(template.replace(/^\$/, ""))}`);
@@ -2986,20 +3024,32 @@ ${OPS_DOC}`,
 
   tool(
     "template_save",
-    `Save a graphic as a template in the editor's library, for every project, or replace the template with the same name. The page has a {{Field}} placeholder wherever a field's value goes (the values are put in as text); fields lists them in the order the editor reads them, and sample gives each a value for the template's preview, which Scarlet draws at previewAt. basedOn names a graphic of this project whose files (fonts, pictures) the page links to, and absolute links to files of this project are kept with the template. The editor picks a template by typing $ and its name. Returns the template's id${caps.images ? " and its preview" : ""}, and any font the preview couldn't find.`,
+    `Save a graphic or a transition as a template in the editor's library, for every project, or replace the template with the same name. A transition sends transition (how the picture moves, as timeline_transition takes it) and no page or fields. A graphic's page has a {{Field}} placeholder wherever a field's value goes (the values are put in as text); fields lists them in the order the editor reads them, and sample gives each a value for the template's preview, which Scarlet draws at previewAt. basedOn names a graphic of this project whose files (fonts, pictures) the page links to, and absolute links to files of this project are kept with the template. The editor picks a template by typing $ and its name. Returns the template's id${caps.images ? " and its preview" : ""}, and any font the preview couldn't find.`,
     {
       name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).max(64).describe("Lowercase words joined by hyphens, e.g. lower-third"),
       title: z.string().trim().min(1).max(120),
       description: z.string().max(2000).default("").describe("When to use it, in a line"),
-      fields: z.array(z.string().trim().min(1).max(60)).max(20),
+      fields: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
       html: z.string().min(1).max(500_000).optional(),
       ...(caps.files ? { path: z.string().optional().describe("Or an HTML file in the task artifact directory") } : {}),
-      sample: z.record(z.string()),
+      sample: z.record(z.string()).default({}),
+      transition: z.object({
+        type: z.enum(["dissolve", "dip", "push", "slide", "whip"]),
+        duration: z.number().finite().positive().max(10).describe("Seconds, centred on the join"),
+        direction: z.enum(["left", "right", "up", "down"]).default("left"),
+        color: z.string().optional().describe("dip: the colour it passes through"),
+      }).optional(),
       basedOn: z.string().optional().describe("mediaId of the graphic it was made from"),
       duration: z.number().positive().max(600).optional().describe("Seconds a use lasts by default"),
       previewAt: z.number().nonnegative().optional().describe("Seconds into the graphic the preview shows; default halfway"),
     },
     async (args) => {
+      if (args.transition) {
+        if (args.html || (args as { path?: string }).path) return errorText("A transition template has no page: send transition alone.");
+        const { template } = await client.post<{ template: GraphicTemplate }>("/templates", {
+          name: args.name, title: args.title, description: args.description, transition: args.transition, projectId: ctx.projectId });
+        return json({ templateId: template.id, name: template.name, kind: template.kind, transition: template.transition });
+      }
       const path = (args as { path?: string }).path;
       if (!args.html === !path) return errorText("Send the page as html or path.");
       const html = path ? (await readArtifact(await artifactDir(), path)).toString("utf8") : args.html!;
@@ -3096,6 +3146,24 @@ ${OPS_DOC}`,
       // A task whose update was lost or refused is still a Scarlet task. It hears what failed, and the request goes on without the update.
       return text(error === undefined ? "Not running as a Scarlet task; message not posted."
         : `This update didn't reach the editor: ${error}. Carry on with the request unless the task itself has ended.`);
+    },
+  );
+
+  // Only the run that chooses the moments for a Make shorts request: the first short's.
+  if (ctx.task?.context.short?.index === 1) tool(
+    "shorts_plan",
+    "Save the moments you chose for this Make shorts request, one per short, in the order the shorts are numbered: the first is this project's. " +
+      "Times are timeline seconds on the copied edit, the version every short started as. Each short is named for its title. " +
+      "Scarlet starts a run in each other short's project, given its moment, and moves the shorts you leave unused to the trash. Call it once, before you cut this project.",
+    {
+      moments: z.array(z.object({
+        start: z.number().finite().nonnegative(), end: z.number().finite().positive(),
+        title: z.string().trim().min(1).max(80).describe("A few words a viewer would know the short by"),
+      })).min(1).max(5),
+    },
+    async ({ moments }) => {
+      const result = await client.post<{ shorts: Array<{ projectId: string; name: string; taskId?: string }>; removed: string[] }>(`/tasks/${ctx.taskId}/shorts-plan`, { moments });
+      return json(result);
     },
   );
 
