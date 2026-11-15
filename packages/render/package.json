@@ -23,6 +23,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@hyzyla/pdfium": "3.0.0",
     "@ozymandiasthegreat/vad": "2.0.7",
     "@scarlet/timeline": "workspace:*"
   }

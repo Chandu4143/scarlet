@@ -102,6 +102,7 @@ test("the updater-signed release discloses OS signing and includes the same veri
   await remote.publish({ updaterSignedOnly: true });
   assert.match(remote.release.body, /Both Windows installers are unsigned/);
   assert.match(remote.release.body, /Restart to update/);
+  assert.match(remote.release.body, /0\.1\.20.*once/);
   assert.ok(remote.assets.some(asset => asset.name === "latest.json"));
 });
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProject, makeMediaClip, type Project, type Timeline } from "@scarlet/timeline";
 import { execFile } from "node:child_process";
-import { ChromeNotFound, chromeCandidates, findChrome, graphicCoverage, hasChrome, pdfPageCount, pdfPages, probeMedia, renderGraphic, renderGraphicStill, renderTimelineFrame, runCapture } from "./index.js";
+import { ChromeNotFound, chromeCandidates, findChrome, graphicCoverage, hasChrome, pdfPageCount, pdfPages, renderPdfDocument, probeMedia, renderGraphic, renderGraphicStill, renderTimelineFrame, runCapture } from "./index.js";
 
 let dir: string;
 
@@ -29,7 +29,7 @@ describe("finding Chrome", () => {
   it("names every place it looked when there is no browser", () => {
     expect(() => findChrome(path.join(os.tmpdir(), "no-such-chrome"))).toThrow(ChromeNotFound);
     expect(() => findChrome(undefined, { SCARLET_CHROME: "/nowhere/chrome" })).toThrow(/SCARLET_CHROME and \/nowhere\/chrome/);
-    expect(chromeCandidates("darwin")[0]).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    expect(chromeCandidates("darwin", { HOME: "/Users/editor" })[0]).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
     expect(chromeCandidates("win32", { PROGRAMFILES: "C:\\Program Files" })).toContain("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
     expect(chromeCandidates("linux", { PATH: "/usr/bin" })).toContain("/usr/bin/chrome-headless-shell");
   });
@@ -114,10 +114,13 @@ describe.skipIf(!hasChrome())("drawing a graphic", () => {
       await new Promise<void>((resolve, reject) => execFile(findChrome(), ["--headless=new", "--no-pdf-header-footer", `--user-data-dir=${profile}`, `--print-to-pdf=${pdf}`, html], error => error ? reject(error) : resolve()));
     } finally { await fs.rm(profile, { recursive: true, force: true }); }
     expect(pdfPageCount(await fs.readFile(pdf))).toBe(2);
-    const pages = await pdfPages(pdf, [1, 2, 3], { width: 400, settleMs: 1500 });
-    expect(pages).toHaveLength(2);
+    const { pageCount, pages } = await renderPdfDocument(pdf, [3, 2, 1, 1], { width: 400 });
+    expect(pageCount).toBe(2);
+    expect(pages.map(p => p.page)).toEqual([2, 1, 1]);
+    expect(pages[1]!.jpeg).toEqual(pages[2]!.jpeg);
+    expect(await pdfPages(pdf, [3], { width: 400 })).toHaveLength(0);
     const first = path.join(dir, "page1.jpg");
-    await fs.writeFile(first, pages[0]!);
+    await fs.writeFile(first, pages[1]!.jpeg);
     // The heading's red is drawn on the first page.
     const { stdout } = await runCapture("ffmpeg", ["-v", "error", "-i", first, "-vf", "format=rgb24", "-f", "rawvideo", "pipe:1"]);
     expect([...Array(stdout.length / 3).keys()].some(i => stdout[i * 3]! > 180 && stdout[i * 3 + 1]! < 80 && stdout[i * 3 + 2]! < 80)).toBe(true);
