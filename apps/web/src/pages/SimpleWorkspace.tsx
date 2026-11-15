@@ -58,6 +58,8 @@ import { useProjectStore } from "../stores/project";
 import { markedRangeOf, playheadPoints, pointOf, useUiStore, withMarkedRange, type AgentContext, type MarkedRange } from "../stores/ui";
 import { CutPreview } from "./WatchPage";
 import { EditHoverContext, type TimelineDot, type TimelineGap } from "../components/review/TimelineScrubber";
+import type { TimelineEdit } from "../components/review/timelineEdits";
+import { useProjectEdits } from "../components/review/useProjectEdits";
 import "../simple.css";
 
 const narrow = window.matchMedia("(max-width: 767px)");
@@ -2248,7 +2250,7 @@ export function SimpleWorkspace() {
   const editDot = (thread: Thread, e: Omit<ThreadEdit, "at"> & { at?: number }, title: string): TimelineDot => {
     const at = e.at ?? e.range.start;
     const landed = justLanded(e.changeId) ? e.beforeCut || e.at !== undefined ? "cut" as const : "edit" as const : undefined;
-    return { time: at, landed, title, summary: e.label,
+    return { time: at, landed, title, summary: e.label, edit: `${e.changeId}/${e.spot}`,
       detail: e.beforeCut ? `Removed ${lengthLabel(e.beforeCut.removed.end - e.beforeCut.removed.start)}`
         : e.at !== undefined ? editKindWord(e) ?? "Cut" : [editKindWord(e), span(e.range)].filter(Boolean).join(" · "),
       context: [...thread.changes, ...thread.flagged ?? []].find(c => belongsTo(e, c))?.description,
@@ -2299,6 +2301,31 @@ export function SimpleWorkspace() {
   // calls. While the timeline is the pass's own, its dots above draw them.
   const passDots: TimelineDot[] = !pass || !passThread || suggestion || (playerView && focusThread?.id === passThread.id) ? []
     : passEdits.flatMap(e => e.check && !passReviewed(e) && !passRevising(e) ? [{ ...passEditDot(passThread, e), group: "pass", state: "check" as const }] : []);
+  // Every applied edit on the working cut, whichever request made it, is drawn under the marks above and quieter: a cut
+  // a red line, a graphic a bar, gathered into counts where they would touch. Only while the timeline is the working cut:
+  // an open cut plays on the version before it, and a call or a suggestion on its own, where these times don't hold.
+  // The open edit has its band, and while a pass's full list is open its own cuts are its faint ticks.
+  const projectEdits = useProjectEdits(current.id, head, threads);
+  const onWorkingCut = !source && !beforeCut && !suggestion && !pinnedCallVersion && !appliedCut && !draftVersion && !!head && timeline?.version === head;
+  const listedThread = listShown ? focusThread?.id : undefined;
+  const openEditRef = useRef(actions.openEdit);
+  openEditRef.current = actions.openEdit;
+  const editDotRef = useRef(editDot);
+  editDotRef.current = editDot;
+  // An edit with a dot of its own is that dot, and isn't drawn again under it.
+  const dotted = [...numberedDots, ...passDots].flatMap(dot => !dot.quiet && dot.edit ? [dot.edit] : []).join("\n");
+  const allEdits = useMemo((): TimelineEdit[] => {
+    if (!onWorkingCut) return [];
+    const hasDot = new Set(dotted.split("\n"));
+    return projectEdits.flatMap(({ thread, edit: e }): TimelineEdit[] => {
+      if (thread.id === listedThread || (shownEdit && matchesEdit(shownEdit, e)) || hasDot.has(`${e.changeId}/${e.spot}`)) return [];
+      const at = e.at ?? e.range.start;
+      const kind = e.kind ?? (e.beforeCut ? "cut" : undefined);
+      const dot = editDotRef.current(thread, e, `${e.beforeCut || kind === "cut" ? "Cut" : editKindWord(e) ?? "Edit"} at ${clockLabel(at)}`);
+      return [{ ...dot, landed: undefined, key: `${e.changeId}/${e.spot}`, kind, time: at, end: e.at !== undefined ? at : e.range.end,
+        open: () => openEditRef.current(thread, e) }];
+    });
+  }, [projectEdits, onWorkingCut, listedThread, shownEdit, dotted]);
   // Once the edit or the list closes, the timeline stays with that request only while it still has an edit to check.
   // Otherwise it goes back: to a pass whose full list is still open in the chat, else to the latest request. The latest
   // request also takes it when it is new or has just applied an edit: the editor asked for something else.
@@ -3149,7 +3176,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard, heading: timelineHeading,
+          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard, heading: timelineHeading,
             gaps: cutKey ? gaps : undefined, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? audition)?.skips,
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
