@@ -3321,9 +3321,10 @@ it("cuts by word reference: edges go in the measured gaps, and every gate decisi
       cuts: [{ ...ref, kind: "retake", decision: "cut", reason: "The second take is cleaner." }] } }) as CallToolResult;
     expect(applied.isError).toBeFalsy();
     // Both edges sit in measured silence, so the cut applies as decided. "welcome" starts 0.04 s after its start, close
-    // enough for the picture to show it beginning, so the cut carries a check for the editor and the report says why.
-    expect(mock.requests.find(r => r.path.endsWith("/dialogue-cuts"))?.body).toMatchObject({
-      description: "Remove the first attempt", cuts: [{ start: 1.067, end: 3.5, review: false, check: "A removed word starts right after the cut: watch and listen at the join." }] });
+    // enough for the picture to show it beginning: the report tells the agent, and the cut carries no check unless it gives one.
+    const saved = mock.requests.find(r => r.path.endsWith("/dialogue-cuts"))?.body as { cuts: Record<string, unknown>[] };
+    expect(saved).toMatchObject({ description: "Remove the first attempt", cuts: [{ start: 1.067, end: 3.5, review: false }] });
+    expect(saved.cuts[0]).not.toHaveProperty("check");
     expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut",
       range: [1.07, 3.5], evidence: expect.stringContaining("the removed sound starts") }]);
     // Without measured silence beside the words, the edge falls back to word timings and Scarlet stages the cut, saying why.

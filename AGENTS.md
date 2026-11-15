@@ -53,6 +53,7 @@ Read `docs/AI-AGENTS.md` before changing the prompt, skills, MCP tools, percepti
 - The model makes editorial decisions, the harness (Claude Code, Codex) runs the agent loop, and Scarlet measures the footage, applies edits safely and gives the editor control. Keep them separate so a better model or harness improves Scarlet without changes here.
 - Speed is measured from the editor's request to a moment they can judge. Keep tools fast and cached, and render only what changed.
 - Only creative decisions reach the editor. Anything they'd have to do by hand is a missing tool or measurement.
+- Leave decisions to the model and avoid hardcoded heuristics. The editor gets creative choices and the cuts or edits the model isn't confident about, where a mistake is likely; the model decides which, from Scarlet's measurements. Scarlet doesn't flag, stage or decide by a fixed threshold, except to keep an edit safe.
 - Give the model everything the task needs: the editor's words as said, where they were looking, notes, the thread and preferences. When it errs, look for missing context before adding an instruction.
 - Write for the next model: no fixed pipelines, instructions only for observed failures, and prune rules after each model upgrade.
 - The engine builds the one prompt every host uses (`GET /api/tasks/:id/prompt`). Don't build prompts in a host.

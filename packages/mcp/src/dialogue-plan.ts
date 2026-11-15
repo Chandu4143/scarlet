@@ -65,7 +65,7 @@ export interface DialoguePlanSources {
 
 /** A word's estimate before alignment can sit a few hundred milliseconds early. Ask for final times this far past it. */
 export const SETTLED_MARGIN = 2;
-/** An applied cut's edge this close to the sound it removes is flagged for the editor: about two frames at 30 fps. */
+/** An applied cut's edge this close to the sound it removes is reported to the agent: about two frames at 30 fps. */
 export const SPEECH_BESIDE_EDGE = 0.06;
 
 /**
@@ -558,9 +558,10 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const disputedEdges = issuesByJoin.flat();
     if (disputedEdges.length) return { outcome: "needsRevision", disputedEdges };
   }
-  // An applied cut whose edge sits right beside the sound it removes goes to the editor to watch and hear: the picture
-  // can show a word starting that the sound has not reached yet. The cut still applies, as the agent decided it. Its
-  // edges were measured with its other checks; one with no reading there is not flagged.
+  // An applied cut whose edge sits right beside the sound it removes is reported to the agent: the picture can show a
+  // word starting that the sound has not reached yet. It is evidence, not a flag. Whether the join needs the editor is
+  // the agent's call, made with its own `check` or `edit_flag`: flagging every such join sent 13 of 81 cuts to the
+  // editor on one pass (2026-11-14). Edges with no reading there are not reported.
   // A pause takes out a wait, and what sounds in it goes with it; this is about the words a cut takes out.
   const near = SPEECH_BESIDE_EDGE;
   const edgePages = sources.pages();
@@ -580,11 +581,8 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       }
     }
     if (!close.length) return;
-    decisions[i] = { ...d, check: close.length === 2 ? "Speech sits right beside both edges: watch and listen at the join."
-      : close[0]!.startsWith("the removed sound starts") ? "A removed word starts right after the cut: watch and listen at the join."
-      : "A removed word ends right before the join: watch and listen there." };
     report.push({ cut: c.input, kind: c.kind, ...(c.words && { words: c.words }), asked: c.decision, outcome: "cut",
-      range: [r2(d.start), r2(d.end)], evidence: `In the recording ${close.join(" and ")}. The cut applies; the editor is asked to check it (${decisions[i]!.check}).` });
+      range: [r2(d.start), r2(d.end)], evidence: `In the recording ${close.join(" and ")}, close enough for the picture to show it. The cut applies as decided.` });
   });
   removals.forEach((c, i) => {
     const d = decisions[i]!;

@@ -372,8 +372,10 @@ describe("dialogue plan", () => {
     const dipped = await plan(.001);
     expect(dipped.decision).toMatchObject({ review: false, start: 1.4, end: 2.4 });
     expect(dipped.gate).toMatchObject({ outcome: "cut", evidence: expect.stringContaining("No pause between “recognized” and “that”: the start is at the lowest level between them (-60 dBFS).") });
-    // The repeat starts the instant the cut does, so the cut applies and the editor is asked to watch and hear the join.
-    expect(dipped.decision.check).toBe("A removed word starts right after the cut: watch and listen at the join.");
+    // The repeat starts right after the cut. The cut applies and the gate tells the agent; whether the editor needs
+    // to watch the join is the agent's call, so Scarlet flags nothing itself.
+    expect(dipped.decision.check).toBeUndefined();
+    expect(dipped.gate.evidence).toContain("the removed sound starts 0.02 s after the cut");
     // Spoken straight through, or with a dip no deeper than a sibilant's hiss, there is nowhere to cut, and the editor auditions it as before.
     for (const level of [.12, .005]) {
       const through = await plan(level);
