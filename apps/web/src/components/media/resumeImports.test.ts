@@ -340,11 +340,14 @@ it("carries on with a list saved before first files were marked", async () => {
   expect(pendingImports("other")).toEqual([{ projectId: "other", source: "/clips/z.mov", at }]);
 });
 
-it("knows a link saved before imports were marked has arrived by the name the engine gave it, without the address's escapes", async () => {
+it.each([
+  ["without the address's escapes", "Café take.mp4"],
+  ["with them, as a file that arrived before names were decoded", "Caf%C3%A9%20take.mp4"],
+])("knows a link saved before imports were marked has arrived by the name the engine gave it, %s", async (_, name) => {
   const at = "2026-11-06T20:00:00.000Z";
   const link = "https://example.com/clips/Caf%C3%A9%20take.mp4";
   const { resumeImports } = await relaunch(JSON.stringify([{ projectId: "prj", source: link, at }]));
-  const arrived = { ...video("Café take.mp4", 1920, 1080, 30), provenance: { by: "human", createdAt: at } } as MediaAsset;
+  const arrived = { ...video(name, 1920, 1080, 30), provenance: { by: "human", createdAt: at } } as MediaAsset;
   await resumeImports("prj", [arrived]);
   expect(importLocalFile).not.toHaveBeenCalled();
   expect(localStorage.getItem(SAVED)).toBeNull();

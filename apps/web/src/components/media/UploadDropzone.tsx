@@ -41,10 +41,16 @@ export type ImportSource = File | string;
 export function filename(source: ImportSource) {
   if (typeof source !== "string") return source.name;
   if (!isLink(source)) return source.split(/[\\/]/).pop() || source;
-  let last: string | undefined;
-  try { last = new URL(source).pathname.split("/").pop(); } catch { return source; }
-  if (!last?.includes(".")) return source;
+  const last = linkFile(source);
+  if (!last) return source;
   try { return decodeURIComponent(last); } catch { return last; }
+}
+
+/** A link's last part as its address spells it, when that reads as a file's name. */
+function linkFile(link: string) {
+  let last: string | undefined;
+  try { last = new URL(link).pathname.split("/").pop(); } catch { return undefined; }
+  return last?.includes(".") ? last : undefined;
 }
 
 interface ProjectImports {
@@ -175,8 +181,10 @@ export function resumeImports(projectId: string, media: readonly MediaAsset[]) {
   const added = (i: PendingImport) => {
     if (i.started === false) return;
     if (i.importId) return media.find(m => m.importId === i.importId);
-    // Older queues recorded only the filename and when the file was chosen.
-    return media.find(m => m.name === filename(i.source) && (m.provenance?.createdAt ?? "") >= i.at);
+    // Older queues recorded only the filename and when the file was chosen. A link that arrived before its name was
+    // decoded is named as its address spells it.
+    const names = [filename(i.source), isLink(i.source) && linkFile(i.source)];
+    return media.find(m => names.includes(m.name) && (m.provenance?.createdAt ?? "") >= i.at);
   };
   const matchFormat = waiting.some(i => i.setsFormat) ? resumeFirstClip(projectId) : undefined;
   const jobs: Promise<void>[] = [];
