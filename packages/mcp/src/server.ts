@@ -42,7 +42,7 @@ import {
   emptyTimeline,
   frameAligned,
   introducedDoubledSound,
-  type DoubledSound,
+  type LouderDoubledSound,
   newId,
   makeTimeMap,
   mergeRanges,
@@ -164,16 +164,16 @@ function newClipEdges(before: Timeline | null, next: Timeline, media: ReadonlyAr
   return edges;
 }
 
-const DOUBLED_SOUND = "Nothing was saved. The mix would play that sound twice, at twice its level. Silence one copy only where they overlap, so the sound either clip plays alone stays, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
+const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that sound would play louder than the edit started. Silence one copy only where they overlap, so the sound either clip plays alone stays, or lower the copies until their volumes add up to the level it started at, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
 
 /** A doubled pair as the refusal names it, with the one change that silences a copy and keeps what each plays alone. */
-export function doubledSoundText(d: DoubledSound, next: Timeline): string {
+export function doubledSoundText(d: LouderDoubledSound, next: Timeline): string {
   const clips = new Map(next.tracks.flatMap(t => t.clips.map(c => [c.id, c] as const)));
   const [a, b] = d.clipIds.map(id => clips.get(id) as MediaClip);
   // The exact seconds, so a split there leaves no sliver of either copy doubled or silenced.
   const from = Math.max(a!.timelineIn, b!.timelineIn), to = Math.min(clipEnd(a!), clipEnd(b!));
   const t = (n: number) => String(+n.toFixed(6));
-  const pair = `clips ${a!.id} and ${b!.id} both play ${d.mediaId} from ${t(timelineToSource(a!, from))} to ${t(timelineToSource(a!, to))} s, at ${t(from)}–${t(to)} s on the timeline`;
+  const pair = `clips ${a!.id} and ${b!.id} both play ${d.mediaId} from ${t(timelineToSource(a!, from))} to ${t(timelineToSource(a!, to))} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
   // One clip of the two starts where they overlap and one ends there, so either one plays only inside the overlap or each
   // plays past it on one side, where a single split leaves its own sound.
   const inside = [b!, a!].find(c => c.timelineIn >= from - 1e-6 && clipEnd(c) <= to + 1e-6);
@@ -2404,7 +2404,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. An edit that has two audible clips play the same moment of one recording at once, which the mix plays twice as loud, is refused with the clips and where they overlap: silence one of them only there, so sound either plays alone stays, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, where they overlap and both levels. Silence one of them only there, so sound either plays alone stays, or lower them to the level it started at, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {
@@ -2501,7 +2501,7 @@ ${OPS_DOC}`,
         const next = body.timeline ?? applyOps(before ?? emptyTimeline(ctx.projectId), body.ops ?? []);
         const doubled = await getProject()
           .then(({ project }) => introducedDoubledSound(before, next, project.media))
-          .catch(without("failed to check the edit for sound it plays twice", [] as DoubledSound[]));
+          .catch(without("failed to check the edit for sound it plays louder", [] as LouderDoubledSound[]));
         if (doubled.length) throw new Error(doubled.slice(0, 6).map(d => doubledSoundText(d, next)).join("; ") +
           `${doubled.length > 6 ? `; and ${doubled.length - 6} more` : ""}. ${DOUBLED_SOUND}`);
       }

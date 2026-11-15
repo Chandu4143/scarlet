@@ -497,7 +497,7 @@ describe("timeline_propose", () => {
       const saved = changes();
       const doubled = await propose(tl, { ops: [added] });
       expect(doubled.isError).toBe(true);
-      expect(textOf(doubled)).toContain("clips video-clip and audio-clip both play m1 from 0 to 5 s, at 0–5 s on the timeline: audio-clip plays only there, so set its volume to 0");
+      expect(textOf(doubled)).toContain("clips video-clip and audio-clip both play m1 from 0 to 5 s, at 0–5 s on the timeline, where their volumes add up to 2 and the edit started at 1: audio-clip plays only there, so set its volume to 0");
       expect(textOf(doubled)).toContain("Nothing was saved");
       expect(changes()).toBe(saved);
       // The editor asked to hear it twice.
@@ -514,6 +514,49 @@ describe("timeline_propose", () => {
       // A full replacement timeline is checked the same way.
       const whole = { ...tl, tracks: [tl.tracks[0]!, { ...tl.tracks[1]!, clips: [makeMediaClip("m1", 0, 5, 0, { id: "audio-clip" })] }] };
       expect(textOf(await propose(tl, { timeline: whole }))).toContain("clips video-clip and audio-clip both play m1");
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
+  });
+
+  it("compares the copies' combined level with the base's: a split into two copies at 0.5 applies, and raising them to 1 is refused", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    const changes = () => mock.requests.filter(req => req.method === "POST" && req.path.endsWith("/changes")).length;
+    const propose = async (base: Timeline, ops: object[], extra: Record<string, unknown> = {}) => {
+      mock.state.timeline = structuredClone(base);
+      await c.callTool({ name: "timeline_get", arguments: {} });
+      return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Layer the sound", ops, ...extra } }) as CallToolResult;
+    };
+    try {
+      const single = emptyTimeline(mock.state.project.id);
+      single.version = "v_single";
+      single.tracks[0]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "video-clip" })];
+      // The one clip at 1 as two copies in sync at 0.5 each: the mix plays it as loud as before.
+      const halves = [{ op: "updateClip", clipId: "video-clip", patch: { volume: 0.5 } },
+        { op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 0, 5, 0, { id: "audio-clip", volume: 0.5 }) }];
+      const split = await propose(single, halves);
+      expect(split.isError, textOf(split)).toBeFalsy();
+
+      // Those two copies raised to 1 play it at twice the level, though neither is a new copy.
+      const layered = structuredClone(single);
+      layered.version = "v_halves";
+      layered.tracks[0]!.clips[0]!.volume = 0.5;
+      layered.tracks[1]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "audio-clip", volume: 0.5 })];
+      const raise = [{ op: "updateClip", clipId: "video-clip", patch: { volume: 1 } }, { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }];
+      const saved = changes();
+      const raised = await propose(layered, raise);
+      expect(raised.isError).toBe(true);
+      expect(textOf(raised)).toContain("clips video-clip and audio-clip both play m1 from 0 to 5 s, at 0–5 s on the timeline, where their volumes add up to 2 and the edit started at 1");
+      expect(textOf(raised)).toContain("Nothing was saved");
+      expect(changes()).toBe(saved);
+      expect((await propose(layered, raise, { layeredSound: true })).isError).toBeFalsy();
+      // Raising one of them alone with the other silenced is one copy at 1, as the base played it.
+      const swapped = [{ op: "updateClip", clipId: "video-clip", patch: { volume: 0 } }, { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }];
+      expect((await propose(layered, swapped)).isError).toBeFalsy();
     } finally {
       mock.state.timeline = old.timeline;
       mock.state.waveform = old.waveform;
@@ -540,7 +583,7 @@ describe("timeline_propose", () => {
       const added = { op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 1.05, 3.5, 1.05, { id: "audio-clip" }) };
       const doubled = await propose([added]);
       expect(doubled.isError).toBe(true);
-      expect(textOf(doubled)).toContain("at 1.05–1.7 s on the timeline: each also plays on its own outside that, so splitClip audio-clip at 1.7, which keeps the part after it as a new clip with its sound, and set audio-clip's volume to 0");
+      expect(textOf(doubled)).toContain("at 1.05–1.7 s on the timeline, where their volumes add up to 2 and the edit started at 1: each also plays on its own outside that, so splitClip audio-clip at 1.7, which keeps the part after it as a new clip with its sound, and set audio-clip's volume to 0");
       // Done as it says, A1 takes over from V1 at 1.7 s inside “back.”, on the same second of the recording: one sound
       // that plays on, not a cut through the word.
       const fixed = await propose([added, { op: "splitClip", clipId: "audio-clip", at: 1.7, newClipId: "audio-rest" },

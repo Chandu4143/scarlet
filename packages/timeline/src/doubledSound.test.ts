@@ -94,15 +94,57 @@ describe("doubled sound", () => {
     expect(doubledSound(tl, media)).toHaveLength(1);
   });
 
-  it("reports only the pairs an edit introduced", () => {
-    const before = reported();
+  it("reports copies an edit adds of a moment the base played once, wherever on the timeline", () => {
+    const once = timeline([makeMediaClip("media-a", 0, 5.75, 0, { id: "video-clip" })]);
+    const next = structuredClone(once);
+    next.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-a" }));
+    next.tracks[0]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-v" }));
+    expect(introducedDoubledSound(once, next, media)).toEqual([{ mediaId: "media-a", clipIds: ["late-v", "late-a"],
+      overlap: { start: 10, end: 12 }, source: { start: 0, end: 2 }, level: { before: 1, after: 2 } }]);
+    // From an empty timeline the report's two copies at unity are twice unity.
+    expect(introducedDoubledSound(null, reported(), media)).toEqual([{ ...doubledSound(reported(), media)[0]!, level: { before: 1, after: 2 } }]);
+  });
+
+  it("leaves a copy of a moment the base already layered, at the level it played it", () => {
     const next = reported();
     next.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-a" }));
     next.tracks[0]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-v" }));
-    expect(introducedDoubledSound(before, next, media)).toEqual([
-      { mediaId: "media-a", clipIds: ["late-v", "late-a"], overlap: { start: 10, end: 12 }, source: { start: 0, end: 2 } },
+    expect(introducedDoubledSound(reported(), next, media)).toEqual([]);
+  });
+
+  it("compares combined level: one clip at 1 split into two copies at 0.5 plays as before, and raising them to 1 doubles it", () => {
+    const single = timeline([makeMediaClip("media-a", 0, 5.75, 0, { id: "video-clip" })]);
+    const halves = reported();
+    for (const track of halves.tracks.slice(0, 2)) (track.clips[0] as MediaClip).volume = 0.5;
+    expect(introducedDoubledSound(single, halves, media)).toEqual([]);
+    const raised = applyOps(halves, [
+      { op: "updateClip", clipId: "video-clip", patch: { volume: 1 } },
+      { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } },
     ]);
-    expect(introducedDoubledSound(null, before, media)).toHaveLength(1);
+    expect(introducedDoubledSound(halves, raised, media)).toEqual([{ ...doubledSound(raised, media)[0]!, level: { before: 1, after: 2 } }]);
+    // Raising one of them to 1 is 1.5.
+    const one = applyOps(halves, [{ op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }]);
+    expect(introducedDoubledSound(halves, one, media).map(d => d.level)).toEqual([{ before: 1, after: 1.5 }]);
+  });
+
+  it("leaves one clip's own volume, with no second copy", () => {
+    const single = timeline([makeMediaClip("media-a", 0, 5.75, 0, { id: "v" })]);
+    const louder = applyOps(single, [{ op: "updateClip", clipId: "v", patch: { volume: 3 } }]);
+    expect(introducedDoubledSound(single, louder, media)).toEqual([]);
+  });
+
+  it("holds a moment the base didn't play to the louder of unity and the loudest copy", () => {
+    const quiet = timeline([makeMediaClip("media-a", 0, 5, 0, { id: "v", volume: 0.5 })], [makeMediaClip("media-a", 0, 5, 0, { id: "a", volume: 0.3 })]);
+    expect(introducedDoubledSound(null, quiet, media)).toEqual([]);
+    const loud = timeline([makeMediaClip("media-a", 0, 5, 0, { id: "v", volume: 1.5 })], [makeMediaClip("media-a", 0, 5, 0, { id: "a", volume: 0.5 })]);
+    expect(introducedDoubledSound(null, loud, media).map(d => d.level)).toEqual([{ before: 1.5, after: 2 }]);
+    // The base playing another stretch of the recording quietly doesn't hold this one to that level.
+    const elsewhere = timeline([makeMediaClip("media-a", 0, 2, 0, { id: "early", volume: 0.5 })]);
+    const later = timeline([makeMediaClip("media-a", 3, 5, 3, { id: "v", volume: 0.6 })], [makeMediaClip("media-a", 3, 5, 3, { id: "a", volume: 0.3 })]);
+    expect(introducedDoubledSound(elsewhere, later, media)).toEqual([]);
+    // A muted clip in the base played nothing.
+    const muted = timeline([makeMediaClip("media-a", 0, 5, 0, { id: "v", volume: 0 })]);
+    expect(introducedDoubledSound(muted, reported(), media).map(d => d.level)).toEqual([{ before: 1, after: 2 }]);
   });
 
   it("doesn't report sound layered on purpose that a later edit cuts through, which gives its clips new ids", () => {
@@ -114,10 +156,12 @@ describe("doubled sound", () => {
     expect(introducedDoubledSound(layered, split, media)).toEqual([]);
   });
 
-  it("reports a third copy moved under two layered on purpose, by the pairs it makes", () => {
+  it("reports a third copy moved under two layered on purpose, by the pairs it makes, at 3 where the base played 2", () => {
     const before = reported();
     before.tracks.push({ ...structuredClone(before.tracks[1]!), id: "a2", clips: [makeMediaClip("media-a", 0, 5.75, 20, { id: "third" })] });
     const next = applyOps(before, [{ op: "moveClip", clipId: "third", timelineIn: 0 }]);
-    expect(introducedDoubledSound(before, next, media).map(d => d.clipIds)).toEqual([["video-clip", "third"], ["audio-clip", "third"]]);
+    expect(introducedDoubledSound(before, next, media).map(d => [d.clipIds, d.level])).toEqual([
+      [["video-clip", "third"], { before: 2, after: 3 }], [["audio-clip", "third"], { before: 2, after: 3 }],
+    ]);
   });
 });
