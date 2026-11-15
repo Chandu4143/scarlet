@@ -19,8 +19,7 @@ import { Composer } from "../components/agent/Composer";
 import { useImportTranscription } from "../components/media/TranscriptionAction";
 import { Dropzone, useImportCount, useUploader } from "../components/media/UploadDropzone";
 import { MediaDrawer } from "../components/media/MediaDrawer";
-import { CachingMenuItem, MediaButton, useVideoCaching } from "../components/media/MediaMenuItems";
-import { ProgressRing } from "../components/ui/ProgressRing";
+import { CachingMenuItem, MediaButton } from "../components/media/MediaMenuItems";
 import { LearningsPanel, learningsToReview } from "../components/review/LearningsPanel";
 import { usePlaybackCache } from "../components/player/usePlaybackCache";
 import { focusAround } from "../components/player/SimpleProgress";
@@ -1531,10 +1530,7 @@ export function SimpleWorkspace() {
   const [menuError, setMenuError] = useState("");
   const needsYou = [toLearn > 0 && `${plural(toLearn, "rule")} to review in Learnings`, exportWarning, modelNeedsYou && "No model is ready"]
     .filter((reason): reason is string => !!reason);
-  // Pausing caching is inside the menu, so its button shows when videos are caching: a ring that fills as far as
-  // they've got. It asks nothing of the editor, so it isn't the amber mark.
-  const caching = useVideoCaching();
-  const menuSays = [...needsYou, caching.label].filter((line): line is string => !!line).join(". ");
+  const menuSays = needsYou.join(". ");
   // A clip from Media and the cut each keep their own place: the clip opens at its start, not at the cut's time on
   // it, and going back returns the cut to where it was left.
   const cutPlace = useRef<number>(undefined);
@@ -3125,16 +3121,15 @@ export function SimpleWorkspace() {
               <span className="rotate-180 inline-flex"><Icon name="arrow" size={13} /></span></Link>
             <h1 title={current.project.name}>{current.project.name}</h1>
             <ConnectionStatus />
-            {/* The menu shows status for the project tools. Its button is
-                marked when something inside needs the editor, and the row that does carries the same mark. While videos
-                cache, a ring fills around it. */}
+            {/* The menu's button is marked when something inside needs the editor, and the row that does carries the
+                same mark. While videos cache, the ring is on the Media button. */}
             <div className="simple-tools">
               <MediaButton importing={importing} importFailed={importFailed} onOpen={() => setPanel("media")} />
               <ExportButton onOpen={() => setPanel("export")} />
               <button type="button" className="btn-quiet" aria-haspopup="dialog" onClick={() => setPanel("history")}>History</button>
               <Dropdown label="More" align="right" width={240} description={menuSays || undefined}
                 button={<span className={`btn-icon simple-more${needsYou.length ? " needs-you" : ""}`} title={menuSays || "More"}>
-                  <Icon name="more" />{caching.active && <ProgressRing className="simple-more-ring" progress={caching.progress} />}</span>}>
+                  <Icon name="more" /></span>}>
                 {close => <>
                   <MenuItem onClick={() => { close(); setPanel("learnings"); }} title={toLearn ? `${plural(toLearn, "rule")} to review` : undefined}>
                     <Icon name="bulb" />Learnings{toLearn > 0 && <span className="menu-dot" role="img" aria-label={`${plural(toLearn, "rule")} to review`} />}</MenuItem>

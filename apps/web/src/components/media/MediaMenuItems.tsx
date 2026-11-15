@@ -5,6 +5,7 @@ import { mediaProblems, mediaWarningLabel } from "../../lib/transcriptionProgres
 import { useProjectStore } from "../../stores/project";
 import { MenuItem } from "../shell/WorkspaceNavigation";
 import { Icon } from "../ui/primitives";
+import { ProgressLine } from "../ui/ProgressLine";
 import { cachePercent, useSourceCaches } from "./sourceCaches";
 
 /**
@@ -23,8 +24,8 @@ export function useMediaWarning(importFailed = false): string | undefined {
 
 /**
  * What the project's videos are doing with their playback caches: caching and how far, or waiting their turn, and
- * whether the project is paused. It is about the videos only: the edit's own playback cache isn't counted. The header's Media button and
- * the ring around the menu's button both read it, so they say the same thing.
+ * whether the project is paused. It is about the videos only: the edit's own playback cache isn't counted. The header's
+ * Media button reads it for its line and its hover, and the menu's caching row for Pause and Resume.
  * How far is counted across the videos being cached by their length, so the figure only goes up as one video
  * finishes and the next starts.
  */
@@ -56,17 +57,19 @@ export function useVideoCaching() {
 }
 
 /**
- * The header's Media button. It carries the amber mark when a file needs the editor, and hover names the problem
- * ahead of what the videos are doing (adding, caching and how far, paused). Each video's cache is in Media itself.
+ * The header's Media button. While videos cache, a line under its word fills as far as they've got, as Export's does
+ * while it exports. It carries the amber mark when a file needs the editor, and hover names the problem ahead of what
+ * the videos are doing (adding, caching and how far, paused). Each video's cache is in Media itself.
  */
 export function MediaButton({ importing, importFailed, onOpen }: { importing: number; importFailed?: boolean; onOpen(): void }) {
   const warning = useMediaWarning(importFailed);
-  const { headline } = useVideoCaching();
-  const doing = importing > 0 ? `Adding ${plural(importing, "file")}` : headline;
+  const { active, progress, label, headline } = useVideoCaching();
+  const doing = importing > 0 ? `Adding ${plural(importing, "file")}` : label ?? headline;
   const description = [warning, doing].filter(Boolean).join(". ") || undefined;
   return <button type="button" className={`btn-quiet simple-media${warning ? " needs-you" : ""}`} aria-haspopup="dialog" title={description}
     aria-description={description} onClick={onOpen}>
     Media{warning && <span className="menu-dot" role="img" aria-label={warning} />}
+    {active && <ProgressLine progress={progress} />}
   </button>;
 }
 

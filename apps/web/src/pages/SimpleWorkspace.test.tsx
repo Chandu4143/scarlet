@@ -5365,9 +5365,9 @@ const openMenu = () => click(container.querySelector('[aria-label="More"]')!);
 const moreButton = () => container.querySelector<HTMLElement>('[aria-label="More"]')!;
 /** A row of the menu by its name, whatever status or mark follows the name. */
 const menuRow = (name: string) => [...container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(i => i.textContent?.trim().startsWith(name))!;
-/** The ring around the menu's button while videos cache, and how much of it is drawn, out of 100. */
-const cachingRing = () => moreButton().querySelector<SVGElement>(".simple-more-ring");
-const ringDrawn = (ring = cachingRing()) => Math.round(100 - Number(ring?.querySelector("circle + circle")?.getAttribute("stroke-dashoffset")));
+/** The line under the Media button's word while videos cache, and how much of it is filled, out of 100, or 0 while unmeasured. */
+const cachingLine = () => mediaButton().querySelector<HTMLElement>(".progress-line");
+const lineDrawn = (line = cachingLine()) => Math.round(parseFloat(line?.querySelector<HTMLElement>("span")?.style.width || "0"));
 const exportButton = () => buttonIn(container.querySelector(".simple-tools")!, "Export")!;
 /** The header's Media button, whatever mark follows its name. */
 const mediaButton = () => container.querySelector<HTMLElement>(".simple-tools .simple-media")!;
@@ -5473,7 +5473,7 @@ it("caches the edit without a ring on the picture or a word on the Media button,
   await show();
   await act(async () => {});
   expect(container.querySelector(".simple-cache")).toBeNull();
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(mediaButton().title).toBe("");
   await openMenu();
   expect(menuItems()).not.toContain("Media");
@@ -5618,23 +5618,23 @@ it("says how far a video's cache has got on the menu's Media row, with Pause und
   useProjectStore.setState({ updateProject });
   await show();
   await act(async () => {});
-  // Caching needs nothing from the editor, so the menu isn't marked for it. Pausing it is inside the menu, so its
-  // button shows the caching instead: a ring drawn as far as the cache has got, named on hover.
+  // Caching needs nothing from the editor, so nothing is marked for it. The Media button shows it: a line under its
+  // word filled as far as the cache has got, named on hover. The menu's button shows nothing.
   expect(moreButton().querySelector(".needs-you")).toBeNull();
-  expect(ringDrawn()).toBe(30);
-  expect(cachingRing()!.classList.contains("is-unknown")).toBe(false);
-  expect(moreTitle()).toBe("Caching 30%");
-  expect(moreButton().getAttribute("aria-description")).toBe("Caching 30%");
-  // The menu button draws the ring without repeating its status in text.
-  expect(moreButton().textContent).toBe("");
-  expect(mediaButton().title).toBe(rest.length ? `${rest.length} of ${rest.length + 1} videos cached` : "Caching for playback");
+  expect(moreButton().querySelector(".progress-line")).toBeNull();
+  expect(moreTitle()).toBe("More");
+  expect(lineDrawn()).toBe(30);
+  expect(cachingLine()!.classList.contains("is-unknown")).toBe(false);
+  expect(mediaButton().title).toBe("Caching 30%");
+  expect(mediaButton().getAttribute("aria-description")).toBe("Caching 30%");
+  expect(mediaButton().textContent).toBe("Media");
   await openMenu();
   await click(menuItem("Pause caching"));
   expect(updateProject).toHaveBeenCalledWith({ mediaPaused: true });
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 
-it("draws a ring around the menu's button only while videos cache, and leaves a file that needs the editor to the Media button", async () => {
+it("draws a line under the Media button's word only while videos cache, and never on the menu's button", async () => {
   const [first, ...rest] = data.media.filter(m => m.kind === "video");
   const others = rest.map(m => ({ mediaId: m.id, state: "ready" as const }));
   const caches = vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [{ mediaId: first!.id, state: "ready" }, ...others] });
@@ -5648,35 +5648,35 @@ it("draws a ring around the menu's button only while videos cache, and leaves a 
   await show();
   await act(async () => {});
   // Every video cached: the button is as it always is.
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(moreTitle()).toBe("More");
-  expect(moreButton().getAttribute("aria-description")).toBeNull();
-  // A cache starts and the engine has no figure yet: a quarter of the ring, which turns.
+  expect(mediaButton().getAttribute("aria-description")).not.toMatch(/^Caching/);
+  // A cache starts and the engine has no figure yet: a short stretch of the line, which slides.
   await cachesBecome({ state: "caching" });
-  expect(cachingRing()!.classList.contains("is-unknown")).toBe(true);
-  expect(ringDrawn()).toBe(25);
-  expect(moreTitle()).toBe("Caching");
+  expect(cachingLine()!.classList.contains("is-unknown")).toBe(true);
+  expect(lineDrawn()).toBe(0);
+  expect(mediaButton().title).toBe("Caching");
+  expect(moreButton().querySelector(".progress-line")).toBeNull();
   await cachesBecome({ state: "caching", progress: 0.71 });
-  expect(cachingRing()!.classList.contains("is-unknown")).toBe(false);
-  expect(ringDrawn()).toBe(71);
-  expect(moreTitle()).toBe("Caching 71%");
+  expect(cachingLine()!.classList.contains("is-unknown")).toBe(false);
+  expect(lineDrawn()).toBe(71);
+  expect(mediaButton().title).toBe("Caching 71%");
   // A file that needs the editor marks the Media button, which says it first, and not the menu.
   const broken = rest[0] ?? first!;
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "failed" as const, error: "moov atom not found" } : m) });
   expect(moreButton().querySelector(".needs-you")).toBeNull();
-  expect(cachingRing()).not.toBeNull();
-  expect(moreTitle()).toBe("Caching 71%");
-  expect(mediaButton().title).toMatch(new RegExp(`^Couldn’t read ${broken.name}\\. `));
+  expect(cachingLine()).not.toBeNull();
+  expect(mediaButton().title).toBe(`Couldn’t read ${broken.name}. Caching 71%`);
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "ready" as const, error: undefined } : m) });
   // Paused, nothing is caching: the ring is gone, and nothing under the header says so. The menu's Resume caching row does.
   await cachesBecome({ state: "uncached", queued: true }, { project: { ...data.project, mediaPaused: true } });
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(container.querySelector(".simple-banner")).toBeNull();
   // Cached: the ring goes.
   await cachesBecome({ state: "caching", progress: 0.9 }, { project: { ...data.project, mediaPaused: false } });
-  expect(ringDrawn()).toBe(90);
+  expect(lineDrawn()).toBe(90);
   await cachesBecome({ state: "ready" });
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(moreTitle()).toBe("More");
 });
 
@@ -5838,17 +5838,17 @@ it("updates the Export button as the job advances without drawing the player or 
   preview.mockClear();
   const chat = composer.props;
   expect(chat).toBeDefined();
-  const ring = () => exportButton().querySelector<SVGElement>("svg");
+  const ring = () => exportButton().querySelector<HTMLElement>(".progress-line");
   const status = () => [exportButton().title, exportButton().getAttribute("aria-description")];
   expect(ring()).toBeNull();
   await exports({ ...running, phase: "choosing" });
   expect(ring()).toBeNull();
   await exports(running);
   expect(ring()?.getAttribute("aria-hidden")).toBe("true");
-  expect(ringDrawn(ring())).toBe(42);
+  expect(lineDrawn(ring())).toBe(42);
   expect(status()).toEqual(["Exporting 42%", "Exporting 42%"]);
   await exports({ ...running, progress: 0.5 });
-  expect(ringDrawn(ring())).toBe(50);
+  expect(lineDrawn(ring())).toBe(50);
   for (const job of [{ ...running, progress: 0 }, { ...running, progress: 0, waiting: true },
     { ...running, progress: 0.97 }, { ...running, phase: "saving" as const, progress: 1 }]) {
     await exports(job);

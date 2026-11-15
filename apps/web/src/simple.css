@@ -265,22 +265,21 @@
 .simple-more.needs-you { color: var(--color-fg); }
 .simple-more.needs-you::after { content: ""; position: absolute; top: 4px; right: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--color-warn);
   box-shadow: 0 0 0 2px var(--color-panel); }
-/* Caching and exporting share the same motion. The cache ring surrounds More, and the export ring sits beside its label. */
-.simple-more-ring { position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; }
-.simple-export-ring { width: 16px; height: 16px; }
-.progress-ring { flex: none; transform: rotate(-90deg); pointer-events: none; }
-.progress-ring circle { fill: none; stroke: var(--color-line); stroke-width: 1.5; }
-.simple-export-ring circle { stroke-width: 2.5; }
-.progress-ring circle + circle { stroke: var(--color-muted); stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
 .simple-more.needs-you::after { z-index: 1; }
+/* Caching and exporting share the same motion: a thin line under the button's word, inside its padding. */
+.simple-media, .simple-export { position: relative; }
+.progress-line { position: absolute; left: 12px; right: 12px; bottom: 1px; height: 2px; border-radius: 1px; overflow: hidden;
+  background: var(--color-line); pointer-events: none; }
+.progress-line > span { display: block; height: 100%; border-radius: 1px; background: var(--color-muted); transition: width 1s linear; }
+.progress-line.is-unknown > span { width: 35%; }
 @media (prefers-reduced-motion: no-preference) {
-  .progress-ring.is-unknown { animation: progress-ring-turn 1s linear infinite; }
+  .progress-line.is-unknown > span { animation: progress-line-slide 1.2s ease-in-out infinite alternate; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .progress-ring circle + circle { transition: none; }
-  .progress-ring.is-unknown circle + circle { stroke-dasharray: none; animation: media-link-breathe 2.4s ease-in-out infinite !important; }
+  .progress-line > span { transition: none; }
+  .progress-line.is-unknown > span { width: 100%; animation: media-link-breathe 2.4s ease-in-out infinite !important; }
 }
-@keyframes progress-ring-turn { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+@keyframes progress-line-slide { from { transform: translateX(0); } to { transform: translateX(186%); } }
 .menu-value { margin-left: auto; min-width: 0; padding-left: 10px; color: var(--color-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .menu-dot { flex: none; margin-left: auto; width: 6px; height: 6px; border-radius: 50%; background: var(--color-warn); }
 .menu-value + .menu-dot { margin-left: 8px; }
