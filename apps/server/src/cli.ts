@@ -10,7 +10,7 @@
  * for the local user (kept in `<data>/access-token`). The desktop app uses
  * `--solo` to bind the API to loopback and receive the startup handshake:
  *
- *   SCARLET_READY {"port":N,"url":"http://127.0.0.1:N","token":"sct_...","userId":"usr_..."}
+ *   SCARLET_READY {"port":N,"url":"http://127.0.0.1:N","token":"sct_...","userId":"usr_...","dataDir":"..."}
  */
 import { existsSync, fstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -130,6 +130,11 @@ async function runServe(argv: string[]) {
 
   // Multi-GB uploads can outlast Node's default five-minute request deadline.
   server.requestTimeout = 6 * 60 * 60 * 1000;
+  // Node closes a connection idle for five seconds, and the desktop's agent host reuses one for a minute and a half:
+  // an event posted after a quiet stretch met the closed end and was lost ("post event failed: error sending request",
+  // seven times in a week of logs). The engine keeps a connection longer than any of its clients does.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
   attachWebSocket(server, ctx);
 
   let stopping = false;

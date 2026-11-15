@@ -8,7 +8,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient, Task, type EditingTools } from "@scarlet/shared";
 import type { Transcript } from "@scarlet/timeline";
 import { emptyTimeline, makeMediaClip } from "@scarlet/timeline";
-import { createScarletMcpServer, describeError, SCARLET_TOOL_NAMES, toolRefusal } from "./server.js";
+import { createScarletMcpServer, SCARLET_TOOL_NAMES } from "./server.js";
+import { describeError, toolRefusal } from "./tool-result.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { makeState, startMockServer, type MockServer } from "./mock-server.js";
 
@@ -2367,6 +2368,10 @@ it("measures the recording beside a staged cut's new edges with no scan read, an
     expect(saved.at(-1)).toMatchObject({ start: 1.9, end: 2.4 });
     expect(quiet.audio).toBeUndefined();
     expect(quiet.next).toBeUndefined();
+    // The result reads the words either side of the saved join, so nothing needs reading again to judge it.
+    const words = (side: { words: Array<[number, number, string]> }[]) => side.flatMap(s => s.words.map(w => w[2]));
+    expect(words(quiet.nearbyWords.start)).toContain("back.");
+    expect(words(quiet.nearbyWords.end)).toContain("Um,");
     // A start 40 ms inside “back.” goes onto the silence after the word, where dialogue_check_join puts it.
     const snapped = await move(1.76, 2.28);
     expect(saved.at(-1)!.start).toBeCloseTo(58 / 30);

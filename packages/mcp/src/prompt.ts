@@ -17,8 +17,8 @@ export interface LearningCheckContext {
   about?: string;
   /** Skills the editor chose for the request. */
   usedSkills: string[];
-  /** What they asked earlier in this project, oldest first. */
-  earlier: string[];
+  /** What they asked before, in any project, oldest first: their words, what they were aimed at, and whether it was in another video. */
+  earlier: Array<{ said: string; about?: string; elsewhere?: boolean }>;
   /** Rules already offered to the editor or saved in a skill, oldest first. */
   rules: Array<{ rule: string; skill: string; state: "offered" | "saved" }>;
   /** The editor's skills a rule can go into. */
@@ -131,12 +131,15 @@ The editor just sent the agent the message that is your instruction. Another run
 
 - If it does, read the skill it belongs in, in full, with \`skills_list\`, then offer the rule with \`learning_suggest\`: once, or once for each separate rule. The editor reviews what you offer beside what the skill says that it would change, and nothing changes in a skill unless they approve it.
 - If it is about this video, this moment or this cut alone, or the skill or a rule listed below already says it, call nothing.
+- A note about one cut can still be a rule. When their earlier requests keep asking for the same kind of fix to what a skill made, that fix is how they want the skill to work. Offer it for that skill and name the requests it comes from.
+
+A rule is for every video the skill edits, so write the principle behind what they said, not its instances: no words, names, times or moments from this video or the requests, and a number they gave stays a guide, not a fixed amount. If what they asked can't be put that way, it isn't a rule.
 
 End with one short line: the rule you offered, or “No rule.”`,
     `# The request\n\n${[
       check.about,
       check.usedSkills.length ? `They chose ${check.usedSkills.length === 1 ? "this skill" : "these skills"} for it: ${check.usedSkills.join(", ")}.` : undefined,
-      check.earlier.length ? `What they asked earlier in this project, oldest first:\n${list(check.earlier.map(e => `“${e}”`))}` : "It is the first thing they asked in this project.",
+      check.earlier.length ? `What they asked before, oldest first:\n${list(check.earlier.map(e => `“${e.said}”${[e.about && `about ${e.about}`, e.elsewhere && "in another video"].filter(Boolean).map(w => ` (${w})`).join("")}`))}` : "It is the first thing they asked.",
     ].filter(Boolean).join("\n\n")}`,
     `# The editor’s skills\n\n${list(check.skills.map(s => `${s.name} (${s.id}): ${s.description.trim() || "no description"}`))}`,
     ...(check.rules.length ? [`# Rules Scarlet already has\n\n${list(check.rules.map(r => `“${r.rule}” (${r.state === "saved" ? "saved in" : "offered for"} ${r.skill})`))}`] : []),
