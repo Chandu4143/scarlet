@@ -2768,6 +2768,28 @@ it("keeps a call whose save is still on its way when an earlier save fails, and 
   expect(call().querySelector('[role="alert"]')).toBeNull();
 });
 
+it("says nothing when an earlier save fails after a later one carrying its calls has landed", async () => {
+  flagged();
+  data = { ...data, changes: data.changes.map(c => c.id === "chg_ready" ? { ...c, cutAssessments: c.cutAssessments!.map(a => ({ ...a, verdict: "ask" as const })) } : c) };
+  useProjectStore.setState({ current: data });
+  const saves: { land(): void; fail(reason: string): void }[] = [];
+  vi.spyOn(api, "saveCutChoices").mockImplementation((id, body) => new Promise((resolve, reject) => saves.push({
+    land: () => resolve(savedCalls(id, body)), fail: reason => reject(new Error(reason)) })));
+  await show();
+  await act(async () => {});
+  const need = () => passCard().querySelector(".simple-pass-need")?.textContent;
+  await reviewCalls();
+  await press("a");
+  await press("a");
+  expect(saves).toHaveLength(2);
+  // The second save lands with both calls, then the first one fails: both calls were saved.
+  await act(async () => saves[1]!.land());
+  await act(async () => saves[0]!.fail("The engine is busy."));
+  expect(need()).toBe("1 needs you");
+  expect(passCard().querySelector(".simple-error")).toBeNull();
+  expect(call().querySelector('[role="alert"]')).toBeNull();
+});
+
 type Staged = { start: number; end: number; reason: string };
 const ripples = (cuts: readonly Staged[]) => [...cuts].reverse().map(r => ({ op: "rippleDelete" as const, start: r.start, end: r.end }));
 const STAGED: Staged[] = [{ start: 2, end: 3, reason: "A clean retake." }, { start: 6, end: 7, reason: "Breath before the price." }, { start: 11, end: 12, reason: "Repeated aside." }];
@@ -4574,11 +4596,36 @@ it("puts a queued request's words back in the box as they stood when Scarlet qui
   await act(async () => {});
   expect(composer.props?.rewording).toBeUndefined();
   // Words kept for a request Scarlet has started since are let go.
-  localStorage.setItem("scarlet.rewording.v1", JSON.stringify({ projectId: PRJ, id: "task_started_since", text: "Too late" }));
+  localStorage.setItem(`scarlet.rewording.v1:${PRJ}`, JSON.stringify({ projectId: PRJ, id: "task_started_since", text: "Too late" }));
   await reopen(`/p/${PRJ}`);
   await act(async () => {});
   expect(composer.props?.rewording).toBeUndefined();
+  expect(localStorage.getItem(`scarlet.rewording.v1:${PRJ}`)).toBeNull();
+});
+
+it("keeps the words being changed for each project's queued request apart, so rewording in one leaves another's alone", async () => {
+  runningPass();
+  const holdForRewording = vi.fn().mockResolvedValue(undefined);
+  data = { ...data, tasks: [...data.tasks, callRequest("task_queued_revision", 2, { kind: "edit" as const, instruction: "Keep the aside.",
+    context: { ...callRequest("task_queued_revision", 2, {}).context, message: "Keep the aside." } })] };
+  useProjectStore.setState({ current: data, holdForRewording, rewordTask: vi.fn() });
+  // Another project's words, being changed when it was last on screen.
+  const other = JSON.stringify({ projectId: "prj_other", id: "task_other", text: "Shorter intro" });
+  localStorage.setItem("scarlet.rewording.v1:prj_other", other);
+  await show();
+  await act(async () => {});
+  await click(container.querySelector('[aria-label="Queued requests"] .queue-reword')!);
+  await act(async () => composer.props!.rewording!.onChange("Keep the aside, but trim it."));
+  expect(JSON.parse(localStorage.getItem(`scarlet.rewording.v1:${PRJ}`)!)).toMatchObject({ id: "task_queued_revision", text: "Keep the aside, but trim it." });
+  expect(localStorage.getItem("scarlet.rewording.v1:prj_other")).toBe(other);
+  // Words kept in the slot every project shared before come back for their own project, and move to its own slot.
+  await act(async () => composer.props!.rewording!.onCancel());
+  localStorage.setItem("scarlet.rewording.v1", JSON.stringify({ projectId: PRJ, id: "task_queued_revision", text: "Kept before" }));
+  await reopen(`/p/${PRJ}`);
+  await act(async () => {});
+  expect(composer.props?.rewording).toMatchObject({ id: "task_queued_revision", text: "Kept before" });
   expect(localStorage.getItem("scarlet.rewording.v1")).toBeNull();
+  expect(localStorage.getItem("scarlet.rewording.v1:prj_other")).toBe(other);
 });
 
 it("offers no way to fold the queue while one of several queued requests has its words in the box", async () => {
@@ -8127,6 +8174,17 @@ it("leaves a box aimed at an edit or at Scarlet's question as it is when a point
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_approved_2", editIndex: 1 });
 });
 
+it("keeps a message being written about the whole video so through a seek, though nothing aimed it yet", async () => {
+  idle();
+  await show();
+  await act(async () => useUiStore.getState().setAgentDraft("Tighten the intro"));
+  await press("ArrowRight");
+  expect([boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, null]);
+  // N still takes the current time.
+  await press("n");
+  expect(pointTag()).toEqual(["At 0:05", true]);
+});
+
 it("doesn't bring back a point picked in an earlier visit on an empty box, and keeps one with its message", async () => {
   idle();
   const owner = JSON.stringify([PRJ, null]);
@@ -10845,7 +10903,10 @@ it("names the video a short was made from under its title, and links to it", asy
 });
 
 it("opens a short's chat with a line that says it is a new project, which stays until its × is pressed", async () => {
-  const saved = vi.spyOn(api, "updateProject").mockResolvedValue({ project: {} as never });
+  const saved = vi.spyOn(api, "updateProject").mockImplementation(async () => {
+    const { project } = useProjectStore.getState().current!;
+    return { project: { ...project, source: { ...project.source!, notice: undefined } } };
+  });
   await showFolded();
   await asShort();
   const note = container.querySelector<HTMLElement>(".simple-chat > .simple-source-note")!;
@@ -10855,4 +10916,9 @@ it("opens a short's chat with a line that says it is a new project, which stays 
   await click(note.querySelector('[aria-label="Dismiss"]')!);
   expect(container.querySelector(".simple-source-note")).toBeNull();
   expect(saved).toHaveBeenCalledWith(PRJ, { sourceNotice: false });
+  // Dismissed, it stays so when the chat is drawn again.
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await showFolded();
+  expect(container.querySelector(".simple-source-note")).toBeNull();
 });

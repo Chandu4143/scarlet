@@ -706,10 +706,6 @@ button.queue-head:hover { color: var(--color-fg); }
 @media (max-width: 767px) {
   .simple-transcript-rail { order: 2; width: 100%; max-height: 45%; border-left: 0; border-top: 1px solid var(--color-line); }
 }
-/* Its Transcribe is a link, as the chat's actions are. */
-.transcript-missing .btn-ghost { min-height: 0; padding: 0; border: 0; background: none; color: var(--color-muted); font-size: 12.5px;
-  text-decoration: underline; text-underline-offset: 3px; }
-.transcript-missing .btn-ghost:hover:not(:disabled) { background: none; color: var(--color-fg); }
 /* The search under the Transcript's heading: a plain field, its count, nothing else. */
 .transcript-search { display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--color-line); color: var(--color-dim); font-size: 12.5px; }
 .transcript-search input { flex: 1; min-width: 0; padding: 4px 0; border: 0; outline: none; background: none; color: var(--color-fg); font: 13px var(--font-sans); }
