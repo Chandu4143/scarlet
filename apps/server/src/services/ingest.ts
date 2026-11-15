@@ -674,6 +674,8 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     // Word alignment follows. In the same lane, the lane waits for it rather than starting another recording.
     const lane = whisperLane(ctx, provider.separateWhisperLane);
     const result = saved.aligned ?? (provider.name === "whispercpp" ? await lane.run(work, signal, transcribe, { more: lane === audioLane(ctx) }) : await transcribe());
+    const configuredLanguage = ctx.settings().transcription.language;
+    const language = result.language || (configuredLanguage === "auto" ? undefined : configuredLanguage);
     // A rerun keeps the readable transcript, including a speaker-labelled revision or an older unlinked one,
     // until the replacement is complete. A first transcript can publish its words while alignment runs.
     const previous = ctx.db.prepare(`SELECT t.id, json_extract(t.json, '$.aligning') IS NULL AS complete
@@ -689,11 +691,11 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
       signal.throwIfAborted();
       if (ctx.repos.tasks.get(task.id)?.state !== "running") return null;
       if (aligning) {
-        saved.saveAlignment(aligning, { segments, language: result.language, modelLabel: model }, replacing ? undefined : id);
+        saved.saveAlignment(aligning, { segments, language, modelLabel: model }, replacing ? undefined : id);
         if (replacing) return null; // The previous completed transcript remains the readable one.
       }
       const savedAt = now();
-      const transcript: Transcript = { id, mediaId: asset.id, language: result.language, provider: provider.name, localModel: provider.localModel, modelLabel: model, segments,
+      const transcript: Transcript = { id, mediaId: asset.id, language, provider: provider.name, localModel: provider.localModel, modelLabel: model, segments,
         createdAt: savedAt, ...(aligning && { aligning: { through: aligning.through } }) };
       ctx.repos.transcripts.put({ ...transcript, projectId });
       const current = ctx.repos.projects.getMedia(asset.id);
@@ -715,7 +717,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     // that takes several times as long as Whisper, so the words are saved first: a dialogue pass reads them and its
     // scan pages run while alignment goes on. `aligning.through` says how far the times are final, and whatever
     // turns a word into a cut edge waits for alignment to pass it.
-    const alignable = alignsLanguage(result.language) && result.segments.some(s => s.words.length);
+    const alignable = alignsLanguage(language) && result.segments.some(s => s.words.length);
     // Whisper kept the lane for alignment, which this recording won't have: its speakers needn't wait out the hold.
     if (!alignable && provider.name === "whispercpp") lane.release(work);
     if (alignable && !saved.alignment) early = !!save(result.segments, { through: 0, nextWord: 0, fraction: 0 });
@@ -738,8 +740,8 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
       try {
         if (!wav) await extractWav(src, full, { signal });
         return await fillTranscriptHoles({ wav: full, segments, tmpDir: ctx.paths.tmp, signal, log: message => ctx.log(`${message} (${asset.id})`),
-          read: provider.name !== "whispercpp" ? undefined : async laid => (await lane.run(work, signal, () => provider.transcribe({ path: laid, dialogueWindow: {}, tmpDir: ctx.paths.tmp, signal, language: result.language }))).segments,
-          align: async found => alignTranscript(ctx, { source: src, wav: full, language: result.language, segments: found, signal,
+          read: provider.name !== "whispercpp" ? undefined : async laid => (await lane.run(work, signal, () => provider.transcribe({ path: laid, dialogueWindow: {}, tmpDir: ctx.paths.tmp, signal, language }))).segments,
+          align: async found => alignTranscript(ctx, { source: src, wav: full, language, segments: found, signal,
             emissions: await emissionStore(ctx, projectId, src), work: { mediaId: asset.id, kind: "alignment" } }) });
       } catch (error) {
         signal.throwIfAborted();
@@ -749,7 +751,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     };
     let publishedThrough = saved.alignment?.through ?? 0;
     const finishedAlignment = saved.alignment?.complete;
-    const aligned = finishedAlignment ? result.segments : await alignTranscript(ctx, { source: src, wav, language: result.language, segments: result.segments, signal, resume: saved.alignment,
+    const aligned = finishedAlignment ? result.segments : await alignTranscript(ctx, { source: src, wav, language, segments: result.segments, signal, resume: saved.alignment,
       emissions: alignable ? await emissionStore(ctx, projectId, src) : undefined, hold: speakersFirst,
       work: { mediaId: asset.id, kind: "alignment" }, onProgress: progress.aligning,
       onTurn: (soFar, through, cursor) => {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { open, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractWav } from "../render/ffmpeg.js";
-import { alignmentVersion, pcmWavHeader } from "../transcribe/wordAlign.js";
+import { pcmWavHeader } from "../transcribe/wordAlign.js";
 
 type Paths = { paths: { tmp: string; waveforms(projectId: string): string } };
 
@@ -14,7 +14,9 @@ async function stamp(file: string, audioStream?: number) {
 }
 
 function emissionPath(ctx: Paths, projectId: string, identity: readonly unknown[]) {
-  const key = createHash("sha256").update(JSON.stringify([alignmentVersion, identity])).digest("hex");
+  // English emissions keep their existing cache identity when support for another language is added.
+  const emissionVersion = 3;
+  const key = createHash("sha256").update(JSON.stringify([emissionVersion, identity])).digest("hex");
   return join(ctx.paths.waveforms(projectId), `emissions-${key.slice(0, 32)}.bin`);
 }
 

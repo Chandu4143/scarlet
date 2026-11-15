@@ -12,6 +12,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - Type a timestamp like 1:42 in a new edit request to mark it on the timeline. Click it to jump there, or send the note about that moment.
 - The tokens a request has used now show in the chat by default; turn them off in Settings › Usage.
 - Codex installed through Homebrew can start editing on macOS while keeping its sandbox.
+- Scarlet now times Spanish transcript words against the recording, including words Whisper gave the same start and end time.
+- Scarlet can finish checking a batch of dialogue cuts even when the audio takes several minutes to measure.
 
 ## November 14, 2026
 

@@ -1,3 +1,4 @@
+import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
 import { matchAudio, syncRate } from "./audio-sync.js";
 /**
@@ -110,6 +111,8 @@ export interface ScarletMcpContext {
   editingTools?: EditingTools;
   /** How long a cut or an edge check waits for word alignment to reach it. Tests shorten it. */
   alignmentWaitMs?: number;
+  /** Time budget for each collection of slow join measurements. */
+  joinWaitMs?: number;
   /** Agent task this session is running for; enables task_log/task_question and tags changes. */
   taskId?: string;
   /** Claim that launched this MCP session, including when a provider reconnects. */
@@ -197,14 +200,6 @@ const EDGE_WAIT_MS = 40_000;
  */
 const DIALOGUE_FAILURE_LIMIT = 2;
 
-/**
- * The longest list of checked joins dialogue_check_join returns whole, in characters. Claude Code withholds a tool
- * result over 25,000 tokens, and a run has no tool to read it back with: lists of 24 to 35 cuts, 57,000 characters
- * and more, came back to real passes as "exceeds maximum allowed tokens", and each was checked again a few at a time
- * or saved unchecked.
- */
-const JOIN_LIST_CHARS = 40_000;
-
 /** Buckets for a waveform window read at 20 ms a bucket, ten at least. */
 const levelPoints = (from: number, to: number) => Math.max(10, Math.ceil((to - from) * 50));
 
@@ -290,6 +285,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
   const scanScopes = new Map<string, number>();
   const acousticRetakePages = new Map<string, AcousticRetakePage>();
+  const joinChecks = new JoinChecks();
   const pendingDetections = new Map<string, Promise<DialogueDetections>>();
   /** Dialogue analysis requests that failed in a row, per recording, and the last reason. */
   const dialogueFailures = new Map<string, { count: number; error: string }>();
@@ -681,8 +677,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return found;
   }
 
-  async function measureAround(points: Array<{ mediaId: string; t: number }>) {
-    const { media } = await client.media(ctx.projectId);
+  async function measureAround(points: Array<{ mediaId: string; t: number }>, knownMedia?: ProjectDetail["project"]["media"]) {
+    const media = knownMedia ?? (await client.media(ctx.projectId)).media;
     await Promise.all(points.map(({ mediaId, t }) => {
       const asset = media.find(m => m.id === mediaId);
       // A source with no sound has no levels to read: the engine refuses it, and the join check leaves it out anyway.
@@ -1654,91 +1650,86 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const repeatedPhrase = z.string().trim().min(1);
   const resumeWith = z.string().trim().min(1).max(240).optional().describe("For a retake, quote the first consecutive words to keep immediately after the removal. Include the continuation that distinguishes this delivery.");
   tool("dialogue_check_join",
-    `Check proposed dialogue removals on a timeline version before submitting them. Give one range, or list up to 100 as \`cuts\` to check them in one call; each is given the same way. ${cutCoordinates} Where two words run together with no pause, the edge goes at the lowest level between them if that is down at room tone (${DIP_DBFS} dBFS or lower) and the removal's other edge has a pause, and the result says what was measured. A word reference keeps its exact performance. alternativeWordRanges lists other indices that leave the same transcript text, with measured edge problems and dips. Submit the indices of the performance you choose. This changes nothing. Returns status (unchanged = both edges quiet; snapped = an edge moved a few frames onto silence and applies as given; adjusted/partial = a larger move that narrows the removal and goes to review; review = no safe edge), the resulting range, per edge the source second, sound (quiet | valley | sound), RMS dBFS in 20 ms steps from 0.3 s before to 0.3 s after the edge (\`|\` marks it) and the nearest quiet points either side, and nearbyWords as [timeline start, timeline end, text] from the scan. The kept audio is independently read for up to ${JOIN_WORD_SECONDS} source seconds on each side of the proposed removal. unreadJoinAudio names a reading that was unavailable. repeatAtJoin identifies a word or phrase that the proposed join would play twice, with both occurrences in timeline seconds. partialWordRepeat identifies a fragment of a word beside another complete delivery, including sound inside the audio crossfade. Its side and ranges locate the fragment on the input timeline. pickupRepeats lists a doubled word or phrase opening or ending the kept take, with each occurrence and the side of the removal. When a prior scan measured an immediate restart, acousticRetakeContinuity reports which delivery the original range removes and whether the word following the second delivery stays connected to the retained take. Its source word times are approximate. An optional resumeWith quote is checked at the original end. With \`cuts\`, the result has \`joins\` in the same order, and a range that cannot be checked carries its own \`error\`. A list too long to return whole leaves out nearbyWords, per-edge readings (\`audio\`) and alternativeWordRanges, on unchanged joins first and then on the others from the end of the list. If needed, it then omits acousticRetakeContinuity and partialWordRepeat details. Every join keeps its status and range, and \`evidenceLeftOut\` lists the indices of the joins that came back without some of it: check the ones you need again in a shorter list.`,
+    `Check proposed dialogue removals on a timeline version before submitting them. Give one range, or list up to 100 as \`cuts\` to check them in one call; each is given the same way. ${cutCoordinates} Where two words run together with no pause, the edge goes at the lowest level between them if that is down at room tone (${DIP_DBFS} dBFS or lower) and the removal's other edge has a pause, and the result says what was measured. A word reference keeps its exact performance. alternativeWordRanges lists other indices that leave the same transcript text, with measured edge problems and dips. Submit the indices of the performance you choose. Slow checks return status "measuring", the completed readings and the zero-based pendingCuts. Repeat the same arguments on the returned version after retryAfterSeconds to collect the full readings. This changes nothing. Returns status (unchanged = both edges quiet; snapped = an edge moved a few frames onto silence and applies as given; adjusted/partial = a larger move that narrows the removal and goes to review; review = no safe edge), the resulting range, per edge the source second, sound (quiet | valley | sound), RMS dBFS in 20 ms steps from 0.3 s before to 0.3 s after the edge (\`|\` marks it) and the nearest quiet points either side, and nearbyWords as [timeline start, timeline end, text] from the scan. The kept audio is independently read for up to ${JOIN_WORD_SECONDS} source seconds on each side of the proposed removal. unreadJoinAudio names a reading that was unavailable. repeatAtJoin identifies a word or phrase that the proposed join would play twice, with both occurrences in timeline seconds. partialWordRepeat identifies a fragment of a word beside another complete delivery, including sound inside the audio crossfade. Its side and ranges locate the fragment on the input timeline. pickupRepeats lists a doubled word or phrase opening or ending the kept take, with each occurrence and the side of the removal. When a prior scan measured an immediate restart, acousticRetakeContinuity reports which delivery the original range removes and whether the word following the second delivery stays connected to the retained take. Its source word times are approximate. An optional resumeWith quote is checked at the original end. With \`cuts\`, the result has \`joins\` in the same order, and a range that cannot be checked carries its own \`error\`. A list too long to return whole leaves out nearbyWords, per-edge readings (\`audio\`) and alternativeWordRanges, on unchanged joins first and then on the others from the end of the list. If needed, it then omits acousticRetakeContinuity and partialWordRepeat details. Every join keeps its status and range, and \`evidenceLeftOut\` lists the indices of the joins that came back without some of it: check the ones you need again in a shorter list.`,
     { version: z.string(), crossfadeFrames, ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith,
       cuts: z.array(z.object({ ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith }))
         .min(1).max(100).optional().describe("Several removals to check in one call, instead of start/end or a word reference"),
       ...audioOption("Attach about two seconds of the original recording around each edge as WAV, for a single range") },
     async ({ version, includeAudio, resumeWith, cuts, crossfadeFrames = 0, ...cut }) => {
-      const [tl, { project }] = await Promise.all([getTimeline(version), getProject()]);
-      const resolve = async (c: typeof cut, label: string) => {
-        const resolved = await resolveCutRange(tl, c, label, planSources, true);
-        if (resolved.start >= resolved.end || resolved.end > timelineDuration(tl)) {
-          throw new Error(`${label} ${resolved.start}–${resolved.end} s is not a nonempty range inside version ${tl.version} (0–${timelineDuration(tl).toFixed(2)} s).`);
+      const tl = await getTimeline(version);
+      const snapshot = tl.version === "draft" ? createHash("sha256").update(JSON.stringify(tl)).digest("hex") : tl.version;
+      const key = JSON.stringify([snapshot, cuts, cut, resumeWith, crossfadeFrames, !!includeAudio]);
+      return joinChecks.collect(key, tl.version, cuts?.length ?? 1, async publish => {
+        const { project } = await getProject();
+        const resolve = async (c: typeof cut, label: string) => {
+          const resolved = await resolveCutRange(tl, c, label, planSources, true);
+          if (resolved.start >= resolved.end || resolved.end > timelineDuration(tl)) {
+            throw new Error(`${label} ${resolved.start}–${resolved.end} s is not a nonempty range inside version ${tl.version} (0–${timelineDuration(tl).toFixed(2)} s).`);
+          }
+          return resolved;
+        };
+        const report = async (resolved: Awaited<ReturnType<typeof resolve>>, quote: string | undefined) => {
+          const range = { start: resolved.start, end: resolved.end };
+          // Edges placed beside the named words stand as placed, here as in dialogue_apply_cuts.
+          const pages = joinPages();
+          const checked = "dips" in resolved && !resolved.problems.length
+            ? { ...range, status: "unchanged" as const, reason: resolved.dips.length ? resolved.dips.join(" ") : "Scarlet placed both edges in the measured silence beside the words." }
+            : checkDialogueJoin(tl, project, range, pages, "spoken" in resolved ? resolved.spoken : undefined);
+          const played = frameAligned(checked, project.settings.fps);
+          const nearbyWords = dialogueJoinWords(tl, project, played, pages);
+          const continuity = acousticRetakeJoin(tl, project, range, acousticRetakePages.values());
+          const { repeatAtJoin, partialWordRepeat, pickupRepeats, unread } = await checkKeptWords(tl, project, played, nearbyWords, planSources.readKeptWords,
+            undefined, undefined, { at: played.start, preview: () => dialogueCutPreview(tl, project.media, [played], crossfadeFrames / project.settings.fps) });
+          const audio = joinAudio(tl, project, range, pages);
+          const inspected = audio.some(edge => edge.levels || edge.words) ? () => {
+            readPassage(tl.version, range, true);
+            readPassage(tl.version, checked, true);
+          } : undefined;
+          return { inspected, reading: { originalRange: range,
+            ...("wordRef" in resolved && { words: resolved.words, sourceRange: resolved.source, ...(resolved.problems.length && { wordEdgeProblems: resolved.problems }) }),
+            ...("notes" in resolved && resolved.notes.length && { notes: resolved.notes }),
+            ...("alternativeWordRanges" in resolved && { alternativeWordRanges: resolved.alternativeWordRanges }),
+            ...checked, audio, nearbyWords, ...(partialWordRepeat && { partialWordRepeat }), ...(continuity.length && { acousticRetakeContinuity: continuity }), ...(unread.length && { unreadJoinAudio: unread }), ...(repeatAtJoin && { repeatAtJoin }), ...(pickupRepeats.length && { pickupRepeats }),
+            ...(quote && { resumeAtOriginalEnd: checkResumeQuote(tl, project, range.end, evidence.scans, quote) }) } };
+        };
+        if (cuts) {
+          if (Object.values(cut).some(value => value !== undefined) || resumeWith) {
+            throw new Error("Give either one range or a cuts list, not both.");
+          }
+          const checkedRanges = await Promise.all(cuts.map(async ({ resumeWith: quote, ...c }, i) => {
+            try {
+              const resolved = await resolve(c, `cuts[${i}]`);
+              await measureAround(audibleSourcePoints(tl, [resolved.start, resolved.end]), project.media);
+              const { reading, inspected } = await report(resolved, quote);
+              publish(i, reading, inspected);
+              return [resolved];
+            } catch (err) {
+              publish(i, { error: describeError(err) });
+              return [];
+            }
+          }));
+          await reportChecked(tl, checkedRanges.flat());
+          return;
         }
-        return resolved;
-      };
-      const report = async (resolved: Awaited<ReturnType<typeof resolve>>, quote: string | undefined) => {
-        const range = { start: resolved.start, end: resolved.end };
-        // Edges placed beside the named words stand as placed, here as in dialogue_apply_cuts.
-        const pages = joinPages();
-        const checked = "dips" in resolved && !resolved.problems.length
-          ? { ...range, status: "unchanged" as const, reason: resolved.dips.length ? resolved.dips.join(" ") : "Scarlet placed both edges in the measured silence beside the words." }
-          : checkDialogueJoin(tl, project, range, pages, "spoken" in resolved ? resolved.spoken : undefined);
-        const played = frameAligned(checked, project.settings.fps);
-        const nearbyWords = dialogueJoinWords(tl, project, played, pages);
-        const continuity = acousticRetakeJoin(tl, project, range, acousticRetakePages.values());
-        const { repeatAtJoin, partialWordRepeat, pickupRepeats, unread } = await checkKeptWords(tl, project, played, nearbyWords, planSources.readKeptWords,
-          undefined, undefined, { at: played.start, preview: () => dialogueCutPreview(tl, project.media, [played], crossfadeFrames / project.settings.fps) });
-        const audio = joinAudio(tl, project, range, pages);
-        if (audio.some(edge => edge.levels || edge.words)) {
-          readPassage(tl.version, range, true);
-          readPassage(tl.version, checked, true);
-        }
-        return { originalRange: range,
-          ...("wordRef" in resolved && { words: resolved.words, sourceRange: resolved.source, ...(resolved.problems.length && { wordEdgeProblems: resolved.problems }) }),
-          ...("notes" in resolved && resolved.notes.length && { notes: resolved.notes }),
-          ...("alternativeWordRanges" in resolved && { alternativeWordRanges: resolved.alternativeWordRanges }),
-          ...checked, audio, nearbyWords, ...(partialWordRepeat && { partialWordRepeat }), ...(continuity.length && { acousticRetakeContinuity: continuity }), ...(unread.length && { unreadJoinAudio: unread }), ...(repeatAtJoin && { repeatAtJoin }), ...(pickupRepeats.length && { pickupRepeats }),
-          ...(quote && { resumeAtOriginalEnd: checkResumeQuote(tl, project, range.end, evidence.scans, quote) }) };
-      };
-      if (cuts) {
-        if (Object.values(cut).some(value => value !== undefined) || resumeWith) {
-          throw new Error("Give either one range or a cuts list, not both.");
-        }
-        const resolved = await Promise.all(cuts.map(({ resumeWith: _quote, ...c }, i) => resolve(c, `cuts[${i}]`).catch((err: Error) => err)));
-        // One measurement pass covers every edge in the list.
-        await measureTimeline(tl, resolved.flatMap(r => r instanceof Error ? [] : [r.start, r.end]));
-        await reportChecked(tl, resolved.flatMap(r => r instanceof Error ? [] : [r]));
-        const joins: Array<Record<string, unknown>> = await Promise.all(resolved.map((r, i) => r instanceof Error ? { error: r.message } : report(r, cuts[i]!.resumeWith).catch((err: Error) => ({ error: describeError(err) }))));
-        const whole = JSON.stringify({ version: tl.version, joins });
-        if (whole.length <= JOIN_LIST_CHARS) return text(whole);
-        // A longer list would not reach the model at all, so it gives up its bulk: the words around each join, then
-        // the readings at its edges. Joins with both edges on quiet give theirs up first, since nothing about them is
-        // left to judge, then the others from the end of the list. Every join keeps its status and its range, and the
-        // result names each one that came back without some of it, for the agent to check again in a shorter list.
-        const short = new Set<number>();
-        // Counted as if every join were named, so what goes back is never longer than this.
-        let size = JSON.stringify({ version: tl.version, joins, evidenceLeftOut: joins.map((_, i) => i) }).length;
-        for (const [field, quiet] of [["nearbyWords", true], ["audio", true], ["alternativeWordRanges", true], ["nearbyWords", false], ["audio", false], ["alternativeWordRanges", false], ["acousticRetakeContinuity", true], ["acousticRetakeContinuity", false], ["partialWordRepeat", true], ["partialWordRepeat", false]] as const) {
-          for (let i = joins.length - 1; i >= 0 && size > JOIN_LIST_CHARS; i--) {
-            const join = joins[i]!;
-            if (!(field in join) || (join.status === "unchanged") !== quiet) continue;
-            // The value, its name in quotes, the colon and the comma.
-            size -= JSON.stringify(join[field]).length + field.length + 4;
-            delete join[field];
-            short.add(i);
+        const resolved = await resolve(cut, "Range");
+        await measureTimeline(tl, [resolved.start, resolved.end]);
+        await reportChecked(tl, [resolved]);
+        const { reading: checked, inspected } = await report(resolved, resumeWith);
+        publish(0, checked, inspected);
+        const result = json({ version: tl.version, ...checked });
+        if (!includeAudio || !hearing) return result;
+        for (const edge of checked.audio) {
+          const from = Math.max(0, edge.at - 1);
+          try {
+            const { wav } = await client.sourceAudio(ctx.projectId, { mediaId: edge.mediaId, from, to: edge.at + 1 });
+            result.content.push({ type: "text", text: `Original ${edge.edge} edge of ${edge.mediaId}: the boundary is ${(edge.at - from).toFixed(2)} s into this clip (source ${edge.at} s).` },
+              { type: "audio", mimeType: "audio/wav", data: wav });
+          } catch (err) {
+            result.content.push({ type: "text", text: `Audio for the ${edge.edge} edge is unavailable: ${describeError(err)}. Judge it from the levels.` });
           }
         }
-        return json({ version: tl.version, joins, evidenceLeftOut: [...short].sort((a, b) => a - b) });
-      }
-      const resolved = await resolve(cut, "Range");
-      await measureTimeline(tl, [resolved.start, resolved.end]);
-      await reportChecked(tl, [resolved]);
-      const checked = await report(resolved, resumeWith);
-      const result = json({ version: tl.version, ...checked });
-      if (!includeAudio || !hearing) return result;
-      for (const edge of checked.audio) {
-        const from = Math.max(0, edge.at - 1);
-        try {
-          const { wav } = await client.sourceAudio(ctx.projectId, { mediaId: edge.mediaId, from, to: edge.at + 1 });
-          result.content.push({ type: "text", text: `Original ${edge.edge} edge of ${edge.mediaId}: the boundary is ${(edge.at - from).toFixed(2)} s into this clip (source ${edge.at} s).` },
-            { type: "audio", mimeType: "audio/wav", data: wav });
-        } catch (err) {
-          result.content.push({ type: "text", text: `Audio for the ${edge.edge} edge is unavailable: ${describeError(err)}. Judge it from the levels.` });
-        }
-      }
-      return result;
+        return result;
+      }, ctx.joinWaitMs ?? 40_000);
     });
 
   /** Silences of two seconds or more inside this part that none of its decisions covers, on the version it was planned on. */

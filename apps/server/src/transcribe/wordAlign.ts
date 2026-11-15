@@ -7,7 +7,7 @@ import { extractWav } from "../render/ffmpeg.js";
 import { AnalysisCache } from "../services/analysisCache.js";
 import { audioLane, type AudioLane, type AudioWork } from "../services/audioWork.js";
 import {
-  alignGroup, applyTimings, alignmentGroups, CLASSES, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
+  alignGroup, applyTimings, alignmentGroups, CTC_LETTERS, SPANISH_CTC_LETTERS, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
   planChunks, round, SAMPLE_RATE, stitchChunks, type AlignWord, type Emissions, type WordTiming,
 } from "./ctcAlign.js";
 import { audioWorker } from "./audioWorker.js";
@@ -22,6 +22,12 @@ const weights = {
   url: "https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/a19f851b3d42865797e410752b4c570c871e4825/onnx/model.onnx",
   size: 377887594, sha256: "e46614273f03ff4b87923a965e417fa72004825522cb007c9c25633b8475490d",
 };
+// Parseh's Apache-2.0 int8 ONNX export of jonatasgrosman/wav2vec2-large-xlsr-53-spanish.
+const spanishWeights = {
+  name: "wav2vec2-xlsr-spanish-6531e09e.onnx",
+  url: "https://huggingface.co/parseh/aligner-es/resolve/d2b70028033dac453897da0cafaa98ce3a6121b9/model.int8.onnx",
+  size: 356293089, sha256: "6531e09eb1646c7789e90f7d606c23e533e8570c3e6983ae99c0c4a5dfaee775",
+};
 /**
  * The feature encoder's strided convolutions, which ONNX Runtime 1.22's WebGPU path computes wrongly (any one of
  * them on the GPU changed the top letter in 2,379 of 5,996 frames). With these six on the CPU and the rest of the
@@ -33,7 +39,7 @@ const WEBGPU_CPU_NODES = [1, 2, 3, 4, 5, 6].map(layer => `/wav2vec2/feature_extr
 const GPU_LOGIT_TOLERANCE = 0.05, GPU_FLIP_TOLERANCE = 0.001;
 
 /** Bump with the model or the algorithm so cached word-timed results are rebuilt. */
-export const alignmentVersion = 3;
+export const alignmentVersion = 4;
 /** Audio searched on each side of a run's Whisper times. */
 const MARGIN = 0.5;
 /** Seconds of audio one worker aligns before yielding its turn. */
@@ -51,7 +57,7 @@ const SHARED_BATCH_SECONDS = 120;
  * recording and span `duration`, and the worker's audio is then the whole recording, read only for windows the
  * store lacks.
  */
-export interface AlignRequest { measure?: TimeRange[]; groups: Array<{ start: number; end: number; words: AlignWord[] }>; after?: number;
+export interface AlignRequest { language?: "es"; measure?: TimeRange[]; groups: Array<{ start: number; end: number; words: AlignWord[] }>; after?: number;
   store?: { file: string; offset: number; duration?: number } }
 /** Where a recording's emissions are kept, for audio that starts `offset` seconds into it and lasts `duration`
  * (by default, the whole recording). `wav` decodes the whole recording (16 kHz mono, as extractWav writes it) when
@@ -72,9 +78,17 @@ export interface AlignmentCheckpoint {
 
 type AlignmentTurn = (segments: TranscriptSegment[], through: number, checkpoint: AlignmentCheckpoint) => void;
 
-/** Whisper's English codes and names; an unknown language is attempted and rejected per run when unspellable. */
-export function alignsLanguage(language?: string) {
+/** Free decoding of letters at a join uses the English model and its own emission store. */
+export function readsEnglishSpeech(language?: string) {
   return !language?.trim() || /^en(glish)?([-_].*)?$/i.test(language.trim());
+}
+
+function isSpanish(language?: string) {
+  return /^(?:es|spanish|español)(?:[-_].+)?$/i.test(language?.trim() ?? "");
+}
+
+export function alignsLanguage(language?: string) {
+  return readsEnglishSpeech(language) || isSpanish(language);
 }
 
 /** Refines word times in place of Whisper's estimates. Words keep their text, and keep their times wherever
@@ -85,9 +99,13 @@ export function alignsLanguage(language?: string) {
  * `onPlaced` gets, once the last turn is done, how many of the words took their times from the audio. */
 export class WordAligner {
   private readonly model: LocalWhisperModel;
+  private readonly spanishModel: LocalWhisperModel;
   private readonly turns = new AnalysisCache<AlignResponse>(() => 0, 0, 1);
 
-  constructor(directory: string) { this.model = new LocalWhisperModel(directory, weights); }
+  constructor(directory: string) {
+    this.model = new LocalWhisperModel(directory, weights);
+    this.spanishModel = new LocalWhisperModel(directory, spanishWeights);
+  }
 
   /** Fill missing recording windows for free decoding, without supplying any expected words. */
   async measure(source: EmissionSource, ranges: TimeRange[], signal: AbortSignal) {
@@ -110,6 +128,11 @@ export class WordAligner {
     onPlaced?: (placed: number, words: number) => void }) {
     opts.signal.throwIfAborted();
     if (!alignsLanguage(opts.language)) return segments;
+    const spanish = isSpanish(opts.language);
+    const alphabet = spanish ? SPANISH_CTC_LETTERS : CTC_LETTERS;
+    const classes = 5 + alphabet.length;
+    const emissions = spanish && opts.emissions
+      ? { ...opts.emissions, file: `${opts.emissions.file}.es-${spanishWeights.sha256.slice(0, 8)}.bin` } : opts.emissions;
     const words = segments.flatMap(s => s.words);
     const { resume } = opts;
     const through = resume?.through ?? 0;
@@ -128,7 +151,7 @@ export class WordAligner {
     }
     const nextWord = hasCursor ? cursor : fixedPrefix;
     const groups = alignmentGroups(segments, undefined, nextWord);
-    if (!groups.some(g => groupLabels(g.words).spelled)) return segments;
+    if (!groups.some(g => groupLabels(g.words, alphabet).spelled)) return segments;
     const timings: Array<WordTiming | undefined> = [];
     let after = through > 0 ? through : undefined;
     // Progress is how far into the speech alignment has reached. A turn covers up to five minutes of speech,
@@ -154,15 +177,14 @@ export class WordAligner {
       while (last < groups.length && groups[last]!.end - groups[first]!.start <= seconds) last++;
       const batch = groups.slice(first, last);
       const turn = async (signal: AbortSignal) => {
-        const model = await this.model.get(signal);
-        const { emissions } = opts;
+        const model = await (spanish ? this.spanishModel : this.model).get(signal);
         const runs = batch.map(({ start, end, words }) => ({ start, end, words }));
         // The recording is decoded only when the store lacks a window these words need.
-        const audio = !emissions ? wav : await storeCovers(emissions, runs) ? "" : await emissions.wav();
+        const audio = !emissions ? wav : await storeCovers(emissions, runs, classes) ? "" : await emissions.wav();
         // Beside the store the request ends in .part, which the leftover sweep clears from a project's folder.
         const request = emissions ? `${emissions.file}.${randomUUID()}.part` : `${wav}.${randomUUID()}.align.json`;
         try {
-          await writeFile(request, JSON.stringify({ groups: runs, after,
+          await writeFile(request, JSON.stringify({ groups: runs, after, ...(spanish && { language: "es" as const }),
             ...(emissions && { store: { file: emissions.file, offset: emissions.offset ?? 0, duration: emissions.duration } }) } satisfies AlignRequest));
           const from = reached(first), to = last >= groups.length ? 1 : reached(last);
           return await audioWorker.request<AlignResponse>({ kind: "align", wav: audio, model, request }, { signal,
@@ -203,7 +225,7 @@ export function measureRecordingWords(ctx: { paths: { root: string } }, mediaId:
 
 /**
  * Align `segments` (Whisper or cloud ASR output, times relative to `wav`) to the audio in `wav`.
- * Returns new segments with the same text. Non-English input is returned unchanged. Throws when the
+ * Returns new segments with the same text. Unsupported languages keep their original times. Throws when the
  * aligner model cannot be prepared or the worker fails; callers may keep the original segments.
  */
 export function alignWords(ctx: { paths: { root: string } }, wav: string, segments: TranscriptSegment[],
@@ -314,8 +336,8 @@ function searchRegions(groups: AlignRequest["groups"], duration: number) {
 }
 
 /** Whether the store already holds every frame these groups' searches read. */
-async function storeCovers(source: EmissionSource, groups: AlignRequest["groups"]) {
-  const store = await EmissionFile.open(source.file).catch(() => null);
+async function storeCovers(source: EmissionSource, groups: AlignRequest["groups"], classes: number) {
+  const store = await EmissionFile.open(source.file, undefined, classes).catch(() => null);
   if (!store) return false;
   try {
     const offset = source.offset ?? 0;
@@ -328,13 +350,14 @@ async function storeCovers(source: EmissionSource, groups: AlignRequest["groups"
  * `onProgress` gets the share of this request's audio inferred so far, after each window. */
 export async function runAlignWorker(wav: string, model: string, requestFile: string, onProgress?: (done: number) => void,
   sessions?: Sessions): Promise<AlignResponse> {
-  const { groups, after, store, measure } = JSON.parse(await readFile(requestFile, "utf8")) as AlignRequest;
-  if (store) return alignFromStore(wav, model, groups, after, store, onProgress, sessions, measure);
+  const { groups, after, store, measure, language } = JSON.parse(await readFile(requestFile, "utf8")) as AlignRequest;
+  const alphabet = language === "es" ? SPANISH_CTC_LETTERS : CTC_LETTERS;
+  if (store) return alignFromStore(wav, model, groups, after, store, alphabet, onProgress, sessions, measure);
   // Before the audio is opened: a missing runtime throws here, with no file left open.
   const ort = loadRuntime();
   const audio = await openWav(wav);
   // On the GPU when there is one. A run that fails there starts again on the CPU, so it builds its result afresh.
-  try { return await withInference(ort, model, async session => {
+  try { return await withAligner(ort, model, alphabet, sessions, async readWindow => {
     const out: AlignResponse = groups.map(g => g.words.map(() => null));
     const regions = searchRegions(groups, audio.samples / SAMPLE_RATE);
     let previousEnd = after ?? -Infinity;
@@ -344,21 +367,21 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
       const from = Math.floor(region.start * SAMPLE_RATE / FRAME_SAMPLES) * FRAME_SAMPLES;
       const samples = await audio.read(from, Math.ceil(region.end * SAMPLE_RATE));
       const length = region.end - region.start;
-      const emissions = await emit(ort, session, samples, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
+      const emissions = await emit(readWindow, samples, 5 + alphabet.length, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
       emitted += length;
-      previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out);
+      previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out, alphabet);
     }
     return out;
-  }, { sessions }); } finally {
+  }); } finally {
     await audio.close();
   }
 }
 
 /** Align one region's groups against its emissions, never reaching back over words the previous run placed. */
-function place(em: Emissions, groups: AlignRequest["groups"], indices: number[], previousEnd: number, out: AlignResponse) {
+function place(em: Emissions, groups: AlignRequest["groups"], indices: number[], previousEnd: number, out: AlignResponse, alphabet: string) {
   for (const g of indices) {
     const group = groups[g]!;
-    const timings = alignGroup(em, group.words, Math.max(group.start - MARGIN, previousEnd), group.end + MARGIN);
+    const timings = alignGroup(em, group.words, Math.max(group.start - MARGIN, previousEnd), group.end + MARGIN, alphabet);
     timings.forEach((t, i) => {
       if (!t) return;
       out[g]![i] = { start: round(t.start), end: round(t.end), score: round(t.score) };
@@ -373,11 +396,12 @@ function place(em: Emissions, groups: AlignRequest["groups"], indices: number[],
  * recording, and saved; when it has them all, no audio is read and the model is never loaded.
  */
 async function alignFromStore(wav: string, model: string, groups: AlignRequest["groups"], after: number | undefined,
-  { file, offset, duration }: NonNullable<AlignRequest["store"]>, onProgress?: (done: number) => void, sessions?: Sessions, measure?: TimeRange[]): Promise<AlignResponse> {
+  { file, offset, duration }: NonNullable<AlignRequest["store"]>, alphabet: string, onProgress?: (done: number) => void, sessions?: Sessions, measure?: TimeRange[]): Promise<AlignResponse> {
+  const classes = 5 + alphabet.length;
   const audio = wav ? await openWav(wav) : undefined;
   let store: EmissionFile | null | undefined;
   try {
-    store = await EmissionFile.open(file, audio?.samples);
+    store = await EmissionFile.open(file, audio?.samples, classes);
     if (!store) throw new Error("The recording's alignment store is missing.");
     const saved = store;
     const regions = searchRegions(groups, duration ?? saved.samples / SAMPLE_RATE).map(region =>
@@ -387,31 +411,19 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
     if (missing.length) {
       if (!audio) throw new Error("The recording's alignment store lacks audio it was not given.");
       const ort = loadRuntime();
-      // On Apple silicon the helper tries WebGPU, where it keeps the session: preparing it for one turn costs more
-      // than it saves. A window is saved as soon as it is inferred, so a run that fails on the GPU continues on the
-      // CPU where it stopped.
-      const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: WEBGPU_CPU_NODES } : {};
-      await withInference(ort, model, async (session, provider) => {
+      // Save each verified window as it finishes. CPU fallback resumes at the first missing window.
+      await withAligner(ort, model, alphabet, sessions, async readWindow => {
         for (const [done, index] of missing.entries()) {
           if (saved.missing(saved.chunks[index]!.keep[0], saved.chunks[index]!.keep[1]).includes(index)) {
             const chunk = saved.chunks[index]!;
             const part = await audio.read(chunk.start, chunk.start + chunk.length);
-            const logits = await infer(ort, session, part);
-            if (provider === "webgpu" && sessions && !sessions.verified.has(model)) {
-              const expected = await withInference(ort, model, cpu => infer(ort, cpu, part), { sessions, gpu: false });
-              const { worst, flips } = compareLogits(expected, logits);
-              if (!(worst <= GPU_LOGIT_TOLERANCE && flips <= GPU_FLIP_TOLERANCE)) {
-                throw new Error(`The GPU's aligner output differs from the CPU's (${worst.toFixed(3)}, ${(100 * flips).toFixed(1)}% of frames).`);
-              }
-              sessions.verified.add(model);
-              await sessions.drop(`cpu:${model}`);
-            }
+            const logits = await readWindow(part);
             const first = chunk.start / FRAME_SAMPLES;
-            await saved.write(index, logSoftmax(logits.slice((chunk.keep[0] - first) * CLASSES, (chunk.keep[1] - first) * CLASSES)));
+            await saved.write(index, logSoftmax(logits.slice((chunk.keep[0] - first) * classes, (chunk.keep[1] - first) * classes), classes));
           }
           onProgress?.((done + 1) / missing.length);
         }
-      }, { sessions, ...gpu });
+      });
     }
     const out: AlignResponse = groups.map(g => g.words.map(() => null));
     let previousEnd = after ?? -Infinity;
@@ -419,7 +431,7 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
       const [from, to] = region.frames;
       if (to <= from) continue;
       const em: Emissions = { logProbs: await saved.read(from, to), frames: to - from, origin: from * FRAME_SAMPLES / SAMPLE_RATE - offset };
-      previousEnd = place(em, groups, region.groups, previousEnd, out);
+      previousEnd = place(em, groups, region.groups, previousEnd, out, alphabet);
     }
     onProgress?.(1);
     return out;
@@ -429,16 +441,16 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
 }
 
 /** The largest difference between two sets of logits, and the share of frames whose top class differs. */
-function compareLogits(a: Float32Array, b: Float32Array) {
+function compareLogits(a: Float32Array, b: Float32Array, classes: number) {
   let worst = a.length === b.length ? 0 : Infinity, flips = 0;
-  const frames = Math.min(a.length, b.length) / CLASSES;
+  const frames = Math.min(a.length, b.length) / classes;
   for (let f = 0; f < frames; f++) {
     let top = 0, other = 0;
-    for (let c = 0; c < CLASSES; c++) {
-      const at = f * CLASSES + c;
+    for (let c = 0; c < classes; c++) {
+      const at = f * classes + c;
       worst = Math.max(worst, Math.abs(a[at]! - b[at]!));
-      if (a[at]! > a[f * CLASSES + top]!) top = c;
-      if (b[at]! > b[f * CLASSES + other]!) other = c;
+      if (a[at]! > a[f * classes + top]!) top = c;
+      if (b[at]! > b[f * classes + other]!) other = c;
     }
     if (top !== other) flips++;
   }
@@ -448,8 +460,34 @@ function compareLogits(a: Float32Array, b: Float32Array) {
 type Runtime = ReturnType<typeof loadRuntime>;
 type Session = Awaited<ReturnType<Runtime["InferenceSession"]["create"]>>;
 
+type ReadWindow = (part: Float32Array) => Promise<Float32Array>;
+
+/** Check the first accelerated window against this model's CPU output before its timings or emissions are used. */
+function withAligner<T>(ort: Runtime, model: string, alphabet: string, sessions: Sessions | undefined,
+  work: (readWindow: ReadWindow) => Promise<T>) {
+  const classes = 5 + alphabet.length;
+  const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: alphabet === CTC_LETTERS ? WEBGPU_CPU_NODES : undefined } : {};
+  return withInference(ort, model, async (session, provider) => {
+    let verified = sessions?.verified.has(model) ?? false;
+    return work(async part => {
+      const logits = await infer(ort, session, part, classes);
+      if (!verified && (provider === "webgpu" || (provider === "dml" && alphabet === SPANISH_CTC_LETTERS))) {
+        const expected = await withInference(ort, model, cpu => infer(ort, cpu, part, classes), { sessions, gpu: false });
+        const { worst, flips } = compareLogits(expected, logits, classes);
+        if (!(worst <= GPU_LOGIT_TOLERANCE && flips <= GPU_FLIP_TOLERANCE)) {
+          throw new Error(`The GPU's aligner output differs from the CPU's (${worst.toFixed(3)}, ${(100 * flips).toFixed(1)}% of frames).`);
+        }
+        verified = true;
+        sessions?.verified.add(model);
+        await sessions?.drop(`cpu:${model}`);
+      }
+      return logits;
+    });
+  }, { sessions, ...gpu });
+}
+
 /** One window's logits, its audio normalized like the model's feature extractor. */
-async function infer(ort: Runtime, session: Session, part: Float32Array) {
+async function infer(ort: Runtime, session: Session, part: Float32Array, classes: number) {
   let total = 0, variance = 0;
   for (let i = 0; i < part.length; i++) total += part[i]!;
   const mean = total / part.length;
@@ -460,19 +498,19 @@ async function infer(ort: Runtime, session: Session, part: Float32Array) {
   const result = await session.run({ input_values: new ort.Tensor("float32", input, [1, input.length]) });
   const logits = result.logits!;
   const frames = framesFor(part.length);
-  if (logits.dims[1] !== frames || logits.dims[2] !== CLASSES) throw new Error(`Unexpected aligner output ${logits.dims.join("×")}.`);
+  if (logits.dims[1] !== frames || logits.dims[2] !== classes) throw new Error(`Unexpected aligner output ${logits.dims.join("×")}.`);
   return logits.data as Float32Array;
 }
 
 /** Log-probabilities over ≤30 s windows that overlap by 2 s, each normalized like the model's feature extractor. */
-async function emit(ort: Runtime, session: Session, samples: Float32Array, onChunk?: (done: number) => void) {
+async function emit(readWindow: ReadWindow, samples: Float32Array, classes: number, onChunk?: (done: number) => void) {
   const chunks = planChunks(samples.length);
   const outputs: Float32Array[] = [];
   for (const [index, chunk] of chunks.entries()) {
-    outputs.push(await infer(ort, session, samples.subarray(chunk.start, chunk.start + chunk.length)));
+    outputs.push(await readWindow(samples.subarray(chunk.start, chunk.start + chunk.length)));
     onChunk?.((index + 1) / chunks.length);
   }
-  const logProbs = logSoftmax(stitchChunks(chunks, outputs));
-  return { logProbs, frames: logProbs.length / CLASSES };
+  const logProbs = logSoftmax(stitchChunks(chunks, outputs, classes), classes);
+  return { logProbs, frames: logProbs.length / classes };
 }
 
