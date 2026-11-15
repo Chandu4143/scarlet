@@ -582,20 +582,27 @@ it("draws every applied edit on the working cut under what needs the editor, gat
   await act(async () => {});
   expect(container.querySelector(".timeline-ruler")!.textContent).not.toBe(ruler);
   expect(editPanel()).toBeNull();
-  for (let i = 0; i < 4 && !countLabels().includes("1 cut"); i++) {
-    const count = editMarks().find(m => m.classList.contains("is-count"))!;
-    await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(count.style.left) * 10 })); });
-    await act(async () => {});
-  }
-  // Zoomed in, the counts open into smaller ones, down to a count of one cut. A cut is never drawn as a line.
-  expect(countLabels()).toContain("1 cut");
-  expect(editMarks().filter(m => m.classList.contains("is-cut"))).toEqual([]);
-  // Hovering a count of one names its cut, and a press opens it in the card, as its row in the chat would.
-  const one = editMarks().find(m => m.textContent === "1 cut")!;
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(one.style.left) * 10 })); });
+  // One press is enough: zoomed in to the count's stretch, every edit is a mark of its own, a cut too, so a count never
+  // opens onto more counts. The only counts left are at the edges, of the edits beyond each.
+  const inside = () => editMarks().filter(m => !m.classList.contains("is-count"));
+  expect(inside().length).toBeGreaterThan(1);
+  expect(inside().some(m => m.classList.contains("is-tick") && m.dataset.kind === "cut")).toBe(true);
+  expect(countLabels().every(label => /^‹ \d+ edits?$|^\d+ edits? ›$/.test(label))).toBe(true);
+  expect(countLabels().length).toBeGreaterThan(0);
+  // Hovering near a cut's tick, not on it, names the cut and lights the tick, and a press there opens it in the card,
+  // as its row in the chat would.
+  const one = inside().filter(m => m.dataset.kind === "cut").find((m, i, all) => all.every(o => o === m || Math.abs(parseFloat(o.style.left) - parseFloat(m.style.left)) > 2.4)
+    && parseFloat(m.style.left) > 12 && parseFloat(m.style.left) < 88) ?? inside().find(m => m.dataset.kind === "cut")!;
+  const near = parseFloat(one.style.left) * 10 + 8;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: near })); });
   expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined b")?.textContent).toMatch(/^Cut at \d+:\d\d$/);
-  expect(one.classList.contains("is-hot")).toBe(true);
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(one.style.left) * 10 })); });
+  expect(editMarks().find(m => m.classList.contains("is-hot"))?.style.left).toBe(one.style.left);
+  // A count at an edge says what lies beyond it, and a press moves there at the same zoom.
+  const edge = editMarks().find(m => m.classList.contains("is-count"))!;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(edge.style.left) * 10 })); });
+  expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined small")?.textContent).toMatch(/^(Before|After) \d+:\d\d(\.\d+)? · Click to go there$/);
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: near })); });
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: near })); });
   await act(async () => {});
   expect(editPanel()).not.toBeNull();
 });
