@@ -107,6 +107,10 @@ jobs:
       - name: Fetch external media tools for the smoke test
         run: node apps/desktop/scripts/fetch-ffmpeg.mjs --target ${{ matrix.triple }}
 
+      # Bundled in every package. The installer build checks it again before bundling.
+      - name: Fetch the headless browser for motion graphics
+        run: node apps/desktop/scripts/fetch-chrome.mjs --target ${{ matrix.triple }}
+
       # Windows also gets a Vulkan whisper-cli for the GPU, built against the SDK's headers, loader and glslc.
       - name: Install the Vulkan SDK
         if: runner.os == 'Windows'
@@ -132,6 +136,9 @@ jobs:
             archs=$(lipo -archs "$f"); echo "$f: $archs"
             [[ " $archs " == *" ${{ matrix.arch }} "* ]] || { echo "::error::$f is $archs, expected ${{ matrix.arch }}"; exit 1; }
           done
+          chrome=apps/desktop/src-tauri/binaries/chrome-headless-shell/chrome-headless-shell
+          [[ $(lipo -archs "$chrome") == "${{ matrix.arch }}" ]] || { echo "::error::$chrome is not ${{ matrix.arch }}"; exit 1; }
+          "$chrome" --version
 
       - name: Rust tests
         working-directory: apps/desktop/src-tauri
@@ -166,6 +173,19 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           for f in "$APP"/Contents/MacOS/*; do codesign -dv "$f" 2>&1 | grep -E "^(Identifier|Format|flags|Signature)" | sed "s|^|$(basename "$f"): |"; done
           echo "engine entitlements:"; codesign -d --entitlements - "$APP/Contents/MacOS/scarlet-engine"
+          codesign --verify --strict --verbose=2 "$APP/Contents/Resources/chrome-headless-shell/chrome-headless-shell"
+
+      - name: Render a page in the packaged headless browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            chrome="$BUNDLE/macos/$DESKTOP_PRODUCT.app/Contents/Resources/chrome-headless-shell/chrome-headless-shell"
+          else
+            chrome="apps/desktop/src-tauri/target/${{ matrix.triple }}/release/chrome-headless-shell/chrome-headless-shell.exe"
+          fi
+          page=$("$chrome" --headless --dump-dom 'data:text/html,<p>rendered</p>')
+          [[ "$page" == *"<p>rendered</p>"* ]] || { echo "::error::The packaged headless browser returned: $page"; exit 1; }
 
       - name: Stage external media tools for the package smoke test
         shell: bash
