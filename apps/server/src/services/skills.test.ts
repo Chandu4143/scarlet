@@ -70,6 +70,14 @@ describe("the skills Scarlet comes with", () => {
     expect(guide.content).not.toMatch(/timeline_crossfade_audio|crossfadeFrames/);
   });
 
+  it("keeps a renamed first-cut workflow out of unrelated prompts and loads it in full when selected", async () => {
+    await upgrade();
+    const guide = updateSkill(app.ctx, editor, publicGuide()!, { name: "my-dialogue-cut" });
+    expect(assistantSkills([guide], [], true)[0]?.content).toContain("Read this workflow");
+    expect(assistantSkills([guide], [guide.id], true)).toEqual([guide]);
+    expect(assistantSkills([guide], [], false)).toEqual([guide]);
+  });
+
   it("carries existing dialogue preferences into the editable skill once and keeps other settings", async () => {
     oldSettings({ aiCuts: { filler: "off", pause: "suggest", retake: "cut", coaching: "suggest" }, pauseTightness: "tight", crossfadeFrames: 6 });
     await upgrade();

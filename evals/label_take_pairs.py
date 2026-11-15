@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 
 from compare import encoded, private_path, sha
-from score_audio_reference import occurrence_evidence
+from prepare_take_pairs import check_distinct_recordings
+from score_audio_reference import occurrence_evidence, validated_transcript_stream
 from take_listening import write_new
 
 
@@ -114,9 +115,8 @@ def reference_binding(record, evidence, reference, ref_file, paths, source_dir):
             raise ValueError(f"Invalid {key} in reference input identity.")
     # Schema 1 blind sources used stream zero unless the evidence selected a stream.
     # The manifest's explicit stream on new runs must agree with the transcript's stream.
-    evidence_stream = evidence.get("audioStream", 0)
-    stream = record.get("audioStream", 0)
-    if type(stream) is not int or type(evidence_stream) is not int or not (stream == evidence_stream == identity["audioStream"]):
+    stream = validated_transcript_stream(evidence, record["sourceSha256"], record.get("audioStream", 0))
+    if stream != identity["audioStream"]:
         raise ValueError(f"Source, transcript and correlation audio streams differ: {record['id']}")
     if identity["sourceSha256"] != record["sourceSha256"]:
         raise ValueError(f"Source and correlation digests differ: {record['id']}")
@@ -142,6 +142,7 @@ def label_manifest(manifest, sources, source_dir):
     recordings = {record["id"]: record for record in manifest["recordings"]}
     if len(recordings) != len(manifest["recordings"]) or set(sources) != set(recordings):
         raise ValueError("Expected one independent reference per recording.")
+    check_distinct_recordings(manifest["recordings"])
     ids = [t["id"] for t in manifest["trials"]]
     if len(ids) != len(set(ids)):
         raise ValueError("Duplicate trial ID.")

@@ -215,7 +215,7 @@ it("lists the same timeline words as scanning every word per clip, across many c
 });
 
 describe("picture-to-first-word timing", () => {
-  const inventory = [{ id: "cam", kind: "video" }];
+  const inventory = [{ id: "cam", kind: "video", duration: 12 }];
   const transcript = words([["before", 2.9, 3.2], ["[breath]", 5.61, 5.7], ["first", 5.8, 6.1]]);
   function example() {
     const tl = emptyTimeline("p");
@@ -234,10 +234,25 @@ describe("picture-to-first-word timing", () => {
     expect(read(example(), words([["first", 5.55, 5.85]]))).toMatchObject({ status: "word-trimmed", onsetTrimMs: 50 });
     expect(read(example(), transcript, 5.7).status).toBe("unavailable");
     const tl = example(), clip = tl.tracks[1]!.clips[1]!;
-    if (clip.kind === "media") clip.audioFadeIn = .3;
+    if (clip.kind !== "media") throw new Error("Expected incoming audio");
+    clip.audioFadeIn = .3;
     expect(read(tl)).toMatchObject({ status: "onset-in-fade", fadeOverOnsetMs: 100 });
+    clip.audioFadeIn = 0;
+    clip.audioFadeOut = 1;
+    expect(read(tl, words([["last", 8.75, 8.95]]))).toMatchObject({ status: "onset-in-fade", fadeOverOnsetMs: 250 });
+    expect(read(tl).status).toBe("measured");
   });
-  it("does not score an audio cut covered by another shot, a dissolve, or a hidden picture", () => {
+  it("distinguishes rendered transitions from a requested transition too short to play", () => {
+    const tl = example(), clip = tl.tracks[0]!.clips[1]!;
+    if (clip.kind !== "media") throw new Error("Expected incoming camera");
+    for (const type of ["dissolve", "push", "dip"] as const) {
+      clip.transitionIn = { type, duration: .4, direction: "left" };
+      expect(read(tl).status).toBe("unavailable");
+    }
+    clip.transitionIn = { type: "dissolve", duration: .02, direction: "left" };
+    expect(read(tl)).toMatchObject({ status: "measured", gapMs: -240 });
+  });
+  it("does not score an audio cut covered by another shot, a picture fade, or a hidden picture", () => {
     const tl = example(), cover = makeTrack("video", "Cover");
     cover.clips = [makeMediaClip("cam", 20, 30, 0, { volume: 0 })];
     tl.tracks.push(cover);

@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from label_take_pairs import label_trial, occurrence_evidence, reference_binding
+from label_take_pairs import label_manifest, label_trial, occurrence_evidence, reference_binding
 
 
 class LabelTakePairsTests(unittest.TestCase):
@@ -43,6 +43,11 @@ class LabelTakePairsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bind(dict(old, inputs=dict(identity, **wrong)))
 
+            evidence["sourceSha256"] = "c" * 64
+            with self.assertRaisesRegex(ValueError, "source recordings"):
+                bind(dict(old, inputs=identity))
+            evidence["sourceSha256"] = identity["sourceSha256"]
+
             replay = root / "replay.json"
             replay.write_text(json.dumps(dict(old, inputs=identity)))
             metadata = root / "archive.json"
@@ -54,6 +59,11 @@ class LabelTakePairsTests(unittest.TestCase):
             metadata.write_text(json.dumps(dict(sourceSha256=identity["sourceSha256"], editorSha256="d" * 64)))
             with self.assertRaisesRegex(ValueError, "Archive"):
                 bind(old, options)
+
+    def test_frozen_manifest_cannot_label_the_same_recording_as_held_out(self):
+        recordings = [dict(id=name, split=name, sourceSha256="a" * 64) for name in ("dev", "holdout")]
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, "across the study splits"):
+            label_manifest(dict(recordings=recordings, trials=[]), {"dev": {}, "holdout": {}}, Path(tmp))
 
     def test_matching_positions_and_mixed_copies(self):
         words = [dict(text=t) for t in ("a", "b", "c", "A", "b.", "C!")]

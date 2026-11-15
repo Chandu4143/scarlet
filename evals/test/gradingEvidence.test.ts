@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { loadCase, type CaseFile } from "../src/case.ts";
+import { scoreEntrances } from "../src/entrances.ts";
 import { publishedGradingInputs } from "../src/gradingEvidence.ts";
 import { reportPublishedWords } from "../src/run.ts";
 import { cut } from "./fixtures.ts";
@@ -27,6 +28,7 @@ const words = { ...identity, duration: 5, words: [{ text: "begin", start: 1.10, 
 const predicted = { ...words, words: [{ text: "begin", start: 3.10, end: 3.30 }] };
 const digest = (path: string) => createHash("sha256").update(readFileSync(join(root, path))).digest("hex");
 const put = (name: string, value: unknown) => writeFileSync(join(root, name), JSON.stringify(value));
+const get = (name: string) => JSON.parse(readFileSync(join(root, name), "utf8"));
 
 function build({ declared = true, grade = words, map = identity, observed = predicted } = {}) {
   put(candidate, observed);
@@ -82,4 +84,36 @@ it("rejects same-duration recordings or alternate streams even when the substitu
   for (const change of [{sourceSha256: "b".repeat(64)}, { audioStream: 0 }]) {
     expect(() => publishedGradingInputs(build({map: { ...identity, ...change }}))).toThrow(/reference/);
   }
+});
+
+it("requires the frozen picture observations and the same editor export for both grading clocks", async () => {
+  const loaded = build({ declared: false });
+  const timeline = cut("applied", "med_cam", [[0, 2]]);
+  const editor = "e".repeat(64), pictures = "pictures.json", lockFile = "episode.lock.json";
+  const lock = get(lockFile), map = get(reference);
+  put(pictures, { sourceId: source, publishedSha256: editor, publishedFrames: 50, observations: [] });
+  expect(() => publishedGradingInputs(loaded)).toThrow(/undeclared picture/);
+  lock.files[pictures] = digest(pictures);
+  lock.files["media/published.mp4"] = editor;
+  put(lockFile, lock);
+
+  const freezeMap = (inputs?: unknown) => {
+    put(reference, { ...map, inputs });
+    lock.files[reference] = digest(reference);
+    put(lockFile, lock);
+  };
+  freezeMap({ ...identity, editorSha256: "f".repeat(64) });
+  expect(() => publishedGradingInputs(loaded)).toThrow(/different edits/);
+  freezeMap({ ...identity, editorSha256: editor });
+  expect((await scoreEntrances(loaded, timeline))?.summary.verifiedPictures).toBe(0);
+
+  // Original maps had no recording identities. Their frozen episode already pins both inputs.
+  freezeMap();
+  expect((await scoreEntrances(loaded, timeline))?.summary.verifiedPictures).toBe(0);
+  rmSync(join(root, pictures));
+  expect(() => publishedGradingInputs(loaded)).toThrow(/Missing or undeclared picture/);
+  await expect(scoreEntrances(loaded, timeline)).rejects.toThrow(/Missing or undeclared picture/);
+  delete lock.files[pictures];
+  put(lockFile, lock);
+  expect(await scoreEntrances(loaded, timeline)).toBeUndefined();
 });

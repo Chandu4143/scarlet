@@ -18,6 +18,24 @@ class EditorHistoryTests(unittest.TestCase):
         self.assertEqual(suggest_ranges(np.array([.99, .99, .01, .01, .99])), [[0, 1], [4, 4]])
         self.assertEqual(suggest_ranges(np.array([.01, .01])), [])
 
+    def test_evidence_from_another_recording_is_rejected(self):
+        from editor_history import read_case
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "evidence").mkdir()
+            media = dict(id="mic", hash="a" * 64, audioStream=1)
+            (root / "case.json").write_text(json.dumps(dict(id="show", projectId="show", media=[media], dialogueMedia=["mic"])))
+            evidence = dict(mediaId="mic", words=[dict(text="hello", start=0, end=.2)])
+            path = root / "evidence/mic.json"
+            path.write_text(json.dumps(evidence))
+            self.assertEqual(read_case(root)[1]["audioStream"], 1)
+            path.write_text(json.dumps(dict(evidence, sourceSha256="b" * 64)))
+            with self.assertRaisesRegex(ValueError, "source recordings"):
+                read_case(root)
+            path.write_text(json.dumps(dict(evidence, audioStream=0)))
+            with self.assertRaisesRegex(ValueError, "audio streams"):
+                read_case(root)
+
     def test_source_overlap_is_rejected_before_loading_any_reference(self):
         from editor_history import build
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare import encoded, private_path, sha
+from compare import encoded, private_path, sha, verify_reference_recordings
 
 W, H = 80, 46
 
@@ -155,6 +155,7 @@ def verify(root, cache, insets=(), hwaccel=None, margin=.002):
     source_pts, source, source_hash = probe_frames(root / "media/presenter.mp4", cache, "presenter", hwaccel)
     final_pts, final, final_hash = probe_frames(root / "media/published.mp4", cache, "published", hwaccel)
     audio = json.loads((root / "reference-audio.json").read_bytes())
+    verify_reference_recordings(audio, source_hash, final_hash)
     observations = []
     layouts = [(0, 0, 1, 1), *insets]
     for i, j in enumerate(audio["joins"]):

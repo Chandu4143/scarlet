@@ -41,3 +41,14 @@ it("can run a renamed custom guide alone on a case that originally used a differ
   expect(selectTrialSkills(available, { ...wanted, skillIds: ["personal"], skillNames: ["old-name"] }, { add: [] })).toEqual([available[1]]);
   expect(() => selectTrialSkills([{ ...available[1]!, enabled: false }], wanted, { exact: ["renamed-guide"], add: [] })).toThrow("unavailable");
 });
+
+it("keeps the original guide after a rename even if a new guide reuses its old name", () => {
+  const renamed = { id: "original", name: "my-cut", version: 2 };
+  const replacement = { id: "new", name: "dialogue-pass", version: 1 };
+  const wanted = { instruction: "First cut", skillIds: ["original"], skillNames: ["dialogue-pass"] };
+  expect(selectTrialSkills([renamed, replacement], wanted, { add: [] })).toEqual([renamed]);
+  expect(selectTrialSkills([replacement], wanted, { add: [] })).toEqual([replacement]);
+  expect(() => selectTrialSkills([{ ...renamed, enabled: false }, replacement], wanted, { add: [] })).toThrow("disabled");
+  expect(() => selectTrialSkills([renamed], { ...wanted, skillIds: ["original", "missing"],
+    skillNames: ["dialogue-pass", "cutaway"] }, { add: [] })).toThrow("cutaway");
+});

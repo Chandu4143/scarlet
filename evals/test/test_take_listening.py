@@ -50,8 +50,37 @@ class TakeListeningTests(unittest.TestCase):
             decoded = root / "choices.json"
             decode(batch, responses, decoded)
             self.assertEqual([r["choice"] for r in json.loads(decoded.read_text())], ["second"] * 4)
+            # Reversing the decoder mappings must not change an answer from the same sealed run.
+            key_path = batch / "key.json"
+            original_key = key_path.read_bytes()
+            altered = json.loads(original_key)
+            for spec in altered["requests"].values():
+                spec["options"]["A"], spec["options"]["B"] = spec["options"]["B"], spec["options"]["A"]
+            key_path.write_text(json.dumps(altered))
+            with self.assertRaisesRegex(ValueError, "Decoder key"):
+                decode(batch, responses, root / "swapped.json")
+            key_path.write_bytes(original_key)
             rows = json.loads(decoded.read_bytes())
             labels = [{"id": "passage", "case": "example", "split": "test", "exact": {"targetChoice": "second"}}]
+            # Old numeric IDs can be decoded only against an independently preserved key digest.
+            legacy = root / "legacy"
+            legacy.mkdir()
+            old_key = json.loads(original_key)
+            old_key["requests"] = {rid.partition(".")[0]: spec for rid, spec in old_key["requests"].items()}
+            key_bytes = json.dumps(old_key).encode()
+            (legacy / "key.json").write_bytes(key_bytes)
+            old_requests = legacy / "requests.jsonl"
+            old_responses = root / "old-responses.jsonl"
+            for source, destination in [(requests, old_requests), (answers, old_responses)]:
+                destination.write_text("\n".join(json.dumps(dict(row, id=row["id"].partition(".")[0])) for row in source))
+            seal_responses(old_requests, old_responses, runtime)
+            with self.assertRaisesRegex(ValueError, "independent archive"):
+                decode(legacy, old_responses, root / "unverified.json")
+            digest = hashlib.sha256(key_bytes).hexdigest()
+            decode(legacy, old_responses, root / "old-choices.json", legacy_key_sha256=digest)
+            self.assertEqual([r["choice"] for r in json.loads((root / "old-choices.json").read_bytes())], ["second"] * 4)
+            with self.assertRaisesRegex(ValueError, "independent archive"):
+                decode(legacy, old_responses, root / "wrong-digest.json", legacy_key_sha256="b" * 64)
             rows[0]["choice"] = None
             results = {r["modality"]: r for r in score(rows, labels, "exact")}
             self.assertEqual(results["audio"]["bothOrdersCorrect"], 1)

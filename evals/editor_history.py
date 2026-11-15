@@ -137,9 +137,7 @@ def read_case(directory):
     evidence = json.loads(evidence_path.read_bytes())
     if evidence["mediaId"] != media_id or not evidence["words"]:
         raise ValueError("The case needs a transcript for its dialogue recording.")
-    track = evidence.get("audioStream", asset.get("audioStream", 0))
-    if type(track) is not int or track < 0 or asset.get("audioStream", track) != track:
-        raise ValueError("The case and transcript must identify the same audio stream.")
+    track = referee.validated_transcript_stream(evidence, digest, asset.get("audioStream"))
     words = evidence["words"]
     for word in words:
         if (not isinstance(word.get("text"), str) or not all(type(word.get(k)) in (float,int) and math.isfinite(word[k])

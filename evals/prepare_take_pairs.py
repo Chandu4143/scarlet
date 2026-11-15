@@ -10,6 +10,7 @@ import tempfile
 import wave
 
 from compare import EVALS, REPO, private_path, sha
+from score_audio_reference import validated_transcript_stream
 
 
 def scarlet(operation, payload):
@@ -63,9 +64,8 @@ def make_trial(case, split, words, duration, a, end1, b, end2):
 def prepare_episode(case, split, source, evidence_file, stage):
     evidence = json.loads(evidence_file.read_bytes())
     words, duration = evidence["words"], evidence["duration"]
-    stream = evidence.get("audioStream", 0)
-    if type(stream) is not int or stream < 0:
-        raise ValueError("Source audioStream must be a nonnegative integer.")
+    source_digest = sha(source)
+    stream = validated_transcript_stream(evidence, source_digest)
     repeats = scarlet("repeats", words)
     starts = {word["start"]: i for i, word in enumerate(words)}
     ends = {word["end"]: i for i, word in enumerate(words)}
@@ -88,9 +88,14 @@ def prepare_episode(case, split, source, evidence_file, stage):
     for trial in trials:
         for w in trial["windows"]:
             w["sha256"] = hashes[w["path"]]
-    recording = dict(id=case, split=split, words=len(words), sourceSha256=sha(source), audioStream=stream,
+    recording = dict(id=case, split=split, words=len(words), sourceSha256=source_digest, audioStream=stream,
                      transcriptSha256=hashlib.sha256(json.dumps(words, sort_keys=True).encode()).hexdigest(), finderPairs=len(repeats))
     return recording, trials
+
+
+def check_distinct_recordings(recordings):
+    if len({r["sourceSha256"] for r in recordings}) != len(recordings):
+        raise ValueError("Each source recording must appear only once across the study splits.")
 
 
 def prepare(episodes, out):
@@ -113,6 +118,7 @@ def prepare(episodes, out):
                                              Path(evidence).expanduser().resolve(), stage)
             manifest["recordings"].append(record)
             manifest["trials"].extend(trials)
+        check_distinct_recordings(manifest["recordings"])
         (stage / "cases.json").write_text(json.dumps(manifest, ensure_ascii=False, allow_nan=False, indent=2) + "\n", encoding="utf-8")
         stage.rename(out)
     return len(manifest["trials"])

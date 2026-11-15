@@ -71,14 +71,33 @@ class AudioReferenceScoreTests(unittest.TestCase):
         case = dict(media=[dict(id="mic", hash="a"*64, audioStream=1)])
         evidence = dict(mediaId="mic", audioStream=1)
         reference = dict(inputs=dict(sourceSha256="a"*64, audioStream=1))
-        self.assertEqual(validate_reference_source(case, evidence, reference), "recordingAndStream")
+        self.assertEqual(validate_reference_source(case, evidence, reference), ("recordingAndStream", 1))
         with self.assertRaisesRegex(ValueError, "source recordings"):
             validate_reference_source(case, evidence, dict(inputs=dict(sourceSha256="b"*64, audioStream=1)))
         with self.assertRaisesRegex(ValueError, "source recordings"):
             validate_reference_source(case, dict(evidence, sourceSha256="c"*64), reference)
         with self.assertRaisesRegex(ValueError, "audio streams"):
             validate_reference_source(case, dict(evidence, audioStream=0), reference)
-        self.assertEqual(validate_reference_source(case, evidence, {}), "historicalUnboundMap")
+        self.assertEqual(validate_reference_source(case, evidence, {}), ("historicalUnboundMap", 1))
+
+        with self.assertRaisesRegex(ValueError, "source recordings"):
+            validate_reference_source(case, dict(evidence, sourceSha256="c"*64), {})
+        with self.assertRaisesRegex(ValueError, "audio streams"):
+            validate_reference_source(case, dict(evidence, audioStream=0), {})
+
+    def test_explicit_candidate_stream_and_default_presenter_stem(self):
+        clip = dict(kind="media", mediaId="mic", sourceIn=0, sourceOut=2, timelineIn=0)
+        timeline = dict(tracks=[dict(kind="audio", clips=[clip])])
+        for mode in (dict(source_coverage_only=True), dict(matched_joins=True), {}):
+            # A recording-only timeline can be evaluated on its isolated presenter stem.
+            clip.pop("audioStream", None)
+            self.assertEqual(timeline_pieces(timeline, "mic", audio_stream=1, **mode), [Piece(0, 2, 0)])
+            clip["audioStream"] = 1
+            self.assertEqual(timeline_pieces(timeline, "mic", audio_stream=1, **mode), [Piece(0, 2, 0)])
+            for selector in (0, True):
+                clip["audioStream"] = selector
+                with self.assertRaisesRegex(ValueError, "audio streams"):
+                    timeline_pieces(timeline, "mic", audio_stream=1, **mode)
 
     def test_word_join_across_quiet_fades_and_ambiguity_when_the_next_word_starts_in_the_mix(self):
         clips = [dict(kind='media', mediaId='mic', sourceIn=0, sourceOut=2, timelineIn=0, audioFadeOut=.1),

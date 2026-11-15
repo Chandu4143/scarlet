@@ -89,23 +89,24 @@ export function selectTrialSkills(skills: Awaited<ReturnType<Engine["skills"]>>,
   const available = skills.filter(s => s.enabled !== false);
   const selected = new Map<string, (typeof available)[number]>();
   const add = (skill: (typeof available)[number]) => selected.set(skill.id, skill);
-  if (!selection.exact) {
-    // A local ID survives a rename. Across libraries the captured name may be the only match.
-    for (const id of wanted.skillIds) {
-      const match = available.find(s => s.id === id);
-      if (match) add(match);
-    }
-    for (const name of wanted.skillNames) {
-      const match = available.find(s => s.name === name);
-      if (match) add(match);
-    }
-    if (wanted.skillNames.length && !selected.size) throw new Error(`Skills ${wanted.skillNames.join(", ")} are unavailable.`);
-  }
-  for (const name of selection.exact ?? selection.add) {
+  const addByName = (name: string) => {
     const match = available.find(s => s.name === name);
     if (!match) throw new Error(`Requested evaluation skill ${name} is unavailable.`);
     add(match);
+  };
+  if (!selection.exact) {
+    // Captured IDs survive a rename. Fall back to the original name only when its ID is absent.
+    const { skillIds, skillNames } = wanted;
+    for (const [i, id] of skillIds.entries()) {
+      const local = skills.find(s => s.id === id);
+      if (local?.enabled === false) throw new Error(`Requested evaluation skill ${local.name} is disabled.`);
+      if (local) add(local);
+      else if (skillNames.length === skillIds.length) addByName(skillNames[i]!);
+      else throw new Error(`Captured evaluation skill ${id} is unavailable. Choose its replacement with --skills.`);
+    }
+    if (!skillIds.length) skillNames.forEach(addByName);
   }
+  (selection.exact ?? selection.add).forEach(addByName);
   return [...selected.values()].map(({ id, name, version }) => ({ id, name, version }));
 }
 

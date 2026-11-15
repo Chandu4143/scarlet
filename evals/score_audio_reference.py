@@ -76,7 +76,7 @@ def reference_pieces(ref, *, mapped_only=False):
     return result
 
 
-def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False, matched_joins=False):
+def timeline_pieces(tl, media, silent_media=(), *, audio_stream=0, source_coverage_only=False, matched_joins=False):
     result = []
     fades = {}
     for track_index, track in enumerate(tl['tracks']):
@@ -91,6 +91,10 @@ def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False, m
                 continue
             if c['mediaId'] != media:
                 raise ValueError('More than one audible recording. Supply a single-source cut and its evidence.')
+            # Saved timelines often identify only the recording. An explicit selector in an
+            # imported timeline must still agree with the stem on which the words were measured.
+            if 'audioStream' in c and (type(c['audioStream']) is not int or c['audioStream'] != audio_stream):
+                raise ValueError('Candidate clip and grading transcript identify different audio streams.')
             if c['sourceOut'] <= c['sourceIn'] or c.get('speed', 1) <= 0:
                 raise ValueError('Invalid source range or clip speed.')
             piece = Piece(c['sourceIn'], c['sourceOut'], c['timelineIn'], c.get('speed', 1))
@@ -375,20 +379,30 @@ def cut_word_distance(words, reference, candidate, recall):
                 differingFraction=errors / labeled if labeled else None)
 
 
+def validated_transcript_stream(evidence, source_sha256, recording_stream=None):
+    """Use the recording's stream when the transcript predates explicit stream identities."""
+    if source_sha256 is not None and evidence.get("sourceSha256", source_sha256) != source_sha256:
+        raise ValueError("The transcript and media identify different source recordings.")
+    stream = evidence.get("audioStream", 0 if recording_stream is None else recording_stream)
+    if (type(stream) is not int or stream < 0 or
+            recording_stream is not None and (type(recording_stream) is not int or recording_stream != stream)):
+        raise ValueError("The transcript and media must identify valid, matching audio streams.")
+    return stream
+
+
 def validate_reference_source(case, evidence, reference):
     """Historical unbound maps use the frozen episode inventory, when available."""
+    media = next((m for m in case["media"] if m["id"] == evidence["mediaId"]), {}) if case else {}
+    stream = validated_transcript_stream(evidence, media.get("hash"), media.get("audioStream"))
     binding = reference.get("inputs")
     if binding is None:
-        return "historicalUnboundMap"
-    media = next((m for m in case["media"] if m["id"] == evidence["mediaId"]), {}) if case else {}
-    identities = [value for value in (media.get("hash"), evidence.get("sourceSha256")) if value is not None]
-    if any(value != binding.get("sourceSha256") for value in identities):
+        return "historicalUnboundMap", stream
+    digest = media.get("hash") or evidence.get("sourceSha256")
+    if digest is not None and digest != binding.get("sourceSha256"):
         raise ValueError("The reference and grading evidence identify different source recordings.")
-    stream = evidence.get("audioStream", media.get("audioStream", 0))
-    if (type(stream) is not int or type(binding.get("audioStream")) is not int or
-            stream != binding["audioStream"] or media.get("audioStream", stream) != stream):
+    if type(binding.get("audioStream")) is not int or binding["audioStream"] != stream:
         raise ValueError("The reference and grading evidence identify different audio streams.")
-    return "recordingAndStream" if identities else "streamOnly"
+    return ("recordingAndStream" if digest is not None else "streamOnly"), stream
 
 
 def main():
@@ -434,20 +448,20 @@ def main():
     if not words:
         parser.error('No timed spoken words in raw media evidence.')
     reference = read_json(args.reference)
-    binding = validate_reference_source(case, evidence, reference)
+    binding, stream = validate_reference_source(case, evidence, reference)
     frame = 1 / reference['frameRate'] if 'frameRate' in reference else reference['frameDuration']
     if evidence.get('duration') is not None and not math.isclose(evidence['duration'], reference['rawDuration'],
                                                                 abs_tol=max(.25, frame * 2)):
         parser.error('Raw duration in the waveform map differs from the media evidence.')
     silent = {m['id'] for m in case['media'] if m['kind'] not in ('audio', 'video') or m.get('hasAudio') is False} if case else set()
-    pieces = timeline_pieces(candidate, evidence['mediaId'], silent, source_coverage_only=args.verified_keeps)
+    pieces = timeline_pieces(candidate, evidence['mediaId'], silent, audio_stream=stream, source_coverage_only=args.verified_keeps)
     result = verified_keeps(evidence['words'], reference, pieces) if args.verified_keeps else score(words, reference, pieces)
     if args.verified_keeps:
         result['cutWordDistance'] = cut_word_distance(evidence['words'], reference, pieces, result)
     if args.matched_joins:
         ref_pieces = reference_pieces(reference, mapped_only=True)
         try:
-            ordered = timeline_pieces(candidate, evidence['mediaId'], silent, matched_joins=True)
+            ordered = timeline_pieces(candidate, evidence['mediaId'], silent, audio_stream=stream, matched_joins=True)
         except ValueError as exc:
             result['spacingUnavailable'] = str(exc)
         else:

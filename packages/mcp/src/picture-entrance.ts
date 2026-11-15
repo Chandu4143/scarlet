@@ -1,9 +1,9 @@
-import { clipEnd, indexClipsAt, sourceToTimeline, type MediaClip, type Timeline } from "@scarlet/timeline";
+import { clipEnd, indexClipsAt, planTransitions, sourceToTimeline, type MediaClip, type Timeline } from "@scarlet/timeline";
 import type { TimelineJoin } from "./timeline-perception.js";
 
 type SpokenWord = { text: string; start: number; end: number };
 type Side = TimelineJoin["tracks"][number];
-type Media = { id: string; kind: string };
+type Media = { id: string; kind: string; duration?: number };
 const epsilon = 1e-6;
 const millis = (t: number) => Math.round(t * 1000);
 const sourceAt = (c: MediaClip, t: number) => c.sourceIn + (t - c.timelineIn) * (c.speed ?? 1);
@@ -25,7 +25,7 @@ export interface PictureEntrance {
 /** Match an audible splice to a hard cut on the visible presenter footage by both source clocks.
  * A cut to a different camera, a dissolve or a covered layer cannot establish this measurement. */
 export function pictureEntranceReader(timeline: Timeline, media: readonly Media[], fps: number) {
-  const assets = new Map(media.map(m => [m.id, m.kind]));
+  const assets = new Map(media.map(m => [m.id, m]));
   const clips = new Map<string, MediaClip>();
   const frames = new Set<number>();
   for (const track of timeline.tracks) for (const clip of track.clips) {
@@ -33,19 +33,21 @@ export function pictureEntranceReader(timeline: Timeline, media: readonly Media[
     if (track.kind !== "video" || track.hidden || !clip.enabled || clip.kind === "caption" || clip.opacity <= 0) continue;
     for (const t of [clip.timelineIn, clipEnd(clip)]) if (t > 0) frames.add(Math.ceil(t * fps - epsilon));
   }
-  const hits = indexClipsAt(timeline);
+  const transitions = planTransitions(timeline, assets, fps);
+  const hits = indexClipsAt(transitions.timeline);
   function picture(frame: number) {
     const t = frame / fps + epsilon;
-    return hits(t).findLast(({ track, clip }) => track.kind === "video" && !track.hidden && clip.enabled &&
-      clip.kind !== "caption" && clip.opacity > 0 && (clip.kind === "color" || assets.get(clip.mediaId) !== "audio"))?.clip;
+    const visible = hits(t).findLast(({ track, clip }) => track.kind === "video" && !track.hidden && clip.enabled &&
+      clip.kind !== "caption" && clip.opacity > 0 && (clip.kind === "color" || assets.get(clip.mediaId)?.kind !== "audio"))?.clip;
+    if (visible?.kind !== "media" || assets.get(visible.mediaId)?.kind !== "video" ||
+        transitions.layers.has(visible.id) || transitions.motions.get(visible.id)?.some(m => m.start <= t && t < m.end)) return;
+    return visible;
   }
   const cuts: { at: number; out: MediaClip; inn: MediaClip }[] = [];
   for (const frame of frames) {
     if (frame < 1) continue;
     const out = picture(frame - 1), inn = picture(frame);
-    if (out?.kind !== "media" || inn?.kind !== "media" || out.id === inn.id ||
-        assets.get(out.mediaId) !== "video" || assets.get(inn.mediaId) !== "video" ||
-        out.videoFadeOut > 0 || inn.videoFadeIn > 0) continue;
+    if (!out || !inn || out.id === inn.id || out.videoFadeOut > 0 || inn.videoFadeIn > 0) continue;
     // Require two abutting shots. Revealing a lower shot under an overlay is a different kind of edit.
     if (Math.abs(clipEnd(out) - inn.timelineIn) > epsilon) continue;
     if (out.mediaId === inn.mediaId && Math.abs(out.sourceOut - inn.sourceIn) < epsilon) continue;
@@ -75,7 +77,10 @@ export function pictureEntranceReader(timeline: Timeline, media: readonly Media[
         endTrimMs: millis(Math.max(0, word.end - b.sourceOut) / b.speed) };
     }
     const wordAt = sourceToTimeline(b, word.start);
-    const fadeOverOnset = b.timelineIn + (b.audioFadeIn ?? 0) - wordAt;
+    const end = clipEnd(b);
+    const inFadeOut = b.audioFadeOut > 0 && wordAt >= Math.max(b.timelineIn, end - b.audioFadeOut) - epsilon;
+    const fadeEnd = inFadeOut ? end : Math.min(end, b.timelineIn + (b.audioFadeIn ?? 0));
+    const fadeOverOnset = fadeEnd - wordAt;
     if (fadeOverOnset > epsilon) return { status: "onset-in-fade", ...identity, wordAt, fadeOverOnsetMs: millis(fadeOverOnset) };
     return { status: "measured", ...identity, wordAt, gapMs: millis(wordAt - pictureAt) };
   };

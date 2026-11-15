@@ -59,6 +59,17 @@ def case_files(root, case):
     return sorted(names)
 
 
+def verify_reference_recordings(reference, source_hash, published_hash, audio_stream=None):
+    # Older frozen episodes predate recording identities in their audio maps.
+    if "inputs" not in reference:
+        return
+    inputs = reference["inputs"]
+    if not isinstance(inputs, dict) or inputs.get("sourceSha256") != source_hash or inputs.get("editorSha256") != published_hash:
+        raise ValueError("The audio reference identifies different source footage or a different published edit.")
+    if audio_stream is not None and (type(inputs.get("audioStream")) is not int or inputs["audioStream"] != audio_stream):
+        raise ValueError("The audio reference identifies a different source audio stream.")
+
+
 def inventory(root, case):
     files = {name: sha(root / name) for name in case_files(root, case)}
     meta = json.loads((root / "cases" / case / "case.json").read_bytes())
@@ -68,6 +79,8 @@ def inventory(root, case):
     pictures = json.loads((root / "pictures.json").read_bytes())
     if pictures.get("publishedSha256") and pictures["publishedSha256"] != files["media/published.mp4"]:
         raise ValueError("The verified pictures came from a different published edit.")
+    verify_reference_recordings(json.loads((root / "reference-audio.json").read_bytes()), asset["hash"],
+                                files["media/published.mp4"], asset.get("audioStream", 0))
     return files
 
 

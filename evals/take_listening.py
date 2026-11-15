@@ -48,6 +48,11 @@ def make_prompt(guide, trial, windows, options):
     return "\n\n".join(text)
 
 
+def blind_request_id(number, batch, spec):
+    # The runner echoes this opaque commitment without seeing the private decoder key.
+    return number + "." + hashlib.sha256(encoded([number, batch, spec])).hexdigest()
+
+
 def prepare(manifest, guide_files, out, seed):
     manifest = private_path(manifest)
     trials = json.loads(manifest.read_bytes())["trials"]
@@ -66,6 +71,7 @@ def prepare(manifest, guide_files, out, seed):
         stage = Path(tmp) / "study"
         stage.mkdir(mode=0o700)
         rows, key = [], {}
+        header = dict(manifest=sha(manifest), seed=seed, temperature=0, guides={p.stem: sha(p) for p in guide_files})
         for trial in trials:
             paths = source_windows(manifest.parent, trial)
             opts = list(trial["options"])
@@ -82,17 +88,18 @@ def prepare(manifest, guide_files, out, seed):
                 for name, guide in guides.items():
                     prompt = make_prompt(guide, trial, windows, labeled)
                     for modality in ("text", "audio"):
-                        request_id = f"{len(rows):06d}"
                         attached = [paths[i] for i in windows] if modality == "audio" else []
+                        spec = dict(trial=trial["id"], case=trial["case"], split=trial["split"],
+                                    guide=name, modality=modality, order=order,
+                                    options={letter: opt["id"] for letter, opt in labeled},
+                                    promptSha256=hashlib.sha256(prompt.encode()).hexdigest(),
+                                    audioSha256=[trial["windows"][i]["sha256"] for i in windows] if attached else [])
+                        request_id = blind_request_id(f"{len(rows):06d}", header, spec)
+                        key[request_id] = spec
                         rows.append(dict(id=request_id, prompt=prompt, audio=list(map(str, attached)),
                                          seed=seed, max_tokens=24))
-                        key[request_id] = dict(trial=trial["id"], case=trial["case"], split=trial["split"],
-                                               guide=name, modality=modality, order=order,
-                                               options={letter: opt["id"] for letter, opt in labeled},
-                                               promptSha256=hashlib.sha256(prompt.encode()).hexdigest(),
-                                               audioSha256=[trial["windows"][i]["sha256"] for i in windows] if attached else [])
         write_new(stage / "requests.jsonl", b"".join((json.dumps(r, ensure_ascii=False) + "\n").encode() for r in rows))
-        write_new(stage / "key.json", encoded(dict(manifest=sha(manifest), seed=seed, temperature=0, guides={p.stem: sha(p) for p in guide_files}, requests=key)))
+        write_new(stage / "key.json", encoded(dict(header, requests=key)))
         stage.rename(out)
     return len(rows)
 
@@ -134,9 +141,11 @@ def seal_responses(requests, responses, runtime):
     write_new(receipt_path(responses), encoded(receipt))
 
 
-def decode(batch, response_file, output):
+def decode(batch, response_file, output, *, legacy_key_sha256=None):
     batch, response_file = map(private_path, (batch, response_file))
-    key = json.loads((batch / "key.json").read_bytes())
+    key_bytes = (batch / "key.json").read_bytes()
+    key = json.loads(key_bytes)
+    key_digest = hashlib.sha256(key_bytes).hexdigest()
     receipt = json.loads(private_path(receipt_path(response_file)).read_bytes())
     if sha(response_file) != receipt["responsesSha256"] or sha(batch / "requests.jsonl") != receipt["requestsSha256"]:
         raise ValueError("Sealed batch requests or responses changed.")
@@ -144,6 +153,14 @@ def decode(batch, response_file, output):
         raise ValueError("Decoder or sampling settings differ from the batch receipt.")
     identity = hashlib.sha256(encoded(receipt["runtime"])).hexdigest()
     specs = key["requests"]
+    if all(rid.isdecimal() for rid in specs):
+        if legacy_key_sha256 != key_digest:
+            raise ValueError("Legacy requests have no key commitment. Supply the key SHA-256 from an independent archive.")
+    else:
+        header = {name: value for name, value in key.items() if name != "requests"}
+        for rid, spec in specs.items():
+            if rid != blind_request_id(rid.partition(".")[0], header, spec):
+                raise ValueError("Decoder key differs from the prepared request IDs.")
     decisions = {}
     for line in private_path(response_file).read_text().splitlines():
         row = json.loads(line)
@@ -166,7 +183,7 @@ def decode(batch, response_file, output):
         decisions[rid] = spec["options"].get(answer.group(1)) if answer else None
     if decisions.keys() != specs.keys():
         raise ValueError(f"Missing {len(specs) - len(decisions)} responses")
-    provenance = dict(manifestSha256=key["manifest"], runtimeSha256=identity, keySha256=sha(batch / "key.json"),
+    provenance = dict(manifestSha256=key["manifest"], runtimeSha256=identity, keySha256=key_digest,
                       inferenceReceiptSha256=sha(receipt_path(response_file)))
     write_new(output, encoded([{**spec, **provenance, "request": rid, "choice": decisions[rid]}
                                for rid, spec in specs.items()]))
@@ -234,6 +251,7 @@ def main():
     read.add_argument("--batch", type=Path, required=True)
     read.add_argument("--responses", type=Path, required=True)
     read.add_argument("--out", type=Path, required=True)
+    read.add_argument("--legacy-key-sha256", help="For older numeric request IDs, keySha256 from independently archived choices or a frozen inventory.")
     grade = sub.add_parser("score")
     grade.add_argument("--choices", type=Path, required=True)
     grade.add_argument("--labels", type=Path, required=True)
@@ -249,7 +267,7 @@ def main():
         seal_responses(args.requests, args.responses, runtime)
         print(receipt_path(args.responses))
     elif args.command == "decode":
-        print(f"Decoded {decode(args.batch, args.responses, args.out)} model responses.")
+        print(f"Decoded {decode(args.batch, args.responses, args.out, legacy_key_sha256=args.legacy_key_sha256)} model responses.")
     else:
         decoded = json.loads(private_path(args.choices).read_bytes())
         reference = json.loads(private_path(args.labels).read_bytes())

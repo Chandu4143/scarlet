@@ -1,13 +1,15 @@
 """A camera pan or a still can look like the right shot without identifying the source frame."""
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 try:
     import cv2
     import numpy as np
-    from verify_pictures import camera_crop, match_three
+    from verify_pictures import camera_crop, match_three, verify
 except ModuleNotFoundError as e:
     if e.name not in ("cv2", "numpy"):
         raise
@@ -16,6 +18,15 @@ except ModuleNotFoundError as e:
 
 @unittest.skipUnless(cv2, "picture-reference preparation uses OpenCV and NumPy")
 class PictureReferenceTests(unittest.TestCase):
+    def test_declines_picture_observations_for_a_different_audio_reference(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "reference-audio.json").write_text('{"inputs":{"sourceSha256":"cam","editorSha256":"other"},"joins":[]}')
+            with patch("verify_pictures.probe_frames", side_effect=[([], [], "cam"), ([], [], "published")]):
+                with self.assertRaisesRegex(ValueError, "different published edit"):
+                    verify(root, root / "cache")
+            self.assertFalse((root / "pictures.json").exists())
+
     def test_requires_unique_source_motion_and_three_matching_frames(self):
         rng = np.random.default_rng(3)
         frames = rng.integers(10, 200, (25, 32, 48)).astype("float32")

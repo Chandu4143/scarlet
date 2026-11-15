@@ -15,6 +15,30 @@ from score_audio_reference import Piece, timeline_pieces, verified_keeps
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_freeze_checks_recordings_and_stream_when_the_audio_map_identifies_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            for name in compare.REQUIRED:
+                path = root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(encoded({}))
+            source = compare.sha(root / "media/presenter.mp4")
+            (root / "media/published.mp4").write_bytes(b"published")
+            editor = compare.sha(root / "media/published.mp4")
+            case = root / "cases" / "sample"
+            case.mkdir(parents=True)
+            (case / "case.json").write_bytes(encoded(dict(id="sample", dialogueMedia=["cam"],
+                media=[dict(id="cam", hash=source, audioStream=1)])))
+            (root / "pictures.json").write_bytes(encoded(dict(sourceId=source, publishedSha256=editor)))
+            self.assertIn("reference-audio.json", compare.inventory(root, "sample"))  # Pre-identity map.
+            binding = dict(sourceSha256=source, editorSha256=editor, audioStream=1)
+            (root / "reference-audio.json").write_bytes(encoded({"inputs": binding}))
+            self.assertIn("reference-audio.json", compare.inventory(root, "sample"))
+            for changed in (dict(sourceSha256=editor), dict(editorSha256=source), dict(audioStream=0)):
+                (root / "reference-audio.json").write_bytes(encoded({"inputs": {**binding, **changed}}))
+                with self.assertRaisesRegex(ValueError, "audio reference"):
+                    compare.inventory(root, "sample")
+
     def test_unmapped_publication_cannot_be_used_to_label_source_removals(self):
         words = [{"text": "again", "start": t, "end": t + .2} for t in (1, 3, 5)]
         ref = {"frameRate": 30, "mappedFraction": .5, "unmappedFinal": [{"finalStart": 2, "finalEnd": 4}],

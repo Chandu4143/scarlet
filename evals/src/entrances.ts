@@ -1,8 +1,8 @@
 /** Compare the same two spoken occurrences across a verified presenter cut in the published and candidate edits. */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { createReadStream } from "node:fs";
+import { join } from "node:path";
 import { type Timeline } from "../../packages/timeline/src/index.ts";
 import { pictureEntranceReader, type PictureEntrance } from "../../packages/mcp/src/picture-entrance.ts";
 import { timelineJoins } from "../../packages/mcp/src/timeline-perception.ts";
@@ -81,6 +81,17 @@ export function entranceSummary(rows: EntranceRow[]) {
     meanErrorMs: mean(measured.map(r => r.errorMs!)), meanAbsoluteErrorMs: mean(measured.map(r => Math.abs(r.errorMs!))) };
 }
 
+/** The timing comparison is paired on verified editor joins; a changed take stays visible in coverage. */
+export function pairedEntrances(baseline: EntranceRow[], candidate: EntranceRow[]) {
+  const measured = (rows: EntranceRow[]) => new Map(rows.flatMap(r => r.errorMs === undefined ? [] : [[r.join, Math.abs(r.errorMs)] as const]));
+  const before = measured(baseline), after = measured(candidate);
+  const shared = [...before.keys()].filter(id => after.has(id));
+  return { baselineMatched: before.size, candidateMatched: after.size, shared: shared.length,
+    lost: [...before.keys()].filter(id => !after.has(id)), gained: [...after.keys()].filter(id => !before.has(id)),
+    baselineErrorMs: mean(shared.map(id => before.get(id)!)), candidateErrorMs: mean(shared.map(id => after.get(id)!)),
+    changeMs: mean(shared.map(id => after.get(id)! - before.get(id)!)) };
+}
+
 async function sha(path: string) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
@@ -89,21 +100,13 @@ async function sha(path: string) {
 
 export async function scoreEntrances(loaded: LoadedCase, timeline: Timeline) {
   const root = dataDir(), file = (name: string) => checkedPath(root, join(root, name));
-  if (!existsSync(file("pictures.json"))) return;
-  const manifest = readJson<{ schema: number; case: string; files: Record<string, string> }>(file("episode.lock.json"));
-  const id = loaded.file.dialogueMedia[0];
-  if (manifest.schema !== 1 || loaded.file.id !== manifest.case || loaded.file.dialogueMedia.length !== 1 ||
-      !id || timeline.projectId !== loaded.file.projectId) throw new Error("Expected a frozen single-dialogue case and its candidate timeline.");
-  const pictures = readJson<Pictures>(file("pictures.json"));
   const grading = publishedGradingInputs(loaded, root);
-  if (!grading) throw new Error("Picture observations require their frozen audio reference.");
+  if (!grading?.pictures) return;
+  const id = loaded.file.dialogueMedia[0];
+  if (!id || timeline.projectId !== loaded.file.projectId) throw new Error("Expected the candidate timeline from the frozen dialogue case.");
+  const pictures = readJson<Pictures>(grading.pictures);
   const words = readJson<{ words?: Word[] }>(grading.evidence).words;
-  const caseDir = relative(root, loaded.dir);
-  for (const key of ["pictures.json", "reference-audio.json", join(caseDir, "case.json"), join(caseDir, "evidence", id + ".json")]) {
-    if (await sha(file(key)) !== manifest.files[key.split("\\").join("/")]) throw new Error("Frozen entrance input changed: " + key);
-  }
-  if (!words?.length || !pictures.sourceId || pictures.sourceId !== loaded.file.media.find(m => m.id === id)?.hash ||
-      !pictures.publishedSha256 || pictures.publishedSha256 !== manifest.files["media/published.mp4"]) throw new Error("Picture verification does not identify the frozen recordings.");
+  if (!words?.length) throw new Error("Picture entrance grading requires frozen source words.");
   let pts: number[] = [];
   if (pictures.observations.some(o => o.publishedTime === undefined)) {
     const movie = file("media/published.mp4");
@@ -119,8 +122,9 @@ export async function scoreEntrances(loaded: LoadedCase, timeline: Timeline) {
       obs.some(o => o.publishedFrame >= pictures.publishedFrames)) throw new Error("Invalid or duplicate verified picture.");
   const read = pictureEntranceReader(timeline, loaded.file.media, loaded.file.fps);
   const candidates = timelineJoins(timeline, loaded.file).flatMap(j => j.tracks.filter(s => s.out.mediaId === id && s.in.mediaId === id).map(s => read(s, words, words)));
-  const rows = entranceRows(words, readJson<Reference>(file("reference-audio.json")), obs, candidates);
-  const graderFiles = ["evals/src/entrances.ts", "evals/src/gradingEvidence.ts", "packages/mcp/src/picture-entrance.ts", "packages/mcp/src/timeline-perception.ts"];
+  const rows = entranceRows(words, readJson<Reference>(grading.reference), obs, candidates);
+  const graderFiles = ["evals/src/entrances.ts", "evals/src/gradingEvidence.ts", "packages/mcp/src/picture-entrance.ts",
+    "packages/mcp/src/timeline-perception.ts", "packages/timeline/src/transitions.ts"];
   const graderSha256 = Object.fromEntries(await Promise.all(graderFiles.map(async name => [name, await sha(join(REPO_ROOT, name))])));
   return { schema: 1, case: loaded.file.id, version: timeline.version, graderSha256, gradingEvidenceSha256: grading.evidenceSha256, episodeSha256: await sha(file("episode.lock.json")),
     candidateSha256: createHash("sha256").update(JSON.stringify(timeline)).digest("hex"),
@@ -130,13 +134,23 @@ export async function scoreEntrances(loaded: LoadedCase, timeline: Timeline) {
 }
 
 if (isMain(import.meta.url)) void main(async () => {
-  const { values } = cli({ case: { type: "string" }, timeline: { type: "string" }, version: { type: "string" } },
-    "entrances.ts --case ID (--version SAVED_VERSION | --timeline TIMELINE_JSON)");
+  const { values } = cli({ case: { type: "string" }, timeline: { type: "string" }, version: { type: "string" }, baseline: { type: "string" } },
+    "entrances.ts --case ID (--version SAVED_VERSION | --timeline TIMELINE_JSON) [--baseline TIMELINE_OR_SCORE_JSON]");
   if (!values.case || !!values.version === !!values.timeline) throw new Error("Supply a case and one candidate timeline or saved version.");
   const loaded = loadCase(values.case);
   const tl = values.timeline ? readJson<Timeline>(values.timeline) : loaded.timeline(values.version!);
   if (!tl) throw new Error("Candidate timeline unavailable.");
   const score = await scoreEntrances(loaded, tl);
   if (!score) throw new Error("Episode has no verified pictures.");
-  console.log(JSON.stringify(score, null, 2));
+  if (!values.baseline) { console.log(JSON.stringify(score, null, 2)); return; }
+  const input = readJson<Timeline | typeof score>(values.baseline);
+  const before = "tracks" in input ? await scoreEntrances(loaded, input) : input;
+  if (!before || before.schema !== score.schema || before.episodeSha256 !== score.episodeSha256 ||
+      before.gradingEvidenceSha256 !== score.gradingEvidenceSha256 ||
+      Object.entries(score.graderSha256).some(([name, hash]) => before.graderSha256?.[name] !== hash)) {
+    throw new Error("Re-score the baseline with the same frozen episode, grading words and grader.");
+  }
+  const opening = (rows: EntranceRow[]) => rows.filter(r => r.editorPictureAt < 40);
+  console.log(JSON.stringify({ ...score, baselineSha256: before.candidateSha256, paired: pairedEntrances(before.rows, score.rows),
+    pairedOpening40s: pairedEntrances(opening(before.rows), opening(score.rows)) }, null, 2));
 });

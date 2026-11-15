@@ -372,7 +372,10 @@ For frozen single-presenter episodes with verified picture observations, score a
 
 ```sh
 SCARLET_EVAL_DATA="$EPISODE" node --import tsx evals/src/entrances.ts --case "$CASE" --version "$VERSION" > entrances.json
+SCARLET_EVAL_DATA="$EPISODE" node --import tsx evals/src/entrances.ts --case "$CASE" --timeline candidate.json --baseline entrances.json
 ```
+
+The baseline may also be an exported timeline. The paired report gives mean absolute timing error for each edit on the same matched entrances, the change in milliseconds, and the joins each edit alone matched. A negative change means a closer match to the editor. The report includes the first 40 seconds separately.
 
 Use `--timeline candidate.json` for an exported timeline. New model trials, `--evaluate-case` and `--evaluate-task --case` also write `picture-entrances.json` when the episode contains picture evidence. The grader checks the frozen inputs. Older picture observations resolve the frame timestamp with FFprobe against the hash-checked finished movie. New observations store the presentation timestamp directly. Prepare a reference with the existing audio and picture tools. Candidate media and the editor reference stay outside Git.
 
@@ -404,7 +407,7 @@ python3 -B evals/run_take_listening_mlx.py --model "$MODEL_DIR" \
   --input "$STUDY/batch/requests.jsonl" --output "$STUDY/responses.jsonl" --choice-letters ABC
 ```
 
-The runner joins the two original waveforms with 750 ms of silence so the model can hear both within one audio input. Its receipts include both original hashes and the joined waveform hash. Calibrate with two spoken phrases whose words are absent from the prompt. Reverse their order and check both transcriptions. Also ask the model to identify the excerpts by letter in both orders using the experiment’s decoder. Record any failures alongside editorial accuracy. The runner writes `responses.jsonl.runtime.json` before inference and records its hash with every answer. Seal the completed batch before decoding. Keep the receipt and original batch for replay.
+The runner joins the two original waveforms with 750 ms of silence so the model can hear both within one audio input. Its receipts include both original hashes and the joined waveform hash. Calibrate with two spoken phrases whose words are absent from the prompt. Reverse their order and check both transcriptions. Also ask the model to identify the excerpts by letter in both orders using the experiment’s decoder. Record any failures alongside editorial accuracy. The runner writes `responses.jsonl.runtime.json` before inference and records its hash with every answer. Seal the completed batch before decoding. Keep the receipt and original batch for replay. New request IDs bind each response to its private answer mapping. When replaying an older batch with numeric IDs, pass `--legacy-key-sha256` to `decode` with the key digest from an independently archived choices file or inventory.
 
 Supply a separate private JSON object mapping each recording ID to its source word evidence and independently prepared `reference-audio.json`. For example, `{"example":{"words":"/private/path/words.json","reference":"/private/path/reference-audio.json"}}`.
 

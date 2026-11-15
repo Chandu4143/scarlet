@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -12,6 +13,24 @@ from take_listening import prepare as prepare_requests
 
 
 class PrepareTakePairsTests(unittest.TestCase):
+    def test_rejects_foreign_evidence_and_duplicate_recording_bytes_across_splits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, copy = root / "first.wav", root / "copy.wav"
+            first.write_bytes(b"same recording")
+            copy.write_bytes(first.read_bytes())
+            path = root / "words.json"
+            evidence = dict(duration=1, words=[dict(text="hello", start=.1, end=.5)])
+            path.write_text(json.dumps(dict(evidence, sourceSha256="b" * 64)))
+            with patch("prepare_take_pairs.scarlet", return_value=[]) as finder:
+                with self.assertRaisesRegex(ValueError, "source recordings"):
+                    prepare([("one", "dev", first, path)], root / "foreign")
+                finder.assert_not_called()
+                path.write_text(json.dumps(evidence))
+                with self.assertRaisesRegex(ValueError, "across the study splits"):
+                    prepare([("one", "dev", first, path), ("two", "holdout", copy, path)], root / "pairs")
+                self.assertFalse((root / "pairs").exists())
+
     def test_source_only_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
