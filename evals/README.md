@@ -279,7 +279,7 @@ $TSX evals/src/run.ts --cases my-case --configs … --trials 3 --yes
 
 Each trial follows these steps:
 
-1. Creates the branch `eval <case> <config> t<n> <time>` from the case's source version.
+1. Creates a branch from the case's source version. Its name includes the trial number and a unique run ID, even when long case or model names need shortening.
 2. Sends the composer's first-cut request on that branch.
 3. Waits for the task. A question or a timeout cancels it.
 4. Switches the project back to the editor's branch.

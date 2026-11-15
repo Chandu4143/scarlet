@@ -1,7 +1,16 @@
 import { expect, it } from "vitest";
 import { runMarkdown, type TrialRow } from "../src/report.ts";
 import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
-import { positiveNumber, selectTrialSkills, trialTranscripts } from "../src/run.ts";
+import { branchName, positiveNumber, selectTrialSkills, trialTranscripts } from "../src/run.ts";
+
+it("gives repeated trials distinct branches even with long case and model names", () => {
+  const caseId = "long-project-name-".repeat(5), stamp = "2026-11-15T10-30-00Z";
+  const config = { agent: "codex", model: "long-model-name" };
+  const name = branchName(caseId, config, 1, stamp);
+  expect(name).toHaveLength(80);
+  expect(name).not.toBe(branchName(caseId, config, 2, stamp));
+  expect(name).not.toBe(branchName(caseId, { ...config, model: "another-model" }, 1, stamp));
+});
 
 it("binds a live trial to the ordered source words and their timing", () => {
   const a = { text: "again", start: 0.1, end: 0.4 };

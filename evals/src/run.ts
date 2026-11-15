@@ -9,6 +9,7 @@
  */
 import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
 import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -79,8 +80,11 @@ function taskRequest(loaded: LoadedCase, config: AgentConfig, branch: string, sk
   };
 }
 
-function branchName(caseId: string, config: AgentConfig, trial: number, stamp: string) {
-  return `eval ${caseId} ${configLabel(config)} t${trial} ${stamp}`.slice(0, 80);
+export function branchName(caseId: string, config: AgentConfig, trial: number, stamp: string) {
+  const label = `eval ${caseId} ${configLabel(config)}`;
+  const id = createHash("sha256").update(JSON.stringify([caseId, configLabel(config), trial, stamp])).digest("hex").slice(0, 12);
+  const suffix = ` t${trial} ${stamp} ${id}`;
+  return label.slice(0, 80 - suffix.length) + suffix;
 }
 
 interface SkillSelection { add: string[]; exact?: string[] }
@@ -167,7 +171,7 @@ export function reportPublishedWords(inputs: NonNullable<ReturnType<typeof publi
       matchedPauseErrorMs: published.spacing.meanAbsErrorMs }) });
 }
 
-async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, dir: string, timeoutMs: number, selection: SkillSelection): Promise<TrialRow> {
+async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, runId: string, dir: string, timeoutMs: number, selection: SkillSelection): Promise<TrialRow> {
   const grading = publishedGradingInputs(loaded);
   const caseId = loaded.file.id, projectId = loaded.file.projectId;
   const row: TrialRow = { caseId, config: configLabel(config), trial, state: "not started" };
@@ -179,7 +183,7 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
     throw new Error("The engine project does not contain the frozen grading recording.");
   }
   const original = { branch: project.branch ?? "main", head: project.head! };
-  const name = branchName(caseId, config, trial, timestamp());
+  const name = branchName(caseId, config, trial, runId);
   const skills = selectTrialSkills(await engine.skills(), loaded.file.request, selection);
   const skillIds = skills.map(s => s.id);
   writeJson(join(dir, "skills.json"), skills);
@@ -289,7 +293,11 @@ async function runCli(argv = process.argv.slice(2)) {
   if (selection.exact && !selection.exact.length) throw new Error("--skills needs at least one installed skill name.");
   const cases = caseIds.map(loadCase);
   const total = cases.length * configs.length * trials;
-  const runDir = join(resultsDir(), "runs", timestamp());
+  if (new Set(caseIds).size !== cases.length || new Set(configs.map(c => slug(configLabel(c)))).size !== configs.length) {
+    throw new Error("Choose distinct cases and configurations so each trial has its own result directory.");
+  }
+  const runId = timestamp() + "-" + randomUUID().slice(0, 8);
+  const runDir = join(resultsDir(), "runs", runId);
 
   if (values["dry-run"] || !values.yes) {
     let engine: Engine | undefined;
@@ -305,7 +313,7 @@ async function runCli(argv = process.argv.slice(2)) {
       console.log(`Case ${loaded.file.id} (${loaded.file.suite}) · project ${loaded.file.projectId} · source ${loaded.file.sourceVersion}` +
         (project ? ` · editor currently on “${project.branch}” @ ${project.head}` : ""));
       for (const config of configs) for (let t = 1; t <= trials; t++) {
-        const name = branchName(loaded.file.id, config, t, "<time>");
+        const name = branchName(loaded.file.id, config, t, runId);
         console.log(`  ${configLabel(config)} trial ${t}:`);
         console.log(`    POST /projects/${loaded.file.projectId}/branches ${JSON.stringify({ name, from: loaded.file.sourceVersion, expectedHead: project?.head ?? "<head>", expectedBranch: project?.branch ?? "<branch>" })}`);
         console.log(`    POST /projects/${loaded.file.projectId}/tasks ${JSON.stringify(taskRequest(loaded, config, name, skillIds))}`);
@@ -322,7 +330,7 @@ async function runCli(argv = process.argv.slice(2)) {
     const dir = join(runDir, loaded.file.id, slug(configLabel(config)), `trial-${t}`);
     console.log(`${loaded.file.id} · ${configLabel(config)} · trial ${t}/${trials}`);
     try {
-      rows.push(await runTrial(engine, loaded, config, t, dir, timeoutMs, selection));
+      rows.push(await runTrial(engine, loaded, config, t, runId, dir, timeoutMs, selection));
     } catch (err) {
       rows.push({ caseId: loaded.file.id, config: configLabel(config), trial: t, state: "error", error: (err as Error).message });
       console.error(`  ${(err as Error).message}`);
