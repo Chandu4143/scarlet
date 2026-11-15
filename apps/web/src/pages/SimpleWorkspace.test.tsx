@@ -18,6 +18,7 @@ import { useHostsStore } from "../stores/hosts";
 import { usePlayerStore } from "../stores/player";
 import { useProjectStore, type ProjectData } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
+import { useTemplatesStore } from "../stores/templates";
 import { useUiStore, type AgentContext } from "../stores/ui";
 import { SimpleWorkspace } from "./SimpleWorkspace";
 import { cutOnWorkingCut, keepGoesTo } from "../lib/passCalls";
@@ -1803,6 +1804,54 @@ it("undoes one applied edit by asking Scarlet to put back just that edit", async
   // Sent: the box is no longer aimed at the edit, and the player goes back to the whole timeline.
   expect(boxTag()).not.toBe("Edit at 0:00");
   expect(editPanel()).toBeNull();
+});
+
+it("saves a graphic from its card as a template, with an icon before Undo edit and T as its key", async () => {
+  appliedEdits();
+  // The engine says the second edit laid a graphic over the picture.
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "Lower third: Daniel", range: { start: 0.2, end: 2.4 }, previous: [], kind: "graphic" as const,
+        summary: "Added a lower third naming Daniel as he first speaks." },
+    ] }));
+  let sent!: () => void;
+  const createTask = vi.fn().mockImplementation(() => new Promise(resolve => { sent = () => resolve({ id: "task_template" }); }));
+  useProjectStore.setState({ createTask });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  const panel = editPanel()!;
+  // The card names what the edit is, and its small icons come before Revise and Keep: Save as template, then Undo edit.
+  expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("Graphic");
+  expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-label"), b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
+    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["", "Undo edit", "U", "Undo edit (U)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"]]);
+  // T sends one request however long it is held, worded as Undo edit's is: about this edit, named "Save as template".
+  await press("t");
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", repeat: true, bubbles: true })); });
+  await press("t");
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    kind: "edit", agent: "claude", model: "opus",
+    instruction: expect.stringMatching(/^Save the graphic of edit 2, “Lower third: Daniel” as a reusable template\. Work out which parts of it change/),
+    context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, editNumber: 2, threadId: threadWith("chg_approved_2").id, message: "Save as template" }),
+  }));
+  await act(async () => sent());
+  // An edit that isn't a graphic has no such icon.
+  await press("ArrowUp");
+  await act(async () => {});
+  expect(editPanel()?.querySelector(".edit-card-template")).toBeNull();
+});
+
+it("draws the template lit in the message box's $ list over the player's picture until the list closes", async () => {
+  await show();
+  const monitor = container.querySelector(".watch-monitor")!;
+  expect(monitor.querySelector(".template-on-picture")).toBeNull();
+  await act(async () => useTemplatesStore.getState().setLit({ id: "tpl_lower", url: "data:image/png;base64,AA==" }));
+  const over = monitor.querySelector<HTMLImageElement>(".template-on-picture")!;
+  expect([over.getAttribute("src"), over.dataset.template]).toEqual(["data:image/png;base64,AA==", "tpl_lower"]);
+  await act(async () => useTemplatesStore.getState().setLit(null));
+  expect(monitor.querySelector(".template-on-picture")).toBeNull();
 });
 
 it("undoes the open edit with U, once however long the key is held", async () => {
