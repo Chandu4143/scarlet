@@ -471,24 +471,15 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   const thread = threadWith("chg_approved_2");
   data = { ...data, changes: thread.changes, tasks: thread.tasks, notes: [] };
   await act(async () => useProjectStore.setState({ current: data }));
-  // The latest request's edits are marked. Each dot names its edit by number, sums it up, and says where it runs on hover.
-  // The note joins the scrub preview's card, under the frame, instead of opening a second popup below the track.
+  // The latest request's edits are marked. Hovering a dot lights it and shows only the frame and its time: none of
+  // these waits on the editor, so nothing is written under the frame.
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
   strip.getBoundingClientRect = () => ({ left: 0, width: 1000 }) as DOMRect;
-  const tips: Element[] = [];
   for (const mark of container.querySelectorAll<HTMLElement>(".simple-timeline-mark")) {
     await act(async () => { strip.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(mark.style.left) * 10 })); });
     expect(mark.classList.contains("is-hot")).toBe(true);
-    expect(mark.querySelector(".simple-timeline-tip")).toBeNull();
-    tips.push(...[...container.querySelectorAll(".timeline-track .simple-timeline-tip.is-joined > span")].map(tip => tip.cloneNode(true) as Element));
+    expect(container.querySelector(".simple-timeline-need, .simple-timeline-tip")).toBeNull();
   }
-  await act(async () => { strip.dispatchEvent(new PointerEvent("pointerout", { bubbles: true })); });
-  expect(container.querySelector(".simple-timeline-tip")).toBeNull();
-  // Each names the request first, so a dot never reads as another request's "Edit 3".
-  const request = "Tighten the wrap, add music bed…";
-  expect(tips.map(tip => tip.querySelector("b")?.textContent)).toEqual([`${request} · 1 of 3 · 0:00`, `${request} · 2 of 3 · 0:00`, `${request} · 3 of 3 · 0:11`]);
-  expect(tips.map(tip => tip.querySelector(".simple-timeline-tip-summary")?.textContent)).toEqual(["music bed", "captions", "wrap"]);
-  expect(tips.map(tip => tip.querySelector("small")?.textContent)).toEqual(["0:00–0:16 · 16 s", "0:00–0:02 · 2.2 s", "0:11–0:16 · 4.5 s"]);
   // Each dot carries its edit's number, as in the chat: filled once kept, amber while it asks for a look.
   const dots = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
   expect(dots.map(d => d.querySelector(".simple-timeline-number")?.textContent)).toEqual(["1", "2", "3"]);
@@ -499,14 +490,15 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(dots[2]!.style.left) * 10 })); });
   await act(async () => {});
   expect(openTitle()).toBe("wrap");
-  // The open edit's band says where it is, so its own dot goes. The timeline is zoomed to it, with the request's other
-  // edits out of view. Zoomed out to the whole video (0) they keep their dots, there to see and to press.
+  // The open edit's dot is lit at the start of its band. The timeline is zoomed to it, with the request's other edits
+  // out of view. Zoomed out to the whole video (0) they keep their dots, there to see and to press.
   const numbers = () => [...container.querySelectorAll(".simple-timeline-mark.is-numbered .simple-timeline-number")].map(n => n.textContent);
   expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
-  expect(numbers()).toEqual([]);
+  expect(numbers()).toEqual(["3"]);
+  expect(container.querySelector(".simple-timeline-mark.is-on")?.textContent).toBe("3");
   await press("0");
   expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
-  expect(numbers()).toEqual(["1", "2"]);
+  expect(numbers()).toEqual(["1", "2", "3"]);
   // An edit that runs most of the video has no band to draw: its dot stays, lit, among the others.
   await click(turn.querySelector<HTMLElement>(".simple-edits .simple-edit")!);
   await act(async () => {});
@@ -539,97 +531,16 @@ const everyEdit = (length: number) => {
     ] }));
   return { cuts, graphic };
 };
-const editMarks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-edit")];
-const countLabels = () => editMarks().filter(m => m.classList.contains("is-count")).map(m => m.textContent);
-
-it("draws every applied edit on the working cut under what needs the editor, gathered into counts on the whole video", async () => {
+it("marks only the edits of the request the timeline is on: another request's hundreds of cuts draw nothing", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("timeline-slider") ? 1000 : 0; });
-  const length = timelineDuration(data.timeline!);
-  const { cuts } = everyEdit(length);
+  everyEdit(timelineDuration(data.timeline!));
   await show();
   await act(async () => {});
-  // The whole video can't fit 200 lines: they gather into a few counts that say what they hold, and none touch.
-  const counts = countLabels();
-  expect(counts.length).toBeGreaterThan(1);
-  expect(counts.length).toBeLessThanOrEqual(12);
-  for (const label of counts) expect(label).toMatch(/^\d+ cuts( · \d+ (graphic|graphics|captions?|audio edits?|other edits?))*( · \d+ more)?$/);
-  const held = counts.reduce((sum, label) => sum + label!.split(" · ").filter(part => !/more$/.test(part)).reduce((n, part) => n + parseInt(part), 0)
-    + parseInt(label!.match(/(\d+) more$/)?.[1] ?? "0"), 0);
-  const drawn = editMarks().filter(m => !m.classList.contains("is-count")).length;
-  // Every edit of the earlier request on the working cut is in a count or drawn on its own. The latest request's have
-  // their numbered dots, and aren't drawn again under them.
-  expect(held + drawn).toBe(cuts.length + 1);
-  // What needs the editor is unchanged on top: the latest request's numbered dots, the flagged one amber.
-  const numbered = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
+  // The earlier request's 200 cuts and its graphic aren't drawn: no counts, bars or ticks under the dots.
+  expect(container.querySelector(".simple-timeline-edit")).toBeNull();
+  // The latest request's numbered dots are all there is, the flagged one amber.
+  const numbered = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
   expect(numbered.map(d => [d.textContent, d.dataset.state])).toEqual([["1–2", undefined], ["3", "check"]]);
-  // Drawn after the counts, the marks sit over them.
-  const order = [...container.querySelectorAll(".simple-timeline-edit, .simple-timeline-mark")];
-  expect(order.findIndex(m => m.classList.contains("simple-timeline-mark"))).toBeGreaterThan(order.findLastIndex(m => m.classList.contains("simple-timeline-edit")));
-  // Hovering a count says what it holds and that a press zooms in.
-  const strip = timelineStrip();
-  // One clear of the numbered dots, which win a press over anything under them.
-  const dotsAt = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(d => parseFloat(d.style.left));
-  const first = editMarks().find(m => m.classList.contains("is-count") && dotsAt.every(at => Math.abs(at - parseFloat(m.style.left)) > 10))!;
-  await act(async () => { strip.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(first.style.left) * 10 })); });
-  const note = container.querySelector(".timeline-track .simple-timeline-tip.is-joined > span")!;
-  expect(note.querySelector("b")?.textContent).toBe(first.textContent);
-  expect(note.querySelector("small")?.textContent).toMatch(/Click to zoom in$/);
-  // A press on a count zooms to its stretch, and the count opens into the marks it held, with room for each.
-  zoomAtOnce();
-  const ruler = container.querySelector(".timeline-ruler")!.textContent;
-  await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(first.style.left) * 10 })); });
-  await act(async () => {});
-  expect(container.querySelector(".timeline-ruler")!.textContent).not.toBe(ruler);
-  expect(editPanel()).toBeNull();
-  // One press is enough: zoomed in to the count's stretch, every edit is a mark of its own, a cut too, so a count never
-  // opens onto more counts. The only counts left are at the edges, of the edits beyond each.
-  const inside = () => editMarks().filter(m => !m.classList.contains("is-count"));
-  expect(inside().length).toBeGreaterThan(1);
-  expect(inside().some(m => m.classList.contains("is-tick") && m.dataset.kind === "cut")).toBe(true);
-  expect(countLabels().every(label => /^‹ \d+ edits?$|^\d+ edits? ›$/.test(label))).toBe(true);
-  expect(countLabels().length).toBeGreaterThan(0);
-  // Hovering near a cut's tick, not on it, names the cut and lights the tick, and a press there opens it in the card,
-  // as its row in the chat would.
-  const one = inside().filter(m => m.dataset.kind === "cut").find((m, i, all) => all.every(o => o === m || Math.abs(parseFloat(o.style.left) - parseFloat(m.style.left)) > 2.4)
-    && parseFloat(m.style.left) > 12 && parseFloat(m.style.left) < 88) ?? inside().find(m => m.dataset.kind === "cut")!;
-  const near = parseFloat(one.style.left) * 10 + 8;
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: near })); });
-  expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined b")?.textContent).toMatch(/^Cut at \d+:\d\d$/);
-  expect(editMarks().find(m => m.classList.contains("is-hot"))?.style.left).toBe(one.style.left);
-  // A count at an edge says what lies beyond it, and a press moves there at the same zoom.
-  const edge = editMarks().find(m => m.classList.contains("is-count"))!;
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(edge.style.left) * 10 })); });
-  expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined small")?.textContent).toMatch(/^(Before|After) \d+:\d\d(\.\d+)? · Click to go there$/);
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: near })); });
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: near })); });
-  await act(async () => {});
-  expect(editPanel()).not.toBeNull();
-});
-
-it("draws a graphic as a bar as long as it is on screen, and lets a dot that needs the editor win a press over an edit under it", async () => {
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("timeline-slider") ? 1000 : 0; });
-  const length = timelineDuration(data.timeline!);
-  const { graphic } = everyEdit(length);
-  await show();
-  await act(async () => {});
-  zoomAtOnce();
-  // Zoomed to the graphic, it is a bar from where it comes on to where it goes.
-  for (let i = 0; i < 6; i++) await press("+");
-  const bars = () => editMarks().filter(m => m.classList.contains("is-bar"));
-  const seekTo = (t: number) => act(async () => { usePlayerStore.setState({ time: t }); });
-  await seekTo(graphic.range.start + .6);
-  for (let i = 0; i < 6 && !bars().length; i++) await press("+");
-  expect(bars().map(b => b.dataset.kind)).toContain("graphic");
-  const bar = bars().find(b => b.dataset.kind === "graphic")!;
-  expect(parseFloat(bar.style.width)).toBeGreaterThan(0);
-  // The latest request's flagged edit sits on cuts of the earlier pass: a press on its dot opens it, not a cut.
-  await press("0");
-  const wrap = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")].find(d => d.textContent === "3")!;
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(wrap.style.left) * 10 })); });
-  await act(async () => {});
-  expect(openTitle()).toBe("wrap");
-  // The open edit isn't drawn again under its band.
-  expect(editMarks().some(m => m.classList.contains("is-tick") && Math.abs(parseFloat(m.style.left) - parseFloat(wrap.style.left)) < .01)).toBe(false);
 });
 
 it("steps between a request's edits with the arrow keys, sideways or up and down, and keeps K and Esc", async () => {
@@ -1168,11 +1079,11 @@ it("gives the timeline to the latest request when its edit lands, though the edi
   await act(async () => {});
   expect(openTitle()).toBe("wrap");
   await press("Escape");
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
   // The request proposes its edit. Nothing is applied yet, so the timeline stays where the editor was.
   await event(d => ({ ...d, changes: [...d.changes, { ...later.change, taskId: "task_later", state: "ready" as const }] }));
   await act(async () => {});
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
   // The edit is applied, flagged, and the timeline is on it.
   later.lists.task_later = landed;
   await event(d => ({ ...d, changes: d.changes.map(c => c.id === "chg_later" ? { ...later.change, taskId: "task_later" } : c),
@@ -1221,10 +1132,10 @@ it("lets go of an open edit that is no longer in its request's list, and goes ba
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  // While "music bed" is open in an earlier request, only that edit is marked.
+  // While "music bed" is open in an earlier request, that request's edits are marked, the open one lit.
   await press("ArrowUp");
   expect(openTitle()).toBe("music bed");
-  expect(numbered()).toEqual([["1", undefined]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", undefined]]);
   // The edit is undone. Its request no longer lists it.
   later.lists[later.earlier] = (later.lists[later.earlier] as object[]).slice(1);
   await headMoves("ver_undone");
@@ -1276,12 +1187,12 @@ it("stays with an earlier request that has an edit to check through a reload of 
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   await press("Escape");
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
   // Its markers load again, and fail once on the way. Neither says the edit was looked at.
   later.hold(later.earlier);
   await headMoves("ver_moved");
   await later.release();
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
   const good = later.lists[later.earlier]!;
   later.lists[later.earlier] = new Error("Engine unreachable");
   await headMoves("ver_failed");
@@ -1290,7 +1201,7 @@ it("stays with an earlier request that has an edit to check through a reload of 
   later.lists[later.earlier] = good;
   await headMoves("ver_back");
   await act(async () => {});
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
   // The editor sends "wrap" back for revision. It no longer waits on them, so the timeline is back on the latest request.
   const base = buildDb().tasks.find(t => t.id === "task_done")!;
   await event(d => ({ ...d, tasks: [...d.tasks, { ...base, id: "task_revise_wrap", state: "queued" as const, createdAt: new Date().toISOString(),
@@ -1313,7 +1224,7 @@ it("stays with an earlier request's flagged edit after a look at it, when the la
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   await press("Escape");
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
 it("keeps an open edit through markers that fail to load, unless a newer request arrived meanwhile", async () => {
@@ -1559,7 +1470,7 @@ it("leaves the edits quiet when the project's history arrives slowly, after the 
   expect(container.querySelector("[data-landed], .simple-timeline-closing")).toBeNull();
 });
 
-it("marks only the flagged cut of a dialogue pass that is the latest request, from the start", async () => {
+it("numbers every cut of a dialogue pass that is the latest request, from the start, the flagged one amber", async () => {
   appliedEdits();
   data = { ...data, tasks: [...data.tasks, { ...data.tasks.find(t => t.id === "task_done")!, id: "task_pass", kind: "edit" as const,
     instruction: "/dialogue-pass", context: { message: "/dialogue-pass" }, changeIds: ["chg_approved_2"] }] };
@@ -1569,8 +1480,9 @@ it("marks only the flagged cut of a dialogue pass that is the latest request, fr
   await show();
   await act(async () => {});
   expect(turnFor("chg_approved_2").querySelector(".simple-pass")).not.toBeNull();
-  // A pass can leave hundreds of settled cuts. Only the one that asks for a look is marked.
-  expect([...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(m => m.dataset.state)).toEqual(["check"]);
+  // Its cuts are numbered in timeline order, as its list goes; where they crowd they share pills of runs.
+  expect([...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(m => [m.textContent, m.dataset.state]))
+    .toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
 /**
@@ -1710,7 +1622,7 @@ it("goes back to the latest request once the request the editor went to has noth
   await click(earlier.querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
   await press("Escape");
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
   // Once "wrap" is kept nothing there waits for the editor, and the timeline is back on the latest request.
   await click(earlier.querySelector(".simple-pass-need")!);
   await act(async () => {});
@@ -2189,10 +2101,9 @@ it("marks every place a suggestion changes: its band on the one the player is on
   await press("0");
   expect(band()).toEqual([12.5, 6.3]);
   expect(dots().map(d => d.style.left)).toEqual(["43.75%", "75%"]);
-  // A dot names its place as the suggestion's on hover.
+  // Hovering a dot shows its frame and time, with nothing written under them.
   await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 437.5 })); });
-  const note = container.querySelector(".timeline-track .simple-timeline-tip.is-joined > span")!;
-  expect([note.querySelector("b")?.textContent, note.querySelector("small")?.textContent]).toEqual(["Suggestion · 0:07", "0:07–0:08 · 1.0 s"]);
+  expect(container.querySelector(".simple-timeline-need, .simple-timeline-tip")).toBeNull();
   // A press on a dot moves the player and the band to that place, and the timeline zooms to it as it does to an edit
   // that opens: 0:07–0:16. Of the other two places, the one at 0:07 is in view there, as a dot.
   seek.mockClear();
@@ -2454,7 +2365,7 @@ it("hands the editor the cuts a finished pass never checked, as calls, instead o
   expect(call().querySelector(".edit-card-title")?.textContent).toBe("Not checked yet. Breath before the price.");
 });
 
-it("marks only what needs the editor once a pass is applied, and its settled cuts while its list is open", async () => {
+it("numbers an applied pass's cuts on the timeline while it has the timeline, as while its list is open", async () => {
   appliedEdits();
   data = { ...data, tasks: [...data.tasks, { ...data.tasks.find(t => t.id === "task_done")!, id: "task_pass", kind: "edit" as const,
     instruction: "/dialogue-pass", context: { message: "/dialogue-pass" }, changeIds: ["chg_approved_2"] }] };
@@ -2476,12 +2387,12 @@ it("marks only what needs the editor once a pass is applied, and its settled cut
   const pass = turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass")!;
   const marks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
   expect(marks()).toEqual([]);
-  // Its open list brings the pass's cuts onto the timeline: settled ones faint, the flagged one amber.
+  // Its open list brings the pass's cuts onto the timeline, numbered, the flagged one amber.
   await click(pass.querySelector(".simple-pass-toggle")!);
   await act(async () => {});
-  expect(marks().map(m => m.classList.contains("is-quiet"))).toEqual([true, true, false]);
-  expect(marks()[2]!.dataset.state).toBe("check");
-  // The row under the pointer lights its tick and shows its number.
+  const drawn = () => marks().map(m => [m.textContent, m.dataset.state]);
+  expect(drawn()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
+  // The row under the pointer lights its dot.
   const row = pass.querySelector(".simple-pass-list button")!;
   await act(async () => { row.dispatchEvent(new PointerEvent("pointerover", { bubbles: true })); });
   expect(marks()[0]!.classList.contains("is-hot")).toBe(true);
@@ -2495,13 +2406,13 @@ it("marks only what needs the editor once a pass is applied, and its settled cut
   expect(editPanel()).not.toBeNull();
   await press("Escape");
   await act(async () => {});
-  expect(marks().map(m => m.classList.contains("is-quiet"))).toEqual([true, true, false]);
-  // Closed, only the edit that asks for a look stays marked.
+  expect(drawn()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
+  // Closed, the pass keeps the timeline while its flagged cut waits on the editor, and its cuts stay numbered.
   await click(pass.querySelector(".simple-pass-toggle")!);
-  expect(marks().map(m => m.dataset.state)).toEqual(["check"]);
+  expect(drawn()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
-it("lists just an applied pass's flagged cut from need you, and shows its settled cuts on the timeline once every edit is listed", async () => {
+it("lists just an applied pass's flagged cut from need you, and every edit from its link, its cuts numbered on the timeline", async () => {
   appliedEdits();
   data = { ...data, tasks: [...data.tasks, { ...data.tasks.find(t => t.id === "task_done")!, id: "task_pass", kind: "edit" as const,
     instruction: "/dialogue-pass", context: { message: "/dialogue-pass" }, changeIds: ["chg_approved_2"] }] };
@@ -2522,14 +2433,11 @@ it("lists just an applied pass's flagged cut from need you, and shows its settle
   // The row that needs the editor has its time in amber, and no dot before its words.
   expect([list()?.querySelector(".simple-pass-label")?.textContent, list()?.querySelector(".simple-pass-time")?.className, list()?.querySelector("button")?.getAttribute("aria-current")]).toEqual(["wrap", "simple-pass-time is-need", "true"]);
   expect(editPanel()).not.toBeNull();
-  // The settled cuts aren't on the timeline for this list: only the whole list puts them there.
-  expect(marks().filter(m => m.classList.contains("is-quiet"))).toEqual([]);
   await click(need());
   expect([list(), need().getAttribute("aria-pressed"), !!editPanel()]).toEqual([null, "false", true]);
   await click(need());
   expect(list()?.querySelectorAll("li").length).toBe(1);
-  // Kept, nothing waits on the editor, so that list goes. The link lists every edit, and the timeline shows them too:
-  // settled cuts as faint ticks.
+  // Kept, nothing waits on the editor, so that list goes. The link lists every edit, and the timeline numbers them.
   await press("k");
   await act(async () => {});
   expect(editPanel()).toBeNull();
@@ -2538,11 +2446,11 @@ it("lists just an applied pass's flagged cut from need you, and shows its settle
   await act(async () => {});
   expect(list()?.getAttribute("aria-label")).toBe("Every edit");
   expect(list()?.querySelectorAll("li")).toHaveLength(3);
-  expect(marks().map(m => m.classList.contains("is-quiet"))).toEqual([true, true, true]);
-  // The row under the pointer lights its tick.
+  expect(marks().map(m => m.textContent)).toEqual(["1", "2", "3"]);
+  // The row under the pointer lights its dot.
   await act(async () => { list()!.querySelector("button")!.dispatchEvent(new PointerEvent("pointerover", { bubbles: true })); });
   expect(marks()[0]!.classList.contains("is-hot")).toBe(true);
-  // The link, which now says Hide, closes the list, and the ticks go with it.
+  // The link, which now says Hide, closes the list, and the dots go with it.
   expect([pass.querySelector(".simple-pass-toggle")?.textContent, pass.querySelector(".simple-pass-toggle")?.getAttribute("aria-expanded")]).toEqual(["Hide", "true"]);
   await click(pass.querySelector(".simple-pass-toggle")!);
   expect(list()).toBeNull();
@@ -2648,21 +2556,21 @@ const appliedPass = (flagged: boolean) => {
   return later;
 };
 const passToggle = () => turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass .simple-pass-toggle")!;
-const ticks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(m => m.classList.contains("is-quiet") ? "tick" : m.dataset.state ?? "dot");
+const ticks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(m => m.dataset.state ?? "dot");
 
-it("shows a settled pass's cuts as faint ticks while its full list is open, and gives a request that arrives meanwhile the timeline once it closes", async () => {
+it("numbers a settled pass's cuts while it has the timeline, and gives a request that arrives under its open list the timeline once it closes", async () => {
   const later = appliedPass(false);
   await show();
   await act(async () => {});
-  expect(ticks()).toEqual([]);
-  // Nothing in the pass needs the editor. Its cuts are on the timeline only while its list is open.
+  expect(ticks()).toEqual(["dot", "dot", "dot"]);
+  // Nothing in the pass needs the editor. It is the latest request, so its cuts are numbered, and its open list keeps them.
   await click(passToggle());
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "tick"]);
+  expect(ticks()).toEqual(["dot", "dot", "dot"]);
   // A request arrives while the list is open. The list keeps the timeline until it closes.
   await event(d => ({ ...d, changes: [...d.changes, later.change] }));
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "tick"]);
+  expect(ticks()).toEqual(["dot", "dot", "dot"]);
   await click(passToggle());
   await act(async () => {});
   expect(numbered()).toEqual([["1", "check"]]);
@@ -2701,20 +2609,20 @@ it("gives the timeline back to a pass's open list when another request's edit cl
   await act(async () => {});
   await click(passToggle());
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "check"]);
+  expect(ticks()).toEqual(["dot", "dot", "check"]);
   // The other request has an edit to check of its own. With the pass's list still open, its cuts come back all the same.
   await click(turnFor("chg_later").querySelector(".simple-pass-need")!);
   await act(async () => {});
   expect(openTitle()).toBe("outro fade");
   await press("Escape");
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "check"]);
+  expect(ticks()).toEqual(["dot", "dot", "check"]);
   // A third request's edit lands while the list is open. When the list closes the timeline is on it.
   const third = { ...later.change, id: "chg_third", description: "Lower the music", createdAt: new Date(Date.now() + 1000).toISOString() };
   later.lists.chg_third = [{ changeId: "chg_third", spot: 0, label: "music level", range: { start: 5, end: 9 }, previous: [], check: "It may be too quiet now" }];
   await event(d => ({ ...d, changes: [...d.changes, third] }));
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "check"]);
+  expect(ticks()).toEqual(["dot", "dot", "check"]);
   await click(passToggle());
   await act(async () => {});
   expect(numbered()).toEqual([["1", "check"]]);
@@ -3210,22 +3118,22 @@ it("keeps the other calls' dots on the timeline while a call is open, so one pre
   const dots = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
   const numbers = () => dots().map(d => d.querySelector(".simple-timeline-number")?.textContent);
   expect(numbers()).toEqual(["1", "2", "3"]);
-  // The open call's band says where it is, so its own dot goes. The calls still waiting that are in view keep theirs.
+  // The open call's dot is lit at the start of its band. The calls still waiting that are in view keep theirs.
   await openCall("Breath before the price.");
   expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
-  expect(numbers()).toEqual(["1", "3"]);
-  expect(dots().map(d => d.dataset.state)).toEqual(["check", "check"]);
+  expect(numbers()).toEqual(["1", "2", "3"]);
+  expect(dots().map(d => [d.dataset.state, d.classList.contains("is-on")])).toEqual([["check", false], ["check", true], ["check", false]]);
   // A press on one opens that call in the card, and the timeline zooms to it.
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
   strip.getBoundingClientRect = () => ({ left: 0, width: 1000 }) as DOMRect;
-  await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(dots()[1]!.style.left) * 10 })); });
+  await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(dots()[2]!.style.left) * 10 })); });
   await act(async () => {});
   expect(onVideo()).toBe("Showing cut at 0:11 · 3 of 3 · After");
-  expect(numbers()).toEqual(["2"]);
+  expect(dots().find(d => d.classList.contains("is-on"))?.textContent).toBe("3");
   // Zoomed out to the whole video (0), the other calls are there to see and to press without closing this one.
   await press("0");
   expect(call()).not.toBeNull();
-  expect(numbers()).toEqual(["1", "2"]);
+  expect(numbers()).toEqual(["1", "2", "3"]);
 });
 
 it("plays a call's cut footage from a click inside its passage on the timeline", async () => {
@@ -6446,16 +6354,9 @@ it("greys out the pass's other cuts on After, and a click into one plays it in B
   expect(gap().classList.contains("is-skipped")).toBe(true);
   // It goes by its time, as its row in the pass's list and its tag in the message box do, not by a number of its own.
   expect(gap().querySelector(".simple-timeline-gap-label")?.textContent).toBe("Cut at 0:06");
-  // Hovered, its note joins the scrub preview's card like a marker's.
-  expect(container.querySelector(".simple-timeline-tip")).toBeNull();
+  // Hovered, it shows the frame and its time like anywhere on the timeline: the tag already says which cut it is.
   await act(async () => { gap().dispatchEvent(new PointerEvent("pointerover", { bubbles: true })); });
-  const gapNote = container.querySelector(".timeline-track .simple-timeline-tip.is-joined")!;
-  expect(gap().querySelector(".simple-timeline-tip")).toBeNull();
-  expect(gapNote.querySelector("b")?.textContent).toBe("Cut at 0:06 · 1.0 s");
-  expect(gapNote.textContent).toContain("Drop the false start");
-  expect(gapNote.querySelector("em")).toBeNull();
-  // The grey and the tag already say After skips it: the note doesn't repeat that.
-  expect(gapNote.querySelector("small")).toBeNull();
+  expect(container.querySelector(".simple-timeline-tip, .simple-timeline-need")).toBeNull();
   expect(container.querySelector(".edit-card-switched")).toBeNull();
 
   // Without layout the click lands on the gap's first frame. It plays Before from there instead of seeking past the gap.
@@ -6528,13 +6429,13 @@ it("keeps an edit that left its request's list closed when it is listed again, i
   await headMoves("ver_undone");
   await act(async () => {});
   expect(editPanel()).toBeNull();
-  expect(numbered()).toEqual([["2", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", "check"]]);
   // Put back, it stays closed.
   later.lists[later.earlier] = all;
   await headMoves("ver_redone");
   await act(async () => {});
   expect(editPanel()).toBeNull();
-  expect(numbered()).toEqual([["3", "check"]]);
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
 it("gives the timeline to a request that arrived while an earlier request's edit was open, when that edit's markers then fail", async () => {
@@ -6562,7 +6463,7 @@ it("gives the timeline to a request that arrived under a pass's open list once t
   await act(async () => {});
   await click(passToggle());
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "check"]);
+  expect(ticks()).toEqual(["dot", "dot", "check"]);
   // A request's flagged edit lands while the list is open. The editor looks at it and closes it without keeping it.
   await event(d => ({ ...d, changes: [...d.changes, later.change] }));
   await act(async () => {});
@@ -6571,7 +6472,7 @@ it("gives the timeline to a request that arrived under a pass's open list once t
   expect(openTitle()).toBe("outro fade");
   await press("Escape");
   await act(async () => {});
-  expect(ticks()).toEqual(["tick", "tick", "check"]);
+  expect(ticks()).toEqual(["dot", "dot", "check"]);
   // The list closes. The new request has the timeline, as it would without the look.
   await click(passToggle());
   await act(async () => {});
@@ -7068,13 +6969,13 @@ it("keeps the waiting pass's flagged edit on the timeline, numbered after its ca
   const strip = () => { const el = container.querySelector<HTMLElement>(".simple-timeline-hover")!; el.getBoundingClientRect = () => ({ left: 0, width: 1000 }) as DOMRect; return el; };
   const dot = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].find(m => m.textContent === "4")!;
   await act(async () => { strip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientX: parseFloat(dot.style.left) * 10 })); });
-  expect(container.querySelector(".simple-timeline-tip b")?.textContent).toBe("Edit 4 · 0:13");
+  expect(container.querySelector(".simple-timeline-need")?.textContent).toBe("Edit 4 needs you");
   await act(async () => { strip().dispatchEvent(new PointerEvent("pointerleave", { bubbles: true, pointerId: 1 })); });
   // With a call open and the whole video in view, the flagged edit still has its dot: "4 need you" still counts it.
   await openCall("Breath before the price.");
   await press("0");
   expect(call()).not.toBeNull();
-  expect([marks(), needYou()]).toEqual([["1", "3", "4"], "4 need you"]);
+  expect([marks(), needYou()]).toEqual([["1", "2", "3", "4"], "4 need you"]);
   await press("Escape");
   // A request waits behind the pass. It is the latest, so the timeline goes to it: the window asks for its edits, as
   // only the timeline does for a request that has applied none.
@@ -7107,14 +7008,14 @@ it("keeps the number a call or a flagged edit was shown under when another call 
   expect([needYou(), numbers()]).toEqual(["4 need you", [["1", "A clean retake."], ["2", "Breath before the price."], ["3", "wrap"], ["4", "Repeated aside."]]]);
   const marks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(m => m.textContent);
   expect(marks()).toEqual(["1", "2", "4", "3"]);
-  // Its number is past the calls' own run, so its dot says the number alone, not "Cut 4 of 3".
+  // Hovered, each says it needs the editor by its number alone, not "Cut 4 of 3".
   const strip = () => { const el = container.querySelector<HTMLElement>(".simple-timeline-hover")!; el.getBoundingClientRect = () => ({ left: 0, width: 1000 }) as DOMRect; return el; };
   const tip = async (n: string) => {
     const dot = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].find(m => m.textContent === n)!;
     await act(async () => { strip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientX: parseFloat(dot.style.left) * 10 })); });
-    return container.querySelector(".simple-timeline-tip b")?.textContent;
+    return container.querySelector(".simple-timeline-need")?.textContent;
   };
-  expect([await tip("2"), await tip("4"), await tip("3")]).toEqual(["Cut 2 of 3 · 0:06", "Cut 4 · 0:11", "Edit 3 · 0:13"]);
+  expect([await tip("2"), await tip("4"), await tip("3")]).toEqual(["Cut 2 needs you", "Cut 4 needs you", "Edit 3 needs you"]);
   // Opened again, the project shows the numbers the editor has seen.
   await act(async () => root.unmount());
   root = createRoot(container);
@@ -8679,12 +8580,13 @@ it("leaves another request's edit open when a pass with its full list open leave
   // The link is worded for the rows it opens: the applied cut and the pass's two calls, which are listed among its
   // edits. So it isn't "See it".
   expect(pass().querySelector(".simple-pass-toggle")?.textContent).toBe("See all");
-  // Its full list is open, so its applied edit is on the timeline as a faint tick.
+  // Its full list is open. While it waits on the editor only its calls and flagged edits are marked: its applied cut
+  // isn't, and neither is a call this staged pass can't place on the working cut.
   await click(pass().querySelector(".simple-pass-toggle")!);
   await act(async () => {});
   expect(list()).toBe("Every edit");
   expect(pass().querySelectorAll(".simple-pass-list > li")).toHaveLength(3);
-  expect(ticks()).toEqual(["tick"]);
+  expect(ticks()).toEqual([]);
   // The editor opens an edit of the other request, with the list still open.
   await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
   await act(async () => {});
@@ -8701,11 +8603,12 @@ it("leaves another request's edit open when a pass with its full list open leave
   expect(list()).toBe("Every edit");
   expect(openTitle()).toBe("music bed");
   expect(editPanel()).not.toBeNull();
-  // Closed, the timeline goes back to the pass's open list.
+  // Closed, the timeline goes back to the pass's open list. While its call is revised nothing of it waits on the
+  // editor, so its applied cut is numbered there.
   await press("Escape");
   await act(async () => {});
   expect(editPanel()).toBeNull();
-  expect(ticks()).toEqual(["tick"]);
+  expect(ticks()).toEqual(["dot"]);
 });
 
 it("says a stopped pass's cut wasn't checked, lists a skipped call as Skipped, and says why the pass couldn't apply", async () => {

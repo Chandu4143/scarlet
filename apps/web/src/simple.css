@@ -132,38 +132,7 @@
 .simple-timeline-cut { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; width: 2px; margin-left: -1px; pointer-events: none; background: rgba(255, 160, 156, .9); }
 .simple-timeline-cut span { position: absolute; left: 6px; top: 3px; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(255, 160, 156, .55);
   background: rgba(40, 22, 21, .9); font-size: 10.5px; line-height: 14px; color: var(--color-fg); white-space: nowrap; }
-/* Every applied edit on the working cut, under what needs the editor and quieter than it: a graphic or overlay a bar
-   along the top of the strip as long as it is on screen, a zoom, reframe or caption a dimmer bar, anything else a small
-   tick. On the whole video cuts are only counted ("9 cuts", "1 cut"), and where marks would touch they gather into a
-   count. Zoomed in to a stretch whose edits fit, each is a tick or bar of its own, a cut too. */
-.simple-timeline-edit { position: absolute; z-index: 1; pointer-events: none; font-style: normal; }
-/* A tick runs on beneath a count. */
-.simple-timeline-edit.is-tick { z-index: 0; }
-.simple-timeline-edit.is-bar, .simple-timeline-edit.is-dim { top: calc(var(--ruler-height) + 3px + var(--edit-lane, 0) * 4px); height: 3px; min-width: 3px; border-radius: 2px;
-  background: rgba(244, 241, 233, .78); box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); }
-.simple-timeline-edit.is-dim { background: rgba(244, 241, 233, .32); }
-/* A tick is wide enough to see and point at; the pointer reaches it from either side (LINE_REACH), and the one a press
-   would open stands taller. */
-.simple-timeline-edit.is-tick { top: var(--ruler-height); width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: #c9c5bb; }
-.simple-timeline-edit.is-count { top: calc(var(--ruler-height) - 8px); height: 16px; box-sizing: border-box; display: grid; place-items: center;
-  border: 1px solid #4a4845; border-radius: 8px; background: rgba(24, 23, 22, .92); box-shadow: 0 0 0 1px #1a1918; }
-.simple-timeline-edit.is-count span { white-space: nowrap; font-size: 10px; font-weight: 500; line-height: 1; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-.simple-timeline-edit.is-bar.is-hot, .simple-timeline-edit.is-dim.is-hot { background: var(--color-fg); }
-.simple-timeline-edit.is-tick.is-hot { z-index: 1; width: 3px; height: 15px; margin-left: -1.5px; background: var(--color-fg); box-shadow: 0 0 0 1px rgba(0, 0, 0, .55); }
-.simple-timeline-edit.is-count.is-hot { border-color: var(--color-muted); }
-.simple-timeline-edit.is-count.is-hot span { color: var(--color-fg); }
 .simple-timeline-mark { position: absolute; z-index: 1; pointer-events: none; }
-/* Each edit is a thin tick where they crowd, so none hides another. Kept ticks are white, ones asking for a look amber. */
-.simple-timeline-mark.is-tick { top: calc(var(--ruler-height) - 6px); width: 2px; height: 12px; margin-left: -1px; border-radius: 1px;
-  background: var(--color-muted); box-shadow: 0 0 0 1px #1a1918; }
-.simple-timeline-mark.is-tick[data-state="check"] { background: var(--color-warn); }
-.simple-timeline-mark.is-tick[data-state="kept"] { background: var(--color-fg); }
-/* A settled edit, shown only while its list is open in the chat: short and faint, so the ones that need a look stand out. */
-.simple-timeline-mark.is-tick.is-quiet { top: calc(var(--ruler-height) - 3px); width: 1px; height: 6px; margin-left: -.5px; background: #6b6864; box-shadow: none; }
-.simple-timeline-mark.is-tick.is-hot, .simple-timeline-mark.is-tick.is-on { top: calc(var(--ruler-height) - 9px); width: 3px; height: 18px; margin-left: -1.5px; background: var(--color-fg); }
-/* The hovered or selected tick names its edit in a small flag above it. */
-.simple-timeline-mark.is-tick .simple-timeline-number { position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%);
-  padding: 2px 5px; border-radius: 8px; background: var(--color-fg); color: var(--color-bg); }
 .simple-timeline-mark.is-dot { top: calc(var(--ruler-height) - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
   background: var(--color-muted); box-shadow: 0 0 0 1px #1a1918; }
 /* A dot with no number is amber too while it asks for a look. */
@@ -175,17 +144,10 @@
 /* Over a marker that opens its edit, the pointer says a press opens it instead of scrubbing. */
 .simple-timeline-hover.is-aimed { cursor: pointer; }
 .simple-timeline-mark.is-hot, .simple-timeline-mark.is-on { z-index: 4; }
-.simple-timeline-tip { position: absolute; z-index: 6; top: 14px; display: none; flex-direction: column; gap: 8px; width: max-content; max-width: 18rem; padding: 7px 10px;
-  border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); box-shadow: 0 3px 12px rgb(0 0 0 / 35%);
-  font-size: 12px; font-style: normal; line-height: 1.35; color: var(--color-fg); pointer-events: none; }
-/* A hovered marker's note sits under the frame in the scrub preview: one card, not a second popup below the track. */
-.simple-timeline-tip.is-joined { position: static; display: flex; width: auto; max-width: none; padding: 7px 10px 8px; border: 0; border-top: 1px solid var(--color-line);
-  border-radius: 0; background: none; box-shadow: none; text-align: left; }
-.simple-timeline-tip > span { display: flex; flex-direction: column; gap: 2px; }
-.simple-timeline-tip b { font-weight: 600; font-size: 11px; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-.simple-timeline-tip-summary, .simple-timeline-tip em { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.simple-timeline-tip small { font-size: 11px; color: var(--color-dim); font-variant-numeric: tabular-nums; }
-.simple-timeline-tip em { margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--color-line); font-style: normal; font-size: 11.5px; color: var(--color-muted); }
+/* Hovering a marker shows only the frame and its time, as anywhere on the timeline. A marker that holds a cut or an
+   edit waiting on the editor adds one amber line under the time naming it: "Cut 23 needs you". */
+.simple-timeline-need { display: block; padding: 6px 10px 7px; border-top: 1px solid var(--color-line); text-align: left;
+  font-size: 12px; line-height: 1.35; color: var(--color-warn); }
 
 /* What a request's rows share: the row that carries Stop when there is no heading, a quiet figure, and the steps so far. */
 .run-stop { margin-left: auto; }

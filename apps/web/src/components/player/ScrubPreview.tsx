@@ -75,7 +75,7 @@ function hoverMovie(video: HTMLVideoElement, lastFrame: number, paint: (frame: H
   };
 }
 
-export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, frameAt, hoverVideo, suspended, note, children }: {
+export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, frameAt, hoverVideo, suspended, note, pin, children }: {
   start?: number;
   duration: number;
   pictureAspect?: number;
@@ -84,6 +84,8 @@ export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, fram
   suspended?: boolean;
   /** What the pointer is over, shown under the frame in the same card. */
   note?: ReactNode;
+  /** A time to show instead of the one under the pointer, as a marker's own while the pointer is on it. */
+  pin?: number;
   children: ReactNode;
 }) {
   const bar = useRef<HTMLDivElement>(null);
@@ -109,6 +111,10 @@ export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, fram
   // Scarlet works. The bubble reads the latest one without being set up again: that would drop a drag in progress.
   const frameSource = useRef(frameAt);
   useLayoutEffect(() => { frameSource.current = frameAt; }, [frameAt]);
+  // The bubble shows a pinned time from the next paint, without being set up again.
+  const pinned = useRef(pin);
+  const repaint = useRef<() => void>(undefined);
+  useLayoutEffect(() => { pinned.current = pin; repaint.current?.(); }, [pin]);
   useLayoutEffect(() => {
     if (suspended || !(duration > 0 && Number.isFinite(duration))) return;
     const track = bar.current!, tip = bubble.current!, canvas = picture.current!, stamp = label.current!;
@@ -195,7 +201,7 @@ export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, fram
       const rect = track.getBoundingClientRect();
       if (!rect.width) return;
       const offset = Math.max(0, Math.min(rect.width, x - rect.left));
-      time = start + duration * (offset / rect.width);
+      time = dragId === undefined && pinned.current !== undefined ? pinned.current : start + duration * (offset / rect.width);
       const text = playbackClock(time);
       if (stamp.textContent !== text) stamp.textContent = text;
       tip.hidden = false;
@@ -230,6 +236,8 @@ export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, fram
       move(event);
     }
     function leave() { if (dragId === undefined) hide(); }
+    // Only while the bubble is up: a pin that comes or goes then shows at once.
+    repaint.current = () => { if (!tip.hidden && !paint) paint = requestAnimationFrame(update); };
     function finish(event: PointerEvent) {
       if (event.pointerId !== dragId) return;
       dragId = undefined;
@@ -247,6 +255,7 @@ export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, fram
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
     return () => {
+      repaint.current = undefined;
       hide();
       movie?.dispose();
       track.removeEventListener("pointermove", move);

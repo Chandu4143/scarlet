@@ -202,7 +202,6 @@
 .timeline-ruler { position: absolute; inset: 0 0 auto; height: calc(var(--ruler-height) - 4px); overflow: hidden; pointer-events: none; }
 .timeline-ruler > span { position: absolute; bottom: 0; width: 1px; }
 .ruler-major { height: 6px; background: #87847f; }
-.ruler-minor { height: 2px; background: #65615d; }
 .ruler-major > span { position: absolute; left: 3px; bottom: 9px; color: #aaa69e; font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .timeline-lanes {
   position: absolute; inset: var(--ruler-height) 0 0; display: flex; flex-direction: column; overflow: hidden;
