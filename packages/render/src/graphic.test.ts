@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProject, makeMediaClip, type Project, type Timeline } from "@scarlet/timeline";
-import { ChromeNotFound, chromeCandidates, findChrome, graphicCoverage, hasChrome, probeMedia, renderGraphic, renderGraphicStill, renderTimelineFrame, runCapture } from "./index.js";
+import { execFile } from "node:child_process";
+import { ChromeNotFound, chromeCandidates, findChrome, graphicCoverage, hasChrome, pdfPageCount, pdfPages, probeMedia, renderGraphic, renderGraphicStill, renderTimelineFrame, runCapture } from "./index.js";
 
 let dir: string;
 
@@ -102,6 +103,24 @@ describe.skipIf(!hasChrome())("drawing a graphic", () => {
     expect(result.problems.join(" ")).toMatch(/missing\.css|ERR_FILE_NOT_FOUND|Failed to load/);
     const boxes = await graphicCoverage(output, [0, 0.5, 0.75], { width: 200, height: 100 });
     expect(boxes.map(b => b.box?.left)).toEqual([0, expect.closeTo(0.4, 1), expect.closeTo(0.6, 1)]);
+  });
+
+  it("draws a PDF's pages for a model that can't open the file, and leaves out pages past its end", async () => {
+    const html = path.join(dir, "guide.html");
+    await fs.writeFile(html, `<h1 style="color:#d00">Brand guide</h1><div style="page-break-after:always"></div><h1>Lower thirds</h1>`);
+    const pdf = path.join(dir, "guide.pdf");
+    const profile = await fs.mkdtemp(path.join(os.tmpdir(), "scarlet-print-"));
+    try {
+      await new Promise<void>((resolve, reject) => execFile(findChrome(), ["--headless=new", "--no-pdf-header-footer", `--user-data-dir=${profile}`, `--print-to-pdf=${pdf}`, html], error => error ? reject(error) : resolve()));
+    } finally { await fs.rm(profile, { recursive: true, force: true }); }
+    expect(pdfPageCount(await fs.readFile(pdf))).toBe(2);
+    const pages = await pdfPages(pdf, [1, 2, 3], { width: 400, settleMs: 1500 });
+    expect(pages).toHaveLength(2);
+    const first = path.join(dir, "page1.jpg");
+    await fs.writeFile(first, pages[0]!);
+    // The heading's red is drawn on the first page.
+    const { stdout } = await runCapture("ffmpeg", ["-v", "error", "-i", first, "-vf", "format=rgb24", "-f", "rawvideo", "pipe:1"]);
+    expect([...Array(stdout.length / 3).keys()].some(i => stdout[i * 3]! > 180 && stdout[i * 3 + 1]! < 80 && stdout[i * 3 + 2]! < 80)).toBe(true);
   });
 
   it("stops Chrome and leaves no movie when cancelled", async () => {
