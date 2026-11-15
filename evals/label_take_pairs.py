@@ -178,7 +178,8 @@ def label_manifest(manifest, sources, source_dir):
     if len(ids) != len(set(ids)):
         raise ValueError("Duplicate trial ID.")
     inputs, coverage = {}, []
-    for name, paths in sources.items():
+    for name in recordings:
+        paths = sources[name]
         # Paths can be absolute or relative to the source index, kept independently of blind requests.
         evidence_file = private_path(source_dir / paths["words"])
         ref_file = private_path(source_dir / paths["reference"])
