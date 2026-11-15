@@ -30,7 +30,7 @@ import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
 import { ignorePageShortcut, useHotkeys } from "../lib/hotkeys";
-import { LiveTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
+import { RequestTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
 import { ExportButton, ExportMenuItem, useExportWarning } from "../components/review/ExportMenuItem";
@@ -956,8 +956,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time. Each has its own Stop.`}>Working on {atOnce} at once</span> : null);
     // One way to stop each request: Stop in its heading once Scarlet has it, the tray's × while it still waits there.
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
-    // The tokens it has used so far sit before Stop, and climb while Scarlet works.
-    const stopLink = stop && <><LiveTokens taskId={task.id} /><button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button></>;
+    // The tokens the request has used sit in its heading, before Stop, climb while Scarlet works and stay once it's done.
+    const headingEnd = <><RequestTokens taskId={task.id} />{stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>}</>;
     const bundle = <RunBundle task={task} events={events[task.id] ?? []} changes={thread.changes} finalChange={final} banded={!!request} callNumber={actions.callNumber}
         say={said.length ? <div className="req-said">{said}</div> : undefined} told={told} result={rows} recovery={recovery}
         // Under its call's row, that row is the cut it saved, with Scarlet's note: the note isn't said again under it.
@@ -975,7 +975,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     // at their right, as in a block's heading, and its work. Under its row the row names it, and the tag is hidden.
     if (inside) return <div key={run.root} className="subunit" data-run={run.root}>
       {request && <div className="subunit-msg" title={request.text}><span className="simple-who">You</span>
-        <p><span className="simple-revising">{about ?? "Revision"}</span>{request.text}</p><span className="unit-state">{standing}</span>{stopLink}</div>}
+        <p><span className="simple-revising">{about ?? "Revision"}</span>{request.text}</p><span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
@@ -993,7 +993,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
           actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
         <p>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}{request.text}</p>
-        <span className="unit-state">{standing}</span>{stopLink}</div>}
+        <span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {wrong}
     </div>;
