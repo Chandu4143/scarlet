@@ -3484,6 +3484,11 @@ it("returns progress for a cold 12-cut batch and collects the same measurements 
     await hold;
     return { acoustic: [], segments: [{ id: "kept", start: from, end: to, text: "", words: words.filter(w => w.start >= from && w.end <= to) }] };
   });
+  const originalWaveform = ScarletClient.prototype.waveform;
+  const waveform = vi.spyOn(ScarletClient.prototype, "waveform").mockImplementation(async function (this: ScarletClient, ...args) {
+    if (args[1] >= 20) await hold;
+    return originalWaveform.apply(this, args);
+  });
   const cuts = Array.from({ length: 12 }, (_, i) => ({ start: 1 + i * 4, end: 2 + i * 4 }));
   const check = async (version: string) => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version, cuts } }) as CallToolResult);
   try {
@@ -3493,9 +3498,12 @@ it("returns progress for a cold 12-cut batch and collects the same measurements 
     expect(waiting).toMatchObject({ status: "measuring", version: tl.version, retryAfterSeconds: 5 });
     expect(waiting.pendingCuts).toEqual(cuts.map((_, index) => index));
     expect(waiting.joins).toEqual(cuts.map(() => ({ status: "pending" })));
-    const calls = detections.mock.calls.length;
+    // Every new batch loads the project once. Audio reads from this batch can still start between polls.
+    const batchStarts = () => mock.requests.filter(r => r.path === `/projects/${tl.projectId}`).length;
+    const startedBatches = batchStarts();
+    expect(startedBatches).toBeGreaterThan(0);
     expect(await check(waiting.version)).toEqual(waiting);
-    expect(detections).toHaveBeenCalledTimes(calls);
+    expect(batchStarts()).toBe(startedBatches);
     release();
     await vi.waitFor(async () => {
       const result = await check(waiting.version);
@@ -3506,6 +3514,7 @@ it("returns progress for a cold 12-cut batch and collects the same measurements 
   } finally {
     release();
     await editor.close();
+    waveform.mockRestore();
     detections.mockRestore();
     Object.assign(mock.state, original);
   }
