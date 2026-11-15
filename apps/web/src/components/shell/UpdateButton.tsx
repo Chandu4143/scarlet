@@ -2,16 +2,59 @@ import { clearUpdatePlace, saveUpdatePlace } from "../../lib/updatePlace";
 import { useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import { desktop } from "../../lib/desktop";
 import { buildPercent, refreshUpdateStatus, useUpdateStatus } from "../../lib/updateStatus";
+import { changesSince, parseChangelog, plainChange } from "../../lib/changelog";
 
 const RING = 2 * Math.PI * 5;
 const build = (revision: string) => <span className="font-mono">{revision.slice(0, 7)}</span>;
+const MOST_CHANGES = 6;
 
-/** What hovering the control says: which build it is about, which one is running now, and what happens next. */
-function UpdateHint({ id, title, children }: { id: string; title: ReactNode; children: ReactNode }) {
+// What each build's changelog adds to this one's, read once per build from the updater's checkout.
+const changes = new Map<string, Promise<string[]>>();
+function changesIn(revision: string) {
+  let read = changes.get(revision);
+  if (!read) {
+    // Nothing read is not kept: the updater can name a build before its checkout has fetched it.
+    read = desktop.updateChangelog(revision).then(text => text ? changesSince(parseChangelog(text)) : undefined, () => undefined)
+      .then(list => { if (!list) changes.delete(revision); return list ?? []; });
+    changes.set(revision, read);
+  }
+  return read;
+}
+/** How long the hover waits before reading again a build's changelog that wasn't there yet, and how many times. */
+const REREAD_MS = 15_000, REREADS = 8;
+
+function useChanges(revision: string) {
+  const [found, setFound] = useState<{ revision: string; changes: string[] } | null>(null);
+  const [reread, setReread] = useState(0);
+  useEffect(() => setReread(0), [revision]);
+  useEffect(() => {
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void changesIn(revision).then(list => {
+      if (!current) return;
+      setFound({ revision, changes: list });
+      if (!changes.has(revision) && reread < REREADS) timer = setTimeout(() => setReread(n => n + 1), REREAD_MS);
+    });
+    return () => { current = false; clearTimeout(timer); };
+  }, [revision, reread]);
+  return found?.revision === revision ? found.changes : [];
+}
+
+/**
+ * What hovering the control says: which build it is about, which one is running now, what happens next, and what the
+ * build brings, in the changelog's words.
+ */
+function UpdateHint({ id, revision, title, children }: { id: string; revision: string; title: ReactNode; children: ReactNode }) {
+  const news = useChanges(revision);
   return <span id={id} role="tooltip" className="update-hint"><span>
     <span className="text-fg">{title}</span>
     <span>You’re on {__SCARLET_VERSION__}{__SCARLET_REVISION__ && <>, build {build(__SCARLET_REVISION__)}</>}.</span>
     {children}
+    {news.length > 0 && <span className="update-hint-news">
+      <span className="text-fg">What’s new</span>
+      <ul>{news.slice(0, MOST_CHANGES).map(change => <li key={change}>{plainChange(change)}</li>)}</ul>
+      {news.length > MOST_CHANGES && <span>And {news.length - MOST_CHANGES} more in Settings › About once it’s installed.</span>}
+    </span>}
   </span></span>;
 }
 
@@ -31,7 +74,8 @@ function setRestart(next: Partial<typeof restart>) {
  * while it is under way. It sits at the top right of the window.
  */
 export function UpdateButton() {
-  const { ready, building } = useUpdateStatus();
+  const { ready, building, source } = useUpdateStatus();
+  const release = source === "release";
   const { restarting, error: refused, about } = useSyncExternalStore(watch, () => restart);
   const error = about === ready ? refused : "";
   const [now, setNow] = useState(Date.now);
@@ -70,14 +114,14 @@ export function UpdateButton() {
       {restarting ? "Restarting…" : "Restart to update"}
     </button>
     {error ? <span role="alert" className="update-button-error">{error}</span>
-      : ready && <UpdateHint id={hint} title={<>Build {build(ready)} is ready</>}>
+      : ready && <UpdateHint id={hint} revision={ready} title={release ? <>Version {ready} is ready</> : <>Build {build(ready)} is ready</>}>
         <span>Restarting installs it and brings you back here.</span>
       </UpdateHint>}
   </aside>;
   if (!building) return null;
   const percent = buildPercent(building, now);
   return <aside className="update-control update-corner" aria-label="Scarlet update">
-    <span role="status" className="update-button" aria-label={`Updating Scarlet, ${percent}% built`} aria-describedby={hint}>
+    <span role="status" className="update-button" aria-label={`Updating Scarlet, ${percent}% ${release ? "downloaded" : "built"}`} aria-describedby={hint}>
       <svg className="update-button-ring" viewBox="0 0 14 14" aria-hidden="true">
         <circle cx="7" cy="7" r="5" />
         <circle cx="7" cy="7" r="5" strokeDasharray={RING} strokeDashoffset={RING * (1 - percent / 100)} />
@@ -85,8 +129,8 @@ export function UpdateButton() {
       Updating
       <span className="update-button-figure">{percent}%</span>
     </span>
-    <UpdateHint id={hint} title={<>Updating to build {build(building.revision)}</>}>
-      <span>Scarlet is building it in the background. Keep working: this becomes Restart to update when it’s ready.</span>
+    <UpdateHint id={hint} revision={building.revision} title={release ? <>Updating to version {building.revision}</> : <>Updating to build {build(building.revision)}</>}>
+      <span>Scarlet is {release ? "downloading" : "building"} it in the background. Keep working: this becomes Restart to update when it’s ready.</span>
     </UpdateHint>
   </aside>;
 }

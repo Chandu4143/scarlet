@@ -7,6 +7,7 @@ import { startUiLog } from "./lib/uiLog";
 import { BootSplash } from "./components/shell/BootSplash";
 import { StartupRecovery } from "./components/shell/StartupRecovery";
 import { UpdateButton } from "./components/shell/UpdateButton";
+import { ReleaseUpdateNotice } from "./components/shell/ReleaseUpdateNotice";
 import { enableUpdateStatus } from "./lib/updateStatus";
 import "./index.css";
 import "./workspace.css";
@@ -27,16 +28,16 @@ async function launch() {
   });
   try {
     const [native, view] = await Promise.all([desktop.info(), opening]);
-    const { platform, localUpdates, customOpenaiModels, customClaudeModels } = native;
+    const { platform, updates, customOpenaiModels, customClaudeModels } = native;
     if (platform !== "macos" && platform !== "windows" && platform !== "linux") {
       view.render(desktopOnly);
       return;
     }
     // Loading the router and stores starts the editor. Wait for the native
     // handshake first, including when using the interview fixture.
-    if (localUpdates) {
+    if (updates) {
       restoreUpdatePlace();
-      enableUpdateStatus();
+      enableUpdateStatus(updates);
     }
     restoreLastProject();
     const [{ App }, hosts] = await Promise.all([
@@ -44,7 +45,10 @@ async function launch() {
       customOpenaiModels?.length || customClaudeModels?.length ? import("./stores/hosts") : undefined,
     ]);
     hosts?.useHostsStore.setState({ customOpenaiModels: customOpenaiModels ?? [], customClaudeModels: customClaudeModels ?? [] });
-    view.render(<StrictMode>{localUpdates && <UpdateButton />}<App platform={platform} /></StrictMode>);
+    view.render(<StrictMode>
+      {updates ? <UpdateButton /> : __SCARLET_RELEASE_CHANNEL__ && <ReleaseUpdateNotice channel={__SCARLET_RELEASE_CHANNEL__} />}
+      <App platform={platform} />
+    </StrictMode>);
   } catch (error) {
     const view = await opening;
     view.render(<StartupRecovery title="Scarlet couldn’t start"

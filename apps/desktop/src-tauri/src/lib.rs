@@ -8,6 +8,7 @@ pub mod host;
 pub mod util;
 mod crisper;
 mod updates;
+mod release_updates;
 mod storage;
 mod logs;
 mod quit;
@@ -45,6 +46,11 @@ fn resolve_paths(app: &tauri::AppHandle) -> anyhow::Result<Paths> {
         resource_dir,
         home: util::home_dir(),
     })
+}
+
+/// The isolated native demo: a development build under the demo's own identifier.
+pub(crate) fn is_demo(app: &tauri::AppHandle) -> bool {
+    cfg!(debug_assertions) && app.config().identifier == "com.forwardfuture.scarlet.demo"
 }
 
 /// Write a panic to the log before the default hook prints it. A release build aborts on a panic, so this is
@@ -125,6 +131,8 @@ pub fn run() {
             storage::developer_storage,
             updates::update_status,
             updates::latest_update_revision,
+            updates::check_for_release,
+            updates::update_changelog,
             updates::restart_for_update,
         ])
         .setup(|app| {
@@ -135,6 +143,16 @@ pub fn run() {
                 log::info!("login shell PATH {}", if found { "loaded" } else { "unavailable; using the built-in search paths" });
             });
             let handle = app.handle().clone();
+            let update_source = updates::source(&handle);
+            if update_source == Some(updates::Source::Release) {
+                handle.plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.manage(release_updates::ReleaseUpdates::default());
+                release_updates::start(handle.clone());
+            }
+            if let Some(source) = update_source {
+                log::info!("updates: {source:?}");
+                app.manage(source);
+            }
             #[cfg(target_os = "linux")]
             if let Some(window) = handle.get_webview_window("main") {
                 linux::enable_voice_input(&window)?;
@@ -162,7 +180,7 @@ pub fn run() {
             app.manage(AppState { paths: paths.clone(), config: config.clone(), engine: engine.clone(), host: host.clone(), login });
 
             // The native interview demo uses in-memory fixtures and has no engine jobs.
-            if !(cfg!(debug_assertions) && handle.config().identifier == "com.forwardfuture.scarlet.demo") {
+            if !is_demo(&handle) {
                 engine.start_solo();
             }
             Ok(())
@@ -179,6 +197,7 @@ pub fn run() {
                 state.host.stop_blocking();
                 state.engine.stop_blocking();
             }
+            release_updates::install_on_quit(app_handle);
         }
     });
 }

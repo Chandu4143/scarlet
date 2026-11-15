@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writePrivateFile } from "../private-files.js";
 import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
-import { resolveCli, spawnLines, tailSummary } from "./spawn.js";
+import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, claudeUsage } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
 
@@ -12,12 +12,15 @@ import type { AgentUsage, PlanStep } from "@scarlet/shared";
  * and its result names the step's id; TaskUpdate changes one step by id. A Claude Code from before those has
  * TodoWrite, which takes the whole list. `--tools` takes the names a CLI knows and passes over the rest.
  */
-export const CLAUDE_PLAN_TOOLS = ["TaskCreate", "TaskUpdate", "TodoWrite"];
+const CLAUDE_PLAN_TOOLS = ["TaskCreate", "TaskUpdate", "TodoWrite"];
 const PLAN_READS = new Set(["TaskList", "TaskGet", "TodoRead"]);
 const STEP_STATE: Record<string, PlanStep["state"]> = { pending: "pending", in_progress: "in_progress", completed: "done" };
 
+/** Why a run whose Scarlet MCP server failed has failed: Claude Code carries on without it and calls the run a success. */
+const MCP_FAILED = "Scarlet's MCP server failed to start, so Claude Code had no editing tools.";
+
 /** The plan as Claude Code's to-do tools have left it, and their calls still waiting for a result. */
-export interface ClaudePlanState {
+interface ClaudePlanState {
   steps: Array<PlanStep & { id: string }>;
   calls: Record<string, { create: string } | { update: { id: string; status?: string; subject?: string } }>;
   /** The plan last passed on. */
@@ -79,9 +82,10 @@ export interface ClaudeParseState {
   pendingQuestion?: { id: string; text: string };
   question?: string;
   questionPosted: boolean;
-  /** Set when the tool_result for the question arrived: the runner should stop the process. */
+  /** Set when the tool_result for the question arrived, or Scarlet's MCP server failed: the runner should stop the process. */
   shouldStop: boolean;
-  mcpConnected?: boolean;
+  /** Scarlet's MCP server as the init line reported it ("connected", "failed", …), when it was listed. */
+  mcpStatus?: string;
   sessionId?: string;
   /** The CLI opened a session. A resume that finds none fails before this. */
   started?: boolean;
@@ -106,15 +110,9 @@ type ContentBlock =
 
 /** Parse one stream-json line from `claude -p --output-format stream-json --verbose`. */
 export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent[] {
-  let msg: Record<string, unknown>;
-  try {
-    msg = JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    // Non-JSON noise (warnings) — surface as a log line.
-    return [{ type: "log", text: line }];
-  }
-  // The CLIs write one JSON object per line. Anything else that parses (null, a number, a list) is noise too.
-  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return [{ type: "log", text: line }];
+  // Anything that isn't one JSON object (a warning, null, a number, a list) is noise: surface it as a log line.
+  const msg = jsonLine(line);
+  if (!msg) return [{ type: "log", text: line }];
   const events: RunnerEvent[] = [];
   const type = msg.type as string | undefined;
   if ((type === "system" && msg.subtype === "init") || type === "assistant" || type === "user") st.started = true;
@@ -124,7 +122,9 @@ export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent
       if (typeof msg.session_id === "string" && msg.session_id) st.sessionId = msg.session_id;
       const servers = (msg.mcp_servers as Array<{ name: string; status: string }> | undefined) ?? [];
       const scarlet = servers.find((s) => s.name === "scarlet");
-      st.mcpConnected = scarlet ? scarlet.status === "connected" : undefined;
+      st.mcpStatus = scarlet?.status;
+      // This runner offers only Scarlet's tools, so nothing useful can follow.
+      if (scarlet?.status === "failed") st.shouldStop = true;
       if (typeof msg.model === "string" && msg.model) st.model = msg.model;
       events.push({
         type: "log",
@@ -319,23 +319,21 @@ export async function runClaude(opts: RunAgentOptions): Promise<RunAgentResult> 
       }
       if (st.shouldStop) {
         st.shouldStop = false;
-        // The question is posted; stop the agent instead of letting it ramble.
+        // The question is posted, or there are no tools; stop the agent instead of letting it ramble.
         setTimeout(() => handle.kill(), 250).unref();
       }
     },
   });
   const outcome = await handle.done;
   const session = { sessionId: st.sessionId ?? (st.started ? opts.resumeSession : undefined), usage: claudeRunUsage(st, opts.model) };
-  if (st.question) {
-    return { ok: true, summary: tailSummary(st.texts), question: st.question, questionPosted: st.questionPosted, exitCode: outcome.code, ...session };
-  }
-  if (outcome.timedOut) return { ok: false, summary: tailSummary(st.texts), error: outcome.stalled ? "stalled" : "timed out", timedOut: true, stalled: outcome.stalled, exitCode: outcome.code, ...session };
-  if (outcome.aborted) return { ok: false, summary: tailSummary(st.texts), error: "cancelled", aborted: true, exitCode: outcome.code, ...session };
-  const ok = !st.resultIsError && (outcome.code === 0 || st.result !== undefined);
+  const early = earlyResult(st, outcome, session);
+  if (early) return early;
+  const mcpFailed = st.mcpStatus === "failed";
+  const ok = !mcpFailed && !st.resultIsError && (outcome.code === 0 || st.result !== undefined);
   return {
     ok,
     summary: st.result || tailSummary(st.texts),
-    error: ok ? undefined : st.resultIsError ? st.result : `claude exited with code ${outcome.code}${outcome.stderr ? `: ${outcome.stderr.trim().slice(-800)}` : ""}`,
+    error: ok ? undefined : mcpFailed ? MCP_FAILED : st.resultIsError ? st.result : `claude exited with code ${outcome.code}${outcome.stderr ? `: ${outcome.stderr.trim().slice(-800)}` : ""}`,
     exitCode: outcome.code,
     resumeFailed: !ok && !!opts.resumeSession && !st.started || undefined,
     ...session,

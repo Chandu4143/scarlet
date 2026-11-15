@@ -67,11 +67,12 @@ describe("the prompt for reading a request for a standing rule", () => {
 
   it("is about the request alone: what it was about, what came before, the editor's skills and the rules Scarlet has", () => {
     const prompt = buildSystemPrompt({ project: "A project the task only borrows.", skills: [skill()], learningCheck: { ...check,
-      about: "They said it about one cut Scarlet made at 2:05.", usedSkills: ["frame-screen"], earlier: ["/first-cut-dialogue", "Tighten the intro."],
+      about: "They said it about one cut Scarlet made at 2:05.", usedSkills: ["frame-screen"],
+      earlier: [{ said: "Tighten the intro." }, { said: "cut tail frames", about: "a cut first-cut-dialogue made", elsewhere: true }],
       rules: [{ rule: "Never cut laughter.", skill: "house-style", state: "saved" }, { rule: "Keep the cold open.", skill: "bare", state: "offered" }] } });
     expect(prompt.startsWith("# You are listening for standing rules in Scarlet")).toBe(true);
     expect(prompt).toContain("# The request\n\nThey said it about one cut Scarlet made at 2:05.\n\nThey chose this skill for it: frame-screen.\n\n" +
-      "What they asked earlier in this project, oldest first:\n- “/first-cut-dialogue”\n- “Tighten the intro.”");
+      "What they asked before, oldest first:\n- “Tighten the intro.”\n- “cut tail frames” (about a cut first-cut-dialogue made) (in another video)");
     expect(prompt).toContain("# The editor’s skills\n\n- house-style (skl_house): Our house rules for interviews.\n- bare (skl_bare): no description");
     expect(prompt).toContain("# Rules Scarlet already has\n\n- “Never cut laughter.” (saved in house-style)\n- “Keep the cold open.” (offered for bare)");
     // The editor's words are the run's instruction, so the prompt doesn't repeat them. It carries no project, no skill's
@@ -82,11 +83,15 @@ describe("the prompt for reading a request for a standing rule", () => {
     expect(prompt).toContain("read the skill it belongs in, in full, with `skills_list`, then offer the rule with `learning_suggest`");
     expect(prompt).toContain("beside what the skill says that it would change");
     expect(prompt).toContain("or the skill or a rule listed below already says it, call nothing.");
+    // A correction the editor keeps making to one skill's cuts is a rule for that skill, though each was about one cut.
+    expect(prompt).toContain("When their earlier requests keep asking for the same kind of fix to what a skill made, that fix is how they want the skill to work.");
+    // A rule is the principle, never the case it came from.
+    expect(prompt).toContain("write the principle behind what they said, not its instances: no words, names, times or moments from this video or the requests");
   });
 
   it("says when the request is the project's first, and leaves out the rules when Scarlet has none", () => {
     const prompt = buildSystemPrompt({ project: "", skills: [], learningCheck: check });
-    expect(prompt).toContain("# The request\n\nIt is the first thing they asked in this project.\n\n# The editor’s skills");
+    expect(prompt).toContain("# The request\n\nIt is the first thing they asked.\n\n# The editor’s skills");
     expect(prompt).not.toContain("# Rules Scarlet already has");
   });
 });

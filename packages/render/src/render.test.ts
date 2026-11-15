@@ -4,7 +4,7 @@ import syncFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyOps, createProject, makeMediaClip, planPlaybackSegments, timelineFromKeepRanges } from "@scarlet/timeline";
+import { applyOps, createProject, makeMediaClip, planPlaybackSegments, planSegments, timelineFromKeepRanges } from "@scarlet/timeline";
 import type { MediaClip, Project, Timeline } from "@scarlet/timeline";
 import * as ffmpeg from "./exec.js";
 import {
@@ -29,7 +29,6 @@ import {
   makeProxy,
   outputSize,
   parseRate,
-  planSegments,
   probeMedia,
   probeToAssetFields,
   renderFullCached,
@@ -893,6 +892,34 @@ describe("render", () => {
       "-an", "-frames:v", "1", "-vf", "scale=1:1,format=rgb24", "-f", "rawvideo", "-"])).stdout;
     expect((await pixel(0.5))[0]).toBeGreaterThan(240);
     expect((await pixel(1.5))[2]).toBeGreaterThan(240);
+  });
+
+  it("exports at original quality with the software encoder and 320 kb/s sound, in a cache of its own", async () => {
+    const source = path.join(dir, "best-source.mp4");
+    await runCapture("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=128x72:r=30:d=2",
+      "-f", "lavfi", "-i", "anoisesrc=r=48000:d=2:a=0.5", "-ac", "2", "-c:v", "libx264", "-c:a", "aac", "-b:a", "512k", source]);
+    const project = createProject("Best", { width: 128, height: 72 });
+    project.media.push({ id: "cam", kind: "video", name: "cam", path: source, duration: 2,
+      width: 128, height: 72, fps: 30, hasAudio: true, hasAlpha: false });
+    // Two pieces, so the export encodes rather than copying the original picture.
+    const timeline = timelineFromKeepRanges(project.id, "cam", [{ start: 0, end: 0.8 }, { start: 1.2, end: 2 }]);
+    const cache = path.join(dir, "best-cache");
+    const audioRate = async (file: string) => Number(JSON.parse((await runCapture("ffprobe", ["-v", "error", "-select_streams", "a:0",
+      "-show_entries", "stream=bit_rate", "-of", "json", file])).stdout.toString()).streams[0].bit_rate);
+    const best = await renderFullCached(project, timeline, cache, path.join(dir, "best.mp4"),
+      { mediaRoot: dir, quality: "delivery", hwaccel: "auto", best: true });
+    expect(best.encoder).toBe("libx264");
+    expect(best.rendered).toBeGreaterThan(0);
+    expect(await audioRate(path.join(dir, "best.mp4"))).toBeGreaterThan(230_000);
+    // A regular delivery export of the same cut doesn't reuse the best sections or sound.
+    const high = await renderFullCached(project, timeline, cache, path.join(dir, "high.mp4"),
+      { mediaRoot: dir, quality: "delivery", hwaccel: "none" });
+    expect(high.reused).toBe(0);
+    expect(await audioRate(path.join(dir, "high.mp4"))).toBeLessThan(220_000);
+    // A compressed export takes 128 kb/s sound, so each level's file differs from the next.
+    await renderFullCached(project, timeline, cache, path.join(dir, "compressed.mp4"),
+      { mediaRoot: dir, quality: "preview", exportHeight: 72, hwaccel: "none" });
+    expect(await audioRate(path.join(dir, "compressed.mp4"))).toBeLessThan(150_000);
   });
 
   it("shows a delayed camera only during its picture stream and preserves the earlier sound", async () => {

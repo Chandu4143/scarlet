@@ -230,7 +230,7 @@ async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &s
 
     // The isolated native demo has no engine. Its only downloadable assets are the sample video and OTIO JSON.
     let mut demo_content = false;
-    if cfg!(debug_assertions) && app.config().identifier == "com.forwardfuture.scarlet.demo" {
+    if crate::is_demo(app) {
         if url.split('#').next() == Some("/sample.mp4") {
             file.write_all(include_bytes!("../../../web/public/sample.mp4")).await.map_err(|e| e.to_string())?;
             demo_content = true;
@@ -253,6 +253,9 @@ async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &s
         }
     }
     file.flush().await.map_err(|e| e.to_string())?;
+    // On the disk before it takes the chosen name: after a power cut the file there is whole or isn't there, and an
+    // export that isn't there is still owed and saved again at the next launch.
+    file.get_ref().sync_all().await.map_err(|e| e.to_string())?;
     drop(file);
     temp_path.persist(path).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
@@ -311,7 +314,7 @@ fn media_filters(mac: bool) -> &'static [(&'static str, &'static [&'static str])
 }
 
 /// Native multi-select for media import. Returns absolute paths; the UI then
-/// uploads them (or, in solo mode, asks the engine to import by path).
+/// asks the engine to import them by path.
 #[tauri::command]
 pub async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<FilePath>>>();
@@ -357,7 +360,8 @@ pub fn desktop_log(level: Option<String>, message: UiLogMessage) {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopInfo {
-    pub local_updates: bool,
+    /// Where this copy gets its updates, when it gets any.
+    pub updates: Option<crate::updates::Source>,
     pub custom_openai_models: Vec<String>,
     pub custom_claude_models: Vec<String>,
     pub version: String,
@@ -372,7 +376,7 @@ pub struct DesktopInfo {
 #[tauri::command]
 pub fn desktop_info(app: AppHandle, state: State<'_, AppState>) -> DesktopInfo {
     DesktopInfo {
-        local_updates: crate::updates::socket_path(&app).is_some(),
+        updates: tauri::Manager::try_state::<crate::updates::Source>(&app).map(|source| *source),
         custom_openai_models: state.paths.custom_openai_models(),
         custom_claude_models: state.paths.custom_claude_models(),
         version: env!("CARGO_PKG_VERSION").into(),

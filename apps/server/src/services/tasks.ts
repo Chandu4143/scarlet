@@ -1,7 +1,7 @@
 import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
-import { describeDialogueRemovals, dialogueReceipt, dialogueRemovals, newId, type Author } from "@scarlet/timeline";
+import { carriesAudio, describeDialogueRemovals, dialogueReceipt, dialogueRemovals, newId, type Author, type Change } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
 import { now } from "../db.js";
 import { clip, since } from "../logText.js";
@@ -27,7 +27,7 @@ export function hasTranscript(ctx: Ctx, mediaId: string): boolean {
  * Recordings whose transcript or dialogue analysis the run waited for and never got, and whose transcript still
  * isn't saved. The MCP server records each wait and how it ended, so this is measured, not the agent's account.
  */
-export function unmetTranscriptWaits(ctx: Ctx, taskId: string): string[] {
+function unmetTranscriptWaits(ctx: Ctx, taskId: string): string[] {
   const met = new Map<string, boolean>();
   for (const ev of ctx.repos.taskEvents.list(taskId, "mediaWaits")) {
     const d = ev.data;
@@ -62,7 +62,12 @@ function recentDuration(ctx: Ctx, kind: TaskKind, agent: AgentId, model: string 
   return (seconds[middle]! + seconds[Math.floor((seconds.length - 1) / 2)]!) / 2;
 }
 
-const editsDialogue = (kind: TaskKind) => kind === "edit" || kind === "revise" || kind === "note";
+export const editsDialogue = (kind: TaskKind) => kind === "edit" || kind === "revise" || kind === "note";
+
+/** Whether a request of this kind about one cut of `change` revises a staged cut: a revision does, and so does any request about a pass that waits or was replaced. */
+export function stagesCut(kind: TaskKind, change: Change): boolean {
+  return kind === "revise" || change.intent === "suggestion" && (["ready", "revising"].includes(change.state) || !!change.replacedBy);
+}
 
 function requestedDialogue(ctx: Ctx, text: string) {
   if (!dialogueCommand(text)) return;
@@ -122,7 +127,7 @@ export function createTask(
     instruction: input.instruction,
     resumeRootId: input.resumeRootId,
     stagedCutRevision: input.stagedCutRevision ?? (selected && selected.projectId === input.projectId
-      ? input.kind === "revise" || selected.intent === "suggestion" && (["ready", "revising"].includes(selected.state) || !!selected.replacedBy) : undefined),
+      ? stagesCut(input.kind, selected) : undefined),
     cutConflict: input.cutConflict,
     expectedSeconds: recentDuration(ctx, input.kind, input.agent, input.model, input.context?.skillIds),
     context: { ...input.context, ...(input.context?.time !== undefined && (!input.context.version || input.context.version === "head") &&
@@ -285,7 +290,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     const project = ctx.repos.projects.get(task.projectId);
     if (project?.head && (!task.context.branch || project.branch === task.context.branch) && !unmetTranscriptWaits(ctx, task.id).length) {
       const timeline = resolveTimeline(ctx, project);
-      const audible = new Set(project.media.filter(m => m.kind === "audio" || (m.kind === "video" && m.hasAudio !== false)).map(m => m.id));
+      const audible = new Set(project.media.filter(carriesAudio).map(m => m.id));
       const plays = timeline.tracks.some(t => !t.muted && t.clips.some(c => c.kind === "media" && c.enabled && c.volume > 0 && audible.has(c.mediaId)));
       const receipt = task.repeatAudit?.version === project.head ? task.repeatAudit : undefined;
       if (plays && (receipt?.remaining !== 0 || receipt.unavailable?.length)) {
@@ -474,7 +479,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
  * A lead-in keeps the editor's words as typed and out of the CLI's command parser. The system prompt carries the
  * instruction as well, unchanged.
  */
-export function firstMessage(instruction: string) {
+function firstMessage(instruction: string) {
   return instruction.startsWith("/") ? `The editor's request: ${instruction}` : instruction;
 }
 
@@ -512,7 +517,7 @@ export function aboutStagedCut(ctx: Ctx, projectId: string, context: Task["conte
 }
 
 /** How long a hold for rewording lasts unless the app renews it, so a closed app can't keep a request from ever starting. */
-export const REWORDING_HOLD_MS = 90_000;
+const REWORDING_HOLD_MS = 90_000;
 
 /**
  * Only a request that hasn't begun can have its words changed: a run that started has already read them. And only one
@@ -616,8 +621,9 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   if (!taskId && !agents.length) return null;
   const filter = taskId ? "q.id = ?" : "q.kind != 'transcribe' AND q.agent IN (SELECT value FROM json_each(?))";
   // A skill edit and a learning check don't touch the video: neither waits for the project's requests nor holds them up.
-  // One request at a time per project, in the order they were asked, so two agents never edit the same video at
-  // once. A dialogue pass whose staged cuts still need the editor holds back requests that aren't about it. So does one
+  // One request at a time per project, in the order they were asked, so two agents never edit the same footage at
+  // once. The exception is two requests that are each about one cut or edit, and about different ones: neither waits
+  // for the other, running or ahead in line (runsBeside in @scarlet/shared, which this repeats). A dialogue pass whose staged cuts still need the editor holds back requests that aren't about it. So does one
   // with a cut sent back, while that revision is queued or running; the version a finished revision replaced holds nothing.
   // queueWait in @scarlet/shared explains the same rule in the app; keep the two in step.
   // A request the editor started anyway (startsBeforeCalls) doesn't wait for a pass's calls; it still takes its turn.
@@ -631,6 +637,12 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
         AND rv.state IN ('queued','claimed','running','waiting_for_user') AND json_extract(rv.json, '$.context.changeId') = o.id)))
       AND json_array_length(coalesce(json_extract(o.json, '$.cutReasons'), '[]')) > 0
       AND json_extract(ot.json, '$.context.branch') IS json_extract(${t}.json, '$.context.branch')`;
+  const thread = (t: string) => `coalesce(json_extract(${t}.json, '$.context.threadId'), ${t}.id)`;
+  const aboutOne = (t: string) => `(json_extract(${t}.json, '$.context.changeId') IS NOT NULL
+    AND (json_extract(${t}.json, '$.context.cutIndex') IS NOT NULL OR json_extract(${t}.json, '$.context.editIndex') IS NOT NULL))`;
+  const beside = (a: string, b: string) => `(${aboutOne(a)} AND ${aboutOne(b)} AND NOT (${thread(a)} IS ${thread(b)}
+    AND json_extract(${a}.json, '$.context.cutIndex') IS json_extract(${b}.json, '$.context.cutIndex')
+    AND json_extract(${a}.json, '$.context.editIndex') IS json_extract(${b}.json, '$.context.editIndex')))`;
   // A resumed run keeps the place in line of the run it continues: requests asked while that run worked still wait for it.
   // It takes that run's row number as well as its time, so a request asked in the same millisecond as that run doesn't pass it.
   const place = (t: string) => {
@@ -642,6 +654,7 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
     AND (json_extract(q.json, '$.rewordingUntil') IS NULL OR json_extract(q.json, '$.rewordingUntil') <= ?)
     AND (q.kind IN ('skill_edit', 'learning_check') OR (NOT EXISTS (SELECT 1 FROM tasks prior
       WHERE prior.project_id = q.project_id AND prior.id != q.id AND prior.kind NOT IN ('transcribe', 'skill_edit', 'learning_check')
+        AND NOT ${beside("q", "prior")}
         AND (prior.state IN ('claimed','running','waiting_for_user')
           OR (prior.state = 'queued' AND (${place("prior")}) < (${place("q")})
             AND NOT EXISTS (${open("q")} AND ${about("q")} AND NOT ${about("prior")}))))

@@ -42,6 +42,9 @@ use api::Api;
 use runner::{run_agent, RunOptions};
 use types::{AgentAvailability, CompleteTaskRequest, McpSpec, RunResult, RunnerEvent, Task, TaskEvent, CLI_AGENTS};
 
+/// The folder under the work folder that holds one folder for each run.
+const TASKS_DIR: &str = "tasks-v2";
+
 /// Finished task folders keep their artifacts this long.
 const TASK_DIR_DAYS: u64 = 14;
 
@@ -104,10 +107,7 @@ impl McpLauncher {
                 }
             }
             if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
-                if a.model.is_none() { a.model = catalog.model; }
-                a.model_options = catalog.model_options;
-                a.models = Some(catalog.models);
-                a.model_labels = catalog.model_labels;
+                take_catalog(a, catalog.model, catalog.model_options, Some(catalog.models), catalog.model_labels);
             }
         }
     }
@@ -131,6 +131,14 @@ impl McpLauncher {
         env.insert("SCARLET_WORKDIR".into(), work_dir.to_string());
         McpSpec { command: self.program.clone(), args, env }
     }
+}
+
+/// Give an assistant the model list read for it. A model it already has, from the settings, stays its default.
+fn take_catalog(agent: &mut AgentAvailability, model: Option<String>, options: BTreeMap<String, Value>, models: Option<Vec<String>>, labels: BTreeMap<String, String>) {
+    if agent.model.is_none() { agent.model = model; }
+    agent.model_options = options;
+    agent.models = models;
+    agent.model_labels = labels;
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -177,7 +185,7 @@ pub fn claude_project_dir(real_cwd: &Path, home: &Path) -> Option<PathBuf> {
 /// Delete the Claude sessions of one finished Scarlet task: only the project folder named after its task folder,
 /// and the to-do list of each session in it.
 pub fn remove_claude_sessions(real_cwd: &Path, home: &Path) -> std::io::Result<()> {
-    if !real_cwd.parent().and_then(Path::file_name).is_some_and(|n| n == "tasks-v2") {
+    if !real_cwd.parent().and_then(Path::file_name).is_some_and(|n| n == TASKS_DIR) {
         return Ok(());
     }
     let Some(dir) = claude_project_dir(real_cwd, home) else { return Ok(()) };
@@ -290,12 +298,23 @@ async fn heartbeat_workers(api: &Api, host_id: &str, agents: &[AgentAvailability
     Ok(())
 }
 
+/// Show one event of a run in the window and save it with the engine.
+async fn send_event(api: &Api, emit: &Emit, task_id: &str, started_at: Option<&str>, ev: &TaskEvent) {
+    emit("host://task-event", json!({ "taskId": task_id, "event": ev }));
+    if let Err(e) = api.post_task_event(task_id, started_at, ev).await {
+        log::warn!("task {task_id}: post event failed: {e}");
+    }
+}
+
 pub struct HostRuntime {
     emit: Emit,
     api: Api,
     server: String,
     name: String,
     cancel: CancellationToken,
+    /// The host is stopping because its engine went away, not because Scarlet quits. A run it cuts short is then a
+    /// lost worker's, also when the engine is back in time to hear so from this host.
+    engine_lost: AtomicBool,
     agents: RwLock<Vec<AgentAvailability>>,
     running: RunningTasks,
     host_id: StdMutex<Option<String>>,
@@ -332,6 +351,13 @@ impl HostRuntime {
             mcp_command: Some(self.mcp.describe()),
             configured: true,
         }
+    }
+
+    /// The status with the assistants as they are now. `status` gives none while they are being written.
+    async fn full_status(&self) -> HostStatus {
+        let mut s = self.status();
+        s.agents = self.agents.read().await.clone();
+        s
     }
 
     fn emit_status(&self) {
@@ -384,16 +410,19 @@ impl HostRuntime {
         let agents = self.agents.read().await.clone();
         match heartbeat_workers(&self.api, &id, &agents, &self.running).await {
             Ok(()) => self.reached(),
-            Err(e) => {
-                log::warn!("heartbeat failed: {e}");
-                self.connected.store(false, Ordering::SeqCst);
-                self.set_error(Some(format!("heartbeat failed: {e}")));
-                // Host may have been forgotten by a restarted server: re-register.
-                if e.is_status(404) {
-                    if let Err(e2) = self.register().await {
-                        log::warn!("re-register failed: {e2}");
-                    }
-                }
+            Err(e) => self.lost("heartbeat", &e).await,
+        }
+    }
+
+    /// A call to the engine failed: say so in Settings, and register again when the engine no longer knows this host.
+    async fn lost(&self, what: &str, e: &api::ApiError) {
+        log::warn!("{what} failed: {e}");
+        self.connected.store(false, Ordering::SeqCst);
+        self.set_error(Some(format!("{what} failed: {e}")));
+        // Host may have been forgotten by a restarted server: re-register.
+        if e.is_status(404) {
+            if let Err(e2) = self.register().await {
+                log::warn!("re-register failed: {e2}");
             }
         }
     }
@@ -449,10 +478,7 @@ impl HostRuntime {
                 // A refresh or a sign-in that finished meanwhile has the newer answer. Only an assistant still
                 // without a list takes this one.
                 let Some(agent) = agents.iter_mut().find(|a| a.id == found.id && lacks_models(a)) else { continue };
-                if agent.model.is_none() { agent.model = found.model; }
-                agent.model_options = found.model_options;
-                agent.models = found.models;
-                agent.model_labels = found.model_labels;
+                take_catalog(agent, found.model, found.model_options, found.models, found.model_labels);
                 read = true;
             }
             (read, agents.iter().any(lacks_models), describe_agents(&agents))
@@ -612,14 +638,7 @@ impl HostRuntime {
                     if self.cancel.is_cancelled() {
                         break;
                     }
-                    log::warn!("claim failed: {e}");
-                    self.connected.store(false, Ordering::SeqCst);
-                    self.set_error(Some(format!("claim failed: {e}")));
-                    if e.is_status(404) {
-                        if let Err(e2) = self.register().await {
-                            log::warn!("re-register failed: {e2}");
-                        }
-                    }
+                    self.lost("claim", &e).await;
                     self.sleep_or_wake(Duration::from_secs(5)).await;
                 }
             }
@@ -654,10 +673,7 @@ impl HostRuntime {
     async fn post_event(&self, task: &Task, kind: &str, text: String, data: Option<Value>) {
         let task_id = &task.id;
         let ev = TaskEvent { task_id: Some(task_id.to_string()), at: Some(now_iso()), kind: kind.to_string(), text, data };
-        (self.emit)("host://task-event", json!({ "taskId": task_id, "event": ev }));
-        if let Err(e) = self.api.post_task_event(task_id, task.started_at.as_deref(), &ev).await {
-            log::warn!("task {task_id}: post event failed: {e}");
-        }
+        send_event(&self.api, &self.emit, task_id, task.started_at.as_deref(), &ev).await;
     }
 
     /// Where a run's events go: the sink its runner writes to, the task that sends them on in order to the window
@@ -682,10 +698,7 @@ impl HostRuntime {
                         continue; // summary goes in complete()
                     }
                     let tev = TaskEvent { task_id: Some(task_id.clone()), at: Some(at), kind: ev.kind.clone(), text: ev.text.clone(), data: ev.data.clone() };
-                    emit("host://task-event", json!({ "taskId": task_id, "event": tev }));
-                    if let Err(e) = api.post_task_event(&task_id, started_at.as_deref(), &tev).await {
-                        log::warn!("task {task_id}: post event failed: {e}");
-                    }
+                    send_event(&api, &emit, &task_id, started_at.as_deref(), &tev).await;
                 }
             })
         };
@@ -704,7 +717,7 @@ impl HostRuntime {
         let task_id = &task.id;
         let reason = error.clone();
         let interrupted = stopped || (state == "cancelled" && self.cancel.is_cancelled());
-        let body = CompleteTaskRequest { state: state.into(), if_started_at: task.started_at.clone(), summary, error, interrupted, engine_lost: false };
+        let body = CompleteTaskRequest { state: state.into(), if_started_at: task.started_at.clone(), summary, error, interrupted, engine_lost: interrupted && self.engine_lost.load(Ordering::SeqCst) };
         // A post the engine misses is tried again. Forgotten here, the task stays running there until the engine
         // calls it interrupted and runs the finished request a second time. A copy does no harm: the engine ignores
         // the completion of an attempt it has already ended.
@@ -793,7 +806,7 @@ impl HostRuntime {
     /// loopback port may change when the app restarts between task attempts.
     fn task_dir(&self, project_id: &str, task_id: &str) -> PathBuf {
         let scope = serde_json::to_vec(&[project_id, task_id]).expect("task scope");
-        self.work_root.join("tasks-v2").join(format!("{:x}", Sha256::digest(scope)))
+        self.work_root.join(TASKS_DIR).join(format!("{:x}", Sha256::digest(scope)))
     }
 
     pub async fn run_task(&self, task: Task, cancel: CancellationToken) {
@@ -826,6 +839,8 @@ impl HostRuntime {
         if let Err(e) = self.api.post_task_event(&task.id, task.started_at.as_deref(), &start).await {
             return self.complete(&task, "failed", None, Some(e.to_string())).await;
         }
+        // Tokens so far, sent to the engine while the agent works, for the count beside Stop.
+        let live = LiveUsage::start(self.api.clone(), task.id.clone(), task.started_at.clone());
         let options = |p: Prepared| RunOptions {
             agent: task.agent.clone(),
             model: model.clone(),
@@ -838,6 +853,7 @@ impl HostRuntime {
             cwd: p.cwd,
             mcp: p.mcp,
             on_event: sink.clone(),
+            on_usage: Some(live.sink()),
             cancel: cancel.clone(),
             timeout: self.timeout,
             stall: self.stall,
@@ -854,12 +870,14 @@ impl HostRuntime {
             log::info!("task {}: could not resume the CLI session ({}); starting a fresh run", task.id, result.error.as_deref().unwrap_or("unknown"));
             match self.prepare(&task, true).await {
                 Ok(p) => {
+                    live.set_base(usage.clone());
                     result = run_agent(options(p)).await;
                     log::info!("task {}: {} ended (exit code {:?})", task.id, task.agent, result.exit_code);
                 }
                 Err(e) => {
                     drop(sink);
                     drain_events(&task.id, consumer).await;
+                    live.stop().await;
                     self.record_usage(&task, usage.as_ref()).await;
                     self.post_event(&task, "error", format!("Could not prepare task: {e}"), None).await;
                     return self.complete(&task, "failed", None, Some(e.to_string())).await;
@@ -870,6 +888,8 @@ impl HostRuntime {
         // Completion waits for the forwarded events.
         drop(sink);
         drain_events(&task.id, consumer).await;
+        // The final report comes after the last live one, so it is the one the engine keeps.
+        live.stop().await;
         // Record tokens for every outcome, including a cancel or a pause for a question.
         self.record_usage(&task, usage.as_ref()).await;
 
@@ -925,7 +945,7 @@ impl HostRuntime {
     }
 
     async fn run(self: Arc<Self>) {
-        let tasks_root = self.work_root.join("tasks-v2");
+        let tasks_root = self.work_root.join(TASKS_DIR);
         let pids = self.work_root.join("agent-pids");
         let _ = tokio::task::spawn_blocking(move || spawn::stop_orphans(&pids)).await;
         let home = (!child_env(&self.home).contains_key("CLAUDE_CONFIG_DIR")).then(|| self.home.clone());
@@ -1067,11 +1087,7 @@ impl HostManager {
 
     pub async fn status(&self) -> HostStatus {
         match self.runtime.lock().await.as_ref() {
-            Some(rt) => {
-                let mut s = rt.status();
-                s.agents = rt.agents.read().await.clone();
-                s
-            }
+            Some(rt) => rt.full_status().await,
             None => HostStatus { mcp_command: self.mcp.lock().unwrap().as_ref().map(|m| m.describe()), ..Default::default() },
         }
     }
@@ -1118,6 +1134,7 @@ impl HostManager {
             server: server.clone(),
             name: host_name(),
             cancel: CancellationToken::new(),
+            engine_lost: AtomicBool::new(false),
             agents: RwLock::new(Vec::new()),
             running: StdMutex::new(HashMap::new()),
             host_id: StdMutex::new(None),
@@ -1144,8 +1161,20 @@ impl HostManager {
     }
 
     pub async fn stop(&self) {
+        self.stop_as(false).await
+    }
+
+    /// Stop because the engine went away by itself. A run cut short by that counts as a lost worker: an engine back
+    /// before the run's CLI has stopped would otherwise take it for a quit, and a run whose own work brings the
+    /// engine down would carry on without end.
+    pub async fn stop_for_lost_engine(&self) {
+        self.stop_as(true).await
+    }
+
+    async fn stop_as(&self, engine_lost: bool) {
         let rt = self.runtime.lock().await.take();
         if let Some(rt) = rt {
+            rt.engine_lost.store(engine_lost, Ordering::SeqCst);
             rt.stop().await;
             let _ = self.app.emit("host://status", &HostStatus { mcp_command: Some(rt.mcp.describe()), ..Default::default() });
         }
@@ -1167,9 +1196,7 @@ impl HostManager {
                 rt.heartbeat().await;
                 rt.wake.notify_one();
                 rt.emit_status();
-                let mut s = rt.status();
-                s.agents = rt.agents.read().await.clone();
-                s
+                rt.full_status().await
             }
             None => {
                 let env = child_env(&self.paths.home);
@@ -1234,6 +1261,7 @@ mod tests {
             server: server.to_string(),
             name: "test (desktop)".into(),
             cancel: CancellationToken::new(),
+            engine_lost: AtomicBool::new(false),
             agents: RwLock::new(Vec::new()),
             running: StdMutex::new(HashMap::new()),
             host_id: StdMutex::new(Some("host_1".into())),
@@ -2042,5 +2070,65 @@ mod tests {
         assert_eq!(cfg["mcpServers"]["scarlet"]["env"]["SCARLET_PROJECT"], json!("p"));
         let gem: Value = serde_json::from_str(&runner_gemini::gemini_settings_json(&spec)).unwrap();
         assert_eq!(gem["mcpServers"]["scarlet"]["args"], json!(spec.args));
+    }
+}
+
+/// A run's token count so far, sent to the engine at most every two seconds while the agent works. Each report
+/// replaces the last for the same claim, as the final one does.
+struct LiveUsage {
+    base: Arc<StdMutex<Option<usage::AgentUsage>>>,
+    latest: Arc<StdMutex<Option<usage::AgentUsage>>>,
+    changed: Arc<tokio::sync::Notify>,
+    done: CancellationToken,
+    sender: StdMutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl LiveUsage {
+    fn start(api: api::Api, task_id: String, started_at: Option<String>) -> Self {
+        let latest: Arc<StdMutex<Option<usage::AgentUsage>>> = Arc::default();
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let done = CancellationToken::new();
+        let sender = {
+            let (latest, changed, done) = (latest.clone(), changed.clone(), done.clone());
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = changed.notified() => {}
+                        _ = done.cancelled() => break,
+                    }
+                    let Some(now) = latest.lock().unwrap().take() else { continue };
+                    if let Err(e) = api.post_task_usage(&task_id, started_at.as_deref(), &now).await {
+                        log::debug!("task {task_id}: live usage report failed: {e}");
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = done.cancelled() => break,
+                    }
+                }
+            })
+        };
+        LiveUsage { base: Arc::default(), latest, changed, done, sender: StdMutex::new(Some(sender)) }
+    }
+
+    /// What the runner reports, added to the tokens of an earlier attempt in the same claim.
+    fn sink(&self) -> runner::UsageSink {
+        let (base, latest, changed) = (self.base.clone(), self.latest.clone(), self.changed.clone());
+        Arc::new(move |u| {
+            *latest.lock().unwrap() = usage::add_usage(base.lock().unwrap().clone(), Some(u));
+            changed.notify_one();
+        })
+    }
+
+    fn set_base(&self, base: Option<usage::AgentUsage>) {
+        *self.base.lock().unwrap() = base;
+    }
+
+    /// Waits for a report in flight, so none lands after the final one.
+    async fn stop(&self) {
+        self.done.cancel();
+        let sender = self.sender.lock().unwrap().take();
+        if let Some(sender) = sender {
+            let _ = sender.await;
+        }
     }
 }

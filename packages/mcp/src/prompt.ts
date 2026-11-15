@@ -17,8 +17,8 @@ export interface LearningCheckContext {
   about?: string;
   /** Skills the editor chose for the request. */
   usedSkills: string[];
-  /** What they asked earlier in this project, oldest first. */
-  earlier: string[];
+  /** What they asked before, in any project, oldest first: their words, what they were aimed at, and whether it was in another video. */
+  earlier: Array<{ said: string; about?: string; elsewhere?: boolean }>;
   /** Rules already offered to the editor or saved in a skill, oldest first. */
   rules: Array<{ rule: string; skill: string; state: "offered" | "saved" }>;
   /** The editor's skills a rule can go into. */
@@ -77,7 +77,7 @@ The editor sets the brief. You decide what context to inspect, which tools to us
 ## Writing for the editor
 
 - Before your first tool call, say in one sentence what the request will come to when you are done, such as “I’ll take the retakes, false starts and dead air out of the interview and bring you any cut I’m unsure of.” Scarlet keeps that sentence above your steps for as long as you work, so it is about the whole request, not your first step.
-- Scarlet numbers each saved edit and lists its title beside your reply, in the chat and on the timeline. Give each edit in \`timelineEdits\` a short title of at most 50 characters, such as “Trim the false start”. Add \`check\` only when a doubt about that edit is left for the editor to settle by listening or looking, named in a few words, such as “Room tone comes up with it”. It holds the edit in front of the editor as one that needs them until they keep it, so an edit that did what was asked and that you verified has none. Give each edit a \`summary\` too: one plain sentence on what it did, such as “Raised the narration 4 dB, which brings the room tone up with it”. The edit’s card shows that sentence alone, so anything else the edit changed belongs in it.
+- Scarlet numbers each saved edit and lists its title beside your reply, in the chat and on the timeline. Give each edit in \`timelineEdits\` a short title of at most 50 characters, such as “Trim the false start”. Add \`check\` only when a doubt about that edit is left for the editor to settle by listening or looking, named in a few words, such as “Room tone comes up with it”. It holds the edit in front of the editor as one that needs them until they keep it, so an edit that did what was asked and that you verified has none. Any doubt you leave about an edit, whichever tool made it, goes on that edit: \`check\` as you save it, or \`edit_flag\` once it is in the video, an earlier request’s edit included. A doubt said only in your reply is one the editor has no way to open. Give each edit a \`summary\` too: one plain sentence on what it did, such as “Raised the narration 4 dB, which brings the room tone up with it”. The edit’s card shows that sentence alone, so anything else the edit changed belongs in it.
 - After that sentence, while you work, Scarlet shows your latest update whole as what you are doing, on two lines, until your next tool call: one sentence of at most 100 characters on what you are doing now. A longer update is cut off there.
 - End with at most two short sentences about what needs the editor: a judgment call, something you chose not to do, or a question. Scarlet shows them under the request on two lines, about 120 characters, and folds the rest of a longer message away until the editor clicks it. The same goes for a request you finish without an edit: say why in those two sentences. Don’t restate the edits; refer to them by number, such as “edit 4”. When nothing needs the editor, one short sentence is enough.
 - Give times as m:ss.t on the timeline the editor will watch. Don’t mention source seconds, clip IDs, version IDs, tool names or operations. Say “edit” for a change, and “cut” only for an edit that removes footage.`;
@@ -131,12 +131,15 @@ The editor just sent the agent the message that is your instruction. Another run
 
 - If it does, read the skill it belongs in, in full, with \`skills_list\`, then offer the rule with \`learning_suggest\`: once, or once for each separate rule. The editor reviews what you offer beside what the skill says that it would change, and nothing changes in a skill unless they approve it.
 - If it is about this video, this moment or this cut alone, or the skill or a rule listed below already says it, call nothing.
+- A note about one cut can still be a rule. When their earlier requests keep asking for the same kind of fix to what a skill made, that fix is how they want the skill to work. Offer it for that skill and name the requests it comes from.
+
+A rule is for every video the skill edits, so write the principle behind what they said, not its instances: no words, names, times or moments from this video or the requests, and a number they gave stays a guide, not a fixed amount. If what they asked can't be put that way, it isn't a rule.
 
 End with one short line: the rule you offered, or “No rule.”`,
     `# The request\n\n${[
       check.about,
       check.usedSkills.length ? `They chose ${check.usedSkills.length === 1 ? "this skill" : "these skills"} for it: ${check.usedSkills.join(", ")}.` : undefined,
-      check.earlier.length ? `What they asked earlier in this project, oldest first:\n${list(check.earlier.map(e => `“${e}”`))}` : "It is the first thing they asked in this project.",
+      check.earlier.length ? `What they asked before, oldest first:\n${list(check.earlier.map(e => `“${e.said}”${[e.about && `about ${e.about}`, e.elsewhere && "in another video"].filter(Boolean).map(w => ` (${w})`).join("")}`))}` : "It is the first thing they asked.",
     ].filter(Boolean).join("\n\n")}`,
     `# The editor’s skills\n\n${list(check.skills.map(s => `${s.name} (${s.id}): ${s.description.trim() || "no description"}`))}`,
     ...(check.rules.length ? [`# Rules Scarlet already has\n\n${list(check.rules.map(r => `“${r.rule}” (${r.state === "saved" ? "saved in" : "offered for"} ${r.skill})`))}`] : []),
@@ -145,7 +148,10 @@ End with one short line: the rule you offered, or “No rule.”`,
 
 /** The edit of a change the editor selected: as its applied edits list it, or as the change named it before it was applied. */
 function selectedEdit(change: Change, index: number): { label: string; summary?: string; check?: string } | undefined {
-  return changeEdits(change).find(edit => edit.spot === index) ?? namedTimelineEdits(change)?.[index];
+  const edit = changeEdits(change).find(edit => edit.spot === index) ?? namedTimelineEdits(change)?.[index];
+  // A later request may have raised a doubt about it once it was in the video: that is the check the editor saw last.
+  const flag = change.flags?.findLast(f => f.spot === index);
+  return edit && flag ? { ...edit, check: flag.check } : edit;
 }
 
 /**

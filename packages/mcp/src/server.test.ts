@@ -8,7 +8,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient, Task, type EditingTools } from "@scarlet/shared";
 import type { Transcript } from "@scarlet/timeline";
 import { emptyTimeline, makeMediaClip } from "@scarlet/timeline";
-import { createScarletMcpServer, describeError, SCARLET_TOOL_NAMES, toolRefusal } from "./server.js";
+import { createScarletMcpServer, SCARLET_TOOL_NAMES } from "./server.js";
+import { describeError, toolRefusal } from "./tool-result.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { makeState, startMockServer, type MockServer } from "./mock-server.js";
 
@@ -2367,6 +2368,10 @@ it("measures the recording beside a staged cut's new edges with no scan read, an
     expect(saved.at(-1)).toMatchObject({ start: 1.9, end: 2.4 });
     expect(quiet.audio).toBeUndefined();
     expect(quiet.next).toBeUndefined();
+    // The result reads the words either side of the saved join, so nothing needs reading again to judge it.
+    const words = (side: { words: Array<[number, number, string]> }[]) => side.flatMap(s => s.words.map(w => w[2]));
+    expect(words(quiet.nearbyWords.start)).toContain("back.");
+    expect(words(quiet.nearbyWords.end)).toContain("Um,");
     // A start 40 ms inside “back.” goes onto the silence after the word, where dialogue_check_join puts it.
     const snapped = await move(1.76, 2.28);
     expect(saved.at(-1)!.start).toBeCloseTo(58 / 30);
@@ -3315,11 +3320,12 @@ it("cuts by word reference: edges go in the measured gaps, and every gate decisi
     const applied = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt",
       cuts: [{ ...ref, kind: "retake", decision: "cut", reason: "The second take is cleaner." }] } }) as CallToolResult;
     expect(applied.isError).toBeFalsy();
+    // Both edges sit in measured silence, so the cut applies as decided. "welcome" starts 0.04 s after its start, close
+    // enough for the picture to show it beginning, so the cut carries a check for the editor and the report says why.
     expect(mock.requests.find(r => r.path.endsWith("/dialogue-cuts"))?.body).toMatchObject({
-      description: "Remove the first attempt", cuts: [{ start: 1.067, end: 3.5, review: false }] });
-    // Both edges sit in measured silence, so the cut applies as decided; the report names the resolved words and range.
+      description: "Remove the first attempt", cuts: [{ start: 1.067, end: 3.5, review: false, check: "A removed word starts right after the cut: watch and listen at the join." }] });
     expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut",
-      range: [1.07, 3.5] }]);
+      range: [1.07, 3.5], evidence: expect.stringContaining("the removed sound starts") }]);
     // Without measured silence beside the words, the edge falls back to word timings and Scarlet stages the cut, saying why.
     mock.state.waveform = (mediaId, from, to, points) => ({ mediaId, from, to, peaks: Array(points).fill(.2), rms: Array(points).fill(.2),
       speechActivity: [{ start: from, end: to }] });
@@ -3663,7 +3669,8 @@ it("reads a transcript whose words are still being placed on the audio, and hold
     mock.state.transcripts = { m1: transcript };
     await new Promise(resolve => setTimeout(resolve, 1600));
     const applied = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [cut] } }) as CallToolResult;
-    expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut", range: [1.07, 3.5] }]);
+    expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut", range: [1.07, 3.5],
+      evidence: expect.stringContaining("the removed sound starts") }]);
     expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 4 } }) as CallToolResult)).toContain("#4 2.50-2.70 Um,");
   } finally {
     Object.assign(mock.state, original);
