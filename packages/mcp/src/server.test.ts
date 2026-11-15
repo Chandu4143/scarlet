@@ -2819,7 +2819,8 @@ it("reports the pauses and doubled words a saved part still plays, and trims a p
   const tail = { kind: "pause", reason: "Room tone after the last word.", start: 6.2, end: 9.4, decision: "cut" };
   try {
     const first = await apply(tail);
-    expect(first.keptPauses).toEqual([{ at: 3.4, mediaId: "m1", seconds: .9, after: "have", before: "signatures.", afterWord: 4 }]);
+    // With no length asked for, every pause above the rhythm of speech is listed: which ones matter is the agent's call.
+    expect(first.keptPauses).toEqual([{ at: 1.4, mediaId: "m1", seconds: .6, after: "note.", before: "You", afterWord: 1 }, { at: 3.4, mediaId: "m1", seconds: .9, after: "have", before: "signatures.", afterWord: 4 }]);
     expect(first.repeatedWords).toEqual([{ at: 2.5, mediaId: "m1", text: "have have", fromWord: 3, toWord: 3 }]);
     // Saved again without touching them, they are not listed a second time: a save lists what is new.
     const again = await apply(tail);
