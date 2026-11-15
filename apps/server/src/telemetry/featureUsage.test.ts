@@ -9,6 +9,7 @@ it.each([
   ["GET", "/projects/p1/versions/3/export.otio", "timeline.export_otio"],
   ["GET", "/projects/p1/versions/3/export.srt", "timeline.export_srt"],
   ["GET", "/projects/p1/versions/3/export.vtt", "timeline.export_vtt"],
+  ["POST", "/projects/p1/versions/3/handoff", "timeline.export_handoff"],
   ["POST", "/changes/c1/approve", "change.approve"],
   ["POST", "/projects/p1/media", "media.upload"],
   ["POST", "/projects/p1/media/import", "media.import"],

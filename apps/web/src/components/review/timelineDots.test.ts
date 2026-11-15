@@ -209,4 +209,57 @@ describe("layoutEdits", () => {
     expect(editUnder(layout, 35, 1000)?.edits[0]!.kind).toBe("graphic");
     expect(editUnder(layout, 80, 1000)).toBeUndefined();
   });
+
+  it("draws every edit of a zoomed-in stretch for itself, a cut too, so a count never opens onto counts", () => {
+    const cuts = Array.from({ length: 120 }, (_, i) => edit(i * 5 + 2, "cut"));
+    const whole = { start: 0, end: 600 };
+    // The whole video is counted, as it is with no zoom to speak of.
+    expect(layoutEdits(cuts, 0, 600, 900, [], whole).every(m => m.shape === "count" && !m.edge)).toBe(true);
+    const count = layoutEdits(cuts, 0, 600, 900, [], whole)[3]!;
+    const pad = (count.end - count.start) * .15;
+    const opened = layoutEdits(cuts, count.start - pad, count.end - count.start + pad * 2, 900, [], whole);
+    const inside = opened.filter(m => !m.edge);
+    expect(inside.length).toBeGreaterThanOrEqual(count.edits.length);
+    expect(inside.every(m => m.shape === "tick" && m.edits.length === 1)).toBe(true);
+    // Cuts that would touch still each have a tick.
+    expect(shapes(layoutEdits([edit(10, "cut"), edit(10.01, "cut"), edit(12, "graphic", 14)], 9, 6, 900, [], whole))).toEqual(["tick:cut", "tick:cut", "bar:graphic"]);
+    // Too many to tell apart at this zoom: they are counted until the editor is closer.
+    expect(layoutEdits(cuts, 0, 580, 900, [], whole).every(m => m.shape === "count")).toBe(true);
+  });
+
+  it("counts the edits beyond each edge of a zoomed-in stretch, and moves to the next that has any at the same zoom", () => {
+    const cuts = [edit(10, "cut"), edit(20, "cut"), edit(100, "cut"), edit(104, "cut"), edit(300, "cut")];
+    const layout = layoutEdits(cuts, 90, 20, 900, [], { start: 0, end: 600 });
+    expect(shapes(layout)).toEqual(["‹ 2 edits", "tick:cut", "tick:cut", "1 edit ›"]);
+    const [before, , , after] = layout;
+    // The nearest edit beyond comes in clear of the count at that edge: 12% of the view from it.
+    expect(before!.edge).toBe("before");
+    expect(before!.end).toBeCloseTo(20 + 20 * .12);
+    expect(before!.end - before!.start).toBeCloseTo(20);
+    expect(after!.edge).toBe("after");
+    expect(after!.start).toBeCloseTo(300 - 20 * .12);
+    expect(after!.end - after!.start).toBeCloseTo(20);
+    // At the start of the video the stretch stops there.
+    expect(layoutEdits(cuts, 30, 20, 900, [], { start: 0, end: 600 })[0]!.start).toBeCloseTo(2.4);
+    expect(layoutEdits([edit(5, "cut"), edit(40, "cut")], 30, 20, 900, [], { start: 0, end: 600 })[0]).toMatchObject({ label: "‹ 1 edit", start: 0, end: 20 });
+    expect(editUnder(layout, 2, 900)?.edge).toBe("before");
+    // A cut that would sit under an edge's count, where it couldn't be reached, is counted there, and the count's press
+    // brings it into view.
+    const held = layoutEdits([...cuts, edit(109.5, "cut")], 90, 20, 900, [], { start: 0, end: 600 });
+    expect(shapes(held)).toEqual(["‹ 2 edits", "tick:cut", "tick:cut", "2 edits ›"]);
+    expect(held.at(-1)!.start).toBeCloseTo(109.5 - 20 * .12);
+    // With nothing beyond an edge there is no count, and a tick at that edge is drawn.
+    expect(shapes(layoutEdits([edit(100, "cut"), edit(109.9, "cut")], 90, 20, 900, [], { start: 0, end: 600 }))).toEqual(["tick:cut", "tick:cut"]);
+  });
+
+  it("reaches a tick from either side, the nearest first, and a bar under the pointer before a tick beside it", () => {
+    const layout = layoutEdits([edit(100, "cut"), edit(102, "cut"), edit(108, "graphic", 112)], 95, 20, 1000, [], { start: 0, end: 600 });
+    const at = (time: number) => (time - 95) / 20 * 100;
+    // 50 px a second: 10 px off a tick still picks it, 13 px doesn't.
+    expect(editUnder(layout, at(99.8), 1000)?.edits[0]!.time).toBe(100);
+    expect(editUnder(layout, at(101.8), 1000)?.edits[0]!.time).toBe(102);
+    expect(editUnder(layout, at(102.2), 1000)?.edits[0]!.time).toBe(102);
+    expect(editUnder(layout, at(102.3), 1000)).toBeUndefined();
+    expect(editUnder(layout, at(108.1), 1000)?.edits[0]!.kind).toBe("graphic");
+  });
 });

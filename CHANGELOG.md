@@ -4,6 +4,17 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 15, 2026
+
+- Export › Advanced export saves a folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro: the timeline with its cuts, tracks, zooms, volume and fades, a copy of the footage, the captions, and a Read me that lists anything that doesn't carry over.
+- In the project library, a project whose caching you paused says Importing paused instead of still importing its files.
+- Recordings of your spoken notes are no longer deleted the day after you save them.
+- Type a timestamp like 1:42 in a new edit request to mark it on the timeline. Click it to jump there, or send the note about that moment.
+- The tokens a request has used now show in the chat by default; turn them off in Settings › Usage.
+- Codex installed through Homebrew can start editing on macOS while keeping its sandbox.
+- Scarlet now times Spanish transcript words against the recording, including words Whisper gave the same start and end time.
+- Scarlet can finish checking a batch of dialogue cuts even when the audio takes several minutes to measure.
+
 ## November 14, 2026
 
 - Export can save captions as SubRip (.srt) or WebVTT (.vtt) files.

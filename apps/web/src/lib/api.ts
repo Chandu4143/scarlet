@@ -35,6 +35,7 @@ export type ScarletApi = Pick<
   | "otioUrl"
   | "srtUrl"
   | "vttUrl"
+  | "handoff"
   | "changes"
   | "change"
   | "approveChange"

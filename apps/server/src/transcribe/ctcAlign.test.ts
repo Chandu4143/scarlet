@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ffmpeg from "../render/ffmpeg.js";
 import { AudioLane } from "../services/audioWork.js";
 import {
-  alignGroup, alignmentGroups, applyTimings, CLASSES, ctcAlign, FRAME_SAMPLES, framesFor, planChunks, SAMPLE_RATE,
+  alignGroup, alignmentGroups, applyTimings, CLASSES, ctcAlign, FRAME_SAMPLES, framesFor, planChunks, SAMPLE_RATE, SPANISH_CTC_LETTERS,
   SEPARATOR, stitchChunks, WILDCARD, wordLabels,
 } from "./ctcAlign.js";
 import { LocalWhisperModel } from "./localModel.js";
@@ -51,9 +51,15 @@ describe("text normalization", () => {
     expect(wordLabels("(laughs)")).toBeNull();
   });
 
-  it("accepts English language codes and names only", () => {
-    for (const language of [undefined, "", "en", "english", "EN-us"]) expect(alignsLanguage(language)).toBe(true);
-    for (const language of ["de", "german", "es", "zh"]) expect(alignsLanguage(language)).toBe(false);
+  it("uses the Spanish checkpoint's distinct letter IDs for accents, ñ and ü", () => {
+    expect(wordLabels("¿Mañana?", SPANISH_CTC_LETTERS)).toEqual([19, 7, 36, 7, 20, 7]);
+    expect(wordLabels("ÁÉÍÓÚÜ", SPANISH_CTC_LETTERS)).toEqual([33, 34, 35, 37, 39, 40]);
+    expect(wordLabels("niño", SPANISH_CTC_LETTERS)).not.toEqual(wordLabels("nino", SPANISH_CTC_LETTERS));
+  });
+
+  it("accepts English and Spanish language codes and names", () => {
+    for (const language of [undefined, "", "en", "english", "EN-us", "es", "ES-MX", "es_ES", "spanish", "Español"]) expect(alignsLanguage(language)).toBe(true);
+    for (const language of ["de", "german", "fr", "zh"]) expect(alignsLanguage(language)).toBe(false);
   });
 });
 
@@ -193,6 +199,25 @@ describe("transcript alignment", () => {
   afterEach(async () => { vi.restoreAllMocks(); log.mockReset(); await rm(dir, { recursive: true, force: true }); });
   const ctx = () => ({ paths: { root: dir, tmp: dir }, log });
   const signal = new AbortController().signal;
+
+  it("selects Spanish for regional tags and names, shares its cached frames across pages and preserves text", async () => {
+    const wav = join(dir, "decoded.wav"), file = join(dir, "recording.bin");
+    const segments = [segment(0, 2, [["¿Mañana?", 1, 1], ["sí.", 1, 1]])];
+    const requests: AlignRequest[] = [];
+    vi.spyOn(audioWorker, "request").mockImplementation(async message => {
+      const request: AlignRequest = JSON.parse(readFileSync((message as { request: string }).request, "utf8"));
+      requests.push(request);
+      return [[{ start: .2, end: .8, score: .95 }, { start: 1.2, end: 1.4, score: .9 }]] as never;
+    });
+    const words = await alignTranscript(ctx(), { source: "source.mov", wav, language: "ES-MX", segments, signal, emissions: file });
+    expect(words[0]!.words).toEqual([{ text: "¿Mañana?", start: .2, end: .8 }, { text: "sí.", start: 1.2, end: 1.4 }]);
+    await alignWords(ctx(), wav, segments, { language: "spanish", signal, emissions: { file, offset: 5, duration: 2, wav: async () => wav } });
+    await alignWords(ctx(), wav, segments, { language: "en", signal, emissions: { file, wav: async () => wav } });
+    expect(requests.map(r => r.language)).toEqual(["es", "es", undefined]);
+    expect(requests[0]!.store!.file).toBe(requests[1]!.store!.file);
+    expect(requests[0]!.store!.file).not.toBe(requests[2]!.store!.file);
+    expect(requests[1]!.store!.offset).toBe(5);
+  });
 
   it("aligns in bounded worker turns and carries placed words into the next turn", async () => {
     const segments = Array.from({ length: 24 }, (_, k) => segment(30 * k, 30 * k + 25, [["hello", 30 * k + 1, 30 * k + 2], ["2024", 30 * k + 2, 30 * k + 3]]));
@@ -374,7 +399,7 @@ describe("transcript alignment", () => {
     const segments = [segment(0, 2, [["hola", 0, 1], ["amigo", 1, 2]])];
     const worker = vi.spyOn(audioWorker, "request").mockRejectedValue(new Error("worker crashed"));
     const decode = vi.spyOn(ffmpeg, "extractWav").mockResolvedValue();
-    expect(await alignTranscript(ctx(), { source: "a.mov", language: "es", segments, signal })).toBe(segments);
+    expect(await alignTranscript(ctx(), { source: "a.mov", language: "fr", segments, signal })).toBe(segments);
     expect(worker).not.toHaveBeenCalled();
     expect(await alignTranscript(ctx(), { source: "a.mov", language: "english", segments, signal })).toBe(segments);
     expect(decode).toHaveBeenCalledTimes(1);

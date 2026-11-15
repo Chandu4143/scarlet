@@ -131,14 +131,14 @@ function cueBlock(cue: Cue, vtt: boolean): string {
   return `${formatCaptionTime(cue.start, decimal)} --> ${formatCaptionTime(cue.end, decimal)}\n${vtt ? escapeVtt(cue.text) : cue.text}`;
 }
 
-export function toSrt(timeline: Timeline, opts: CaptionExportOptions = {}): string {
+export function timelineToSrt(timeline: Timeline, opts: CaptionExportOptions = {}): string {
   return exportCues(timeline, opts).map((cue, i) => `${i + 1}\n${cueBlock(cue, false)}`).join("\n\n") + "\n";
 }
 
-export function toVtt(timeline: Timeline, opts: CaptionExportOptions = {}): string {
+export function timelineToVtt(timeline: Timeline, opts: CaptionExportOptions = {}): string {
   return `WEBVTT\n\n${exportCues(timeline, opts).map(cue => cueBlock(cue, true)).join("\n\n")}\n`;
 }
 
 export function toCaptions(timeline: Timeline, format: CaptionExportFormat, opts: CaptionExportOptions = {}): string {
-  return format === "srt" ? toSrt(timeline, opts) : toVtt(timeline, opts);
+  return format === "srt" ? timelineToSrt(timeline, opts) : timelineToVtt(timeline, opts);
 }

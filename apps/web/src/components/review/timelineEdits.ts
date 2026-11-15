@@ -3,8 +3,9 @@ import type { TimelineDot } from "./TimelineScrubber";
 /**
  * Every applied edit on the working cut, drawn under what needs the editor: a graphic or other overlay a bar as long as
  * it is on screen, a zoom, a reframe or a caption a dimmer bar, anything else a small tick. Marks that would touch at this
- * zoom gather into one count ("11 cuts · 2 graphics"). A cut has no line of its own: cuts are only ever counted, so a
- * lone one is a count of one ("1 cut").
+ * zoom gather into one count ("11 cuts · 2 graphics"). On the whole video a cut has no line of its own: cuts are only
+ * counted, so a lone one is a count of one ("1 cut"). Zoomed in to a stretch whose edits fit, nothing is counted: every
+ * edit, a cut too, is a mark of its own, and a count at each edge says how many lie beyond it.
  */
 export interface TimelineEdit extends TimelineDot {
   /** Names the edit among the others. */
@@ -69,6 +70,9 @@ export interface EditLayout {
   lane?: number;
   /** A count's width in pixels. */
   width: number;
+  /** A count pinned to an edge of a zoomed-in timeline, of the edits before or after what it shows: a press moves to
+   *  `start`–`end`, the next stretch that has any, at the same zoom. */
+  edge?: "before" | "after";
 }
 
 /** A count is a pill sized to its text, like a run of numbered dots. */
@@ -84,8 +88,19 @@ const SHORT_BAR = 10;
 /** A count gathers the crowded marks within this many pixels of its first, so a stretch of many cuts reads as a few counts. */
 const GATHER = 120;
 const COUNT_GAP = 6;
-/** How far from a line, in pixels, the pointer still reaches it. */
-const LINE_REACH = 4;
+/** How far from a line, in pixels, the pointer is on it: there it wins over a bar it crosses. */
+const LINE_ON = 4;
+/** How far from a line the pointer still reaches it when it is on nothing else, so a mark two pixels wide is easy to
+ *  point at. The nearest line wins. */
+const LINE_REACH = 12;
+/** Zoomed in, every edit is a mark of its own while the ones in view have this many pixels each, on average. */
+const EACH_ROOM = 8;
+/** The timeline is zoomed in when it shows less than this share of the video. */
+const ZOOMED_IN = .98;
+/** An edge's count sits this far in from the edge, and the stretch it moves to starts this share of the view before
+ *  its first edit, clear of the count at that edge. */
+const EDGE_INSET = 4;
+const EDGE_LEAD = .12;
 
 interface Placed { edit: TimelineEdit; shape: EditShape; x0: number; x1: number }
 
@@ -96,7 +111,9 @@ interface Placed { edit: TimelineEdit; shape: EditShape; x0: number; x1: number 
  */
 export function layoutEdits(edits: readonly TimelineEdit[], from: number, span: number, width: number,
   /** The markers of what needs the editor, by centre and width in pixels. A count steps aside from them. */
-  above: readonly { x: number; w: number }[] = []): EditLayout[] {
+  above: readonly { x: number; w: number }[] = [],
+  /** The whole timeline. Given it, a zoomed-in stretch whose edits fit draws each one, with a count at each edge. */
+  whole?: { start: number; end: number }): EditLayout[] {
   if (span <= 0) return [];
   const to = from + span;
   const px = (t: number) => (t - from) / span * width;
@@ -116,6 +133,45 @@ export function layoutEdits(edits: readonly TimelineEdit[], from: number, span: 
   if (!(width > 0)) return [...lines, ...bars].filter(p => p.shape !== "cut").map(single).sort((a, b) => a.at - b.at);
   lines.sort((a, b) => a.x0 - b.x0);
   bars.sort((a, b) => a.x0 - b.x0);
+  // Zoomed in to a stretch whose edits fit, each is a mark of its own, so a press on a count never opens onto more
+  // counts. Bars that overlap past the last lane share it.
+  if (whole && span < (whole.end - whole.start) * ZOOMED_IN && lines.length + bars.length <= width / EACH_ROOM) {
+    const lastTime = (edit: TimelineEdit) => { const shape = editShape(edit); return shape === "cut" || shape === "tick" ? edit.time : edit.end; };
+    const words = (side: "before" | "after", n: number) => side === "before" ? `‹ ${n === 1 ? "1 edit" : `${n} edits`}` : `${n === 1 ? "1 edit" : `${n} edits`} ›`;
+    // A tick that would sit under an edge's count, out of reach, is counted there with the edits beyond it.
+    const under = (side: "before" | "after", beyond: number) => {
+      let held: Placed[] = [];
+      for (let round = 0; round < 3; round++) {
+        if (!beyond && !held.length) return held;
+        const reach = countWidth(words(side, beyond + held.length)) + EDGE_INSET + LINE_ON;
+        const next = lines.filter(line => side === "before" ? line.x0 < reach : line.x0 > width - reach);
+        if (next.length === held.length) break;
+        held = next;
+      }
+      return held;
+    };
+    const before = edits.filter(e => lastTime(e) < from), after = edits.filter(e => e.time > to);
+    const heldBefore = under("before", before.length), heldAfter = under("after", after.length);
+    const hidden = new Set([...heldBefore, ...heldAfter]);
+    const ends: number[] = [];
+    const each = lines.filter(line => !hidden.has(line)).map((line): EditLayout => ({ ...single(line), shape: "tick" })).concat(bars.map(bar => {
+      const free = ends.findIndex(end => end + BAR_ROOM < bar.x0);
+      const at = free >= 0 ? free : Math.min(ends.length, LANES - 1);
+      ends[at] = Math.max(ends[at] ?? -Infinity, bar.x1);
+      return { ...single(bar), lane: at };
+    }));
+    const edge = (side: "before" | "after", beyond: TimelineEdit[]): EditLayout[] => {
+      if (!beyond.length) return [];
+      const label = words(side, beyond.length);
+      const w = countWidth(label), centre = side === "before" ? w / 2 + EDGE_INSET : width - w / 2 - EDGE_INSET;
+      // The nearest edit beyond the edge comes into view clear of the count on that side.
+      const near = side === "before" ? Math.max(...beyond.map(lastTime)) + span * EDGE_LEAD - span : Math.min(...beyond.map(e => e.time)) - span * EDGE_LEAD;
+      const start = Math.max(whole.start, Math.min(whole.end - span, near));
+      return [{ key: `edge:${side}`, shape: "count", edits: beyond.sort((a, b) => a.time - b.time), at: centre / width * 100, to: centre / width * 100,
+        start, end: start + span, label, width: w, edge: side }];
+    };
+    return [...each, ...edge("before", [...before, ...heldBefore.map(p => p.edit)]), ...edge("after", [...after, ...heldAfter.map(p => p.edit)])].sort((a, b) => a.at - b.at);
+  }
   // A mark is crowded when it would touch another of its row: lines along the strip, bars along the top of it.
   const crowded = new Set<Placed>();
   for (let i = 1; i < lines.length; i++) if (lines[i]!.x0 - lines[i - 1]!.x0 < LINE_ROOM) { crowded.add(lines[i]!); crowded.add(lines[i - 1]!); }
@@ -216,8 +272,9 @@ export function layoutEdits(edits: readonly TimelineEdit[], from: number, span: 
 }
 
 /**
- * The mark a press or hover at `percent` is on, if any: a count under the pointer first, then the nearest tick within
- * reach, then the shortest bar under it, so a short edit inside a long one can still be reached.
+ * The mark a press or hover at `percent` is on, if any: a count under the pointer first, then a tick the pointer is on,
+ * then the shortest bar under it, so a short edit inside a long one can still be reached, then the nearest tick within
+ * reach, so a tick needn't be hit to the pixel.
  */
 export function editUnder(layout: readonly EditLayout[], percent: number, width: number) {
   if (!(width > 0)) return undefined;
@@ -232,6 +289,6 @@ export function editUnder(layout: readonly EditLayout[], percent: number, width:
       if (d <= LINE_REACH && d < near) { line = mark; near = d; }
     } else if (x >= a - 2 && x <= b + 2 && b - a < shortest) { bar = mark; shortest = b - a; }
   }
-  return line ?? bar;
+  return near <= LINE_ON ? line : bar ?? line;
 }
 

@@ -414,9 +414,9 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
                 const standing = asking ? <span className="unit-dot" aria-hidden /> : e.state === "cancelled" ? <span className="unit-word">Stopped</span>
                   : e.state === "failed" ? <span className="unit-word">Couldn’t finish</span> : null;
                 return <div key={e.id} className="unit">
-                  <div className="unit-msg" title={e.instruction}>
+                  <div className="unit-msg">
                     <span className="simple-who">You</span>
-                    <p>{e.instruction}</p>
+                    <Said text={e.instruction} />
                     <span className="unit-state">{standing}</span>
                     {active && <button type="button" className="simple-link unit-stop"
                       onClick={() => void api.cancelTask(e.id).then(({ task }) => showFinished(task)).catch(err => setAskErr(errorMessage(err)))}>Stop</button>}

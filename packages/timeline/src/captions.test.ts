@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CaptionExportError, captionExportHasCues, captionExportRange, emptyTimeline, formatCaptionTime,
-  makeTrack, NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, toSrt, toVtt,
+  makeTrack, NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, timelineToSrt, timelineToVtt,
   type CaptionClip, type Timeline,
 } from "./index.js";
 
@@ -18,7 +18,7 @@ function cut(clips: CaptionClip[], extra: Partial<Timeline["tracks"][number]> = 
 describe("caption sidecars", () => {
   it("writes two cues in SubRip with comma milliseconds and in WebVTT with a header and dots", () => {
     const tl = cut([line("cap_1", 0.2, 2.4, "Welcome back"), line("cap_2", 5.6, 7.6, "Three things today")]);
-    expect(toSrt(tl)).toBe([
+    expect(timelineToSrt(tl)).toBe([
       "1",
       "00:00:00,200 --> 00:00:02,400",
       "Welcome back",
@@ -28,7 +28,7 @@ describe("caption sidecars", () => {
       "Three things today",
       "",
     ].join("\n"));
-    expect(toVtt(tl)).toBe([
+    expect(timelineToVtt(tl)).toBe([
       "WEBVTT",
       "",
       "00:00:00.200 --> 00:00:02.400",
@@ -48,8 +48,8 @@ describe("caption sidecars", () => {
     expect(formatCaptionTime(3661.5, ",")).toBe("01:01:01,500");
     expect(formatCaptionTime(36000, ".")).toBe("10:00:00.000");
     const tl = cut([line("long", 3661.5, 3663.25, "Later")]);
-    expect(toSrt(tl)).toContain("01:01:01,500 --> 01:01:03,250");
-    expect(toVtt(tl)).toContain("01:01:01.500 --> 01:01:03.250");
+    expect(timelineToSrt(tl)).toContain("01:01:01,500 --> 01:01:03,250");
+    expect(timelineToVtt(tl)).toContain("01:01:01.500 --> 01:01:03.250");
   });
 
   it("keeps multi-line text, writes special characters, and escapes them only in WebVTT", () => {
@@ -57,11 +57,11 @@ describe("caption sidecars", () => {
       line("multi", 0, 1, "Hello\r\n\nthere"),
       line("chars", 1, 2, "A < B & C --> D"),
     ]);
-    expect(toSrt(tl)).toContain("Hello\nthere");
-    expect(toSrt(tl)).toContain("A < B & C --> D");
-    expect(toVtt(tl)).toContain("Hello\nthere");
-    expect(toVtt(tl)).toContain("A &lt; B &amp; C --&gt; D");
-    expect(toVtt(tl)).not.toContain("A < B");
+    expect(timelineToSrt(tl)).toContain("Hello\nthere");
+    expect(timelineToSrt(tl)).toContain("A < B & C --> D");
+    expect(timelineToVtt(tl)).toContain("Hello\nthere");
+    expect(timelineToVtt(tl)).toContain("A &lt; B &amp; C --&gt; D");
+    expect(timelineToVtt(tl)).not.toContain("A < B");
   });
 
   it("sorts cues by start, leaves overlapping lines as they are, and skips hidden tracks, disabled clips and empty text", () => {
@@ -83,7 +83,7 @@ describe("caption sidecars", () => {
         line("tiny", 7, 7.0004, "Too short"),
       ],
     });
-    expect(toSrt(tl)).toBe([
+    expect(timelineToSrt(tl)).toBe([
       "1",
       "00:00:00,500 --> 00:00:04,500",
       "First",
@@ -97,7 +97,7 @@ describe("caption sidecars", () => {
       "Overlap",
       "",
     ].join("\n"));
-    expect(toSrt(tl, { trackId: "hidden" })).toBe("1\n00:00:00,000 --> 00:00:01,000\nHidden\n");
+    expect(timelineToSrt(tl, { trackId: "hidden" })).toBe("1\n00:00:00,000 --> 00:00:01,000\nHidden\n");
   });
 
   it("keeps only cues that overlap a range, shifts them so 0 is the range start, and clips a cue that begins before it", () => {
@@ -107,7 +107,7 @@ describe("caption sidecars", () => {
       line("late", 9, 10, "After"),
     ]);
     const range = { start: 1, end: 6 };
-    expect(toSrt(tl, { range })).toBe([
+    expect(timelineToSrt(tl, { range })).toBe([
       "1",
       "00:00:00,000 --> 00:00:01,400",
       "Welcome back",
@@ -117,31 +117,31 @@ describe("caption sidecars", () => {
       "Three things today",
       "",
     ].join("\n"));
-    expect(toVtt(tl, { range })).toContain("00:00:00.000 --> 00:00:01.400");
-    expect(toVtt(tl, { range })).toContain("00:00:04.600 --> 00:00:05.000");
-    expect(toVtt(tl, { range })).not.toContain("After");
+    expect(timelineToVtt(tl, { range })).toContain("00:00:00.000 --> 00:00:01.400");
+    expect(timelineToVtt(tl, { range })).toContain("00:00:04.600 --> 00:00:05.000");
+    expect(timelineToVtt(tl, { range })).not.toContain("After");
   });
 
   it("refuses a version with no caption track, a missing track, and a track that isn't captions", () => {
     const empty = emptyTimeline("project");
-    expect(() => toSrt(empty)).toThrow(CaptionExportError);
-    expect(() => toSrt(empty)).toThrow(NO_CAPTION_TRACK);
-    expect(() => toVtt(empty)).toThrow(NO_CAPTION_TRACK);
-    expect(() => toSrt(cut([line("c", 0, 1, "Hi")]), { trackId: "missing" })).toThrow("That caption track isn’t in this version.");
-    expect(() => toSrt(empty, { trackId: "v1" })).toThrow("That track isn’t captions.");
+    expect(() => timelineToSrt(empty)).toThrow(CaptionExportError);
+    expect(() => timelineToSrt(empty)).toThrow(NO_CAPTION_TRACK);
+    expect(() => timelineToVtt(empty)).toThrow(NO_CAPTION_TRACK);
+    expect(() => timelineToSrt(cut([line("c", 0, 1, "Hi")]), { trackId: "missing" })).toThrow("That caption track isn’t in this version.");
+    expect(() => timelineToSrt(empty, { trackId: "v1" })).toThrow("That track isn’t captions.");
     const hiddenOnly = emptyTimeline("project");
     hiddenOnly.tracks.push({ ...makeTrack("caption", "Off", "cap"), hidden: true, clips: [line("c", 0, 1, "Hi")] });
-    expect(() => toSrt(hiddenOnly)).toThrow(NO_CAPTION_TRACK);
+    expect(() => timelineToSrt(hiddenOnly)).toThrow(NO_CAPTION_TRACK);
   });
 
   it("refuses an empty track or a range that leaves no cues", () => {
-    expect(() => toSrt(cut([]))).toThrow(NO_CAPTIONS_IN_RANGE);
-    expect(() => toVtt(cut([]))).toThrow(NO_CAPTIONS_IN_RANGE);
+    expect(() => timelineToSrt(cut([]))).toThrow(NO_CAPTIONS_IN_RANGE);
+    expect(() => timelineToVtt(cut([]))).toThrow(NO_CAPTIONS_IN_RANGE);
     const tl = cut([line("early", 0.2, 2.4, "Welcome back")]);
     expect(captionExportHasCues(tl)).toBe(true);
     expect(captionExportHasCues(tl, { range: { start: 8, end: 10 } })).toBe(false);
-    expect(() => toSrt(tl, { range: { start: 8, end: 10 } })).toThrow(NO_CAPTIONS_IN_RANGE);
-    expect(() => toVtt(tl, { range: { start: 8, end: 10 } })).toThrow(NO_CAPTIONS_IN_RANGE);
+    expect(() => timelineToSrt(tl, { range: { start: 8, end: 10 } })).toThrow(NO_CAPTIONS_IN_RANGE);
+    expect(() => timelineToVtt(tl, { range: { start: 8, end: 10 } })).toThrow(NO_CAPTIONS_IN_RANGE);
   });
 
   it("refuses a range that starts before 0", () => {
@@ -155,9 +155,9 @@ describe("caption sidecars", () => {
       words: [{ text: "Hello", start: 0, end: 0.4 }, { text: "there", start: 0.4, end: 1 }],
       style: { uppercase: true },
     })]);
-    expect(toSrt(tl)).toBe("1\n00:00:00,000 --> 00:00:01,000\nHello there\n");
-    expect(toVtt(tl)).toBe("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello there\n");
-    expect(toVtt(tl)).not.toContain("<c>");
-    expect(toSrt(tl)).not.toContain("HELLO");
+    expect(timelineToSrt(tl)).toBe("1\n00:00:00,000 --> 00:00:01,000\nHello there\n");
+    expect(timelineToVtt(tl)).toBe("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello there\n");
+    expect(timelineToVtt(tl)).not.toContain("<c>");
+    expect(timelineToSrt(tl)).not.toContain("HELLO");
   });
 });

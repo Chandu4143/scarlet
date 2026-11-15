@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { fullRenderContext, type RenderRequest } from "@scarlet/shared";
-import { captionExportHasCues, NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, snapToFrame, timelineDuration } from "@scarlet/timeline";
+import { captionExportHasCues, captionTracks, handoffLosses, NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, snapToFrame, timelineDuration, usedMedia } from "@scarlet/timeline";
 import { errorMessage, IS_MOCK } from "../../lib/client";
 import { desktop } from "../../lib/desktop";
 import { exportCounting, exportFailureSeen, exportFile, PICTURE_DONE, useExports, type ExportFile } from "../../lib/exportJobs";
-import { pct, playbackClock } from "../../lib/format";
+import { clock, fmtBytes, pct, playbackClock } from "../../lib/format";
 import { useProjectStore, type ProjectData } from "../../stores/project";
 import { ActivityProgress, Field, Icon, InlineError, Modal } from "../ui/primitives";
 import { PreferenceSelect } from "../ui/PreferenceSelect";
@@ -42,13 +42,16 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   const previous = busy?.file ?? (job?.phase === "failed" && job.context === context ? job.file : undefined);
   // The file the last export saved, while the video is still the one it was made from.
   const exported = job?.phase === "done" && job.context === context ? job : undefined;
-  const [format, setFormat] = useState<ExportFile["format"]>(previous?.format ?? "mp4");
+  // Advanced export: the folder for finishing the edit in another app. Otherwise the video or its captions.
+  const [advanced, setAdvanced] = useState(previous?.format === "folder");
+  const [plainFormat, setPlainFormat] = useState<"mp4" | "srt" | "vtt">(previous?.format === "srt" || previous?.format === "vtt" ? previous.format : "mp4");
+  const format: ExportFile["format"] = advanced ? "folder" : plainFormat;
   const captions = format === "srt" || format === "vtt";
-  const captionTracks = useMemo(() => (current.timeline?.tracks ?? []).filter(t => t.kind === "caption" && !t.hidden), [current.timeline]);
-  const [trackId, setTrackId] = useState(() => previous?.trackId && captionTracks.some(t => t.id === previous.trackId) ? previous.trackId : captionTracks[0]?.id ?? "");
+  const captionTrackChoices = useMemo(() => (current.timeline?.tracks ?? []).filter(t => t.kind === "caption" && !t.hidden), [current.timeline]);
+  const [trackId, setTrackId] = useState(() => previous?.trackId && captionTrackChoices.some(t => t.id === previous.trackId) ? previous.trackId : captionTrackChoices[0]?.id ?? "");
   useEffect(() => {
-    if (!captionTracks.some(t => t.id === trackId)) setTrackId(captionTracks[0]?.id ?? "");
-  }, [captionTracks, trackId]);
+    if (!captionTrackChoices.some(t => t.id === trackId)) setTrackId(captionTrackChoices[0]?.id ?? "");
+  }, [captionTrackChoices, trackId]);
   const [customRange, setCustomRange] = useState(!!previous?.video.range);
   const [start, setStart] = useState(() => playbackClock(previous?.video.range?.start ?? 0));
   const [end, setEnd] = useState(() => playbackClock(previous?.video.range?.end ?? duration));
@@ -66,18 +69,29 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   // An export that stopped is explained here, so the menu's mark for it goes once this is open.
   const failed = job?.phase === "failed";
   useEffect(() => { if (failed) exportFailureSeen(current.id); }, [failed, current.id]);
-  const range = format !== "otio" && customRange ? { start: snapToFrame(parseClock(start), fps), end: snapToFrame(parseClock(end), fps) } : undefined;
+  const range = format !== "folder" && customRange ? { start: snapToFrame(parseClock(start), fps), end: snapToFrame(parseClock(end), fps) } : undefined;
   const invalidRange = range && !(range.start >= 0 && range.end > range.start && range.end <= duration);
   const custom = format === "mp4" && (!!range || !!targetHeight || quality !== "delivery");
   const level = QUALITY[quality];
   const sampleOnly = IS_MOCK && custom;
-  const noCaptionTrack = captions && captionTracks.length === 0;
+  const noCaptionTrack = captions && captionTrackChoices.length === 0;
   // The picker can still hold a trackId after that track is gone; the effect below
   // clears it, but this render must not throw track_not_found first.
-  const exportTrackId = captionTracks.some(t => t.id === trackId) ? trackId : undefined;
+  const exportTrackId = captionTrackChoices.some(t => t.id === trackId) ? trackId : undefined;
   const noCaptionsInRange = captions && !noCaptionTrack && !invalidRange && current.timeline
     ? !captionExportHasCues(current.timeline, { trackId: exportTrackId, range })
     : false;
+  const handoff = useMemo(() => {
+    if (!current.timeline) return undefined;
+    const used = usedMedia(project, current.timeline);
+    const sizes = used.map(m => m.fingerprintStamp?.size);
+    return {
+      bytes: sizes.every(size => size !== undefined) ? sizes.reduce((a, b) => a + b!, 0) : undefined,
+      files: used.length,
+      captions: captionTracks(current.timeline).length > 0,
+      losses: handoffLosses(project, current.timeline),
+    };
+  }, [project, current.timeline]);
   const invalid = !hasCut || !duration || invalidRange || sampleOnly || noCaptionTrack || noCaptionsInRange;
   const size = targetHeight ? `${Math.round(width * targetHeight / height / 2) * 2} × ${targetHeight}` : "Project size";
   const submit = () => {
@@ -90,13 +104,18 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
     setRevealError("");
     // The file is named once, in the system's Save dialog, which also picks its folder and asks before replacing a
     // file. It opens on the project's name.
-    const name = `${project.name.replace(/[\\/:*?"<>|]+/g, " ").trim() || "Scarlet"}.${format}`;
+    const stem = project.name.replace(/[\\/:*?"<>|]+/g, " ").trim() || "Scarlet";
+    const name = format === "folder" ? stem : `${stem}.${format}`;
     void exportFile(current, { format, name, video, ...(captions && exportTrackId ? { trackId: exportTrackId } : {}) });
   };
-  return <Modal open title="Export" width={600} onClose={onClose} footer={running ? <>
+  const switchTo = !busy && !exported && <button type="button" className="btn-quiet mr-auto" onClick={() => setAdvanced(!advanced)}>
+    {advanced ? "Back" : "Advanced export"}
+  </button>;
+  return <Modal open title={advanced ? "Advanced export" : "Export"} width={600} onClose={onClose} footer={running ? <>
     {busy.phase === "rendering" && <button type="button" className="btn-quiet" onClick={busy.cancel}>Cancel export</button>}
     <button type="button" className="btn-primary" onClick={onClose}>Continue editing</button>
   </> : <>
+    {switchTo}
     <button type="button" className="btn-ghost" onClick={onClose}>{busy || exported ? "Close" : "Cancel"}</button>
     <button type="submit" form="export-working-cut" className="btn-primary" disabled={!!busy || !!invalid}>
       {failed ? "Retry" : "Export"}
@@ -104,29 +123,29 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   </>}>
     <form id="export-working-cut" onSubmit={event => { event.preventDefault(); submit(); }}>
       <fieldset disabled={!!busy} className="min-w-0">
-        <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+        {advanced ? <HandoffSummary summary={handoff} /> : <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
           <Field label="Format" htmlFor="export-format">
-            <PreferenceSelect id="export-format" value={format} onChange={setFormat}
+            <PreferenceSelect id="export-format" value={plainFormat} onChange={setPlainFormat}
               options={[
                 { value: "mp4", label: "Video (.mp4)" },
                 { value: "srt", label: "Captions (.srt)" },
                 { value: "vtt", label: "Captions (.vtt)" },
-                { value: "otio", label: "Resolve timeline (.otio)" },
               ]} />
           </Field>
           <Field label="Range" htmlFor="export-range">
-            <PreferenceSelect id="export-range" disabled={format === "otio"} value={format !== "otio" && customRange ? "custom" : "whole"}
+            <PreferenceSelect id="export-range" value={customRange ? "custom" : "whole"}
               onChange={value => setCustomRange(value === "custom")} options={[{ value: "whole", label: "Whole video" }, { value: "custom", label: "Custom range" }]} />
           </Field>
+          {range && <div className="hidden sm:block" />}
           {range && <>
             <Field label="From" htmlFor="export-start"><input className="field tnum" id="export-start" value={start} onChange={e => setStart(e.target.value)} /></Field>
             <Field label="To" htmlFor="export-end"><input className="field tnum" id="export-end" value={end} onChange={e => setEnd(e.target.value)} /></Field>
           </>}
-          {captions && captionTracks.length > 1 && <Field label="Track" htmlFor="export-track">
+          {captions && captionTrackChoices.length > 1 && <Field label="Track" htmlFor="export-track">
             <PreferenceSelect id="export-track" value={trackId} onChange={setTrackId}
-              options={captionTracks.map(track => ({ value: track.id, label: track.name }))} />
+              options={captionTrackChoices.map(track => ({ value: track.id, label: track.name }))} />
           </Field>}
-        </div>
+        </div>}
         {format === "mp4" ? <details className="border-t border-line pt-3">
           <summary className="cursor-pointer text-xs"><strong>Video options</strong><span className="ml-2 text-muted">{size} · {Number(fps.toFixed(3))} fps · {level.label}</span></summary>
           <div className="mt-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2">
@@ -141,7 +160,7 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
                 options={(Object.keys(QUALITY) as ExportQuality[]).map(value => ({ value, label: QUALITY[value].label }))} />
             </Field>
           </div>
-        </details> : format === "otio" ? <p className="text-xs text-muted">The timeline links to the original media. The receiving editor needs access to those files.</p> : null}
+        </details> : null}
       </fieldset>
     </form>
     {!running && <InlineError>{!hasCut ? "There’s no video to export yet." :
@@ -151,7 +170,7 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
     {busy && <div className="mt-3">
       {busy.phase === "choosing" ? <p className="text-xs text-muted" role="status">Choose a location…</p> :
         <ActivityProgress label={`Export progress for ${busy.file.name}`} value={counting ? busy.progress : undefined}>
-          {busy.phase === "saving" ? "Saving file…" : busy.waiting ? "Waiting to start" : Math.round(busy.progress * 100) >= PICTURE_DONE ? "Finishing…"
+          {busy.phase === "saving" ? (busy.file.format === "folder" ? "Saving the folder…" : "Saving file…") : busy.waiting ? "Waiting to start" : Math.round(busy.progress * 100) >= PICTURE_DONE ? "Finishing…"
             : `Exporting${busy.version !== project.head ? " an earlier version" : ""}${counting ? ` · ${pct(busy.progress)}` : ""}`}
         </ActivityProgress>}
       {running && <p className="mt-2 text-xs text-muted">Your export continues in the background while you edit.</p>}
@@ -162,4 +181,28 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
     </p>}
     <InlineError>{failed ? job.error : revealError}</InlineError>
   </Modal>;
+}
+
+const SHOWN_LOSSES = 4;
+
+/** What the folder holds and what another app won't show as Scarlet does. */
+function HandoffSummary({ summary }: { summary?: { bytes?: number; files: number; captions: boolean; losses: Array<{ at?: number; what: string }> } }) {
+  if (!summary) return null;
+  const { losses } = summary;
+  return <div className="text-xs">
+    <p className="text-muted">A folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro.</p>
+    <ul className="mt-2 list-disc space-y-1 pl-4">
+      <li>The timeline: cuts, tracks, zooms, volume, fades, markers and graphics</li>
+      <li>A copy of the footage{summary.files ? <span className="text-muted"> · {summary.files} {summary.files === 1 ? "file" : "files"}{summary.bytes !== undefined ? `, ${fmtBytes(summary.bytes)}` : ""}</span> : null}</li>
+      {summary.captions && <li>The captions, as a SubRip file</li>}
+      <li>A Read me with how to open it in each app</li>
+    </ul>
+    {losses.length > 0 && <>
+      <p className="mt-3 text-muted">Doesn’t carry over</p>
+      <ul className="mt-1 list-disc space-y-1 pl-4">
+        {losses.slice(0, SHOWN_LOSSES).map((loss, i) => <li key={i}>{loss.at !== undefined && <span className="tnum text-muted">{clock(loss.at)} </span>}{loss.what}</li>)}
+        {losses.length > SHOWN_LOSSES && <li className="text-muted">{losses.length - SHOWN_LOSSES} more, listed in the Read me</li>}
+      </ul>
+    </>}
+  </div>;
 }

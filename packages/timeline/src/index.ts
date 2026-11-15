@@ -16,3 +16,5 @@ export * from "./stagedCutMapping.js";
 export * from "./joinCrossfade.js";
 
 export * from "./history.js";
+export * from "./handoff.js";
+export * from "./fcpxml.js";

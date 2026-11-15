@@ -40,6 +40,7 @@
  *   GET    /projects/:id/versions/:v/export.otio         → application/json (OTIO)
  *   GET    /projects/:id/versions/:v/export.srt          → application/x-subrip (SubRip); ?trackId&start&end
  *   GET    /projects/:id/versions/:v/export.vtt          → text/vtt (WebVTT); ?trackId&start&end
+ *   POST   /projects/:id/versions/:v/handoff { folder }  → HandoffResponse (the folder for finishing the edit in another app)
  *
  *  Changes (the review loop)
  *   POST   /projects/:id/changes    ProposeChangeRequest → { change: Change, timeline: Timeline }
@@ -246,6 +247,12 @@ export const WaveformResponse = z.object({
   speechActivity: z.array(TimeRange).optional(),
 });
 export type WaveformResponse = z.infer<typeof WaveformResponse>;
+
+/** One file of the folder an editor takes to another app: its text, or a copy of a file in Scarlet's library. */
+export type HandoffFile = { path: string; text: string } | { path: string; source: string; size: number };
+
+/** The folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro, and the bytes of footage it copies. */
+export interface HandoffResponse { files: HandoffFile[]; mediaBytes: number }
 
 // ---------------------------------------------------------------------------
 // Versions & changes
