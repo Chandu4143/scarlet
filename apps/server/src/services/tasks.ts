@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -73,8 +73,8 @@ export function stagesCut(kind: TaskKind, change: Change): boolean {
 }
 
 function requestedDialogue(ctx: Ctx, text: string) {
-  if (!dialogueCommand(text)) return;
-  return dialogueCommand(text, ctx.repos.skills.select("name IN ('dialogue-pass','first-cut-dialogue','tighten-pauses-here')"));
+  const names = skillCommands(text).map(command => command.name).filter(Boolean);
+  if (names.length) return dialogueCommand(text, ctx.repos.skills.select("name IN (SELECT value FROM json_each(?))", [JSON.stringify(names)]));
 }
 
 /** Upgrade old requests and their answers once, before a host or the renderer reads them. */

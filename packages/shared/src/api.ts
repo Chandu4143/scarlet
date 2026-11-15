@@ -702,6 +702,8 @@ export const Task = z.object({
   context: z
     .object({
       branch: z.string().optional(),
+      /** Include the transcript actually read by editing tools in this evaluation task's evidence. */
+      recordTranscriptDigests: z.boolean().optional(),
       version: Id.optional(),
       mediaId: Id.optional(),
       /** The provider the editor chose for this one transcription, when it isn't the one in Settings. */

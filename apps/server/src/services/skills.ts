@@ -577,7 +577,7 @@ export function assistantSkills(skills: Skill[], selected: string[] | undefined,
     // House rules and explicitly selected skills belong in the initial prompt.
     // Workflows, customized or not, are read one pass at a time.
     if (!forPrompt || selected?.length) return skill;
-    const workflow = BUNDLED_SKILLS.some(s => s.folder === skill.name) ||
+    const workflow = BUNDLED_SKILLS.some(s => s.folder === skill.name || s.folder === skill.bundledName) ||
       skill.bundledName === "first-cut-dialogue" ||
       RETIRED_WORKFLOWS.includes(skill.name);
     if (!workflow) return skill;

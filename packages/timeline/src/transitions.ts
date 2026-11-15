@@ -10,7 +10,7 @@
  * there, and with almost none it stays a straight cut. `joins` says what each join got, for the tool to report.
  */
 import { clipEnd, JOIN_SLACK, meets } from "./time.js";
-import type { Clip, ColorClip, MediaAsset, MediaClip, Timeline, Transition, TransitionDirection, TransitionType } from "./schema.js";
+import type { Clip, ColorClip, MediaClip, Timeline, Transition, TransitionDirection, TransitionType } from "./schema.js";
 
 /** A clip's movement across one transition, in timeline seconds. */
 export interface TransitionMotion {
@@ -54,8 +54,10 @@ export const RUN_ON = "~transition-out";
 
 const seconds = (n: number) => `${Math.round(n * 100) / 100} s`;
 
+type TransitionSource = { kind: string; duration?: number };
+
 /** How much footage a clip has before its first frame and after its last, in timeline seconds. A colour has no end. */
-function footage(clip: MediaClip | ColorClip, asset: MediaAsset | undefined) {
+function footage(clip: MediaClip | ColorClip, asset: TransitionSource | undefined) {
   if (clip.kind === "color") return { before: Infinity, after: Infinity };
   if (!asset || asset.kind === "image" || (asset.kind === "graphic" && !asset.duration)) return { before: Infinity, after: Infinity };
   const speed = clip.speed || 1;
@@ -75,7 +77,7 @@ function layer(clip: MediaClip | ColorClip, id: string, start: number, length: n
   };
 }
 
-export function planTransitions(timeline: Timeline, media: ReadonlyMap<string, MediaAsset>, fps: number): TransitionPlan {
+export function planTransitions(timeline: Timeline, media: ReadonlyMap<string, TransitionSource>, fps: number): TransitionPlan {
   const motions = new Map<string, TransitionMotion[]>();
   const layers = new Set<string>();
   const joins: TransitionJoin[] = [];

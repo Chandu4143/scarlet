@@ -19,6 +19,7 @@ import { acousticRepeatedTakes, findRepeatedTakes } from "./dialogue-retakes.js"
 import { firstCutRanges } from "./first-cut-ranges.js";
 import { InsetFraming, insetFraming, syncPictureOps } from "./sync-layout.js";
 import { createHash } from "node:crypto";
+import { wordDigest } from "./transcript-digest.js";
 import { mkdtemp } from "node:fs/promises";
 import { readArtifact, writeArtifact } from "./workspace-files.js";
 import { tmpdir } from "node:os";
@@ -493,6 +494,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const wordLists = new Map<string, TranscriptWord[]>();
   const aligningWords = new Map<string, { words: TranscriptWord[]; through: number; at: number }>();
   const readingWords = new Map<string, Promise<TranscriptWord[] | null>>();
+  const recordedTranscripts = new Map<string, string>();
   function readWords(mediaId: string, prepareMissing: boolean): Promise<TranscriptWord[] | null> {
     const ready = wordLists.get(mediaId);
     if (ready) return Promise.resolve(ready);
@@ -502,8 +504,15 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const key = JSON.stringify([mediaId, prepareMissing]);
     let job = readingWords.get(key);
     if (!job) {
-      job = getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(t => {
+      job = getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(async t => {
         const words = t?.segments.length ? flattenWords(t) : null;
+        if (ctx.task?.context.recordTranscriptDigests && words) {
+          const sha256 = wordDigest(words);
+          if (recordedTranscripts.get(mediaId) !== sha256) {
+            const result = await postEvent({ type: "log", text: "", data: { kind: "eval_transcript", mediaId, count: words.length, sha256 } });
+            if (result.posted) recordedTranscripts.set(mediaId, sha256);
+          }
+        }
         if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now() });
         else if (words) {
           aligningWords.delete(mediaId);
@@ -2015,6 +2024,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // A fresh review session may have no cached scan from the pass that staged this cut.
     await measureTimeline(original, [range.start, range.end]).catch(without("failed to measure words beside the staged cut", undefined));
     const nearby = dialogueJoinWords(original, { media }, range, joinPages());
+    if (nearby.start.length || nearby.end.length) result.content.push(...json({ nearbyWords: nearby }).content);
     const preview = playback ? await peekTimeline(playback.previewVersion) : review.proposed;
     const { repeatAtJoin, partialWordRepeat, pickupRepeats, unread } = await checkKeptWords(original, { media }, range, nearby, planSources.readKeptWords,
       playback ? undefined : review.cuts[index - 1]?.removed.end, playback ? undefined : review.cuts[index + 1]?.removed.start,
@@ -2081,9 +2091,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   tool("dialogue_review_inspect",
-    "Second pass over chronological cuts of a pending dialogue suggestion. For each cut returns the words around it as [start, end, text, speaker or isolated input], original microphone levels (dBFS), voice activity, and timeline_join_audit's reading of the join or why the cut has none. The surviving speech is checked for a doubled word across the join or at the start or end of its kept take. partialWordRepeat identifies a cut-off word beside a whole occurrence in the saved audio, including faded handles. Inspect up to four consecutive cuts in one call with count. Scarlet prepares the next ones while you read." +
+    "Inspect a staged dialogue cut in its original passage and preview. For each cut returns the words around it as [start, end, text, speaker or isolated input], original microphone levels (dBFS), voice activity, and timeline_join_audit's reading of the join or why the cut has none. The surviving speech is checked for a doubled word across the join or at the start or end of its kept take. partialWordRepeat identifies a cut-off word beside a whole occurrence in the saved audio, including faded handles. Inspect up to four consecutive cuts in one call with count. Scarlet prepares the next ones while you read." +
     (reviewPictures ? " Includes synchronized screen and camera sheets and before/after frames for narrowed cuts. A longer removal shows an overview and windows for closer inspection. wholePicture returns activity sheets across all of them." : "") +
-    " Pass the returned versions and exact range to dialogue_review_save. If later edits conflict with the cut being revised, inspecting it returns its current passage and words for dialogue_revise_cut.",
+    " nearbyWords gives the words at both edges in TIMELINE seconds on the inspected original. Use those times in dialogue_revise_cut to move a splice, or save a recommendation for the current range with dialogue_review_save. If later edits conflict with the cut being revised, inspecting it returns its current passage and words for dialogue_revise_cut.",
     { changeId: z.string(), index: z.number().int().nonnegative(),
       count: z.number().int().min(1).max(4).default(1).describe("Inspect this many consecutive suggestions, starting at index."),
       ...(reviewPictures && { wholePicture: z.boolean().default(false).describe("For one longer removal: activity sheets across its whole removed picture in one result.") }),

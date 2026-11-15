@@ -735,6 +735,19 @@ it("combines word context and independently detected speech on a waveform sugges
 });
 
 describe("transcript tools", () => {
+  it("records the actual timed word list once for an evaluation task", async () => {
+    const task = Task.parse({ id: "eval-words", projectId: "prj_test", kind: "edit", state: "running", agent: "codex",
+      instruction: "Cut dialogue", context: { recordTranscriptDigests: true }, createdBy: { type: "human", name: "Editor" } });
+    const editor = await connect(task.id, undefined, task);
+    try {
+      for (const fromWord of [0, 5]) {
+        const result = await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord } });
+        expect(result.isError).toBeFalsy();
+      }
+      const reads = mock.state.events.filter(e => e.data?.kind === "eval_transcript");
+      expect(reads.map(e => e.data)).toEqual([{ kind: "eval_transcript", mediaId: "m1", count: 10, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+    } finally { await editor.close(); }
+  });
   it("transcript_search finds phrases with context", async () => {
     const r = (await client.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "WELCOME back" } })) as CallToolResult;
     const t = textOf(r);
@@ -4071,6 +4084,9 @@ it("marks a recommendation inspected only after the join on the suggestion's ver
     expect(inspected.isError).toBeFalsy();
     const joinAudit = inspected.content.flatMap(c => c.type === "text" && c.text.includes("joinAudit") ? [JSON.parse(c.text).joinAudit] : [])[0];
     expect(joinAudit[0]).toMatchObject({ at: 1.9, verdict: "clean" });
+    const nearby = inspected.content.flatMap(c => c.type === "text" ? JSON.parse(c.text).nearbyWords ?? [] : [])[0];
+    expect(nearby.start[0].words).toEqual(expect.arrayContaining([[.2, .5, "Hello"]]));
+    expect(nearby.end[0].words.length).toBeGreaterThan(0);
     expect(textOf(inspected)).toContain('"levelsDb":[');
     // The editor's count moves as soon as a cut is looked at, before any recommendation for it is saved.
     expect(mock.state.events.findLast(e => e.data?.kind === "cut_progress")?.data).toMatchObject({ changeId: "pass", looked: 1 });
