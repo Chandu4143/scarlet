@@ -684,3 +684,6 @@ button.queue-head:hover { color: var(--color-fg); }
 .composer-send.is-save svg { transform: none; }
 /* A pass's list sits under its line without a rule, its rows in line with the text above. */
 .req .simple-pass-list { margin: 0 -8px 4px; border-top: 0; }
+/* A file that needs the editor marks the header's Media button, as a row's mark does in the menu. */
+.simple-media.needs-you { display: inline-flex; align-items: center; gap: 6px; color: var(--color-fg); }
+.simple-media .menu-dot { margin-left: 0; }

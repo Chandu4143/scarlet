@@ -19,7 +19,7 @@ import { Composer } from "../components/agent/Composer";
 import { useImportTranscription } from "../components/media/TranscriptionAction";
 import { Dropzone, useImportCount, useUploader } from "../components/media/UploadDropzone";
 import { MediaDrawer } from "../components/media/MediaDrawer";
-import { MediaMenuItems, useMediaWarning, useVideoCaching } from "../components/media/MediaMenuItems";
+import { CachingMenuItem, MediaButton, useVideoCaching } from "../components/media/MediaMenuItems";
 import { ProgressRing } from "../components/ui/ProgressRing";
 import { LearningsPanel, learningsToReview } from "../components/review/LearningsPanel";
 import { usePlaybackCache } from "../components/player/usePlaybackCache";
@@ -1024,9 +1024,9 @@ export function SimpleWorkspace() {
   const uploads = useUploader(current.id);
   const importing = useImportCount(current.id);
   const importFailed = uploads.items.some(item => item.state === "error");
-  // What the menu is marked for: a rule to review, a file Media has to explain, an export that stopped, no model to run a request.
+  // What the menu is marked for: a rule to review, an export that stopped, no model to run a request. A file Media has
+  // to explain marks the header's Media button instead.
   const toLearn = useProjectStore(s => learningsToReview(s.current?.learnings));
-  const mediaWarning = useMediaWarning(importFailed);
   const exportWarning = useExportWarning();
   const modelNeedsYou = useModelNeedsYou();
   const { notice, local } = useImportTranscription();
@@ -1510,10 +1510,10 @@ export function SimpleWorkspace() {
   // The transcript's one heading row: the pane puts its figures and help mark here.
   const [transcriptTools, setTranscriptTools] = useState<HTMLElement | null>(null);
   const [menuError, setMenuError] = useState("");
-  const needsYou = [toLearn > 0 && `${plural(toLearn, "rule")} to review in Learnings`, mediaWarning, exportWarning, modelNeedsYou && "No model is ready"]
+  const needsYou = [toLearn > 0 && `${plural(toLearn, "rule")} to review in Learnings`, exportWarning, modelNeedsYou && "No model is ready"]
     .filter((reason): reason is string => !!reason);
-  // Media is inside the menu, so its button shows when videos are caching: a ring that fills as far as they've got.
-  // It asks nothing of the editor, so it isn't the amber mark; hover says it in the Media row's own words.
+  // Pausing caching is inside the menu, so its button shows when videos are caching: a ring that fills as far as
+  // they've got. It asks nothing of the editor, so it isn't the amber mark.
   const caching = useVideoCaching();
   const menuSays = [...needsYou, caching.label].filter((line): line is string => !!line).join(". ");
   // A clip from Media and the cut each keep their own place: the clip opens at its start, not at the cut's time on
@@ -3084,16 +3084,16 @@ export function SimpleWorkspace() {
                 marked when something inside needs the editor, and the row that does carries the same mark. While videos
                 cache, a ring fills around it. */}
             <div className="simple-tools">
-              <button type="button" className="btn-quiet" aria-haspopup="dialog" onClick={() => setPanel("media")}>Media</button>
+              <MediaButton importing={importing} importFailed={importFailed} onOpen={() => setPanel("media")} />
               <ExportButton onOpen={() => setPanel("export")} />
+              <button type="button" className="btn-quiet" aria-haspopup="dialog" onClick={() => setPanel("history")}>History</button>
               <Dropdown label="More" align="right" width={240} description={menuSays || undefined}
                 button={<span className={`btn-icon simple-more${needsYou.length ? " needs-you" : ""}`} title={menuSays || "More"}>
                   <Icon name="more" />{caching.active && <ProgressRing className="simple-more-ring" progress={caching.progress} />}</span>}>
                 {close => <>
                   <MenuItem onClick={() => { close(); setPanel("learnings"); }} title={toLearn ? `${plural(toLearn, "rule")} to review` : undefined}>
                     <Icon name="bulb" />Learnings{toLearn > 0 && <span className="menu-dot" role="img" aria-label={`${plural(toLearn, "rule")} to review`} />}</MenuItem>
-                  <MediaMenuItems importing={importing} importFailed={importFailed} onOpen={() => setPanel("media")} close={close} />
-                  <MenuItem onClick={() => { close(); setPanel("history"); }}><Icon name="history" />History</MenuItem>
+                  <CachingMenuItem close={close} />
                   <MenuItem onClick={() => { close(); setTranscript(v => !v); }}><Icon name="diff" />{transcript ? "Hide transcript" : "Transcript"}</MenuItem>
                   <ExportMenuItem onOpen={() => setPanel("export")} close={close} />
                   <div role="separator" className="my-1 border-t border-line" />
@@ -3105,7 +3105,7 @@ export function SimpleWorkspace() {
             </div>
           </header>
           {panel === "learnings" && <LearningsPanel onClose={() => setPanel(null)} />}
-          {/* A pause of caching isn't said here: the editor chose it, and the menu's Media row says Paused with Resume under it. */}
+          {/* A pause of caching isn't said here: the editor chose it, and the menu's Resume caching row says it. */}
           {(importFailed || menuError) && <div className="simple-banner" role="status">
             <span>{menuError || "Some files need attention."}</span>
             {importFailed && !menuError && <button type="button" className="simple-link" onClick={() => setPanel("media")}>View media</button>}
