@@ -2828,7 +2828,7 @@ it("reports the pauses and doubled words a saved part still plays, and trims a p
     expect(again).not.toHaveProperty("repeatedWords");
     // Named by the word it follows, the pause comes down to the beat, and with the first “have” out nothing is left to report.
     const second = await apply({ kind: "retake", reason: "Doubled “have”.", mediaId: "m1", fromWord: 3, toWord: 3, decision: "cut" },
-      { kind: "pause", reason: "Wait before “signatures”.", mediaId: "m1", afterWord: 4, decision: "cut" }, tail);
+      { kind: "pause", reason: "Wait before “signatures”.", mediaId: "m1", afterWord: 4, leave: .25, decision: "cut" }, tail);
     expect(second).not.toHaveProperty("keptPauses");
     expect(second).not.toHaveProperty("repeatedWords");
     const sent = (mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).at(-1)!.body as { cuts: Array<{ start: number; end: number; kind: string }> }).cuts;
@@ -2940,7 +2940,7 @@ it("says what the recording holds between two words, in the transcript and in wh
     expect(read.split("\n").slice(1)).toEqual(["#0 2.00-2.40 You", "#1 2.50-2.90 can",
       "  · 1.70 s gap, 0.70 s of it sound at speaking level that no word explains (3.10–3.50, 4.20–4.50)", "#2 4.60-5.00 see", "#3 5.05-5.30 all"]);
     // Trimmed as a pause by the word it follows, the sound in it comes out too, and the gate says so.
-    const trimmed = await apply({ kind: "pause", reason: "Wait before “see”.", mediaId: "m1", afterWord: 1, decision: "cut" });
+    const trimmed = await apply({ kind: "pause", reason: "Wait before “see”.", mediaId: "m1", afterWord: 1, leave: .25, decision: "cut" });
     expect(trimmed.gate.decisions).toEqual([expect.objectContaining({ outcome: "cut",
       evidence: "This pause holds 0.70 s of sound at speaking level that no word explains (3.10–3.50, 4.20–4.50 s in m1). It comes out with the pause." })]);
     expect(trimmed).not.toHaveProperty("unexplainedSound");

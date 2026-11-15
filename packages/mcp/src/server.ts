@@ -1627,7 +1627,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   };
   const PauseRef = {
     afterWord: z.number().int().nonnegative().optional().describe("Pause reference, with mediaId: the transcript_get index of the word the pause follows. Scarlet trims the pause between it and the next word, both edges in the measured quiet."),
-    leave: z.number().finite().min(0.05).max(10).optional().describe(`With afterWord: seconds the pause should still play, word to word, default ${PAUSE_BEAT} s.`),
+    leave: z.number().finite().min(0.05).max(10).optional().describe(`Seconds of pause that should still play, word to word, as the editor hears it. Required with afterWord: how long a pause plays is yours to judge, by the delivery around it and the pace the skill asks for. Optional with fromWord/toWord: the pause the join plays, which is ${PAUSE_BEAT} s when omitted.`),
   };
   let checkedVersion: string | undefined;
   const checkedRepeats = new Map<string, RepeatEvidence>();
@@ -1648,7 +1648,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     { version: z.string(), keep: z.array(z.object({ id: z.string(), reason: z.string().trim().min(1).max(300) })).max(100).optional(), offset: z.number().int().nonnegative().optional() },
     async ({ version, keep, offset }) => json(await checkRepeats(version, keep, offset)));
 
-  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with optional leave in seconds). Measured word edges leave up to ${AIR_AFTER_SPEECH} s after kept speech and ${AIR_BEFORE_SPEECH} s before it resumes. For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
+  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with leave: the seconds it should still play). Measured word edges leave up to ${AIR_AFTER_SPEECH} s after kept speech and ${AIR_BEFORE_SPEECH} s before it resumes, or the pause you give as leave, split the same way. For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
   const crossfadeFrames = CrossfadeFrames.optional()
     .describe("Total audio-only overlap at the new dialogue joins, in project frames. Zero or omitted makes a straight cut.");
   const repeatedPhrase = z.string().trim().min(1);

@@ -95,7 +95,7 @@ export function audibleSourcePoints(tl: Timeline, times: number[]) {
  * Resolve a word reference to a timeline range on `tl`: each edge goes in the measured silence
  * beside the removed words (wordCutRange), then maps through the clip that plays it.
  */
-async function resolveWordCut(tl: Timeline, ref: { mediaId: string; fromWord: number; toWord: number }, sources: DialoguePlanSources, compareTakes = false) {
+async function resolveWordCut(tl: Timeline, ref: { mediaId: string; fromWord: number; toWord: number; leave?: number }, sources: DialoguePlanSources, compareTakes = false) {
   let words = await sources.words(ref.mediaId);
   if (!words) throw new Error(`Media ${ref.mediaId} has no transcript words to reference. Use seconds instead.`);
   sources.sameWordsAsRead?.(ref.mediaId, words);
@@ -130,7 +130,7 @@ export function equivalentShifts(words: ReadonlyArray<Pick<TranscriptWord, "text
   return shifts;
 }
 
-async function placeWordCut(tl: Timeline, words: TranscriptWord[], ref: { mediaId: string; fromWord: number; toWord: number; clipId?: string }, sources: DialoguePlanSources) {
+async function placeWordCut(tl: Timeline, words: TranscriptWord[], ref: { mediaId: string; fromWord: number; toWord: number; clipId?: string; leave?: number }, sources: DialoguePlanSources) {
   const { fromWord, toWord } = ref;
   const before = words[fromWord - 1], after = words[toWord + 1];
   // The gap either side of the removed words: its middle, and the edge of the kept word beside it.
@@ -142,8 +142,10 @@ async function placeWordCut(tl: Timeline, words: TranscriptWord[], ref: { mediaI
   // so the recording is measured there as well. Every other gap is read once, at its middle.
   const beyond = sides.filter(s => { const page = pageAt(s.middle); return page && !pageReaches(page, s.kept); });
   if (beyond.length) await sources.measure(beyond.map(s => ({ mediaId: ref.mediaId, t: s.kept })));
-  const cut = wordCutRange(words, fromWord, toWord, pageAt);
   const clips = audibleMediaClips(tl).filter(c => c.mediaId === ref.mediaId && (!ref.clipId || c.id === ref.clipId));
+  // `leave` is what the editor hears; the quiet is measured in the recording, which the clip plays at its speed.
+  const playing = clips.find(c => words[fromWord]!.start < c.sourceOut && words[toWord]!.end > c.sourceIn) ?? clips[0];
+  const cut = wordCutRange(words, fromWord, toWord, pageAt, ref.leave === undefined ? undefined : ref.leave * (playing?.speed ?? 1));
   if (ref.clipId && clips[0]) {
     // No neighboring recognized word can justify removing a long unmeasured lead-in or tail at a clip boundary.
     const { sourceIn, sourceOut } = clips[0];
@@ -202,7 +204,7 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   const pageAt = (t: number) => scanPageAt(sources.pages(), ref.mediaId, 0, t);
   // `leave` is what the editor hears, and the clip plays the recording at its speed: at 2x, 0.4 s heard is 0.8 s of the
   // recording. The quiet the edges stay in is measured in the recording, so the trim is placed there.
-  const speed = clip.speed ?? 1, leave = ref.leave ?? PAUSE_BEAT;
+  const speed = clip.speed ?? 1, leave = ref.leave ?? PAUSE_BEAT; // Callers inside Scarlet may omit it; the agent's tools require it.
   const cut = pauseCutRange(before, after, pageAt, leave * speed);
   const plays = cut.plays / speed;
   if ((cut.end - cut.start) / speed < .04) throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, which leaves nothing to trim down to ${leave.toFixed(2)} s.`);
@@ -225,7 +227,7 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
   const pause = c.afterWord !== undefined;
   const words = c.mediaId !== undefined || c.fromWord !== undefined || c.toWord !== undefined || pause;
   const seconds = c.start !== undefined || c.end !== undefined;
-  if (c.leave !== undefined && !pause) throw new Error(`${label}: leave goes with afterWord. A range in seconds or words already says what plays.`);
+  if (c.leave !== undefined && seconds) throw new Error(`${label}: leave goes with a word or pause reference. A range in seconds already says what plays.`);
   if (c.occurrence) {
     if (words || seconds || c.leave !== undefined) throw new Error(`${label}: a measured occurrence already identifies the range to remove.`);
     const { mediaId, clipId, words: heard, before, after } = c.occurrence;
@@ -236,6 +238,8 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
   if (words === seconds) throw new Error(`${label}: give start/end in timeline seconds or mediaId with fromWord/toWord, not both or neither.`);
   if (pause) {
     if (!c.mediaId || c.fromWord !== undefined || c.toWord !== undefined) throw new Error(`${label}: a pause reference is mediaId with afterWord, without fromWord or toWord.`);
+    // How long a pause plays is pacing, and pacing is the agent's call: there is no length Scarlet picks for it.
+    if (c.leave === undefined) throw new Error(`${label}: give leave with afterWord, the seconds this pause should still play, word to word. Judge it by the delivery around it and the pace the skill asks for.`);
     return { ...await resolvePauseCut(tl, { mediaId: c.mediaId, afterWord: c.afterWord!, leave: c.leave }, sources), wordRef: true as const };
   }
   if (seconds) {
@@ -246,7 +250,7 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
     return { start: c.start, end: c.end > total && c.end - total <= 0.001 ? total : c.end };
   }
   if (!c.mediaId || c.fromWord === undefined || c.toWord === undefined) throw new Error(`${label}: a word reference needs mediaId, fromWord and toWord.`);
-  return { ...await resolveWordCut(tl, { mediaId: c.mediaId, fromWord: c.fromWord, toWord: c.toWord }, sources, compareTakes), wordRef: true as const };
+  return { ...await resolveWordCut(tl, { mediaId: c.mediaId, fromWord: c.fromWord, toWord: c.toWord, leave: c.leave }, sources, compareTakes), wordRef: true as const };
 }
 
 /** One dialogue-scan page as join evidence, built the same way for the live tool and for replay. */
