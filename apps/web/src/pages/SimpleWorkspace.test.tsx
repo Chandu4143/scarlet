@@ -581,20 +581,20 @@ it("draws every applied edit on the working cut under what needs the editor, gat
   await act(async () => {});
   expect(container.querySelector(".timeline-ruler")!.textContent).not.toBe(ruler);
   expect(editPanel()).toBeNull();
-  for (let i = 0; i < 4 && countLabels().length; i++) {
+  for (let i = 0; i < 4 && !countLabels().includes("1 cut"); i++) {
     const count = editMarks().find(m => m.classList.contains("is-count"))!;
     await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(count.style.left) * 10 })); });
     await act(async () => {});
   }
-  const lines = editMarks().filter(m => m.classList.contains("is-cut"));
-  expect(lines.length).toBeGreaterThan(1);
-  expect(countLabels()).toEqual([]);
-  // Hovering a line names its cut, and a press opens it in the card, as its row in the chat would.
-  const line = lines[1]!;
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(line.style.left) * 10 })); });
+  // Zoomed in, the counts open into smaller ones, down to a count of one cut. A cut is never drawn as a line.
+  expect(countLabels()).toContain("1 cut");
+  expect(editMarks().filter(m => m.classList.contains("is-cut"))).toEqual([]);
+  // Hovering a count of one names its cut, and a press opens it in the card, as its row in the chat would.
+  const one = editMarks().find(m => m.textContent === "1 cut")!;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(one.style.left) * 10 })); });
   expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined b")?.textContent).toMatch(/^Cut at \d+:\d\d$/);
-  expect(line.classList.contains("is-hot")).toBe(true);
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(line.style.left) * 10 })); });
+  expect(one.classList.contains("is-hot")).toBe(true);
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(one.style.left) * 10 })); });
   await act(async () => {});
   expect(editPanel()).not.toBeNull();
 });
@@ -10803,6 +10803,33 @@ it("keeps one list of every edit open at a time, and puts a request's edits on t
   expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("false");
   expect(band("chg_approved_2").classList.contains("is-marked")).toBe(true);
   expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2", "3"]);
+});
+
+it("shows the whole timeline on any press on a request's band", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("timeline-slider") ? 1000 : 0; });
+  earlierRequestOnly(false);
+  const later = laterRequest("chg_later", false);
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const request = (id: string, instruction: string, changeId: string) => Task.parse({ id, projectId: PRJ, kind: "edit", agent: "claude",
+    instruction, state: "done", createdBy: { type: "human", name: "Editor" }, changeIds: [changeId], createdAt: at, finishedAt: at });
+  const change = { ...later.change, taskId: "task_fades", timelineEdits: [{ label: "outro fade", range: { start: 13, end: 15 } }] };
+  data = { ...data, changes: [...data.changes.map(c => c.id === "chg_approved_2" ? { ...c, taskId: "task_zooms" } : c), change],
+    tasks: [request("task_zooms", "Frame the screen", "chg_approved_2"), request("task_fades", "Fade both ends", "chg_later")] };
+  useProjectStore.setState({ current: data });
+  await showFolded();
+  await act(async () => {});
+  zoomAtOnce();
+  const ruler = () => container.querySelector(".timeline-ruler")!.textContent;
+  const whole = ruler();
+  const band = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".unit-msg")!;
+  // The band of the request already marked, then an earlier one's.
+  for (const changeId of ["chg_later", "chg_approved_2"]) {
+    for (let i = 0; i < 3; i++) await press("+");
+    expect(ruler()).not.toBe(whole);
+    await click(band(changeId));
+    await act(async () => {});
+    expect(ruler()).toBe(whole);
+  }
 });
 
 it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flagged edit, when it comes next in the list", () => {

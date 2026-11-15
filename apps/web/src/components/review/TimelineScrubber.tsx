@@ -222,6 +222,8 @@ interface TimelineScrubberProps {
   onGap?(gap: TimelineGap, time: number): void;
   /** A click inside the highlight's band, at the time it points to. It doesn't seek: the caller decides where to play it. */
   onBand?(time: number): void;
+  /** Changes each time the caller asks for the whole timeline, which it then zooms out to. */
+  fit?: number;
   /** The stretch the editor marked for the message they're writing, in this timeline's clock. */
   range?: TimeRange;
   /**
@@ -491,7 +493,7 @@ export function TimelineScrubber(props: TimelineScrubberProps) {
 }
 
 function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, subject, kept,
-  pictureAspect = 16 / 9, frameAt, previewStrip, hoverVideo, onSeek, onSelectTime, onScrubStart, highlight, marks, edits, gaps, skippedRanges, onGap, onBand, range, onRange, fps = 30 }:
+  pictureAspect = 16 / 9, frameAt, previewStrip, hoverVideo, onSeek, onSelectTime, onScrubStart, highlight, marks, edits, gaps, skippedRanges, onGap, onBand, fit, range, onRange, fps = 30 }:
   TimelineScrubberProps & { subject: string; kept: RefObject<KeptView | undefined> }) {
   const litMark = useStore(useContext(EditHoverContext));
   // The message box's icon is open: the passage the message is about lights up.
@@ -541,6 +543,13 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     if (highlightView) fitRange(highlightView.start, highlightView.end, previous !== undefined);
     else fitRange();
   }, [highlightKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The caller asked for the whole timeline. A timeline built since hasn't been asked.
+  const fitAsked = useRef(fit);
+  useLayoutEffect(() => {
+    if (fitAsked.current === fit) return;
+    fitAsked.current = fit;
+    fitRange();
+  }, [fit]); // eslint-disable-line react-hooks/exhaustive-deps
   const mediaWindows = target && (target.from !== samples.from || target.span !== samples.span)
     ? [samples, target] : [samples];
   const to = from + span;
@@ -602,7 +611,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   </span>;
   const hotEditMark = hotEdit === undefined ? undefined : editLayout.find(mark => mark.key === hotEdit);
   const editNote = hotEditMark && <span className="simple-timeline-tip is-joined">
-    {hotEditMark.shape === "count" ? <span>
+    {hotEditMark.shape === "count" && hotEditMark.edits.length > 1 ? <span>
       <b>{hotEditMark.label}</b>
       <small>{playbackClock(hotEditMark.start)}–{playbackClock(hotEditMark.end)} · Click to zoom in</small>
     </span> : hotEditMark.edits.map((dot, i) => <span key={i}>
@@ -649,8 +658,9 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const [aimed, setAimed] = useState(false);
   const pressable = useMemo(() => markLayout.filter(mark => !mark.quiet), [markLayout]);
   // A count opens into its edits: a press zooms to its stretch. Zoomed in as far as the timeline goes, it opens its first.
+  // A count of one cut opens it.
   const openEdits = (mark: EditLayout) => {
-    if (mark.shape !== "count") return mark.edits[0]!.open;
+    if (mark.shape !== "count" || mark.edits.length === 1) return mark.edits[0]!.open;
     if (span > minSpan * 1.05) return () => {
       const pad = Math.max(.5, (mark.end - mark.start) * .15);
       fitRange(Math.max(start, mark.start - pad), Math.min(end, mark.end + pad));

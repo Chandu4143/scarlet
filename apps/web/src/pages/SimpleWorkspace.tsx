@@ -202,6 +202,8 @@ interface ChatActions {
   marked?: string;
   /** Put a request's edits on the timeline, from a press on its band. */
   mark?(threadId: string): void;
+  /** Show the whole timeline, from a press on any request's band. */
+  fitTimeline?(): void;
   pass?: OpenPass;
   reviewingId?: string;
   listening?: Listening;
@@ -976,15 +978,18 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
       {bundle}
       {wrong}
     </div>;
-    // A press on the band of a request that applied edits puts them on the timeline; its band is a shade lighter while
-    // they are the ones marked. Its links and Stop keep their own presses.
+    // A press on any request's band shows the whole timeline. On the band of a request that applied edits it also puts
+    // them on the timeline; its band is a shade lighter while they are the ones marked. Its links and Stop keep their
+    // own presses.
     const markable = !!actions.mark && thread.changes.some(c => c.state === "approved");
     const marked = markable && actions.marked === thread.id;
+    const pressable = markable || !!actions.fitTimeline;
     const block = <div key={run.root} className="unit" data-run={run.root} data-pinned={isPinned || undefined}>
-      {request && <div className={`unit-msg${markable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
-        aria-current={marked || undefined} onClick={markable ? e => {
+      {request && <div className={`unit-msg${pressable ? " is-markable" : ""}${marked ? " is-marked" : ""}`} title={request.text}
+        aria-current={marked || undefined} onClick={pressable ? e => {
           if ((e.target as Element).closest("button, a, input, textarea") || window.getSelection()?.toString()) return;
-          actions.mark!(thread.id);
+          if (markable) actions.mark!(thread.id);
+          actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
         <p>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}{request.text}</p>
         <span className="unit-state">{standing}</span>{stopLink}</div>}
@@ -1131,6 +1136,8 @@ export function SimpleWorkspace() {
   // The request whose band the editor pressed in the chat, to see its edits on the timeline. The latest request takes the
   // timeline back when it is new or applies an edit.
   const [picked, setPicked] = useState<string>();
+  // Counts the presses on a band, each of which shows the whole timeline.
+  const [fitTimeline, setFitTimeline] = useState(0);
   // The request whose edits the timeline numbers when nothing is open: the one picked, else the latest.
   const marked = threads.find(t => t.id === picked) ?? ordered.at(-1);
   // The timeline is on the request the editor went to: an edit they opened, or a pass's full list. Otherwise it is on the
@@ -1805,6 +1812,7 @@ export function SimpleWorkspace() {
       setPicked(threadId === ordered.at(-1)?.id ? undefined : threadId);
       setFocus(undefined);
     },
+    fitTimeline() { setFitTimeline(n => n + 1); },
     reviewingId: suggestion?.id,
     listening,
     listen(change, a) {
@@ -3184,7 +3192,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
+          <CutPreview simple={{ marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
             gaps: cutKey ? gaps : undefined, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? audition)?.skips,
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
