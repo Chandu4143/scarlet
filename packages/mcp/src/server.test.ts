@@ -9,6 +9,7 @@ import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient
 import type { Transcript } from "@scarlet/timeline";
 import { emptyTimeline, makeMediaClip } from "@scarlet/timeline";
 import { createScarletMcpServer, SCARLET_TOOL_NAMES } from "./server.js";
+import * as dialogueJoin from "./dialogue-join.js";
 import { describeError, toolRefusal } from "./tool-result.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { makeState, startMockServer, type MockServer } from "./mock-server.js";
@@ -2212,13 +2213,13 @@ it("resumes a carried conflict by the original cut and keeps it by its new numbe
   }
 });
 
-it.each(["pending conflict", "saved override"])("requires a current read on a rollback to the original version with a %s", async evidence => {
+it.each(["pending conflict", "saved override", "background join"])("requires a current read on a rollback to the original version with a %s", async evidence => {
   const range = { start: 2, end: 3 };
   const task = Task.parse({ id: "rollback", state: "running", projectId: "prj_test", kind: "revise", agent: "codex",
     instruction: "Remove the repeated word.", context: { changeId: "pass", cutIndex: 0 }, createdBy: { type: "human", name: "Editor" },
-    ...(evidence === "pending conflict" && { cutConflict: { version: "intervening", range } }) });
-  const editor = await connect(task.id, undefined, task);
-  const before = { extra: mock.state.extra, timeline: mock.state.timeline };
+    ...(evidence !== "saved override" && { cutConflict: { version: "intervening", range } }) });
+  const editor = await connect(task.id, undefined, task, undefined, undefined, "codex", 20);
+  const before = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform };
   const tl = emptyTimeline("prj_test");
   tl.version = "original";
   tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 6, 0)];
@@ -2242,7 +2243,27 @@ it.each(["pending conflict", "saved override"])("requires a current read on a ro
   try {
     expect((await move()).isError).toBe(true);
     expect(writes).toBe(0);
-    await editor.callTool({ name: "timeline_transcript", arguments: { version: tl.version, from: 1, to: 4 } });
+    if (evidence === "background join") {
+      mock.state.waveform = spokenWaveform;
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const detections = vi.spyOn(ScarletClient.prototype, "dialogueDetections").mockImplementation(async () => {
+        await gate;
+        return { acoustic: [], segments: transcript.segments };
+      });
+      const measured = vi.spyOn(dialogueJoin, "joinAudio");
+      const check = async () => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, ...range } }) as CallToolResult);
+      try {
+        expect((await check()).status).toBe("measuring");
+        release();
+        await vi.waitFor(() => expect(measured).toHaveBeenCalled());
+        expect((await move()).isError).toBe(true);
+        expect(writes).toBe(0);
+        expect((await check()).audio).toHaveLength(2);
+      } finally { release(); measured.mockRestore(); detections.mockRestore(); }
+    } else {
+      await editor.callTool({ name: "timeline_transcript", arguments: { version: tl.version, from: 1, to: 4 } });
+    }
     expect((await move()).isError).toBeFalsy();
     expect(writes).toBe(1);
   } finally {
@@ -3486,6 +3507,35 @@ it("returns progress for a cold 12-cut batch and collects the same measurements 
     release();
     await editor.close();
     detections.mockRestore();
+    Object.assign(mock.state, original);
+  }
+});
+
+it("delivers ready cuts and errors while another cut waits for its waveform", async () => {
+  const original = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+  const editor = await connect(undefined, undefined, undefined, undefined, undefined, "codex", 20);
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "partial-waves";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 52, 0)];
+  mock.state.timeline = tl;
+  mock.state.waveform = spokenWaveform;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const waveform = vi.spyOn(ScarletClient.prototype, "waveform").mockImplementation(async (id, from, to, points = 1000) => {
+    if (from >= 20) await gate;
+    return spokenWaveform(id, from, to, points);
+  });
+  const cuts = [{ start: 50, end: 59 }, { start: 1, end: 2 }, { start: 30, end: 31 }];
+  const check = async () => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, cuts } }) as CallToolResult);
+  try {
+    await vi.waitFor(async () => expect(await check()).toMatchObject({ status: "measuring", pendingCuts: [2],
+      joins: [{ error: expect.stringContaining("nonempty range") }, { originalRange: cuts[1], audio: expect.any(Array) }, { status: "pending" }] }));
+    release();
+    await vi.waitFor(async () => expect((await check()).joins[2]).toMatchObject({ originalRange: cuts[2] }));
+  } finally {
+    release();
+    await editor.close();
+    waveform.mockRestore();
     Object.assign(mock.state, original);
   }
 });

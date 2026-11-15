@@ -7,7 +7,7 @@ import { extractWav } from "../render/ffmpeg.js";
 import { AnalysisCache } from "../services/analysisCache.js";
 import { audioLane, type AudioLane, type AudioWork } from "../services/audioWork.js";
 import {
-  alignGroup, applyTimings, alignmentGroups, CLASSES, CTC_LETTERS, SPANISH_CTC_LETTERS, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
+  alignGroup, applyTimings, alignmentGroups, CTC_LETTERS, SPANISH_CTC_LETTERS, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
   planChunks, round, SAMPLE_RATE, stitchChunks, type AlignWord, type Emissions, type WordTiming,
 } from "./ctcAlign.js";
 import { audioWorker } from "./audioWorker.js";
@@ -132,7 +132,7 @@ export class WordAligner {
     const alphabet = spanish ? SPANISH_CTC_LETTERS : CTC_LETTERS;
     const classes = 5 + alphabet.length;
     const emissions = spanish && opts.emissions
-      ? { ...opts.emissions, file: opts.emissions.file + ".es-6531e09e.bin" } : opts.emissions;
+      ? { ...opts.emissions, file: `${opts.emissions.file}.es-${spanishWeights.sha256.slice(0, 8)}.bin` } : opts.emissions;
     const words = segments.flatMap(s => s.words);
     const { resume } = opts;
     const through = resume?.through ?? 0;
@@ -357,7 +357,7 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
   const ort = loadRuntime();
   const audio = await openWav(wav);
   // On the GPU when there is one. A run that fails there starts again on the CPU, so it builds its result afresh.
-  try { return await withInference(ort, model, async session => {
+  try { return await withAligner(ort, model, alphabet, sessions, async readWindow => {
     const out: AlignResponse = groups.map(g => g.words.map(() => null));
     const regions = searchRegions(groups, audio.samples / SAMPLE_RATE);
     let previousEnd = after ?? -Infinity;
@@ -367,12 +367,12 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
       const from = Math.floor(region.start * SAMPLE_RATE / FRAME_SAMPLES) * FRAME_SAMPLES;
       const samples = await audio.read(from, Math.ceil(region.end * SAMPLE_RATE));
       const length = region.end - region.start;
-      const emissions = await emit(ort, session, samples, 5 + alphabet.length, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
+      const emissions = await emit(readWindow, samples, 5 + alphabet.length, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
       emitted += length;
       previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out, alphabet);
     }
     return out;
-  }, { sessions, ...(language === "es" && { gpu: false as const }) }); } finally {
+  }); } finally {
     await audio.close();
   }
 }
@@ -411,32 +411,19 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
     if (missing.length) {
       if (!audio) throw new Error("The recording's alignment store lacks audio it was not given.");
       const ort = loadRuntime();
-      // On Apple silicon the helper tries WebGPU, where it keeps the session: preparing it for one turn costs more
-      // than it saves. A window is saved as soon as it is inferred, so a run that fails on the GPU continues on the
-      // CPU where it stopped.
-      // The quantized Spanish graph is verified on CPU. The WebGPU node list and comparison below belong to English.
-      const gpu = alphabet === SPANISH_CTC_LETTERS ? { gpu: false as const } : sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: WEBGPU_CPU_NODES } : {};
-      await withInference(ort, model, async (session, provider) => {
+      // Save each verified window as it finishes. CPU fallback resumes at the first missing window.
+      await withAligner(ort, model, alphabet, sessions, async readWindow => {
         for (const [done, index] of missing.entries()) {
           if (saved.missing(saved.chunks[index]!.keep[0], saved.chunks[index]!.keep[1]).includes(index)) {
             const chunk = saved.chunks[index]!;
             const part = await audio.read(chunk.start, chunk.start + chunk.length);
-            const logits = await infer(ort, session, part, classes);
-            if (provider === "webgpu" && sessions && !sessions.verified.has(model)) {
-              const expected = await withInference(ort, model, cpu => infer(ort, cpu, part, classes), { sessions, gpu: false });
-              const { worst, flips } = compareLogits(expected, logits);
-              if (!(worst <= GPU_LOGIT_TOLERANCE && flips <= GPU_FLIP_TOLERANCE)) {
-                throw new Error(`The GPU's aligner output differs from the CPU's (${worst.toFixed(3)}, ${(100 * flips).toFixed(1)}% of frames).`);
-              }
-              sessions.verified.add(model);
-              await sessions.drop(`cpu:${model}`);
-            }
+            const logits = await readWindow(part);
             const first = chunk.start / FRAME_SAMPLES;
             await saved.write(index, logSoftmax(logits.slice((chunk.keep[0] - first) * classes, (chunk.keep[1] - first) * classes), classes));
           }
           onProgress?.((done + 1) / missing.length);
         }
-      }, { sessions, ...gpu });
+      });
     }
     const out: AlignResponse = groups.map(g => g.words.map(() => null));
     let previousEnd = after ?? -Infinity;
@@ -454,16 +441,16 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
 }
 
 /** The largest difference between two sets of logits, and the share of frames whose top class differs. */
-function compareLogits(a: Float32Array, b: Float32Array) {
+function compareLogits(a: Float32Array, b: Float32Array, classes: number) {
   let worst = a.length === b.length ? 0 : Infinity, flips = 0;
-  const frames = Math.min(a.length, b.length) / CLASSES;
+  const frames = Math.min(a.length, b.length) / classes;
   for (let f = 0; f < frames; f++) {
     let top = 0, other = 0;
-    for (let c = 0; c < CLASSES; c++) {
-      const at = f * CLASSES + c;
+    for (let c = 0; c < classes; c++) {
+      const at = f * classes + c;
       worst = Math.max(worst, Math.abs(a[at]! - b[at]!));
-      if (a[at]! > a[f * CLASSES + top]!) top = c;
-      if (b[at]! > b[f * CLASSES + other]!) other = c;
+      if (a[at]! > a[f * classes + top]!) top = c;
+      if (b[at]! > b[f * classes + other]!) other = c;
     }
     if (top !== other) flips++;
   }
@@ -472,6 +459,32 @@ function compareLogits(a: Float32Array, b: Float32Array) {
 
 type Runtime = ReturnType<typeof loadRuntime>;
 type Session = Awaited<ReturnType<Runtime["InferenceSession"]["create"]>>;
+
+type ReadWindow = (part: Float32Array) => Promise<Float32Array>;
+
+/** Check the first accelerated window against this model's CPU output before its timings or emissions are used. */
+function withAligner<T>(ort: Runtime, model: string, alphabet: string, sessions: Sessions | undefined,
+  work: (readWindow: ReadWindow) => Promise<T>) {
+  const classes = 5 + alphabet.length;
+  const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: alphabet === CTC_LETTERS ? WEBGPU_CPU_NODES : undefined } : {};
+  return withInference(ort, model, async (session, provider) => {
+    let verified = sessions?.verified.has(model) ?? false;
+    return work(async part => {
+      const logits = await infer(ort, session, part, classes);
+      if (!verified && (provider === "webgpu" || (provider === "dml" && alphabet === SPANISH_CTC_LETTERS))) {
+        const expected = await withInference(ort, model, cpu => infer(ort, cpu, part, classes), { sessions, gpu: false });
+        const { worst, flips } = compareLogits(expected, logits, classes);
+        if (!(worst <= GPU_LOGIT_TOLERANCE && flips <= GPU_FLIP_TOLERANCE)) {
+          throw new Error(`The GPU's aligner output differs from the CPU's (${worst.toFixed(3)}, ${(100 * flips).toFixed(1)}% of frames).`);
+        }
+        verified = true;
+        sessions?.verified.add(model);
+        await sessions?.drop(`cpu:${model}`);
+      }
+      return logits;
+    });
+  }, { sessions, ...gpu });
+}
 
 /** One window's logits, its audio normalized like the model's feature extractor. */
 async function infer(ort: Runtime, session: Session, part: Float32Array, classes: number) {
@@ -490,11 +503,11 @@ async function infer(ort: Runtime, session: Session, part: Float32Array, classes
 }
 
 /** Log-probabilities over ≤30 s windows that overlap by 2 s, each normalized like the model's feature extractor. */
-async function emit(ort: Runtime, session: Session, samples: Float32Array, classes: number, onChunk?: (done: number) => void) {
+async function emit(readWindow: ReadWindow, samples: Float32Array, classes: number, onChunk?: (done: number) => void) {
   const chunks = planChunks(samples.length);
   const outputs: Float32Array[] = [];
   for (const [index, chunk] of chunks.entries()) {
-    outputs.push(await infer(ort, session, samples.subarray(chunk.start, chunk.start + chunk.length), classes));
+    outputs.push(await readWindow(samples.subarray(chunk.start, chunk.start + chunk.length)));
     onChunk?.((index + 1) / chunks.length);
   }
   const logProbs = logSoftmax(stitchChunks(chunks, outputs, classes), classes);
