@@ -359,7 +359,7 @@ describe("tool annotations", () => {
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
   const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
-    "graphic_render", "template_save", "style_guide_save"];
+    "graphic_render", "template_save", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
 
   it("marks exactly the tools that change something as writes, and nothing as destructive", () => {
@@ -377,11 +377,15 @@ describe("tool annotations", () => {
     const task = Task.parse({ id: "skill-task", state: "running", projectId: "prj_test", kind: "skill_edit", agent: "codex", instruction: "Shorter pauses",
       context: { skillId: "skl_1" }, hostId: "host_a", createdBy: { type: "human", name: "Editor" } });
     const check = Task.parse({ ...task, id: "check-task", kind: "learning_check", context: { checksTaskId: "asked-task" } });
-    const sessions = [await hearing(), await connect({ agent: "codex", taskId: task.id, task }), await connect({ agent: "codex", taskId: check.id, task: check })];
+    const shorts = Task.parse({ ...task, id: "shorts-task", kind: "edit", instruction: "Make up to 3 vertical shorts, each under 60 s.", context: { short: {
+      index: 1, count: 3, sourceProjectId: "prj_long", sourceName: "Long", sourceVersion: "v1", aspect: "9:16", maxSeconds: 60, captions: true, projectIds: ["prj_test", "prj_b", "prj_c"] } } });
+    const sessions = [await hearing(), await connect({ agent: "codex", taskId: task.id, task }), await connect({ agent: "codex", taskId: check.id, task: check }),
+      await connect({ agent: "codex", taskId: shorts.id, task: shorts })];
     try {
       const tools = (await Promise.all(sessions.map(c => c.listTools()))).flatMap(l => l.tools);
-      // The hearing session lists every editing tool; the skill request adds the tool that saves its revision, and the
-      // check that reads a request the one that offers a rule.
+      // The hearing session lists every editing tool; the skill request adds the tool that saves its revision, the
+      // check that reads a request the one that offers a rule, and the first short of Make shorts the one that saves
+      // every short's moment.
       expect([...new Set(tools.map(t => t.name))].sort()).toEqual(every.filter(name => name !== "skill_save_from_change").sort());
       for (const t of tools) expect(t.annotations, t.name).toEqual(toolAnnotations(t.name));
     } finally { await Promise.all(sessions.map(c => c.close())); }
@@ -733,5 +737,24 @@ describe("screen_text", () => {
     const blind = await connect({ capabilities: { images: false, audio: false, files: false } });
     expect(await description(blind)).not.toContain("media_frame");
     expect(await description(await connect({ editingTools: { pictures: false } }))).not.toContain("media_frame");
+  });
+});
+
+describe("shorts_plan", () => {
+  const short = { index: 1, count: 2, sourceProjectId: "prj_long", sourceName: "Long", sourceVersion: "v1", aspect: "9:16" as const, maxSeconds: 60, captions: true, projectIds: ["prj_test", "prj_b"] };
+  const task = (index: number) => Task.parse({ id: `short-${index}`, state: "running", projectId: "prj_test", kind: "edit", agent: "claude", instruction: "Make up to 2 vertical shorts, each under 60 s.",
+    context: { short: { ...short, index } }, hostId: "host_a", createdBy: { type: "human", name: "Editor" } });
+
+  it("saves the first short's moments for its task, and is offered to no other run", async () => {
+    mock.state.extra = (req, res) => req.path === "/tasks/short-1/shorts-plan"
+      ? reply(res, { shorts: [{ projectId: "prj_test", name: "Agents fail" }, { projectId: "prj_b", name: "The wrong flight", taskId: "tsk_b" }], removed: [] }) : false;
+    const first = await connect({ taskId: "short-1", task: task(1) });
+    const second = await connect({ taskId: "short-2", task: task(2) });
+    try {
+      const moments = [{ start: 5, end: 40, title: "Agents fail" }, { start: 50, end: 80, title: "The wrong flight" }];
+      expect(JSON.parse(textOf(await ok(first, "shorts_plan", { moments })))).toMatchObject({ shorts: [{ name: "Agents fail" }, { taskId: "tsk_b" }] });
+      expect(sent("/tasks/short-1/shorts-plan")[0]!.body).toEqual({ moments });
+      expect((await second.listTools()).tools.map(t => t.name)).not.toContain("shorts_plan");
+    } finally { await Promise.all([first.close(), second.close()]); }
   });
 });
