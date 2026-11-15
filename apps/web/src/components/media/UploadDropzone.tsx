@@ -41,12 +41,10 @@ export type ImportSource = File | string;
 export function filename(source: ImportSource) {
   if (typeof source !== "string") return source.name;
   if (!isLink(source)) return source.split(/[\\/]/).pop() || source;
-  try {
-    const last = new URL(source).pathname.split("/").pop();
-    return last?.includes(".") ? last : source;
-  } catch {
-    return source;
-  }
+  let last: string | undefined;
+  try { last = new URL(source).pathname.split("/").pop(); } catch { return source; }
+  if (!last?.includes(".")) return source;
+  try { return decodeURIComponent(last); } catch { return last; }
 }
 
 interface ProjectImports {

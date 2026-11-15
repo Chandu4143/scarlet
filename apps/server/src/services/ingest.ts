@@ -120,12 +120,13 @@ function safeExt(name: string): string {
 
 function filenameFromResponse(cd: string | undefined, url: string): string {
   const m = cd && (/filename\*=UTF-8''([^;]+)/i.exec(cd) ?? /filename="?([^";]+)"?/i.exec(cd));
-  if (m?.[1]) {
-    // A plain name can hold a "%" that isn't an escape: "100% done.mp4".
-    try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+  let name = m?.[1];
+  if (!name) {
+    name = new URL(url).pathname.split("/").pop();
+    if (!name?.includes(".")) return "download";
   }
-  const path = new URL(url).pathname.split("/").pop();
-  return path && path.includes(".") ? path : "download";
+  // A plain name can hold a "%" that isn't an escape: "100% done.mp4".
+  try { return decodeURIComponent(name); } catch { return name; }
 }
 
 /** Hash incoming bytes as they are staged, without rereading an upload or download. */
