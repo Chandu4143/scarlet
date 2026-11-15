@@ -7,14 +7,19 @@
  *   tsx evals/src/run.ts --cases a,b --configs … --trials 3 --yes      (launches agent tasks: billed)
  *   tsx evals/src/run.ts --summarize <results/runs/…>
  */
+import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { cli, isMain, list, main } from "./args.ts";
 import { listCases, loadCase, type LoadedCase } from "./case.ts";
 import { Engine, type TaskRecord } from "./engine.ts";
+import { fetchWords } from "./evidence.ts";
+import type { EventLike } from "./metrics.ts";
 import { evaluateCaseOrigin, evaluateTask } from "./evaluate.ts";
 import { DEFAULT_EDGE_OPTIONS, KEPT_SIDE_EDGE_OPTIONS } from "./metrics.ts";
-import { checkedPath, fileComponent, readJson, resultsDir, timestamp, writeJson, writeText } from "./paths.ts";
+import { checkedPath, dataDir, fileComponent, readJson, REPO_ROOT, resultsDir, timestamp, writeJson, writeText } from "./paths.ts";
 import { evaluationMarkdown, runMarkdown, type TrialRow } from "./report.ts";
 
 const USAGE = `Usage:
@@ -26,6 +31,30 @@ const USAGE = `Usage:
 Results go to $SCARLET_EVAL_DATA/results (default: Scarlet's application support folder /evals).`;
 
 interface AgentConfig { agent: string; model?: string; effort?: string }
+
+async function transcriptSnapshot(engine: Engine, loaded: LoadedCase) {
+  return Promise.all(loaded.file.dialogueMedia.map(async mediaId => {
+    const words = await fetchWords(engine, mediaId);
+    const frozen = loaded.evidence.get(mediaId)?.words;
+    return { mediaId, count: words?.length ?? 0, sha256: words?.length ? wordDigest(words) : null,
+      frozenSha256: frozen?.length ? wordDigest(frozen) : null };
+  }));
+}
+
+type TranscriptSnapshot = Awaited<ReturnType<typeof transcriptSnapshot>>;
+export function trialTranscripts(before: TranscriptSnapshot, after: TranscriptSnapshot, events: EventLike[]) {
+  const reads = events.flatMap(e => {
+    const d = e.data;
+    return d?.kind === "eval_transcript" && typeof d.mediaId === "string" && typeof d.sha256 === "string"
+      ? [{ mediaId: d.mediaId, sha256: d.sha256, count: d.count, at: e.at }] : [];
+  });
+  const mismatchedMedia = before.filter((v, i) => {
+    const seen = reads.filter(r => r.mediaId === v.mediaId);
+    return !v.frozenSha256 || v.sha256 !== v.frozenSha256 || v.sha256 !== after[i]?.sha256 ||
+      !seen.length || seen.some(r => r.sha256 !== v.sha256 || r.count !== v.count);
+  }).map(v => v.mediaId);
+  return { before, reads, after, mismatchedMedia };
+}
 
 function parseConfig(spec: string): AgentConfig {
   const parts = spec.split(":");
@@ -42,7 +71,8 @@ function taskRequest(loaded: LoadedCase, config: AgentConfig, branch: string, sk
   return {
     kind: "edit", agent: config.agent, ...(config.model && { model: config.model }), ...(config.effort && { effort: config.effort }),
     instruction: r.instruction,
-    context: { branch, version: loaded.file.sourceVersion, skillIds, ...(r.mediaId && { mediaId: r.mediaId }), ...(r.time !== undefined && { time: r.time }) },
+    context: { branch, version: loaded.file.sourceVersion, skillIds, recordTranscriptDigests: true,
+      ...(r.mediaId && { mediaId: r.mediaId }), ...(r.time !== undefined && { time: r.time }) },
   };
 }
 
@@ -97,6 +127,8 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
   const original = { branch: project.branch ?? "main", head: project.head! };
   const name = branchName(caseId, config, trial, timestamp());
   const skillIds = await resolveSkills(engine, loaded);
+  const before = await transcriptSnapshot(engine, loaded);
+  writeJson(join(dir, "transcripts.json"), { before });
   await engine.switchBranch(projectId, { name, from: loaded.file.sourceVersion, expectedHead: original.head, expectedBranch: original.branch });
   let task: TaskRecord | undefined;
   try {
@@ -110,13 +142,32 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
     if (now.branch === name) await engine.switchBranch(projectId, { name: original.branch, expectedHead: now.head!, expectedBranch: name });
   }
   row.state = task.state;
-  writeJson(join(dir, "task.json"), await engine.task(task.id));
+  const completed = await engine.task(task.id);
+  writeJson(join(dir, "task.json"), completed);
   if (task.state !== "done") row.error = task.error ?? `ended ${task.state}`;
   try {
+    const after = await transcriptSnapshot(engine, loaded);
+    const transcripts = trialTranscripts(before, after, completed.events);
+    writeJson(join(dir, "transcripts.json"), transcripts);
     const evaluation = await evaluateTask(engine, task.id, { loaded });
+    const reference = checkedPath(dataDir(), join(dataDir(), "reference-audio.json"));
+    if (existsSync(reference)) {
+      const lock = readJson<{ case: string; files: Record<string, string> }>(checkedPath(dataDir(), join(dataDir(), "episode.lock.json")));
+      if (lock.case !== caseId) throw new Error("The frozen episode belongs to a different case.");
+      const timeline = join(dir, "applied-timeline.json");
+      writeJson(timeline, await engine.timeline(projectId, evaluation.score.versions.applied));
+      const published = JSON.parse(execFileSync("python3", ["-B", join(REPO_ROOT, "evals/score_audio_reference.py"),
+        "--reference", reference, "--case-dir", loaded.dir, "--timeline", timeline, "--verified-keeps"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
+        { referenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null };
+      if (published.referenceSha256 !== lock.files["reference-audio.json"]) throw new Error("The published reference differs from its frozen digest.");
+      writeJson(join(dir, "published-words.json"), published);
+      Object.assign(evaluation.score.headline, { verifiedPublishedWords: published.verifiedPublishedWords,
+        missingVerifiedWords: published.missingVerifiedWords, verifiedWordRecall: published.verifiedWordRecall });
+    }
     writeJson(join(dir, "evaluation.json"), evaluation);
     writeText(join(dir, "summary.md"), evaluationMarkdown(evaluation));
-    row.headline = evaluation.score.headline;
+    if (transcripts.mismatchedMedia.length) row.error = [row.error, "missing or mismatched transcript read for " + transcripts.mismatchedMedia.join(", ")].filter(Boolean).join("; ");
+    else row.headline = evaluation.score.headline;
   } catch (err) {
     row.error = [row.error, `evaluation: ${(err as Error).message}`].filter(Boolean).join("; ");
   }

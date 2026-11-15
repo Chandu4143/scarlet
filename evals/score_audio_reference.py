@@ -75,7 +75,7 @@ def reference_pieces(ref):
     return result
 
 
-def timeline_pieces(tl, media, silent_media=()):
+def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False):
     result = []
     for track in tl['tracks']:
         if track.get('muted') or track['kind'] == 'caption':
@@ -85,11 +85,17 @@ def timeline_pieces(tl, media, silent_media=()):
                 continue
             if c['mediaId'] in silent_media:
                 continue
+            if c['mediaId'] != media and source_coverage_only:
+                continue
             if c['mediaId'] != media:
                 raise ValueError('More than one audible recording. Supply a single-source cut and its evidence.')
             if c['sourceOut'] <= c['sourceIn'] or c.get('speed', 1) <= 0:
                 raise ValueError('Invalid source range or clip speed.')
             result.append(Piece(c['sourceIn'], c['sourceOut'], c['timelineIn'], c.get('speed', 1)))
+    if source_coverage_only:
+        # The word-recall metric takes a union on this recording. Crossfades and other tracks
+        # do not affect that coverage, even when their playback positions overlap.
+        return result
     merged = []
     for s in sorted(result, key=lambda p: p.at):
         p = merged[-1] if merged else None
@@ -252,6 +258,35 @@ def read_json(path):
     return json.loads(path.read_bytes())
 
 
+def verified_keeps(words, ref, candidate):
+    """Positive-only recall. Unexplained published intervals could contain additional source words."""
+    frame = 1 / ref['frameRate'] if 'frameRate' in ref else ref['frameDuration']
+    shifts = {}
+    for j in ref['joins']:
+        t = j['finalTime']
+        early = min(j['earliestFinal'], j.get('highBandEarliestFinal', t), j.get('highBandFinal', t))
+        late = max(j['latestFinal'], j.get('highBandLatestFinal', t), j.get('highBandFinal', t))
+        shifts[t] = (early - t - frame, late - t + frame)
+    known = union((p['rawStart'] + shifts.get(p['finalStart'], (-frame, frame))[1],
+                   p['rawEnd'] + shifts.get(p['finalEnd'], (-frame, frame))[0]) for p in ref['segments'])
+    if ref.get('uncertainRetainedSource') or ref.get('excludeJoinsTouchingFinalIntervals') or ref.get('externalFinal'):
+        raise ValueError('Resolve annotated exclusions before scoring published source words.')
+    kept = union((p.start, p.end) for p in candidate)
+    missing, count = [], 0
+    for index, w in enumerate(words):
+        if w['end'] <= w['start'] or not re.search(r'\w', w['text']) or re.fullmatch(r'\[.*\]', w['text'].strip()):
+            continue
+        # Require the whole word to lie inside a confidently matched span before calling it required.
+        if not any(a <= w['start'] and w['end'] <= b for a, b in known):
+            continue
+        count += 1
+        if intersect_len([(w['start'], w['end'])], kept) < (w['end'] - w['start']) / 2:
+            missing.append(dict(index=index, **w))
+    return dict(verifiedPublishedWords=count, missingVerifiedWords=len(missing), missing=missing,
+                verifiedWordRecall=(count - len(missing)) / count if count else None,
+                mappedFraction=ref['mappedFraction'], unmappedFinal=ref['unmappedFinal'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reference', type=Path, required=True, help='JSON source-to-final audio correlation map')
@@ -261,6 +296,7 @@ def main():
     selected.add_argument('--timeline', type=Path, help='Scarlet timeline JSON')
     selected.add_argument('--evaluation', type=Path, help='evaluation.json referencing a timeline stored in --case-dir')
     parser.add_argument('--tier', default='applied', choices=['applied', 'proposed'])
+    parser.add_argument('--verified-keeps', action='store_true', help='Recall of definitely published word occurrences on a partial or complete map')
     args = parser.parse_args()
     case = read_json(args.case_dir / 'case.json') if args.case_dir else None
     if args.evidence:
@@ -294,7 +330,8 @@ def main():
                                                                 abs_tol=max(.25, frame * 2)):
         parser.error('Raw duration in the waveform map differs from the media evidence.')
     silent = {m['id'] for m in case['media'] if m['kind'] not in ('audio', 'video') or m.get('hasAudio') is False} if case else set()
-    result = score(words, reference, timeline_pieces(candidate, evidence['mediaId'], silent))
+    pieces = timeline_pieces(candidate, evidence['mediaId'], silent, source_coverage_only=args.verified_keeps)
+    result = verified_keeps(evidence['words'], reference, pieces) if args.verified_keeps else score(words, reference, pieces)
     result.update(mediaId=evidence['mediaId'], timeline=candidate['version'],
                   referenceSha256=hashlib.sha256(args.reference.read_bytes()).hexdigest())
     print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))

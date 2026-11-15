@@ -735,6 +735,19 @@ it("combines word context and independently detected speech on a waveform sugges
 });
 
 describe("transcript tools", () => {
+  it("records the actual timed word list once for an evaluation task", async () => {
+    const task = Task.parse({ id: "eval-words", projectId: "prj_test", kind: "edit", state: "running", agent: "codex",
+      instruction: "Cut dialogue", context: { recordTranscriptDigests: true }, createdBy: { type: "human", name: "Editor" } });
+    const editor = await connect(task.id, undefined, task);
+    try {
+      for (const fromWord of [0, 5]) {
+        const result = await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord } });
+        expect(result.isError).toBeFalsy();
+      }
+      const reads = mock.state.events.filter(e => e.data?.kind === "eval_transcript");
+      expect(reads.map(e => e.data)).toEqual([{ kind: "eval_transcript", mediaId: "m1", count: 10, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+    } finally { await editor.close(); }
+  });
   it("transcript_search finds phrases with context", async () => {
     const r = (await client.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "WELCOME back" } })) as CallToolResult;
     const t = textOf(r);

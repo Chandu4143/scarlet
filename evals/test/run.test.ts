@@ -1,6 +1,21 @@
 import { expect, it } from "vitest";
 import { runMarkdown, type TrialRow } from "../src/report.ts";
-import { positiveNumber } from "../src/run.ts";
+import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
+import { positiveNumber, trialTranscripts } from "../src/run.ts";
+
+it("binds a live trial to the ordered source words and their timing", () => {
+  const a = { text: "again", start: 0.1, end: 0.4 };
+  const b = { ...a, start: 0.5, end: 0.8 };
+  expect(wordDigest([a, b])).not.toBe(wordDigest([b, a]));
+  expect(wordDigest([a])).not.toBe(wordDigest([{ ...a, end: 0.41 }]));
+  const sha256 = wordDigest([a, b]);
+  const expected = [{ mediaId: "cam", count: 2, sha256, frozenSha256: sha256 }];
+  const event = { type: "log", text: "", data: { kind: "eval_transcript", mediaId: "cam", count: 2, sha256 } };
+  expect(trialTranscripts(expected, expected, [event]).mismatchedMedia).toEqual([]);
+  expect(trialTranscripts(expected, expected, []).mismatchedMedia).toEqual(["cam"]);
+  const changed = { ...event, data: { ...event.data, sha256: wordDigest([b, a]) } };
+  expect(trialTranscripts(expected, expected, [event, changed, event]).mismatchedMedia).toEqual(["cam"]);
+});
 
 it("averages only the trials that finished, and still lists the ones that didn't", () => {
   const row = (trial: number, state: string, tokens: number, error?: string): TrialRow =>

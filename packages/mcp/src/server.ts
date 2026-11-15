@@ -19,6 +19,7 @@ import { acousticRepeatedTakes, findRepeatedTakes } from "./dialogue-retakes.js"
 import { firstCutRanges } from "./first-cut-ranges.js";
 import { InsetFraming, insetFraming, syncPictureOps } from "./sync-layout.js";
 import { createHash } from "node:crypto";
+import { wordDigest } from "./transcript-digest.js";
 import { mkdtemp } from "node:fs/promises";
 import { readArtifact, writeArtifact } from "./workspace-files.js";
 import { tmpdir } from "node:os";
@@ -493,6 +494,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const wordLists = new Map<string, TranscriptWord[]>();
   const aligningWords = new Map<string, { words: TranscriptWord[]; through: number; at: number }>();
   const readingWords = new Map<string, Promise<TranscriptWord[] | null>>();
+  const recordedTranscripts = new Map<string, string>();
   function readWords(mediaId: string, prepareMissing: boolean): Promise<TranscriptWord[] | null> {
     const ready = wordLists.get(mediaId);
     if (ready) return Promise.resolve(ready);
@@ -502,8 +504,15 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const key = JSON.stringify([mediaId, prepareMissing]);
     let job = readingWords.get(key);
     if (!job) {
-      job = getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(t => {
+      job = getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(async t => {
         const words = t?.segments.length ? flattenWords(t) : null;
+        if (ctx.task?.context.recordTranscriptDigests && words) {
+          const sha256 = wordDigest(words);
+          if (recordedTranscripts.get(mediaId) !== sha256) {
+            const result = await postEvent({ type: "log", text: "", data: { kind: "eval_transcript", mediaId, count: words.length, sha256 } });
+            if (result.posted) recordedTranscripts.set(mediaId, sha256);
+          }
+        }
         if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now() });
         else if (words) {
           aligningWords.delete(mediaId);

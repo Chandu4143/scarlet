@@ -160,6 +160,8 @@ export function runMarkdown(title: string, rows: TrialRow[]): string {
   const keys = ["appliedSeconds", "reviewSeconds", "appliedSpeechEdges", "reviewSpeechEdges", "clippedWordsOnSound", "needsYourCall", "heldByScarlet", "gapsLeft", "looseJoins",
     "deadAirSeconds", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
     "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "activeMinutes", "tokens"];
+  if (rows.some(r => r.headline?.verifiedPublishedWords !== undefined))
+    keys.push("verifiedPublishedWords", "missingVerifiedWords", "verifiedWordRecall");
   const lines = [`# ${title}`, "", `| Case | Config | Trials (done) | ${keys.join(" | ")} |`, `|---|---|---|${keys.map(() => "---").join("|")}|`];
   for (const [key, group] of groups) {
     const [caseId, config] = key.split("\u0000");
