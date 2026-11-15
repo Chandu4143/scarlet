@@ -5402,7 +5402,7 @@ it("opens Media, Export and History from the header and keeps project tools in t
   expect(back?.getAttribute("aria-label")).toBe("All projects");
   const tools = container.querySelector(".simple-tools")!;
   expect([...tools.querySelectorAll("button")].map(b => b.textContent?.trim()).slice(0, 3)).toEqual(["Media", "Export", "History"]);
-  for (const [name, field] of [["Media", "#media-file-types"], ["Export", "#export-format"]] as const) {
+  for (const [name, field] of [["Media", "#media-file-types"], ["Export", "#export-range"]] as const) {
     await click(buttonIn(tools, name)!);
     await act(async () => { await vi.dynamicImportSettled(); });
     const dialog = container.querySelector("dialog[open]")!;
@@ -8455,7 +8455,7 @@ it("gives Space back to the player after a row of the menu is clicked, and after
   await pointerClick(menuItem("Export"));
   await act(async () => { await vi.dynamicImportSettled(); });
   const drawer = document.querySelector<HTMLElement>("dialog[open]")!;
-  expect(drawer.querySelector("#export-format")).not.toBeNull();
+  expect(drawer.querySelector("#export-range")).not.toBeNull();
   await pointerClick(drawer.querySelector<HTMLElement>('[aria-label="Close"]')!);
   expect(document.querySelector("dialog[open]")).toBeNull();
   expect(document.activeElement).toBe(document.body);

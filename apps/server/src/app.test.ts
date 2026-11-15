@@ -1266,6 +1266,22 @@ describe("scarlet server", () => {
     expect(text).toContain(media.path);
   });
 
+  it("lists the folder for finishing the edit in another app, linked where it will be saved", async () => {
+    const r = await api<import("@scarlet/shared").HandoffResponse>("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder: "/Users/me/Exports/Test Cut" } });
+    expect(r.status).toBe(200);
+    const paths = r.json.files.map((f) => f.path);
+    expect(paths).toEqual(expect.arrayContaining(["Test Cut.fcpxml", "Test Cut.otio", "Read me.txt", "Media/test.mp4"]));
+    const copy = r.json.files.find((f) => f.path === "Media/test.mp4") as { source: string; size: number };
+    expect(copy.source).toBe(join(dataDir, "projects", project.id, "media", media.path));
+    expect(copy.size).toBe(testMp4.length);
+    expect(r.json.mediaBytes).toBe(testMp4.length);
+    const fcpxml = (r.json.files.find((f) => f.path === "Test Cut.fcpxml") as { text: string }).text;
+    expect(fcpxml).toContain('src="file:///Users/me/Exports/Test%20Cut/Media/test.mp4"');
+    const otio = (r.json.files.find((f) => f.path === "Test Cut.otio") as { text: string }).text;
+    expect(otio).toContain("file:///Users/me/Exports/Test%20Cut/Media/test.mp4");
+    expect((await api("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder: "relative/folder" } })).status).toBe(400);
+  });
+
   it("handles settings and validation errors", async () => {
     const s = await api<{ settings: { render: { handleSeconds: number; concurrency: number }; transcription: { provider: string } } }>("GET", "/settings");
     expect(s.json.settings.render.handleSeconds).toBe(1.5);
