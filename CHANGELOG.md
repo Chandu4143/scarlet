@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- The timeline is quieter: with no request picked it shows only the video, and a picked request's edits are numbered, crowded ones grouped in runs like 15–27. Click a run to zoom into it; hovering shows just the frame, plus one amber line when something needs you.
 - A file you add from a link is named as it is, without %20 and other codes.
 - Drag up from the picture strip or waveform to see neighboring frames, then move sideways to scrub one frame at a time.
 - The timeline hover preview keeps its picture in view while the next frame loads.

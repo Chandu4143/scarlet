@@ -30,7 +30,6 @@ import { cutFrameUrl, scrubFrameUrl } from "../components/review/thumbs";
 import { EditBeforePreview, useEditBefore, type BeforePlayback } from "../components/review/EditBeforePreview";
 import { useApprovalComparison } from "../components/review/SideBySideComparison";
 import { PlayerTimeline, type TimelineDot, type TimelineGap } from "../components/review/TimelineScrubber";
-import type { TimelineEdit } from "../components/review/timelineEdits";
 import { BeforeToggle } from "../components/review/BeforeToggle";
 import type { CutPlaybackWindow, PreparedCut } from "../components/review/usePrepareNextCut";
 import { FramingPreview } from "../components/review/FramingPreview";
@@ -165,8 +164,6 @@ interface PreviewProps {
     marks: TimelineDot[];
     typedTimes?: number[];
     seekFromMessage?: Ref<(time: number) => void>;
-    /** Every other applied edit on the working cut, drawn under the marks. */
-    edits?: TimelineEdit[];
     /** Changes each time the editor asks to see the whole timeline. */
     fit?: number;
     focus?: ProgressFocus; label?: string; compareHost?: HTMLElement | null; above?: ReactNode;
@@ -714,7 +711,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             waveform={{ media: current.media, mediaPaused: current.project.mediaPaused, source, timeline: displayedTimeline, ...sameClockBefore && {
               audioFrom: playingBefore ? sameClockBefore : undefined, scaleWith: playingBefore ? displayedTimeline : sameClockBefore } }} frameAt={frameAt} onSeek={seekFull} onSelectTime={selectTime} onScrubStart={scrubStart}
             range={simple.onRange ? shownRange : undefined} onRange={simple.onRange ? markRange : undefined} fps={fps}
-            typedTimes={simple.typedTimes} marks={simple.marks} edits={simple.edits} fit={simple.fit} gaps={simple.gaps} skippedRanges={simple.skippedRanges} onGap={simple.onGap} onBand={simple.onBand}
+            typedTimes={simple.typedTimes} marks={simple.marks} fit={simple.fit} gaps={simple.gaps} skippedRanges={simple.skippedRanges} onGap={simple.onGap} onBand={simple.onBand}
             highlight={simple.focus ?? (selectedEdit ? editFocus(selectedEdit, duration) : undefined)} />
         </div>
       </div>}

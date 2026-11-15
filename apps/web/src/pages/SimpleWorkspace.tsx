@@ -60,8 +60,6 @@ import { messageTimestamps, type MessageClock } from "../lib/messageTimestamps";
 import { markedRangeOf, playheadPoints, pointOf, useUiStore, withMarkedRange, type AgentContext, type MarkedRange } from "../stores/ui";
 import { CutPreview } from "./WatchPage";
 import { EditHoverContext, type TimelineDot, type TimelineGap } from "../components/review/TimelineScrubber";
-import type { TimelineEdit } from "../components/review/timelineEdits";
-import { useProjectEdits } from "../components/review/useProjectEdits";
 import "../simple.css";
 
 const narrow = window.matchMedia("(max-width: 767px)");
@@ -2122,14 +2120,18 @@ export function SimpleWorkspace() {
   // A dot sits where the cut's footage is on the working cut. A cut that can't be placed there has no dot.
   // While a suggestion plays the timeline is the suggestion's, as it is a call's or an edit's while that is open: After
   // is on the version it proposes, where the pass's cuts sit elsewhere. The calls' dots are back when it closes.
+  // The calls are on the timeline while the timeline is the pass's, while one of them is open, and while the editor
+  // hasn't picked a request in the chat or gone to another's edit: they hold the next request. Another request picked,
+  // or the marked band let go, the timeline marks only that request's edits, or nothing, and "N need you" leads to them.
+  const callsShown = !!pass && (passThread?.id === focusThread?.id || listening?.changeId === pass.id || (picked === undefined && !focus));
   const marks: TimelineDot[] = pass && !suggestion
-    ? allCalls.flatMap(a => {
+    ? !callsShown ? [] : allCalls.flatMap(a => {
       const override = pass.cutEdits?.find(c => c.index === a.index);
       const at = sentBack(a.index) || passChoices[a.index] !== undefined ? undefined
         : override ? override.version === (pinnedCallVersion ?? head) ? override.range : undefined
         : pinnedCallVersion ? undefined : placeCut(a);
       return at ? [{ time: at.start, n: callNo.get(a.index), group: "call", title: `Cut ${callNo.get(a.index)}${ofCalls(callNo.get(a.index))} · ${clockLabel(at.start)}`, summary: a.reason,
-        detail: `Removes ${lengthLabel(a.end - a.start)}`, context: pass.description, state: "check" as const,
+        detail: `Removes ${lengthLabel(a.end - a.start)}`, context: pass.description, state: "check" as const, need: `Cut ${callNo.get(a.index)}`,
         current: listening?.changeId === pass.id && listening.index === a.index, open: () => actions.listen(pass, a) }] : [];
     })
     // A suggestion's band is on the place the player is on. Each of its other places is a dot beside it, and a press
@@ -2382,61 +2384,31 @@ export function SimpleWorkspace() {
   const revisingEdit = useRevising(focusThread);
   const passReviewed = useReviewed(current.id, passThread);
   const passRevising = useRevising(passThread);
-  // The timeline numbers each applied edit as the chat does, filled once kept and amber while it asks for a look.
-  // An edit sent back for revision doesn't ask for one until its new version arrives.
-  // The timeline marks what needs the editor and what they're on now: an edit asking for a look, the edit that's open,
-  // and the latest request's edits. A dialogue pass's settled cuts, and an earlier request's, draw nothing, so hundreds
-  // of ticks don't outlive the pass. The pass's cuts come back as faint ticks while its full list is open in the chat.
+  // The timeline numbers the edits of the request picked in the chat, or of the one that's open, as the chat does:
+  // filled once kept and amber while it asks for a look. With nothing picked it marks nothing, and another request's
+  // edits draw nothing. An edit sent back for revision doesn't ask for a look until its new version arrives.
   const onLatest = !firstCuts?.size && marked?.id === focusThread?.id;
   const listShown = !!focusThread && openList === focusThread.id;
-  // A pass's applied edits are listed by their time, not by number, so the dot of one that asks for a look carries no
-  // number and is named by its time on hover, except while the pass waits on the editor: then it has the number it has
-  // among the calls. It shares a pill only with others like it: beside an edit's numbered dot, or a faint tick lit with
-  // its number, it would read as "3+".
-  // Only the dots that show are built: a pass can leave hundreds of edits that draw nothing.
+  // A pass's edits are numbered in timeline order, as its list goes, except while the pass waits on the editor: then
+  // only the ones that ask for a look are marked, with the numbers they have among its calls, and its other edits go
+  // in with the last call. They share a pill only with others like them.
   // An edit made in several places is one edit: each of its places carries the number its row has in the chat.
+  const passWaits = !!pass && passThread?.id === focusThread?.id;
   const dotNumbers = new Map((playerView && focusThread && !passFocused ? editGroups(playerView.edits) : []).flatMap(g => g.members.map(m => [m.edit, g.members[0]!.i + 1] as const)));
   const numberedDots: TimelineDot[] = playerView && focusThread ? playerView.edits.flatMap((e, i): TimelineDot[] => {
     const state = reviewed(e) ? "kept" as const : e.check && !revisingEdit(e) ? "check" as const : undefined;
     const current = e === shownEdit;
-    if (state === "check" && passFocused) return [{ ...passEditDot(focusThread, e), group: "pass", state, current }];
-    const visible = state === "check" || onLatest || current ? { state, current } : listShown ? { quiet: true } : undefined;
-    if (!visible) return [];
+    const need = state === "check" ? passEditNo.get(editKey(e))?.name ?? passEditName(e) : undefined;
+    if (passWaits) return state === "check" || current ? [{ ...passEditDot(focusThread, e), group: "pass", state, current, need }] : [];
     // The hover note names the request first: "Edit 3" alone would read as the chat's third request.
     const dot = editDot(focusThread, e, `${shortTitle(focusThread.title)} · ${dotNumbers.get(e) ?? i + 1} of ${playerView.edits.length} · ${clockLabel(e.at ?? e.range.start)}`);
-    // The request's words lead the note now, so they aren't said again under it.
-    return [{ ...dot, context: dot.context === focusThread.title ? undefined : dot.context, n: dotNumbers.get(e) ?? i + 1, ...visible }];
+    return [{ ...dot, n: dotNumbers.get(e) ?? i + 1, state, current, need }];
   }) : [];
-  // The waiting pass's edits that ask for a look are on the timeline whatever else is: with one of its calls open, and
-  // with the timeline on another request, as when a request waits behind the pass. "N need you" counts them with the
-  // calls. While the timeline is the pass's own, its dots above draw them.
-  const passDots: TimelineDot[] = !pass || !passThread || suggestion || (playerView && focusThread?.id === passThread.id) ? []
-    : passEdits.flatMap(e => e.check && !passReviewed(e) && !passRevising(e) ? [{ ...passEditDot(passThread, e), group: "pass", state: "check" as const }] : []);
-  // Every applied edit on the working cut, whichever request made it, is drawn under the marks above and quieter: a cut
-  // a red line, a graphic a bar, gathered into counts where they would touch. Only while the timeline is the working cut:
-  // an open cut plays on the version before it, and a call or a suggestion on its own, where these times don't hold.
-  // The open edit has its band, and while a pass's full list is open its own cuts are its faint ticks.
-  const projectEdits = useProjectEdits(current.id, head, threads);
-  const onWorkingCut = !source && !beforeCut && !suggestion && !pinnedCallVersion && !appliedCut && !draftVersion && !!head && timeline?.version === head;
-  const listedThread = listShown ? focusThread?.id : undefined;
-  const openEditRef = useRef(actions.openEdit);
-  openEditRef.current = actions.openEdit;
-  const editDotRef = useRef(editDot);
-  editDotRef.current = editDot;
-  // An edit with a dot of its own is that dot, and isn't drawn again under it.
-  const dotted = [...numberedDots, ...passDots].flatMap(dot => !dot.quiet && dot.edit ? [dot.edit] : []).join("\n");
-  const allEdits = useMemo((): TimelineEdit[] => {
-    if (!onWorkingCut) return [];
-    const hasDot = new Set(dotted.split("\n"));
-    return projectEdits.flatMap(({ thread, edit: e }): TimelineEdit[] => {
-      if (thread.id === listedThread || (shownEdit && matchesEdit(shownEdit, e)) || hasDot.has(`${e.changeId}/${e.spot}`)) return [];
-      const at = e.at ?? e.range.start;
-      const kind = e.kind ?? (e.beforeCut ? "cut" : undefined);
-      const dot = editDotRef.current(thread, e, `${e.beforeCut || kind === "cut" ? "Cut" : editKindWord(e) ?? "Edit"} at ${clockLabel(at)}`);
-      return [{ ...dot, landed: undefined, key: `${e.changeId}/${e.spot}`, kind, time: at, end: e.at !== undefined ? at : e.range.end,
-        open: () => openEditRef.current(thread, e) }];
-    });
-  }, [projectEdits, onWorkingCut, listedThread, shownEdit, dotted]);
+  // The waiting pass's edits that ask for a look are with its calls when the timeline is on another request, numbered
+  // after the calls as "N need you" counts them. While the timeline is the pass's own, its dots above draw them.
+  const passDots: TimelineDot[] = !callsShown || !passThread || suggestion || (playerView && focusThread?.id === passThread.id) ? []
+    : passEdits.flatMap(e => e.check && !passReviewed(e) && !passRevising(e)
+      ? [{ ...passEditDot(passThread, e), group: "pass", state: "check" as const, need: passEditNo.get(editKey(e))?.name ?? passEditName(e) }] : []);
   // Once the edit or the list closes, the timeline stays with that request only while it still has an edit to check.
   // Otherwise it goes back: to a pass whose full list is still open in the chat, else to the latest request. The latest
   // request also takes it when it is new or has just applied an edit: the editor asked for something else.
@@ -3273,7 +3245,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], edits: allEdits, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
+          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : [...marks, ...numberedDots, ...passDots], fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
             gaps: cutKey ? gaps : undefined, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? audition)?.skips,
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
