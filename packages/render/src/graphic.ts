@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { availableParallelism, homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Readable, Writable } from "node:stream";
 import { AbortError, fnum, resolveFfmpeg, runCapture } from "./exec.js";
@@ -408,4 +408,56 @@ export async function graphicCoverage(file: string, times: number[], size: { wid
     }
     return { time, box: right < 0 ? null : { left: round(left / w), top: round(top / h), right: round((right + 1) / w), bottom: round((bottom + 1) / h) } };
   }));
+}
+
+/**
+ * One moment of a graphic laid over a picture (a JPEG of the edit at that moment), or over mid grey when there is
+ * none, as a JPEG `width` wide: how the editor will see it.
+ */
+export async function graphicOver(movie: string, time: number, background: Buffer | null, size: { width: number; height: number },
+  opts: { ffmpegPath?: string; signal?: AbortSignal } = {}): Promise<Buffer> {
+  const w = Math.max(2, Math.round(size.width / 2) * 2), h = Math.max(2, Math.round(size.height / 2) * 2);
+  const base = background ? ["-f", "image2pipe", "-c:v", "mjpeg", "-i", "pipe:0"] : ["-f", "lavfi", "-i", `color=c=0x5a5a5a:s=${w}x${h}:d=1`];
+  const { stdout } = await runCapture(resolveFfmpeg(opts.ffmpegPath), [
+    "-hide_banner", "-nostdin", "-loglevel", "error", ...base, "-ss", fnum(time), "-i", movie,
+    "-filter_complex", `[0:v]scale=${w}:${h},format=rgba[b];[1:v]scale=${w}:${h},format=rgba[g];[b][g]overlay=format=auto,format=yuvj420p`,
+    "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", "-f", "image2pipe", "pipe:1",
+  ], { stdin: background ?? undefined, signal: opts.signal, maxStdout: 8 * 1024 * 1024 });
+  if (!stdout.length) throw new Error(`No frame of the graphic at ${time}s`);
+  return stdout;
+}
+
+/** How many pages a PDF says it has, when its page tree is readable without decompressing it. */
+export function pdfPageCount(pdf: Buffer): number | undefined {
+  const text = pdf.toString("latin1");
+  const counts = [...text.matchAll(/\/Type\s*\/Pages\b[^>]*?\/Count\s+(\d+)|\/Count\s+(\d+)[^>]*?\/Type\s*\/Pages\b/g)].map(m => Number(m[1] ?? m[2]));
+  return counts.length ? Math.max(...counts) : undefined;
+}
+
+/**
+ * Pictures of a PDF's pages as Chrome's viewer draws them, JPEG, `width` wide: how a harness that can't open files
+ * reads a document the editor attached, such as a style guide. Pages past the end are left out.
+ */
+export async function pdfPages(file: string, pages: number[], opts: { width?: number; chromePath?: string; signal?: AbortSignal; settleMs?: number } = {}): Promise<Buffer[]> {
+  const width = opts.width ?? 1000, height = Math.round(width * 1.3);
+  const { writeFile } = await import("node:fs/promises");
+  const wrapper = join(await mkdtemp(join(tmpdir(), "scarlet-pdf-")), "page.html");
+  try {
+    await writeFile(wrapper, "<!doctype html>");
+    return await withBrowser({ htmlFile: wrapper, width, height, chromePath: opts.chromePath, signal: opts.signal }, async browser => {
+      const shots = await Promise.all(pages.map(async n => {
+        const html = join(dirname(wrapper), `page-${n}.html`);
+        await writeFile(html, `<!doctype html><html><body style="margin:0;background:#fff"><embed src="${pathToFileURL(file).href}#page=${n}&view=Fit&toolbar=0&navpanes=0" type="application/pdf" style="width:100vw;height:100vh;border:0"></body></html>`);
+        const page = await openPage(browser, pathToFileURL(html).href, { width, height, scale: 1 }, opts.signal);
+        // The viewer draws in its own process and says nothing when it has: give it a moment.
+        await new Promise(resolve => setTimeout(resolve, opts.settleMs ?? 2000));
+        const { data } = await browser.send("Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false }, page.sessionId) as { data: string };
+        return Buffer.from(data, "base64");
+      }));
+      // A page number past the end shows the last page again.
+      return shots.filter((shot, i) => i === 0 || !shot.equals(shots[i - 1]!));
+    });
+  } finally {
+    await rm(dirname(wrapper), { recursive: true, force: true });
+  }
 }

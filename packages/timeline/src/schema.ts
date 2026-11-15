@@ -102,6 +102,14 @@ export const MediaAsset = z.object({
     model: z.string().optional(),
   }).optional(),
   provenance: Provenance.optional(),
+  /** A graphic Scarlet drew from a web page: the page it keeps, so a later request can revise it. */
+  graphic: z.object({
+    /** The page, relative to the project's folder. Files it links to sit beside it. */
+    source: z.string(),
+    /** The saved template it was filled from, and with what. */
+    templateId: Id.optional(),
+    fields: z.record(z.string()).optional(),
+  }).optional(),
   /** Authenticated user who uploaded or imported the asset. */
   uploadedBy: Id.optional(),
   /** Server-side ingest state. Absent means ready. */
