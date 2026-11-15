@@ -153,8 +153,17 @@ it("sends the editor's words to Scarlet and shows the revision it saved", async 
     await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
     expect([...el.querySelectorAll(".skill-chat .req-say")].map(p => p.textContent)).toEqual(["Added a rule for the cold open.", "Added a rule to keep laughter."]);
     expect(el.querySelector('.skill-chat [role="status"]')).toBeNull();
-    expect(body.value).toContain("Never cut laughter.");
-    expect(body.readOnly).toBe(false);
+    // The version Scarlet saved opens as the history shows it, with what it changed marked, and the message box
+    // still takes the next request.
+    const changes = el.querySelector(`[aria-label="Skill markdown, v${skill.version}"]`)!;
+    expect([...changes.querySelectorAll("ins")].map(i => i.textContent).filter(Boolean)).toEqual(["Never cut laughter."]);
+    expect(el.querySelector(".skill-instructions-head")!.textContent).toContain(`v${skill.version}`);
+    expect(box.disabled).toBe(false);
+    // Done goes back to the skill to edit, as it does from the history.
+    await act(async () => [...el.querySelectorAll("button")].find(b => b.textContent === "Done")!.click());
+    const edited = el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
+    expect(edited.value).toContain("Never cut laughter.");
+    expect(edited.readOnly).toBe(false);
     expect(box.disabled).toBe(false);
     // The history leads with the version Scarlet saved, as the skill stands now.
     await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Version history"]')!.click());
