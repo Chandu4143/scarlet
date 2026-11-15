@@ -6117,6 +6117,35 @@ it("reads an edit's range that runs past the timeline's end as reaching the end,
   expect(over.timelineEdits).toEqual([{ label: "outro", range: { start: 110, end: 120 } }]);
 });
 
+it("lets a request withdraw its own options still waiting for the editor, and nothing else", async () => {
+  const { ctx } = workspace;
+  ctx.repos.projects.putMedia(project.id, { id: "camera", name: "Interview", kind: "video", path: "camera.mov" }, "ready");
+  const base = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 120 }]), { parent: null });
+  ctx.repos.projects.update(project.id, { head: base.version });
+  const request = (instruction: string) => createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction, createdBy: { type: "human", name: "Editor" } });
+  const task = request("Give me options for a cold open");
+  const other = request("Suggest a dimmer opening");
+  const propose = (taskId: string, opacity: number, extra: object = {}) => api("POST", projectsPath() + "/changes?summary=true", { taskId,
+    intent: "alternative", description: `Opening at ${opacity}`, skipRender: true, fromVersion: base.version,
+    ops: [{ op: "updateClip", clipId: base.tracks[0]!.clips[0]!.id, patch: { opacity } }], ...extra });
+  const draft = (await (await propose(task.id, 0.9)).json()).change;
+  const elsewhere = (await (await propose(other.id, 0.7)).json()).change;
+  // Another request's option isn't this one's to take back.
+  const refused = await propose(task.id, 0.8, { withdraws: [elsewhere.id] });
+  expect(refused.status).toBe(400);
+  expect((await refused.json()).error.code).toBe("invalid_withdrawal");
+  const final = (await (await propose(task.id, 0.8, { withdraws: [draft.id] })).json()).change;
+  expect(ctx.repos.changes.get(draft.id)).toMatchObject({ state: "rejected", rejectedFrom: "ready", replacedBy: final.id });
+  expect(ctx.repos.changes.get(final.id)!.state).toBe("ready");
+  expect(ctx.repos.changes.get(elsewhere.id)!.state).toBe("ready");
+  // Once withdrawn, it can't be withdrawn again.
+  expect((await propose(task.id, 0.6, { withdraws: [draft.id] })).status).toBe(400);
+  // An option still waiting for the editor isn't in the video to flag: the run is told how to carry its doubt.
+  const flag = await api("POST", projectsPath() + "/edit-flags", { taskId: task.id, check: "Room tone rises at the join", changeId: final.id, spot: 0 });
+  expect(flag.status).toBe(400);
+  expect(await flag.json()).toMatchObject({ error: { code: "not_applied" } });
+});
+
 it("revises an edit saved with an empty list of named edits by its range, as one saved with no list", async () => {
   const { ctx } = workspace;
   ctx.repos.projects.putMedia(project.id, { id: "camera", name: "Interview", kind: "video", path: "camera.mov" }, "ready");

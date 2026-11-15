@@ -287,6 +287,8 @@ export const ProposeChangeRequest = z.object({
   timelineEdits: Change.shape.timelineEdits,
   /** Skip before/after segment renders (e.g. metadata-only changes). */
   skipRender: z.boolean().optional(),
+  /** This task's own suggestions or alternatives, still waiting for review, that this change replaces. They leave the review. */
+  withdraws: z.array(Id).max(20).optional(),
 });
 export type ProposeChangeRequest = z.infer<typeof ProposeChangeRequest>;
 
