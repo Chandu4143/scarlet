@@ -38,7 +38,7 @@ jobs:
       - name: Test release tooling
         run: |
           ruby .github/tests/desktop_permissions_test.rb
-          node --test apps/desktop/scripts/release-version.test.mjs apps/desktop/scripts/verify-desktop-package.test.mjs .github/scripts/publish-desktop-release.test.mjs
+          node --test apps/desktop/scripts/release-version.test.mjs apps/desktop/scripts/verify-desktop-package.test.mjs apps/desktop/scripts/fetch-chrome.test.mjs .github/scripts/publish-desktop-release.test.mjs
       - name: Resolve the version for this commit
         id: number
         env:
