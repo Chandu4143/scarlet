@@ -7,6 +7,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 14, 2026
 
 - When Claude Code can't reach Scarlet's editing tools, the request now ends as Couldn't finish with Retry instead of looking finished.
+- Approving a trim that waited while you cut elsewhere no longer brings back footage you cut or leaves clips on top of each other.
+- Scarlet lets you know when a new version of your edition is ready to download.
+- A rule you approve stays saved if Scarlet stops after updating the skill.
 - An edit another request flagged can be revised and undone from the request that flagged it.
 - With a marked range's handle focused, ← and → keep stepping it a frame at a time, Esc takes off only the range, and Space plays.
 - A queued request being reworded keeps its new words after Scarlet restarts.

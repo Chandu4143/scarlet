@@ -1,13 +1,21 @@
 import { useState } from "react";
 import { desktop } from "../../lib/desktop";
+import { checkPublishedUpdate, type PublishedUpdate } from "../../lib/publishedUpdate";
 
 export function UpdateSettings() {
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState("");
+  const [update, setUpdate] = useState<PublishedUpdate | null>(null);
   async function check() {
     setChecking(true);
     setMessage("Checking for updates…");
     try {
+      if (__SCARLET_RELEASE_CHANNEL__) {
+        const found = await checkPublishedUpdate(__SCARLET_RELEASE_CHANNEL__);
+        setUpdate(found);
+        setMessage(found ? `Scarlet ${found.version} is available.` : "Scarlet is up to date.");
+        return;
+      }
       const latest = await desktop.latestUpdateRevision();
       if (latest === __SCARLET_REVISION__) setMessage("Scarlet is up to date.");
       else if (__SCARLET_REVISION__) setMessage(`An update is available. Latest build: ${latest.slice(0, 7)}.`);
@@ -21,5 +29,8 @@ export function UpdateSettings() {
   return <div className="mt-4 flex flex-wrap items-center gap-3">
     <button type="button" className="btn-quiet" disabled={checking} onClick={check}>Check for updates</button>
     <span role="status" className="text-sm text-muted">{message}</span>
+    {update && <button type="button" className="btn-quiet" onClick={() => {
+      void desktop.openUrl(update.url).catch(() => setMessage("Couldn’t open the download page. Try again."));
+    }}>Download update</button>}
   </div>;
 }
