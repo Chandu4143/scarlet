@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { agentCapabilities, ScarletClient, type AgentCapabilities, type Task } from "@scarlet/shared";
 import { createScarletMcpServer } from "@scarlet/mcp";
-import { hasChrome } from "@scarlet/render";
+import { findChrome, hasChrome } from "@scarlet/render";
 import { accessToken } from "./auth.js";
 import { createApp, type ScarletApp } from "./app.js";
 
@@ -28,7 +28,7 @@ const images = (r: CallToolResult) => r.content.filter(c => c.type === "image");
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "scarlet-graphic-tools-"));
-  workspace = createApp({ dataDir: dir, skillsSeedDir: join(dir, "empty-seed"), env: {}, log: () => {} });
+  workspace = createApp({ dataDir: dir, skillsSeedDir: join(dir, "empty-seed"), env: hasChrome() ? { SCARLET_CHROME: findChrome() } : {}, log: () => {} });
   const fetch: typeof globalThis.fetch = (input, init) => Promise.resolve(workspace.app.request(input, init));
   api = new ScarletClient({ baseUrl: "https://fixture.test", token: accessToken(workspace.ctx), fetch });
   projectId = (await api.createProject({ name: "Graphics", settings: { width: 320, height: 180, fps: 10, aspect: "custom" } })).project.id;

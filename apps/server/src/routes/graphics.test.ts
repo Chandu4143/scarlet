@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { hasChrome } from "@scarlet/render";
+import { findChrome, hasChrome } from "@scarlet/render";
 import { createProject, type Project } from "@scarlet/timeline";
 import type { GraphicRenderResponse, GraphicTemplate, GraphicTemplateSummary, Task, TaskAttachment, TaskPrompt } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
@@ -16,7 +17,7 @@ let project: Project;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "scarlet-graphics-routes-test-"));
-  workspace = createApp({ dataDir: directory, skillsSeedDir: join(directory, "empty-seed"), env: {}, log: () => {} });
+  workspace = createApp({ dataDir: directory, skillsSeedDir: join(directory, "empty-seed"), env: hasChrome() ? { SCARLET_CHROME: findChrome() } : {}, log: () => {} });
   project = workspace.ctx.repos.projects.insert(createProject("Graphics", { width: 320, height: 180, fps: 10, aspect: "custom" }));
 });
 afterEach(async () => {
@@ -142,7 +143,7 @@ describe.skipIf(!hasChrome())("graphics and templates", () => {
   it("keeps a linked attachment with the graphic, and a revision carries it over", async () => {
     const svg = await attach("logo.svg", `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#0f0"/></svg>`, "image/svg+xml");
     const linked = join(workspace.ctx.paths.attachments(project.id), svg.id, "logo.svg");
-    const first = await render({ duration: 0.5 }, `<img src="file://${linked}" style="position:absolute;left:0;top:0">`);
+    const first = await render({ duration: 0.5 }, `<img src="${pathToFileURL(linked).href}" style="position:absolute;left:0;top:0">`);
     expect(first.status).toBe(201);
     const html = readFileSync(first.body.source!, "utf8");
     const copy = /src="(linked\/[^"]+)"/.exec(html)![1]!;

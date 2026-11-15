@@ -15,7 +15,10 @@ function releaseNotes(repository, sha, unsignedOnce, files, runId, updaterSigned
   if (unsignedOnce || updaterSignedOnly) {
     notes.push("The macOS apps are ad hoc signed and have not been notarized by Apple. Both Windows installers are unsigned. Your operating system may display a publisher warning when you open the download.");
   }
-  if (!unsignedOnce) notes.push("Once this version is installed, Scarlet downloads and verifies new stable releases in the background. Choose **Restart to update** when it’s ready.");
+  if (!unsignedOnce) notes.push(
+    "If you’re using stable Scarlet 0.1.20 or earlier, quit Scarlet and install the download for your computer over your existing copy once. Your stable project library stays in place.",
+    "After that, Scarlet downloads and verifies new stable releases in the background. Choose **Restart to update** when it’s ready.",
+  );
   const helper = "apps/desktop/scripts/Install-Scarlet-FFmpeg-macOS.sh";
   const helperLink = unsignedOnce
     ? `[Download the standalone setup helper](https://raw.githubusercontent.com/${repository}/${sha}/${helper})`

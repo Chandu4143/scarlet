@@ -81,7 +81,7 @@ import { toolAnnotations } from "./annotations.js";
 import { MediaPreparing, describeError, errorResult, errorText, formatZodError, json, noteUnmeasured, text, toolRefusal, unavailable, unmeasured, unmeasuredLine, type ToolResult } from "./tool-result.js";
 import { registerPerception } from "./perception-tools.js";
 import { sourceRangeToTimeline, sourceToTimeline, timelineWords } from "./timeline-perception.js";
-import { KEPT_PAUSE_SECONDS, partLeftovers } from "./dialogue-leftovers.js";
+import { PAUSE_FLOOR_SECONDS, partLeftovers } from "./dialogue-leftovers.js";
 import { GAP_SECONDS, QUIET_PHRASE_CONTEXT, describeGapSound, gapSound, quietPhrases, speakingLevel, type GapLevels, type GapSound, type QuietPhrase } from "./gap-sound.js";
 import { keptSilences, pictureReading, pictureWindows, silences, type Silence } from "./silences.js";
 import { levelProfile } from "./media-profile.js";
@@ -1647,7 +1647,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   };
   const PauseRef = {
     afterWord: z.number().int().nonnegative().optional().describe("Pause reference, with mediaId: the transcript_get index of the word the pause follows. Scarlet trims the pause between it and the next word, both edges in the measured quiet."),
-    leave: z.number().finite().min(0.05).max(10).optional().describe(`With afterWord: seconds the pause should still play, word to word, default ${PAUSE_BEAT} s.`),
+    leave: z.number().finite().min(0.05).max(10).optional().describe(`Seconds of pause that should still play, word to word, as the editor hears it. Required with afterWord: how long a pause plays is yours to judge, by the delivery around it and the pace the skill asks for. Optional with fromWord/toWord: the pause the join plays, which is ${PAUSE_BEAT} s when omitted.`),
   };
   let checkedVersion: string | undefined;
   const checkedRepeats = new Map<string, RepeatEvidence>();
@@ -1668,7 +1668,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     { version: z.string(), keep: z.array(z.object({ id: z.string(), reason: z.string().trim().min(1).max(300) })).max(100).optional(), offset: z.number().int().nonnegative().optional() },
     async ({ version, keep, offset }) => json(await checkRepeats(version, keep, offset)));
 
-  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with optional leave in seconds). Measured word edges leave up to ${AIR_AFTER_SPEECH} s after kept speech and ${AIR_BEFORE_SPEECH} s before it resumes. For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
+  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with leave: the seconds it should still play). Measured word edges leave up to ${AIR_AFTER_SPEECH} s after kept speech and ${AIR_BEFORE_SPEECH} s before it resumes, or the pause you give as leave, split the same way. For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
   const crossfadeFrames = CrossfadeFrames.optional()
     .describe("Total audio-only overlap at the new dialogue joins, in project frames. Zero or omitted makes a straight cut.");
   const repeatedPhrase = z.string().trim().min(1);
@@ -1788,7 +1788,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const shown = <T>(thing: T, ...key: Parameters<typeof listing>) => { listed.add(listing(...key)); return thing; };
   /** Pauses and doubled words this part still plays once its cuts are out, on the version it was planned on. */
   async function passedLeftovers(tl: Timeline, kept: Array<{ start: number; end: number }>,
-    decisions: Array<{ start: number; end: number; review: boolean }>, range?: { start: number; end: number }) {
+    decisions: Array<{ start: number; end: number; review: boolean }>, range?: { start: number; end: number }, pausesFrom?: number) {
     const decided = [...decisions, ...kept];
     if (!decided.length) return { pauses: [], repeats: [], gaps: [] };
     const scope = range ?? { start: Math.min(...decided.map(d => d.start)), end: Math.max(...decided.map(d => d.end)) };
@@ -1800,7 +1800,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (words) transcripts.set(id, words);
     }
     // A range staged for review still plays until the editor approves it.
-    return partLeftovers(timelineWords(tl, transcripts, scope), decisions.filter(d => !d.review), kept, transcripts);
+    return partLeftovers(timelineWords(tl, transcripts, scope), decisions.filter(d => !d.review), kept, transcripts, Math.max(PAUSE_FLOOR_SECONDS, pausesFrom ?? 0));
   }
   /** The version a part continues on, read once however many lists are placed on it. */
   const continued = new Map<string, Promise<Timeline>>();
@@ -1860,10 +1860,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   tool("dialogue_apply_cuts",
-    `Save your decisions on an assembled version: cut, review or keep ranges, sorted and nonoverlapping. ${cutCoordinates} Cut ranges apply together; review stages a range for the editor; keep or omission retains it. Scarlet measures each retake, filler, pause and quoted production edge. An edge on sound moves a few frames onto silence, or onto the lowest level between two words said in one breath, and applies; a larger move narrows the cut and stages it. A pause's edge moves onto the quiet beside it. A short piece between cuts with a transcript word at room-tone level returns quietKeptWord with nearby measured sound in source seconds. Footage between separate removals stays in the timeline. \`gate\` lists changes to the measured plan with their evidence. Its ranges describe placement before the engine rounds to project frames. The returned timelineEdits describe the saved edits. An optional quote must verify before anything is saved. Save a long pass in parts and continue on \`continueFrom\`. For a first dialogue pass, send at most ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions as soon as they are ready, with any keep or protected ranges they depend on. An applied cut whose edge sits within ${SPEECH_BESIDE_EDGE} s of the sound it removes is flagged for the editor to watch and hear, since the picture can show a word starting that the sound has not reached; the gate says so. What Scarlet changed on its own comes back with why: \`stagedForEditor\` (confident cuts that wait for the editor), \`onFrames\` (edges put on whole frames) and \`droppedFromReview\` (an earlier part's staged cuts whose footage a later edit broke up). For a requested crossfade, \`joinCrossfades\` reports how many joins were faded and why any stayed straight. The result also lists what this part still plays, each thing once per pass, at \`at\` on continueFrom: keptSilences (2 s or more without words that no decision covers), keptPauses (${KEPT_PAUSE_SECONDS} s or more, with the afterWord that trims an untouched one), repeatedWords (said twice in a row, atJoin when a cut made it; fromWord/toWord name the first) and unexplainedSound (speaking-level sound the transcript has no word for, often what is left of a take beside a cut). These are evidence, not decisions: a pause can be a beat, a repeat emphasis, a sound a breath. Ranges your previous part staged on that version join this part's review (carriedForward). Cuts already handed to the editor keep their passage and note (heldForReview). \`description\` is your one-sentence summary for the editor.`,
+    `Save your decisions on an assembled version: cut, review or keep ranges, sorted and nonoverlapping. ${cutCoordinates} Cut ranges apply together; review stages a range for the editor; keep or omission retains it. Scarlet measures each retake, filler, pause and quoted production edge. An edge on sound moves a few frames onto silence, or onto the lowest level between two words said in one breath, and applies; a larger move narrows the cut and stages it. A pause's edge moves onto the quiet beside it. A short piece between cuts with a transcript word at room-tone level returns quietKeptWord with nearby measured sound in source seconds. Footage between separate removals stays in the timeline. \`gate\` lists changes to the measured plan with their evidence. Its ranges describe placement before the engine rounds to project frames. The returned timelineEdits describe the saved edits. An optional quote must verify before anything is saved. Save a long pass in parts and continue on \`continueFrom\`. For a first dialogue pass, send at most ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions as soon as they are ready, with any keep or protected ranges they depend on. The gate reports an applied cut whose edge sits within ${SPEECH_BESIDE_EDGE} s of the sound it removes, since the picture can show a word starting that the sound has not reached; whether that needs the editor is yours to judge. What Scarlet changed on its own comes back with why: \`stagedForEditor\` (confident cuts that wait for the editor), \`onFrames\` (edges put on whole frames) and \`droppedFromReview\` (an earlier part's staged cuts whose footage a later edit broke up). For a requested crossfade, \`joinCrossfades\` reports how many joins were faded and why any stayed straight. The result also lists what this part still plays, each thing once per pass, at \`at\` on continueFrom: keptSilences (2 s or more without words that no decision covers), keptPauses (the longest thirty of ${PAUSE_FLOOR_SECONDS} s or more, or from the length you give as pausesFrom, with the afterWord that trims an untouched one), repeatedWords (said twice in a row, atJoin when a cut made it; fromWord/toWord name the first) and unexplainedSound (speaking-level sound the transcript has no word for, often what is left of a take beside a cut). These are evidence, not decisions: a pause can be a beat, a repeat emphasis, a sound a breath. Ranges your previous part staged on that version join this part's review (carriedForward). Cuts already handed to the editor keep their passage and note (heldForReview). \`description\` is your one-sentence summary for the editor.`,
     { version: z.string(), description: z.string().min(1), crossfadeFrames, noteIds: z.array(z.string()).optional(),
       range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive() }).optional().describe("Requested TIMELINE range if only part of the edit is in scope"),
       only: z.enum(["pause", "filler", "retake", "coaching"]).optional().describe("For a request limited to one type of removal. Omit for a full dialogue pass."),
+      pausesFrom: z.number().finite().min(PAUSE_FLOOR_SECONDS).max(10).optional().describe("List in keptPauses the pauses this part still plays from this length in seconds, word to word. Yours to set from the pace the skill and the editor ask for; omit to see the longest ones"),
       cuts: z.array(z.object({ ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(),
         removeRepeat: z.object({ id: z.string(), occurrence: z.enum(["first", "second"]) }).optional().describe("For a retake, identify the occurrence heard by dialogue_check_repeats on this version. Scarlet places both edges using its measured words and waveform."),
         kind: z.enum(["pause", "filler", "retake", "coaching"]), decision: z.enum(["cut", "review", "keep"]),
@@ -1874,7 +1875,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         reason: z.string().trim().min(1).describe("One short sentence for the editor about what they will hear or see"),
         check: z.string().trim().min(1).max(120).optional().describe("For a cut that applies: a few words naming a doubt the editor must settle by listening or looking. Marks the cut as needing them until they keep it; omit when nothing is in doubt") }))
         .describe("For a faint line that still plays, keptQuietPhrases returns mediaId and fromWord/toWord for use here, its position on continueFrom (at), and the phrase and neighboring speech levels in dBFS.") },
-    async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames }) => {
+    async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames, pausesFrom }) => {
       const operation = await dialogueOperation();
       if (ctx.taskId && operation === "first-cut" && requested.filter(c => c.decision !== "keep" && c.picture !== "protect").length > FIRST_CUT_BATCH_SIZE)
         throw new Error(`Save up to ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions in each first-pass batch, with their keep and protected ranges. Send the first settled group now. For the next group use source word references or map its positions on continueFrom with timeline_at.`);
@@ -1918,7 +1919,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // Stretches without words this part still plays and leaves undecided, found before the edit moves.
       const undecided = only && only !== "pause" ? [] : await passedSilences(tl, plan.kept, all, range)
         .catch(without("failed to find the silences this part keeps", []));
-      const left = await passedLeftovers(tl, plan.kept, all, range)
+      const left = await passedLeftovers(tl, plan.kept, all, range, pausesFrom)
         .catch(without("failed to read what this part still plays", { pauses: [], repeats: [], gaps: [] }));
       await postEvent({ type: "log", text: "I’m applying the dialogue decisions to the timeline.", data: { kind: "editor_progress" } });
       const result = await client.submitDialogueCuts(ctx.projectId, { fromVersion: tl.version, description, cuts: all, range: scope, kept: plan.kept, crossfadeFrames,

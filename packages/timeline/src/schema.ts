@@ -503,7 +503,9 @@ export const Change = z.object({
     legacySuggest: z.literal(true).optional(),
     kind: z.enum(["pause", "filler", "retake", "coaching"]).optional(),
     /** Why the editor should look or listen before keeping this applied cut. */
-    check: z.string().trim().min(1).max(120).optional() })).optional(),
+    check: z.string().trim().min(1).max(120).optional(),
+    /** Why Scarlet held this cut for a closer look: what it measured at the edges. For the agent; the editor reads `reason`. */
+    held: z.string().optional() })).optional(),
   /** Second-pass recommendations on the immutable chronological cut-review plan. */
   cutAssessments: z.array(CutAssessment).optional(),
   /** A call rechecked against newer footage. Its index still identifies the same call in the original pass. */

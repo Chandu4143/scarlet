@@ -2,7 +2,8 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it as vitestIt, vi } from "vitest";
+import { partedIt } from "../../../../test/parts";
 import { fullRenderContext, REVISED_CHECK, ScarletApiError, Task, type Learning, type Skill, type SourceCacheStatus } from "@scarlet/shared";
 import { applyOps, makeMediaClip, makeTimeMap, makeTrack, planCutReview, timelineDuration, timelineFromKeepRanges, type MediaClip, type TimeMap } from "@scarlet/timeline";
 import { api } from "../lib/client";
@@ -32,6 +33,8 @@ import { enqueueImports } from "../components/media/UploadDropzone";
 
 import { ChangelogPage } from "./ChangelogPage";
 import { selectOption } from "../../test/selectOption";
+/** A full run spreads this file's tests over SimpleWorkspace.part*.test.tsx. */
+const it = partedIt(vitestIt);
 
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
 type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void;
@@ -5362,9 +5365,9 @@ const openMenu = () => click(container.querySelector('[aria-label="More"]')!);
 const moreButton = () => container.querySelector<HTMLElement>('[aria-label="More"]')!;
 /** A row of the menu by its name, whatever status or mark follows the name. */
 const menuRow = (name: string) => [...container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(i => i.textContent?.trim().startsWith(name))!;
-/** The ring around the menu's button while videos cache, and how much of it is drawn, out of 100. */
-const cachingRing = () => moreButton().querySelector<SVGElement>(".simple-more-ring");
-const ringDrawn = (ring = cachingRing()) => Math.round(100 - Number(ring?.querySelector("circle + circle")?.getAttribute("stroke-dashoffset")));
+/** The line under the Media button's word while videos cache, and how much of it is filled, out of 100, or 0 while unmeasured. */
+const cachingLine = () => mediaButton().querySelector<HTMLElement>(".progress-line");
+const lineDrawn = (line = cachingLine()) => Math.round(parseFloat(line?.querySelector<HTMLElement>("span")?.style.width || "0"));
 const exportButton = () => buttonIn(container.querySelector(".simple-tools")!, "Export")!;
 /** The header's Media button, whatever mark follows its name. */
 const mediaButton = () => container.querySelector<HTMLElement>(".simple-tools .simple-media")!;
@@ -5405,25 +5408,51 @@ const openTranscript = async () => {
   await vi.waitFor(() => expect(container.querySelector(".simple-transcript [data-w]")).not.toBeNull());
 };
 
-it("heads the Transcript with one row: its name once, its figures and help mark, and the way back", async () => {
+it("heads the Transcript as the chat is headed, with its name and a ×, and gives the column to the words alone", async () => {
   await show();
   await openTranscript();
-  const head = container.querySelector<HTMLElement>(".simple-subhead")!;
-  expect([...head.children].map(c => c.textContent || c.querySelector("[aria-label]")?.getAttribute("aria-label")))
-    .toEqual(["Transcript", "0:00–0:16 · 35 words", "Back to chat"]);
-  // The figures and the help mark are the pane's, drawn on the heading. The pane has no title of its own.
-  expect([...head.querySelectorAll(".simple-subhead-tools > *")].map(e => e.textContent || e.getAttribute("aria-label"))).toEqual(["0:00–0:16 · 35 words", "Keyboard shortcuts"]);
-  const pane = container.querySelector<HTMLElement>(".simple-transcript")!;
-  expect(pane.querySelector(".reading-toolbar, .reading-title, h2")).toBeNull();
-  expect((head.textContent! + pane.textContent!).match(/Transcript|Current edit/g)).toEqual(["Transcript"]);
-  // The help mark still opens the keys, under the heading.
-  await click(head.querySelector('[aria-label="Keyboard shortcuts"]')!);
-  expect(pane.querySelector(".reading-keys")?.textContent).toContain("Play from word");
-  await click(buttonIn(head, "Back to chat")!);
-  expect(container.querySelector(".simple-subhead, .simple-transcript")).toBeNull();
+  const rail = container.querySelector<HTMLElement>(".simple-transcript-rail")!;
+  // It is a column of its own on the right of the player, not in the chat.
+  expect(rail.previousElementSibling?.classList.contains("simple-stage")).toBe(true);
+  expect(container.querySelector(".simple-rail .simple-transcript, .simple-thread .simple-transcript")).toBeNull();
+  const head = rail.querySelector<HTMLElement>(".simple-header")!;
+  expect([...head.children].map(c => c.textContent || c.getAttribute("aria-label"))).toEqual(["Transcript", "Close transcript"]);
+  // No toolbar, figures, key box or notes: the words, and a dim line naming each turn's time.
+  const pane = rail.querySelector<HTMLElement>(".simple-transcript")!;
+  expect(pane.querySelector(".reading-toolbar, .reading-window, .reading-keys, [aria-label='Keyboard shortcuts'], .border-warn")).toBeNull();
+  expect(pane.querySelector(".reading-turn-head")?.textContent).toBe("0:00");
+  await click(head.querySelector('[aria-label="Close transcript"]')!);
+  expect(container.querySelector(".simple-transcript-rail, .simple-transcript")).toBeNull();
 });
 
-it("keeps what Scarlet is on above the message box while the Transcript is open, and goes back to the chat on Esc or a sent message", async () => {
+it("shows the whole transcript, places the playhead on a clicked word, lights the sentence it is in, and finds words", async () => {
+  await show();
+  await openTranscript();
+  const pane = container.querySelector<HTMLElement>(".simple-transcript")!;
+  // The whole of it, with no pages to load and no offer to transcribe a file without words.
+  expect(pane.textContent).not.toMatch(/Load (earlier|later) words|Transcribe/);
+  const seek = vi.spyOn(player, "seek"), play = vi.spyOn(player, "play");
+  const word = (i: number) => pane.querySelector<HTMLElement>(`[data-w="${i}"]`)!;
+  await click(word(5));
+  expect(seek).toHaveBeenCalled();
+  expect(play).not.toHaveBeenCalled();
+  await act(async () => usePlayerStore.setState({ time: seek.mock.calls.at(-1)![0] + 0.01 }));
+  expect(word(5).hasAttribute("data-current")).toBe(true);
+  expect(pane.querySelectorAll("[data-near]").length).toBeGreaterThan(1);
+  // Search marks every match and Enter places the playhead on the one in hand.
+  const field = pane.querySelector<HTMLInputElement>('input[type="search"]')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "the"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+  const count = pane.querySelector(".transcript-search-count")!.textContent!;
+  expect(count).toMatch(/^1 of \d+$/);
+  expect(pane.querySelectorAll('[data-match="current"]').length).toBe(1);
+  seek.mockClear();
+  await act(async () => { field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  expect(seek).toHaveBeenCalledTimes(1);
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "zzzz"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+  expect(pane.querySelector(".transcript-search-count")!.textContent).toBe("No matches");
+});
+
+it("keeps the chat in view beside the Transcript, and closes the Transcript on Esc but not on a sent message", async () => {
   appliedEdits();
   // Scarlet has asked a question, and nothing else is running.
   const base = data.tasks.find(t => t.kind !== "transcribe")!;
@@ -5437,21 +5466,19 @@ it("keeps what Scarlet is on above the message box while the Transcript is open,
   const pin = () => container.querySelector<HTMLElement>(".simple-pin")!;
   const transcript = () => container.querySelector(".simple-transcript");
   await openTranscript();
-  // The transcript takes the chat's side. The request Scarlet is on keeps its place: its Stop, its question and Answer
-  // are still there, so the message box doesn't say Answer with no question on screen.
-  expect(chat().hidden).toBe(true);
+  // The transcript is beside the player: the chat and the request Scarlet is on stay in view, with its Stop, its question
+  // and Answer, so the message box doesn't say Answer with no question on screen.
+  expect(chat().hidden).toBe(false);
   expect(pin().hidden).toBe(false);
   expect(pin().querySelector(".unit-msg")?.textContent).toContain("Make the logo smaller.");
   expect(buttonIn(pin(), "Stop")).toBeTruthy();
   expect(pin().querySelector(".req-say")?.textContent).toBe("Smaller by how much?Answer");
   expect(boxTag()).toBe("Answer");
-  // Esc goes back to the chat.
-  await press("Escape");
-  expect(transcript()).toBeNull();
-  expect(chat().hidden).toBe(false);
-  // So does a message that was sent: the chat is where it went.
-  await openTranscript();
+  // A message that was sent leaves it open: the chat, where it went, is already in view.
   await act(async () => composer.props!.onSent!());
+  expect(transcript()).not.toBeNull();
+  // Esc closes it.
+  await press("Escape");
   expect(transcript()).toBeNull();
   // An edit that's open takes Esc first, then the Transcript.
   await click(turnFor("chg_approved_2").querySelectorAll<HTMLElement>(".simple-edits .simple-edit")[1]!);
@@ -5470,7 +5497,7 @@ it("caches the edit without a ring on the picture or a word on the Media button,
   await show();
   await act(async () => {});
   expect(container.querySelector(".simple-cache")).toBeNull();
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(mediaButton().title).toBe("");
   await openMenu();
   expect(menuItems()).not.toContain("Media");
@@ -5615,23 +5642,23 @@ it("says how far a video's cache has got on the menu's Media row, with Pause und
   useProjectStore.setState({ updateProject });
   await show();
   await act(async () => {});
-  // Caching needs nothing from the editor, so the menu isn't marked for it. Pausing it is inside the menu, so its
-  // button shows the caching instead: a ring drawn as far as the cache has got, named on hover.
+  // Caching needs nothing from the editor, so nothing is marked for it. The Media button shows it: a line under its
+  // word filled as far as the cache has got, named on hover. The menu's button shows nothing.
   expect(moreButton().querySelector(".needs-you")).toBeNull();
-  expect(ringDrawn()).toBe(30);
-  expect(cachingRing()!.classList.contains("is-unknown")).toBe(false);
-  expect(moreTitle()).toBe("Caching 30%");
-  expect(moreButton().getAttribute("aria-description")).toBe("Caching 30%");
-  // The menu button draws the ring without repeating its status in text.
-  expect(moreButton().textContent).toBe("");
-  expect(mediaButton().title).toBe(rest.length ? `${rest.length} of ${rest.length + 1} videos cached` : "Caching for playback");
+  expect(moreButton().querySelector(".progress-line")).toBeNull();
+  expect(moreTitle()).toBe("More");
+  expect(lineDrawn()).toBe(30);
+  expect(cachingLine()!.classList.contains("is-unknown")).toBe(false);
+  expect(mediaButton().title).toBe("Caching 30%");
+  expect(mediaButton().getAttribute("aria-description")).toBe("Caching 30%");
+  expect(mediaButton().textContent).toBe("Media");
   await openMenu();
   await click(menuItem("Pause caching"));
   expect(updateProject).toHaveBeenCalledWith({ mediaPaused: true });
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 
-it("draws a ring around the menu's button only while videos cache, and leaves a file that needs the editor to the Media button", async () => {
+it("draws a line under the Media button's word only while videos cache, and never on the menu's button", async () => {
   const [first, ...rest] = data.media.filter(m => m.kind === "video");
   const others = rest.map(m => ({ mediaId: m.id, state: "ready" as const }));
   const caches = vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [{ mediaId: first!.id, state: "ready" }, ...others] });
@@ -5645,35 +5672,35 @@ it("draws a ring around the menu's button only while videos cache, and leaves a 
   await show();
   await act(async () => {});
   // Every video cached: the button is as it always is.
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(moreTitle()).toBe("More");
-  expect(moreButton().getAttribute("aria-description")).toBeNull();
-  // A cache starts and the engine has no figure yet: a quarter of the ring, which turns.
+  expect(mediaButton().getAttribute("aria-description")).not.toMatch(/^Caching/);
+  // A cache starts and the engine has no figure yet: a short stretch of the line, which slides.
   await cachesBecome({ state: "caching" });
-  expect(cachingRing()!.classList.contains("is-unknown")).toBe(true);
-  expect(ringDrawn()).toBe(25);
-  expect(moreTitle()).toBe("Caching");
+  expect(cachingLine()!.classList.contains("is-unknown")).toBe(true);
+  expect(lineDrawn()).toBe(0);
+  expect(mediaButton().title).toBe("Caching");
+  expect(moreButton().querySelector(".progress-line")).toBeNull();
   await cachesBecome({ state: "caching", progress: 0.71 });
-  expect(cachingRing()!.classList.contains("is-unknown")).toBe(false);
-  expect(ringDrawn()).toBe(71);
-  expect(moreTitle()).toBe("Caching 71%");
+  expect(cachingLine()!.classList.contains("is-unknown")).toBe(false);
+  expect(lineDrawn()).toBe(71);
+  expect(mediaButton().title).toBe("Caching 71%");
   // A file that needs the editor marks the Media button, which says it first, and not the menu.
   const broken = rest[0] ?? first!;
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "failed" as const, error: "moov atom not found" } : m) });
   expect(moreButton().querySelector(".needs-you")).toBeNull();
-  expect(cachingRing()).not.toBeNull();
-  expect(moreTitle()).toBe("Caching 71%");
-  expect(mediaButton().title).toMatch(new RegExp(`^Couldn’t read ${broken.name}\\. `));
+  expect(cachingLine()).not.toBeNull();
+  expect(mediaButton().title).toBe(`Couldn’t read ${broken.name}. Caching 71%`);
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "ready" as const, error: undefined } : m) });
   // Paused, nothing is caching: the ring is gone, and nothing under the header says so. The menu's Resume caching row does.
   await cachesBecome({ state: "uncached", queued: true }, { project: { ...data.project, mediaPaused: true } });
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(container.querySelector(".simple-banner")).toBeNull();
   // Cached: the ring goes.
   await cachesBecome({ state: "caching", progress: 0.9 }, { project: { ...data.project, mediaPaused: false } });
-  expect(ringDrawn()).toBe(90);
+  expect(lineDrawn()).toBe(90);
   await cachesBecome({ state: "ready" });
-  expect(cachingRing()).toBeNull();
+  expect(cachingLine()).toBeNull();
   expect(moreTitle()).toBe("More");
 });
 
@@ -5835,17 +5862,17 @@ it("updates the Export button as the job advances without drawing the player or 
   preview.mockClear();
   const chat = composer.props;
   expect(chat).toBeDefined();
-  const ring = () => exportButton().querySelector<SVGElement>("svg");
+  const ring = () => exportButton().querySelector<HTMLElement>(".progress-line");
   const status = () => [exportButton().title, exportButton().getAttribute("aria-description")];
   expect(ring()).toBeNull();
   await exports({ ...running, phase: "choosing" });
   expect(ring()).toBeNull();
   await exports(running);
   expect(ring()?.getAttribute("aria-hidden")).toBe("true");
-  expect(ringDrawn(ring())).toBe(42);
+  expect(lineDrawn(ring())).toBe(42);
   expect(status()).toEqual(["Exporting 42%", "Exporting 42%"]);
   await exports({ ...running, progress: 0.5 });
-  expect(ringDrawn(ring())).toBe(50);
+  expect(lineDrawn(ring())).toBe(50);
   for (const job of [{ ...running, progress: 0 }, { ...running, progress: 0, waiting: true },
     { ...running, progress: 0.97 }, { ...running, phase: "saving" as const, progress: 1 }]) {
     await exports(job);
@@ -7896,8 +7923,8 @@ it("bookmarks a place in the video itself while a suggestion, an open cut or a c
 
 /** The Transcript's heading row, part by part, and the pane under it. */
 const transcriptHeading = () => {
-  const head = container.querySelector<HTMLElement>(".simple-subhead")!, pane = container.querySelector<HTMLElement>(".simple-transcript")!;
-  return { row: [...head.children].map(c => c.textContent), pane, said: (head.textContent! + pane.textContent!).match(/Transcript|interview-take2\.mp4/g) };
+  const head = container.querySelector<HTMLElement>(".simple-transcript-rail .simple-header > h1")!, pane = container.querySelector<HTMLElement>(".simple-transcript")!;
+  return { row: head.textContent, pane, said: (head.textContent! + pane.textContent!).match(/Transcript|interview-take2\.mp4/g) };
 };
 
 it("names a clip from Media once on the Transcript's heading, and keeps Mark unused words on a row under it", async () => {
@@ -7910,10 +7937,10 @@ it("names a clip from Media once on the Transcript's heading, and keeps Mark unu
   await openTranscript();
   // The clip's name is on the heading with the clip's own figures, and the pane has no title to say it again.
   const { row, pane, said } = transcriptHeading();
-  expect(row).toEqual(["Transcript · interview-take2.mp4", "0:00–0:20 · 44 words", "Back to chat"]);
+  expect(row).toBe("Transcript · interview-take2.mp4");
   expect(said).toEqual(["Transcript", "interview-take2.mp4"]);
   // What else the pane's toolbar held for a clip stays in the pane, on a row under the heading.
-  expect(pane.querySelector(".reading-tools")?.textContent).toBe("Mark unused words");
+  expect(pane.querySelector(".transcript-search .btn-quiet")?.textContent).toBe("Mark unused words");
 });
 
 it("names the footage on the Transcript's heading before the first cut, where the pane's title did", async () => {
@@ -7922,10 +7949,10 @@ it("names the footage on the Transcript's heading before the first cut, where th
   await show();
   await openTranscript();
   const { row, pane, said } = transcriptHeading();
-  expect(row).toEqual(["Transcript · interview-take2.mp4", "0:00–0:20 · 44 words", "Back to chat"]);
+  expect(row).toBe("Transcript · interview-take2.mp4");
   expect(said).toEqual(["Transcript", "interview-take2.mp4"]);
   // With no cut there are no unused words to mark, so nothing sits under the heading.
-  expect(pane.querySelector(".reading-tools")).toBeNull();
+  expect(pane.querySelector(".transcript-search .btn-quiet")).toBeNull();
 });
 
 it("writes a time past the first hour with its hour, over the player as on the line that names the box's aim", async () => {

@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findChrome, graphicCoverage, graphicOver, pdfPageCount, pdfPages, renderGraphic, renderGraphicStill, renderTimelineFrame, type MissingFont } from "@scarlet/render";
+import { findChrome, graphicCoverage, graphicOver, renderPdfDocument, renderGraphic, renderGraphicStill, renderTimelineFrame, type MissingFont } from "@scarlet/render";
 import { GraphicTemplate, type GraphicRenderRequest, type GraphicRenderResponse, type GraphicTemplateSummary, type SaveStyleGuideRequest, type SaveTemplateRequest, type TaskAttachment, type User } from "@scarlet/shared";
 import { newId, type MediaAsset, type Project, type StyleGuide } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
@@ -495,11 +495,9 @@ export async function readDocument(ctx: Ctx, projectId: string, ref: { attachmen
     return { ...base, image: { mime: "image/jpeg", data: jpeg.toString("base64") } };
   }
   if (mime === "application/pdf") {
-    const pageCount = pdfPageCount(await readFile(path));
-    const wanted = (ref.pages?.length ? ref.pages : Array.from({ length: Math.min(pageCount ?? 6, 6) }, (_, i) => i + 1))
-      .filter(n => Number.isInteger(n) && n >= 1 && (!pageCount || n <= pageCount)).slice(0, MAX_DOCUMENT_PAGES);
-    const shots = wanted.length ? await pdfPages(path, wanted, { chromePath: chrome(ctx), signal }) : [];
-    return { ...base, ...(pageCount && { pageCount }), pages: shots.map((jpeg, i) => ({ page: wanted[i]!, jpeg: jpeg.toString("base64") })) };
+    const wanted = ref.pages?.length ? ref.pages.filter(n => Number.isInteger(n) && n >= 1).slice(0, MAX_DOCUMENT_PAGES) : [1, 2, 3, 4, 5, 6];
+    const { pageCount, pages } = await renderPdfDocument(path, wanted, { signal });
+    return { ...base, pageCount, pages: pages.map(({ page, jpeg }) => ({ page, jpeg: jpeg.toString("base64") })) };
   }
   return base;
 }
