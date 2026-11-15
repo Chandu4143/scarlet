@@ -1166,12 +1166,14 @@ export function SimpleWorkspace() {
   const [hoveredEdit] = useState(() => createStore<number | undefined>(() => undefined));
   const [hoveredRow] = useState(() => createStore<HoveredReviewRow | undefined>(() => undefined));
   // The request whose band the editor pressed in the chat, to see its edits on the timeline. The latest request takes the
-  // timeline back when it is new or applies an edit.
-  const [picked, setPicked] = useState<string>();
+  // timeline back when it is new or applies an edit. A second press on the marked band takes its edits off (null), and
+  // then no request's edits are marked until the editor presses a band or the latest request moves on.
+  const [picked, setPicked] = useState<string | null>();
   // Counts the presses on a band, each of which shows the whole timeline.
   const [fitTimeline, setFitTimeline] = useState(0);
-  // The request whose edits the timeline numbers when nothing is open: the one picked, else the latest.
-  const marked = threads.find(t => t.id === picked) ?? ordered.at(-1);
+  // The request whose edits the timeline numbers when nothing is open: the one picked, else the latest, unless the
+  // editor took them off.
+  const marked = picked === null ? undefined : threads.find(t => t.id === picked) ?? ordered.at(-1);
   // The timeline is on the request the editor went to: an edit they opened, or a pass's full list. Otherwise it is on the
   // request picked in the chat, else the latest, so that request's edits are marked from the start.
   const focusThread = threads.find(t => t.id === focus?.threadId) ?? marked;
@@ -1835,7 +1837,15 @@ export function SimpleWorkspace() {
     showingFrom: openedFrom && showing && matchesEdit(showing, openedFrom.ref) ? openedFrom.run : undefined,
     marked: focusThread?.id,
     mark(threadId) {
-      if (threadId === focusThread?.id && !showing && !listening && !suggestion) return;
+      // Pressed again with nothing open, the marked band lets go: its edits come off the timeline and it is plain again.
+      if (threadId === focusThread?.id && !showing && !listening && !suggestion) {
+        // Its full list goes with them, since an open list keeps its request on the timeline.
+        setLists(all => all[threadId] === "all" ? Object.fromEntries(Object.entries(all).filter(([id]) => id !== threadId)) : all);
+        if (openList === threadId) setOpenList(undefined);
+        setPicked(null);
+        setFocus(undefined);
+        return;
+      }
       // Whatever was open goes with the timeline it was on, and so does another request's list of every edit.
       actions.stopShowing();
       setLists(all => Object.entries(all).some(([id, list]) => id !== threadId && list === "all")
@@ -2404,7 +2414,7 @@ export function SimpleWorkspace() {
   const followed = useRef(newest);
   // A request that is new or has just applied an edit takes the timeline from the one picked in the chat.
   const pickedAt = useRef(newest);
-  if (pickedAt.current !== newest) { pickedAt.current = newest; if (picked) setPicked(undefined); }
+  if (pickedAt.current !== newest) { pickedAt.current = newest; if (picked !== undefined) setPicked(undefined); }
   // The latest arrival the editor has since gone elsewhere from: opening an edit of another request is where they want to be.
   const wentSince = useRef<string>(undefined);
   const flaggedEdits = useMemo(() => threadEdits.filter(e => !!e.check && !reviewed(e) && !revisingEdit(e)), [threadEdits, reviewed, revisingEdit]);

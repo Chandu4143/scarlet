@@ -10798,6 +10798,16 @@ it("keeps one list of every edit open at a time, and puts a request's edits on t
   await act(async () => {});
   expect(band("chg_later").classList.contains("is-marked")).toBe(true);
   expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
+  // Pressed again, the marked band lets go: no band is shaded and no request's edits are numbered on the timeline.
+  await click(band("chg_later"));
+  await act(async () => {});
+  expect(container.querySelectorAll(".unit-msg.is-marked")).toHaveLength(0);
+  expect(numbered()).toEqual([]);
+  // And a press marks it again.
+  await click(band("chg_later"));
+  await act(async () => {});
+  expect(band("chg_later").classList.contains("is-marked")).toBe(true);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
   // Opening one request's list of every edit closes another's, so two "Hide" links never stand for one timeline.
   const toggle = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".simple-pass-toggle")!;
   await click(toggle("chg_approved_2"));

@@ -271,8 +271,10 @@ export function proposeChange(ctx: Ctx, user: User, projectId: string, body: Pro
   return ctx.db.transaction(() => {
     checkAttempt?.();
     requireUnscopedEdit(ctx, body.taskId ? ctx.repos.tasks.get(body.taskId) : undefined);
+    const withdrawn = withdrawable(ctx, projectId, body);
     const aligned = opsOnWholeFrames(ctx, projectId, body);
     const result = persistProposal(ctx, user, projectId, aligned);
+    for (const earlier of withdrawn) putAway(ctx, earlier, WITHDRAWN, result.change.id);
     // Inside a selected passage the engine places each removal itself, so the agent is told each one it moved.
     if (!aligned.range || !body.ops || aligned.ops?.length !== body.ops.length) return result;
     const round3 = (t: number) => Math.round(t * 1000) / 1000;
@@ -284,6 +286,25 @@ export function proposeChange(ctx: Ctx, user: User, projectId: string, body: Pro
     });
     return onWholeFrames.length ? { ...result, onWholeFrames } : result;
   }, "immediate")();
+}
+
+const WITHDRAWN = "Replaced by a later option from the same request.";
+
+/**
+ * The earlier options a proposal withdraws. An agent sees how a suggestion or an alternative looks only once it is
+ * saved, so it saves drafts; with no way to take one back, a cold-open request left the editor six options to play,
+ * three of them drafts, where it meant to offer three (2026-11-15). Only the request's own options that still wait for
+ * the editor can go: anything they have decided, and anything another request made, stays as it is.
+ */
+function withdrawable(ctx: Ctx, projectId: string, body: ProposeChangeRequest): Change[] {
+  return [...new Set(body.withdraws ?? [])].map(id => {
+    const earlier = ctx.repos.changes.get(id);
+    if (!body.taskId || !earlier || earlier.projectId !== projectId || earlier.taskId !== body.taskId || earlier.state !== "ready" ||
+        !["suggestion", "alternative"].includes(earlier.intent ?? "")) {
+      throw badRequest("invalid_withdrawal", `${id} isn't a suggestion or alternative of this request that is waiting for the editor, so it can't be withdrawn.`);
+    }
+    return earlier;
+  });
 }
 
 /**
@@ -2193,7 +2214,16 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
   let alsoThere: (typeof edits) = [];
   if (body.changeId !== undefined) {
     found = edits.find(e => e.edit.changeId === body.changeId && e.edit.spot === body.spot);
-    if (!found) throw notFound(`edit ${body.spot} of change ${body.changeId} on the working cut`);
+    if (!found) {
+      // A cold-open request flagged each of its three options here, which still waited for the editor, and was told
+      // only that nothing was found (2026-11-15). An option carries its doubt from when it is saved.
+      const staged = ctx.repos.changes.get(body.changeId);
+      if (staged?.projectId === projectId && staged.state === "ready") {
+        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` +
+          "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there.");
+      }
+      throw notFound(`edit ${body.spot} of change ${body.changeId} on the working cut`);
+    }
   } else {
     const { start, end } = body.range!;
     // A cut is a point, where it joins; any other edit is the footage it changed. Each is weighed by how much of the

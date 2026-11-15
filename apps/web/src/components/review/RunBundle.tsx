@@ -11,21 +11,39 @@ import { runAim, runIsActive, runItems, runLines, runSummary, type RunItem, type
 import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
 
 /**
- * Tokens the agent used on a request. Hovering or focusing the count opens a note under it with every part: input,
+ * Tokens the agent used on a request. Hovering or focusing the count opens a note above it with every part: input,
  * output, cache read and write, reasoning, and how many runs it took. Shown only when turned on in Settings → Usage.
+ * The note is placed against the window, so the pinned request's scrolling box doesn't clip it.
  */
 function Tokens({ usage, className }: { usage?: UsageTotals; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
+  const [tip, setTip] = useState<{ right: number; bottom: number } | null>(null);
+  // While the note is open it follows the count, which moves when the pinned request grows or the chat scrolls.
+  useLayoutEffect(() => {
+    if (!open) { setTip(null); return; }
+    let frame = 0;
+    const place = () => {
+      const box = ref.current?.getBoundingClientRect();
+      if (box) setTip(was => {
+        const right = window.innerWidth - box.right, bottom = window.innerHeight - box.top + 6;
+        return was?.right === right && was.bottom === bottom ? was : { right, bottom };
+      });
+      frame = requestAnimationFrame(place);
+    };
+    place();
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
   if (!usage?.totalTokens) return null;
   const parts: [string, number][] = [
     ["Input", usage.inputTokens], ["Output", usage.outputTokens], ["Cache read", usage.cacheReadTokens],
     ["Cache write", usage.cacheWriteTokens], ["Reasoning", usage.reasoningTokens],
   ];
-  return <span className={`run-dim run-tokens${className ? ` ${className}` : ""}`} tabIndex={0} title=""
+  return <span ref={ref} className={`run-dim run-tokens${className ? ` ${className}` : ""}`} tabIndex={0} title=""
     aria-label={`${tokenLabel(usage.totalTokens)}: ${tokenBreakdown(usage)}`} data-breakdown={tokenBreakdown(usage)}
     onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}>
     {tokenLabel(usage.totalTokens)}
-    {open && <span className="tokens-tip" aria-hidden>
+    {tip && <span className="tokens-tip" aria-hidden style={tip}>
       {parts.filter(([label, n]) => n || label === "Input" || label === "Output").map(([label, n]) =>
         <span key={label}><span>{label}</span><b>{n.toLocaleString()}</b></span>)}
       {usage.runs > 1 && <span><span>Runs</span><b>{usage.runs}</b></span>}
