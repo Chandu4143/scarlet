@@ -49,7 +49,7 @@ export function sweepLeftovers(ctx: Ctx, now = Date.now()): number {
   const projects = join(ctx.paths.root, "projects");
   if (!lstatSync(projects, { throwIfNoEntry: false })?.isDirectory()) return removed;
   const known = ctx.db.prepare("SELECT 1 FROM media WHERE id = ?");
-  const knownNote = ctx.db.prepare("SELECT 1 FROM notes WHERE id = ?");
+  const namedRecording = ctx.db.prepare("SELECT 1 FROM notes WHERE project_id = ? AND json_extract(json, '$.audioPath') = ?");
   for (const project of readdirSync(projects, { withFileTypes: true })) {
     if (!project.isDirectory()) continue;
     const id = project.name;
@@ -59,11 +59,8 @@ export function sweepLeftovers(ctx: Ctx, now = Date.now()): number {
       const media = /^(med_[A-Za-z0-9]+)\.[A-Za-z0-9]+$/.exec(name)?.[1];
       return !!media && !known.get(media);
     });
-    // A voice note's recording is saved before its words are read and its note written. One with no note never became one.
-    sweep(ctx.paths.notes(id), name => {
-      const note = /^(note_[A-Za-z0-9]+)\.[A-Za-z0-9]+$/.exec(name)?.[1];
-      return !!note && !knownNote.get(note);
-    });
+    // A voice note's recording is saved before its words are read and its note written. One no note names never became one.
+    sweep(ctx.paths.notes(id), name => /^note_[A-Za-z0-9]+\.[A-Za-z0-9]+$/.test(name) && !namedRecording.get(id, name));
     sweep(ctx.paths.proxies(id), name => name.endsWith(".part.mp4"));
     // A full source cache keeps its parts in a folder of its own.
     try {

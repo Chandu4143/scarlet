@@ -9,7 +9,7 @@ import { accessToken } from "../auth.js";
 import { BUNDLED_SKILLS } from "../bundledSkills.js";
 import { Db, migrate } from "../db.js";
 import { migrateQuickActions } from "./migrateQuickActions.js";
-import { assistantSkills, createSkill, deleteSkill, retireMergedSkills, reviseSkillContent, seedSkillList, updateSkill } from "./skills.js";
+import { assistantSkills, createSkill, deleteSkill, retireMergedSkills, reviseSkillContent, seedSkillList, skillHistory, updateSkill, versionChange } from "./skills.js";
 import { createTask } from "./tasks.js";
 
 const text = (body: string, description = "Make a first dialogue pass.") =>
@@ -26,6 +26,19 @@ it("keeps a skill's name and other header fields when its description and instru
   // A description the revision didn't change keeps its line as written.
   expect(reviseSkillContent({ name: "a-skill", content: "---\nname: a-skill\ncategory: Sound\ndescription: Keep it short.\n---\nOld." }, { description: "Keep it short.", instructions: "New." }))
     .toBe("---\nname: a-skill\ncategory: Sound\ndescription: Keep it short.\n---\n\nNew.\n");
+});
+
+it("names what a version changed by the parts of the skill it touched", () => {
+  const skill = (description: string, sections: Record<string, string>, opening = "Cut tight.") =>
+    `---\nname: a-skill\ndescription: ${description}\n---\n\n# A skill\n\n${opening}\n` + Object.entries(sections).map(([title, body]) => `\n## ${title}\n\n${body}\n`).join("");
+  const base = skill("Make a pass.", { Pauses: "Keep a beat.", Review: "Ask when unsure.", Finish: "Read it through." });
+  expect(versionChange(base, skill("Make a pass.", { Pauses: "Keep half a beat.", Review: "Ask when unsure.", Finish: "Read it through." }))).toBe("Changed “Pauses”");
+  expect(versionChange(base, skill("Make a pass.", { Pauses: "Keep a beat.", Review: "Ask when unsure.", Finish: "Read it through.", Silence: "Cut it." })))
+    .toBe("Added “Silence”");
+  expect(versionChange(base, skill("Make a tight pass.", { Pauses: "Keep a beat.", Review: "Ask when unsure." }, "Cut tighter.")))
+    .toBe("Removed “Finish”, changed when to use it and the opening");
+  expect(versionChange(base, skill("Other.", { Pauses: "A.", Review: "B.", Finish: "C." }, "D."))).toBe("Rewrote most of it");
+  expect(versionChange(base, base.replace("name: a-skill", "name: renamed"))).toBe("Changed the header");
 });
 
 describe("the skills Scarlet comes with", () => {
@@ -146,6 +159,14 @@ describe("the skills Scarlet comes with", () => {
     expect(app.ctx.repos.skills.get(own.id)).toEqual(own);
     await upgrade();
     expect(app.ctx.repos.skills.select("name LIKE 'dialogue-preferences%'")).toHaveLength(2);
+  });
+
+  it("lists each version with what it changed, and one that puts back an earlier text as restoring it", () => {
+    const ctx = app.ctx;
+    const skill = createSkill(ctx, editor, { name: "first-cut-dialogue", content: shipped });
+    const changed = updateSkill(ctx, editor, skill, { content: next });
+    updateSkill(ctx, editor, changed, { content: shipped });
+    expect(skillHistory(ctx, skill.id).map(v => v.note)).toEqual(["First version", "Changed when to use it and the opening", "Restored v1"]);
   });
 
   it("adds each one once, as an ordinary skill", async () => {
@@ -475,7 +496,7 @@ describe("skills that the workflows replaced", () => {
   ].join("\n");
 
   it("ships the stock skills in skills/, and removes unedited copies of the rest on upgrade", async () => {
-    expect(app.ctx.repos.skills.select().map(skill => skill.name).sort()).toEqual(["add-captions", "cold-open", "dialogue-pass", "fit-length", "frame-screen", "motion-graphics", "punch-in", "speed-through-waits"]);
+    expect(app.ctx.repos.skills.select().map(skill => skill.name).sort()).toEqual(["add-captions", "cold-open", "dialogue-pass", "fit-length", "frame-screen", "make-shorts", "motion-graphics", "punch-in", "speed-through-waits"]);
     const stock = createSkill(app.ctx, null, { name: "smooth-audio-cuts", scope: "team", content: smoothing }, { source: "bundled" });
     const run = uses([stock.id]);
     app.ctx.repos.tasks.put({ ...run, state: "done" });

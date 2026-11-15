@@ -9,6 +9,7 @@ import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient
 import type { Transcript } from "@scarlet/timeline";
 import { emptyTimeline, makeMediaClip } from "@scarlet/timeline";
 import { createScarletMcpServer, SCARLET_TOOL_NAMES } from "./server.js";
+import * as dialogueJoin from "./dialogue-join.js";
 import { describeError, toolRefusal } from "./tool-result.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { makeState, startMockServer, type MockServer } from "./mock-server.js";
@@ -44,11 +45,12 @@ let textOf: (r: CallToolResult) => string;
 /** A result's answer, before any line that says what it was answered without. */
 const firstJson = (r: CallToolResult) => JSON.parse((r.content[0] as { text: string }).text);
 
-async function connect(taskId?: string, workDir?: string, task?: Task, editingTools?: EditingTools, alignmentWaitMs?: number, agent = "claude") {
+async function connect(taskId?: string, workDir?: string, task?: Task, editingTools?: EditingTools, alignmentWaitMs?: number, agent = "claude", joinWaitMs?: number) {
   const sc = new ScarletClient({ baseUrl: mock.url, token: "tok" });
   const server = createScarletMcpServer(sc, {
     projectId: "prj_test",
     alignmentWaitMs,
+    joinWaitMs,
     editingTools,
     taskId,
     taskStartedAt: taskId ? "2026-04-01T12:00:00.000Z" : undefined,
@@ -170,8 +172,8 @@ describe("tools/list", () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     // Claude's harness does not deliver audio, so nothing offers WAV, and has no file tools, so nothing imports from the
-    // artifact directory. Only the check that reads a request offers a rule.
-    expect(names).toEqual([...SCARLET_TOOL_NAMES].filter(n => n !== "source_audio" && n !== "learning_suggest" && n !== "asset_add").sort());
+    // artifact directory. Only the check that reads a request offers a rule, and only the first short of a batch plans them.
+    expect(names).toEqual([...SCARLET_TOOL_NAMES].filter(n => n !== "source_audio" && n !== "learning_suggest" && n !== "asset_add" && n !== "shorts_plan").sort());
     for (const t of tools) expect(Object.keys(t.inputSchema.properties ?? {})).not.toContain("includeAudio");
     expect(JSON.stringify(tools)).not.toMatch(/\bWAV\b|can (hear|play)|accepts audio|consume audio/);
     for (const t of tools) expect(t.description?.length ?? 0).toBeGreaterThan(20);
@@ -2211,13 +2213,13 @@ it("resumes a carried conflict by the original cut and keeps it by its new numbe
   }
 });
 
-it.each(["pending conflict", "saved override"])("requires a current read on a rollback to the original version with a %s", async evidence => {
+it.each(["pending conflict", "saved override", "background join"])("requires a current read on a rollback to the original version with a %s", async evidence => {
   const range = { start: 2, end: 3 };
   const task = Task.parse({ id: "rollback", state: "running", projectId: "prj_test", kind: "revise", agent: "codex",
     instruction: "Remove the repeated word.", context: { changeId: "pass", cutIndex: 0 }, createdBy: { type: "human", name: "Editor" },
-    ...(evidence === "pending conflict" && { cutConflict: { version: "intervening", range } }) });
-  const editor = await connect(task.id, undefined, task);
-  const before = { extra: mock.state.extra, timeline: mock.state.timeline };
+    ...(evidence !== "saved override" && { cutConflict: { version: "intervening", range } }) });
+  const editor = await connect(task.id, undefined, task, undefined, undefined, "codex", 20);
+  const before = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform };
   const tl = emptyTimeline("prj_test");
   tl.version = "original";
   tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 6, 0)];
@@ -2241,7 +2243,27 @@ it.each(["pending conflict", "saved override"])("requires a current read on a ro
   try {
     expect((await move()).isError).toBe(true);
     expect(writes).toBe(0);
-    await editor.callTool({ name: "timeline_transcript", arguments: { version: tl.version, from: 1, to: 4 } });
+    if (evidence === "background join") {
+      mock.state.waveform = spokenWaveform;
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const detections = vi.spyOn(ScarletClient.prototype, "dialogueDetections").mockImplementation(async () => {
+        await gate;
+        return { acoustic: [], segments: transcript.segments };
+      });
+      const measured = vi.spyOn(dialogueJoin, "joinAudio");
+      const check = async () => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, ...range } }) as CallToolResult);
+      try {
+        expect((await check()).status).toBe("measuring");
+        release();
+        await vi.waitFor(() => expect(measured).toHaveBeenCalled());
+        expect((await move()).isError).toBe(true);
+        expect(writes).toBe(0);
+        expect((await check()).audio).toHaveLength(2);
+      } finally { release(); measured.mockRestore(); detections.mockRestore(); }
+    } else {
+      await editor.callTool({ name: "timeline_transcript", arguments: { version: tl.version, from: 1, to: 4 } });
+    }
     expect((await move()).isError).toBeFalsy();
     expect(writes).toBe(1);
   } finally {
@@ -3441,6 +3463,89 @@ it("measures the sound beside an edge once, also within a second of where a reco
   } finally {
     Object.assign(mock.state, original);
     await editor.close();
+  }
+});
+
+it("returns progress for a cold 12-cut batch and collects the same measurements on retry", async () => {
+  const original = { timeline: mock.state.timeline, transcripts: mock.state.transcripts, waveform: mock.state.waveform };
+  const editor = await connect(undefined, undefined, undefined, undefined, undefined, "codex", 20);
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "slow-batch";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 52, 0)];
+  mock.state.timeline = tl;
+  const words = Array.from({ length: 150 }, (_, i) => ({ text: "voz", start: i / 3 + .05, end: i / 3 + .25 }));
+  mock.state.transcripts = { m1: { id: "spanish", mediaId: "m1", segments: [{ id: "s", start: 0, end: 50, text: "", words }] } };
+  mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, words);
+  let release!: () => void, started!: () => void;
+  const hold = new Promise<void>(r => { release = r; });
+  const reading = new Promise<void>(r => { started = r; });
+  const detections = vi.spyOn(ScarletClient.prototype, "dialogueDetections").mockImplementation(async (_id, { from, to }) => {
+    started();
+    await hold;
+    return { acoustic: [], segments: [{ id: "kept", start: from, end: to, text: "", words: words.filter(w => w.start >= from && w.end <= to) }] };
+  });
+  const originalWaveform = ScarletClient.prototype.waveform;
+  const waveform = vi.spyOn(ScarletClient.prototype, "waveform").mockImplementation(async function (this: ScarletClient, ...args) {
+    if (args[1] >= 20) await hold;
+    return originalWaveform.apply(this, args);
+  });
+  const cuts = Array.from({ length: 12 }, (_, i) => ({ start: 1 + i * 4, end: 2 + i * 4 }));
+  const check = async (version: string) => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version, cuts } }) as CallToolResult);
+  try {
+    const first = check("head");
+    await reading;
+    const waiting = await first;
+    expect(waiting).toMatchObject({ status: "measuring", version: tl.version, retryAfterSeconds: 5 });
+    expect(waiting.pendingCuts).toEqual(cuts.map((_, index) => index));
+    expect(waiting.joins).toEqual(cuts.map(() => ({ status: "pending" })));
+    // Every new batch loads the project once. Audio reads from this batch can still start between polls.
+    const batchStarts = () => mock.requests.filter(r => r.path === `/projects/${tl.projectId}`).length;
+    const startedBatches = batchStarts();
+    expect(startedBatches).toBeGreaterThan(0);
+    expect(await check(waiting.version)).toEqual(waiting);
+    expect(batchStarts()).toBe(startedBatches);
+    release();
+    await vi.waitFor(async () => {
+      const result = await check(waiting.version);
+      expect(result.status).toBeUndefined();
+      expect(result.joins).toHaveLength(12);
+      expect(result.joins.every((join: { originalRange?: unknown }) => join.originalRange)).toBe(true);
+    });
+  } finally {
+    release();
+    await editor.close();
+    waveform.mockRestore();
+    detections.mockRestore();
+    Object.assign(mock.state, original);
+  }
+});
+
+it("delivers ready cuts and errors while another cut waits for its waveform", async () => {
+  const original = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+  const editor = await connect(undefined, undefined, undefined, undefined, undefined, "codex", 20);
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "partial-waves";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 52, 0)];
+  mock.state.timeline = tl;
+  mock.state.waveform = spokenWaveform;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const waveform = vi.spyOn(ScarletClient.prototype, "waveform").mockImplementation(async (id, from, to, points = 1000) => {
+    if (from >= 20) await gate;
+    return spokenWaveform(id, from, to, points);
+  });
+  const cuts = [{ start: 50, end: 59 }, { start: 1, end: 2 }, { start: 30, end: 31 }];
+  const check = async () => firstJson(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, cuts } }) as CallToolResult);
+  try {
+    await vi.waitFor(async () => expect(await check()).toMatchObject({ status: "measuring", pendingCuts: [2],
+      joins: [{ error: expect.stringContaining("nonempty range") }, { originalRange: cuts[1], audio: expect.any(Array) }, { status: "pending" }] }));
+    release();
+    await vi.waitFor(async () => expect((await check()).joins[2]).toMatchObject({ originalRange: cuts[2] }));
+  } finally {
+    release();
+    await editor.close();
+    waveform.mockRestore();
+    Object.assign(mock.state, original);
   }
 });
 

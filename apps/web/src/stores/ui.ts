@@ -14,6 +14,8 @@ export interface AgentPick {
 export interface AgentContext {
   /** Source-media time when a media ID is present, or cut time otherwise. */
   mediaId?: string;
+  /** A point attached by a timestamp in the draft. It follows the words until they change or are removed. */
+  fromMessage?: boolean;
   version?: string;
   time: number;
   end?: number;

@@ -12,6 +12,7 @@ import type { AcousticWordsRequest, DialogueRangeRequest, DialogueScanRequest, D
 import type { Author, Change, CutAssessment, CutReview, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript, TranscriptWord } from "@scarlet/timeline";
 import type {
   ActivityEntry,
+  MakeShortsRequest,
   AgentHost,
   ApproveResponse,
   TrashedProject,
@@ -60,6 +61,7 @@ import type {
   StagedCutRevision,
   LocalModelStatus,
   TelemetryUnavailable,
+  HandoffResponse,
 } from "./api.js";
 
 /**
@@ -260,6 +262,10 @@ export class ScarletClient {
   }
   updateProject(id: string, body: Record<string, unknown>) {
     return this.patch<{ project: Project }>(`/projects/${id}`, body);
+  }
+  /** Make shorts: a project for each short, made from this one's finished edit. The first short's run starts at once. */
+  makeShorts(id: string, body: MakeShortsRequest) {
+    return this.post<{ projects: Project[]; task: Task }>(`/projects/${id}/shorts`, body);
   }
   deleteProject(id: string) {
     return this.delete<Record<string, never>>(`/projects/${id}`);
@@ -731,6 +737,11 @@ export class ScarletClient {
   restoreProject(projectId: string) {
     return this.post<{ project: Project }>(`/projects/${projectId}/restore`);
   }
+  /** What the folder for finishing the edit in another app holds, linked as it will sit at `folder`. */
+  handoff(projectId: string, version: string, folder: string) {
+    return this.post<HandoffResponse>(`/projects/${projectId}/versions/${version}/handoff`, { folder });
+  }
+
   importOtio(projectId: string, otio: unknown, opts: { autoApprove?: boolean } = {}) {
     return this.post<{ change: Change; timeline: Timeline }>(`/projects/${projectId}/import/otio`, { otio, autoApprove: opts.autoApprove });
   }

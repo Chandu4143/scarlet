@@ -34,6 +34,18 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(restored.find(e => e.spot === 3)?.range).toEqual(named[3]!.range);
   });
 
+  it("reads each cut an agent named to the second as the cut it made, wherever its join falls between hundredths", () => {
+    // A fit-length request named its five cuts to the hundredth of a second, and the joins its removals made fell between
+    // those: three of them listed as edits that weren't cuts, and the request said it made edits, not what it took out (2026-11-15).
+    const removals = [{ start: 60.1234, end: 70.4567 }, { start: 120.3333, end: 135.6789 }, { start: 300.1111, end: 318.2222 }];
+    const cuts = { ...change, toVersion: head.version, ops: removals.map(({ start, end }) => ({ op: "rippleDelete", start, end })).reverse(),
+      timelineEdits: [{ label: "Cut the aside", range: { start: 60.12, end: 60.12 } }, { label: "Cut the walkthrough", range: { start: 110, end: 110 } },
+        { label: "Cut the side note", range: { start: 274.43, end: 274.43 } }] };
+    const edits = threadTimeline(thread([cuts]), head, links, () => earlier, 30);
+    expect(edits.map(e => [e.label, e.kind, e.beforeCut?.removed])).toEqual([
+      ["Cut the aside", "cut", removals[0]], ["Cut the walkthrough", "cut", removals[1]], ["Cut the side note", "cut", removals[2]]]);
+  });
+
   it("lists an edit once when a later save of the same request names it again", () => {
     // A pass that saves the video a second time lists every edit it has made so far, not only what that save changed.
     const first = { ...change, timelineEdits: [

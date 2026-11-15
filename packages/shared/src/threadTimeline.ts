@@ -251,7 +251,9 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
     const kinds = built && taken ? fromSteps.map((kind, spot) => taken.some(cut => cut.range.start >= ranges[spot]!.start - NAMED_SLACK &&
       cut.range.start <= ranges[spot]!.end + NAMED_SLACK) ? "cut" : kind) : fromSteps;
     const joins = named && cuts ? rangedJoins(ranges, kinds, cuts) : undefined;
-    const atJoin = taken?.length ? namedJoins(ranges, taken) : undefined;
+    // A cut named at a point is the join nearest it: an agent names times to the hundredth, and the join its removals
+    // made can fall between ("271.28" for 271.2833), which read the cut as some other edit.
+    const atJoin = taken?.length ? namedJoins(ranges, taken) : named && rippled?.length ? namedJoins(ranges, rippled) : undefined;
     const beforeVersion = change.appliedReview?.originalVersion ?? built?.version ?? change.fromVersion;
     const shown = new Map<Cut, SavedEdit>();
     for (const [spot, item] of entries.entries()) {
