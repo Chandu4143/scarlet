@@ -44,7 +44,7 @@ const voicePhase: Record<SpeakerProgress["phase"], string> = {
  * next, as a card's note does: there is no button, only the pointer changes over it, and the reply ends in an ellipsis
  * while it's folded. However much Scarlet writes, a request stays a few lines tall.
  */
-export function Said({ text, className }: { text: string; className?: string }) {
+export function Said({ text, lead, className }: { text: string; lead?: ReactNode; className?: string }) {
   const ref = useRef<HTMLParagraphElement>(null);
   const [clipped, setClipped] = useState(false);
   const [open, setOpen] = useState(false);
@@ -60,7 +60,7 @@ export function Said({ text, className }: { text: string; className?: string }) 
   }, [text, open]);
   const opens = clipped || open;
   return <p ref={ref} className={`${className ? `${className} ` : ""}said${open ? " is-open" : clipped ? " is-clipped" : ""}`}
-    title={clipped && !open ? "Show all of it" : undefined} aria-expanded={opens ? open : undefined} onClick={opens ? () => setOpen(!open) : undefined}>{text}</p>;
+    title={clipped && !open ? "Show all of it" : undefined} aria-expanded={opens ? open : undefined} onClick={opens ? () => setOpen(!open) : undefined}>{lead}{text}</p>;
 }
 
 /**

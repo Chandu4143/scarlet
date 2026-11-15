@@ -630,9 +630,11 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .said.is-clipped, .said.is-open { cursor: pointer; }
 .req-say.is-note { font-size: 12.5px; color: var(--color-dim); }
 .req-say.is-bad { color: var(--color-bad); }
-/* The editor's answer is their message: it keeps to two lines, as their request does, and its title has the rest. */
+/* The editor's answer is their message: it keeps to two lines, as their request does, and opens on a click. */
 .req-say.is-yours { padding-left: 10px; border-left: 2px solid var(--color-line); color: var(--color-muted);
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* The editor's own words fold and open the same way, wherever they are clamped. */
+.said.is-open, .unit-msg p.said.is-open, .simple-pin .unit-msg p.said.is-open, .simple-turn > .simple-msg.from-you p.said.is-open, .req-say.is-yours.said.is-open { display: block; }
 .req-say .simple-link { margin-left: 10px; }
 /* Answer sits on its own line under Scarlet's question. */
 .req-say .simple-link.is-warn { display: flex; margin: 5px 0 0; }
