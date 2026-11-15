@@ -5,6 +5,7 @@ Every project uses the same library. A skill command pins its guide to the task.
 | Stage | Workflow | Use it when |
 |---|---|---|
 | Story and pacing | [Dialogue pass](dialogue-pass/SKILL.md) | Remove abandoned starts, redundant takes and distracting pauses while preserving the speaker’s meaning and pace. A selected passage limits the cut. |
+| Story and pacing | [Matt’s talking-head edit](matt-talking-head/SKILL.md) | Edit presenter footage in Matt Berman’s style, with tight dialogue, two-frame audio crossfades, camera punch-ins and framing for screen demos. |
 | Story and pacing | [Fit a target length](fit-length/SKILL.md) | Bring the edit to a running time you name by taking out the passages it needs least, and offer the rest when hitting the number would cost something. |
 | Story and pacing | [Cold open](cold-open/SKILL.md) | Suggest the strongest moment to open the video, for you to play and apply or send back for another. Nothing goes in front on its own. |
 | Story and pacing | [Speed through waits](speed-through-waits/SKILL.md) | Play installs, builds, renders and loading fast instead of cutting them, with every track in sync and speech at normal speed. |
