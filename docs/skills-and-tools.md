@@ -41,6 +41,8 @@ An explicit tool option can also encode a convenient preset. For a screen demo, 
 
 The model can request an audio crossfade when submitting dialogue cuts. Scarlet places the requested overlap using the available audio and records it so preview and approval play the same join. The model chooses which pauses to shorten and how much time to leave. [Join crossfades](../packages/timeline/src/joinCrossfade.ts)
 
+A transition is the same split. The editor's taste is in a template (how the picture moves: a swipe, a whip pan, a dip) and in a skill ("every time I go from my camera to the screen recording, use $swipe"), or in the request itself. The model decides which joins get one. Scarlet puts it on those joins with `timeline_transition`, using the footage either side of each, and reports any join that had too little footage for the whole transition. [Transitions](../packages/timeline/src/transitions.ts) · [Drawing them](../packages/render/src/transitions.ts)
+
 ## How a skill reaches an edit
 
 - **Library.** All projects share one library. The Markdown files under `skills/` supply the shipped text. The server build embeds them and the engine seeds ordinary, versioned library entries. A later release updates untouched stock text. An editor’s content change makes that copy theirs. Disabling a guide preserves its disabled state across updates, and deleting a stock guide through the editor keeps it deleted. [Bundling](../apps/server/scripts/gen-skills.mjs) · [Seeding and updates](../apps/server/src/services/skills.ts)

@@ -582,20 +582,27 @@ it("draws every applied edit on the working cut under what needs the editor, gat
   await act(async () => {});
   expect(container.querySelector(".timeline-ruler")!.textContent).not.toBe(ruler);
   expect(editPanel()).toBeNull();
-  for (let i = 0; i < 4 && !countLabels().includes("1 cut"); i++) {
-    const count = editMarks().find(m => m.classList.contains("is-count"))!;
-    await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(count.style.left) * 10 })); });
-    await act(async () => {});
-  }
-  // Zoomed in, the counts open into smaller ones, down to a count of one cut. A cut is never drawn as a line.
-  expect(countLabels()).toContain("1 cut");
-  expect(editMarks().filter(m => m.classList.contains("is-cut"))).toEqual([]);
-  // Hovering a count of one names its cut, and a press opens it in the card, as its row in the chat would.
-  const one = editMarks().find(m => m.textContent === "1 cut")!;
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(one.style.left) * 10 })); });
+  // One press is enough: zoomed in to the count's stretch, every edit is a mark of its own, a cut too, so a count never
+  // opens onto more counts. The only counts left are at the edges, of the edits beyond each.
+  const inside = () => editMarks().filter(m => !m.classList.contains("is-count"));
+  expect(inside().length).toBeGreaterThan(1);
+  expect(inside().some(m => m.classList.contains("is-tick") && m.dataset.kind === "cut")).toBe(true);
+  expect(countLabels().every(label => /^‹ \d+ edits?$|^\d+ edits? ›$/.test(label))).toBe(true);
+  expect(countLabels().length).toBeGreaterThan(0);
+  // Hovering near a cut's tick, not on it, names the cut and lights the tick, and a press there opens it in the card,
+  // as its row in the chat would.
+  const one = inside().filter(m => m.dataset.kind === "cut").find((m, i, all) => all.every(o => o === m || Math.abs(parseFloat(o.style.left) - parseFloat(m.style.left)) > 2.4)
+    && parseFloat(m.style.left) > 12 && parseFloat(m.style.left) < 88) ?? inside().find(m => m.dataset.kind === "cut")!;
+  const near = parseFloat(one.style.left) * 10 + 8;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: near })); });
   expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined b")?.textContent).toMatch(/^Cut at \d+:\d\d$/);
-  expect(one.classList.contains("is-hot")).toBe(true);
-  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(one.style.left) * 10 })); });
+  expect(editMarks().find(m => m.classList.contains("is-hot"))?.style.left).toBe(one.style.left);
+  // A count at an edge says what lies beyond it, and a press moves there at the same zoom.
+  const edge = editMarks().find(m => m.classList.contains("is-count"))!;
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: parseFloat(edge.style.left) * 10 })); });
+  expect(container.querySelector(".timeline-track .simple-timeline-tip.is-joined small")?.textContent).toMatch(/^(Before|After) \d+:\d\d(\.\d+)? · Click to go there$/);
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: near })); });
+  await act(async () => { timelineStrip().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: near })); });
   await act(async () => {});
   expect(editPanel()).not.toBeNull();
 });
@@ -5412,7 +5419,7 @@ it("opens Media, Export and History from the header and keeps project tools in t
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(moreButton().getAttribute("aria-description")).toBeNull();
   await openMenu();
-  expect(menuItems().filter(name => !name?.startsWith("Model") && name !== "Set up a model")).toEqual(["Learnings", "Transcript", "Export", "Project settings", "App settings"]);
+  expect(menuItems().filter(name => !name?.startsWith("Model") && name !== "Set up a model")).toEqual(["Learnings", "Transcript", "Export", "Make shorts", "Project settings", "App settings"]);
   expect(container.querySelector('[role="menu"] .menu-dot')).toBeNull();
   await click(menuItem("Project settings"));
   expect(useUiStore.getState().projectSettingsOpen).toBe(true);
@@ -10869,4 +10876,56 @@ it("shows draft timestamps on the player timeline, with seeking reserved for the
   expect(usePlayerStore.getState().time).toBe(8);
   await act(() => useUiStore.getState().setAgentDraft(""));
   expect(marks()).toEqual([]);
+});
+
+// --- Make shorts ---------------------------------------------------------------------------------------------------
+
+/** A short made from the long video, as Make shorts leaves it: vertical, and said to come from that video. */
+const asShort = (notice = true) => event(d => ({ ...d, project: { ...d.project, name: "Agents fail without tools",
+  settings: { ...d.project.settings, width: 1080, height: 1920, aspect: "9:16" as const },
+  source: { projectId: "prj_long", name: "Weekly interview", ...(notice && { notice: true }) } } }));
+
+it("offers Make shorts in the ⋯ menu after Export, and makes them from a form that opens the first short", async () => {
+  const made = vi.spyOn(api, "makeShorts").mockResolvedValue({ projects: [{ id: "prj_short1" }, { id: "prj_short2" }] as never, task: {} as never });
+  await act(async () => root.render(<MemoryRouter initialEntries={[`/p/${PRJ}`]}><SimpleWorkspace /><Address /></MemoryRouter>));
+  await openMenu();
+  const items = [...container.querySelectorAll('[role="menu"] [role="menuitem"]')].map(item => item.textContent?.trim());
+  expect(items.indexOf("Make shorts")).toBe(items.indexOf("Export") + 1);
+  await click([...container.querySelectorAll('[role="menuitem"]')].find(item => item.textContent?.trim() === "Make shorts")!);
+  const dialog = container.ownerDocument.querySelector('dialog[open]')!;
+  expect(dialog.querySelector("h2")?.textContent).toBe("Make shorts");
+  expect([...dialog.querySelectorAll("label")].map(l => l.textContent)).toEqual(["How many", "Shape", "Length", "Captions"]);
+  expect([...dialog.querySelectorAll('[role="combobox"]')].map(b => b.textContent)).toEqual(["Up to 3", "Vertical · 9:16", "Under 60 s each", "On"]);
+  expect(dialog.textContent).toContain("Makes a new project for each short, starting from this video’s finished edit. This video isn’t changed.");
+  await click(buttonIn(dialog, "Make shorts")!);
+  expect(made).toHaveBeenCalledWith(PRJ, { count: 3, aspect: "9:16", maxSeconds: 60, captions: true, agent: "claude", model: "opus" });
+  expect(container.querySelector("#address")?.textContent).toBe("/p/prj_short1");
+});
+
+it("names the video a short was made from under its title, and links to it", async () => {
+  await showFolded();
+  await asShort(false);
+  const title = container.querySelector(".simple-header h1")!;
+  expect(title.querySelector(".simple-header-name")?.textContent).toBe("Agents fail without tools");
+  expect(title.querySelector(".simple-header-source")?.textContent).toBe("From Weekly interview");
+  expect(title.querySelector(".simple-header-source a")?.getAttribute("href")).toBe("/p/prj_long");
+  // A short isn't made into shorts again.
+  await openMenu();
+  expect([...container.querySelectorAll('[role="menuitem"]')].map(item => item.textContent?.trim())).not.toContain("Make shorts");
+  // Once that video is gone, its name stays, without a link.
+  await event(d => ({ ...d, project: { ...d.project, source: { ...d.project.source!, gone: true } } }));
+  expect(container.querySelector(".simple-header-source a")).toBeNull();
+});
+
+it("opens a short's chat with a line that says it is a new project, which stays until its × is pressed", async () => {
+  const saved = vi.spyOn(api, "updateProject").mockResolvedValue({ project: {} as never });
+  await showFolded();
+  await asShort();
+  const note = container.querySelector<HTMLElement>(".simple-chat > .simple-source-note")!;
+  expect(container.querySelector(".simple-chat")!.firstElementChild).toBe(note);
+  expect(note.querySelector("p")?.textContent).toBe("New project, made from Weekly interview. That video isn’t changed.");
+  expect(note.querySelector("a")?.getAttribute("href")).toBe("/p/prj_long");
+  await click(note.querySelector('[aria-label="Dismiss"]')!);
+  expect(container.querySelector(".simple-source-note")).toBeNull();
+  expect(saved).toHaveBeenCalledWith(PRJ, { sourceNotice: false });
 });

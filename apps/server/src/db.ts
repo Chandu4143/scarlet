@@ -492,6 +492,7 @@ export function openDb(path: string): Db {
     BEGIN DELETE FROM transcription_work WHERE task_id = NEW.id; END;`);
   ensureReadIndexes(db);
   ensureGraphics(db);
+  ensureProjectSource(db);
   return db;
 }
 
@@ -520,6 +521,19 @@ function ensureProjectFormat(db: Db): void {
         AND json_extract(json, '$.kind') = 'video' AND json_extract(json, '$.width') > 0 AND json_extract(json, '$.height') > 0);
       UPDATE projects SET format_set = 1 WHERE EXISTS (SELECT 1 FROM activity
         WHERE project_id = projects.id AND type = 'project.updated' AND json_type(json, '$.data.settings') = 'object');`);
+  }, "immediate")();
+}
+
+/**
+ * The project a short was made from, and whether the line in its chat that says so is still shown. Installed by name,
+ * as the graphics columns are, so a checkout and a release sharing a library don't take each other's numbers.
+ */
+export function ensureProjectSource(db: Db): void {
+  const installed = () => db.prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'source'").get();
+  if (installed()) return;
+  db.transaction(() => {
+    if (installed()) return;
+    db.exec("ALTER TABLE projects ADD COLUMN source TEXT; ALTER TABLE projects ADD COLUMN source_notice INTEGER NOT NULL DEFAULT 0;");
   }, "immediate")();
 }
 

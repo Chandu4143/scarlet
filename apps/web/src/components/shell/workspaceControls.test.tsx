@@ -242,20 +242,22 @@ it("previews an older skill version, restores it into the draft, and protects un
     { path: "/settings/skills", element: <p>Skill library</p> },
   ], { initialEntries: [`/settings/skills/${skill.id}`] });
   await act(async () => root.render(<RouterProvider router={router} />));
-  const editor = el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
-  await selectOption(named("Version history"), /^v1 ·/);
-  expect(editor.readOnly).toBe(true);
-  const olderBody = editor.value;
+  const editor = () => el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
+  await selectOption(named("Version history"), /^First version/);
+  expect(editor()).toBeNull();
+  // The version reads line by line; what Restore puts in the editor is the same text.
+  const words = (text: string) => text.replaceAll("\u200b", "").replace(/\s+/g, "");
+  const olderBody = words(el.querySelector('[aria-label="Skill markdown, v1"]')!.textContent!);
   expect(olderBody).toContain("(v1)");
   const button = (label: string) => [...el.querySelectorAll("button")].find(b => b.textContent?.trim() === label)!;
   await click(button("Restore v1"));
-  expect(editor.readOnly).toBe(false);
-  expect(editor.value).toBe(olderBody);
+  expect(editor().readOnly).toBe(false);
+  expect(words(editor().value)).toBe(olderBody);
   expect(button("Save").disabled).toBe(false);
   await click(button("← Skill library"));
   expect(el.querySelector("dialog")?.textContent).toContain("Save your skill changes?");
   await click(button("Stay"));
-  expect(editor.value).toBe(olderBody);
+  expect(words(editor().value)).toBe(olderBody);
   await click(button("← Skill library"));
   await click(button("Discard changes"));
   expect(el.textContent).toBe("Skill library");

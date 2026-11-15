@@ -5,6 +5,7 @@ Every project uses the same library. A skill command pins its guide to the task.
 | Stage | Workflow | Use it when |
 |---|---|---|
 | Story and pacing | [Dialogue pass](dialogue-pass/SKILL.md) | Remove abandoned starts, redundant takes and distracting pauses while preserving the speaker’s meaning and pace. A selected passage limits the cut. |
+| Story and pacing | [Make shorts](make-shorts/SKILL.md) | Choose the strongest self-contained moments of a long video and cut each into a short of its own, framed for its shape and captioned. Make shorts in the ⋯ menu starts it, with a project for each short. |
 | Picture and graphics | [Frame the screen on what I'm doing](frame-screen/SKILL.md) | Frame tight on the pane or passage being used or read, with smooth zooms in and out as the subject changes. |
 | Picture and graphics | [Add captions](add-captions/SKILL.md) | Caption retained speech in short, readable lines. |
 | Picture and graphics | [Motion graphics](motion-graphics/SKILL.md) | Lower thirds, titles and callouts that read well on the footage, in the project's style guide or the look the editor has approved. |
