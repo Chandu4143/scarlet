@@ -105,6 +105,73 @@ export function skillEdits(ctx: Ctx, skillId: string) {
   return ctx.repos.tasks.select("kind = 'skill_edit' AND json_extract(json, '$.context.skillId') = ?", [skillId], "created_at ASC, rowid ASC");
 }
 
+/** A skill's text in its parts: when to use it, the opening before the first heading, and each section by its heading. */
+function skillParts(content: string): Map<string, string> {
+  const parts = new Map<string, string>();
+  const header = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(content);
+  parts.set("when to use it", parseFrontmatter(content).description ?? "");
+  let title = "the opening";
+  for (const line of content.slice(header?.[0].length ?? 0).split(/\r?\n/)) {
+    const heading = /^#{2,6}\s+(.+?)\s*#*$/.exec(line);
+    if (heading) title = heading[1]!;
+    parts.set(title, `${parts.get(title) ?? ""}${line.trim()}\n`);
+  }
+  return parts;
+}
+
+// A section goes by its heading, in quotes; the two parts every skill has go by what they are.
+const named = (title: string) => title === "when to use it" || title === "the opening" ? title : `“${title}”`;
+const listed = (titles: string[]) => {
+  const words = titles.map(named);
+  return words.length < 3 ? words.join(" and ") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+};
+
+/** What one version changed from the one before, in one line, said by the parts of the skill it touched. */
+export function versionChange(before: string, after: string): string {
+  const was = skillParts(before), now = skillParts(after);
+  const key = (title: string) => title.toLowerCase();
+  const wasByKey = new Map([...was].map(([title, text]) => [key(title), text]));
+  const nowKeys = new Set([...now.keys()].map(key));
+  const added = [...now.keys()].filter(title => !wasByKey.has(key(title)));
+  const removed = [...was.keys()].filter(title => !nowKeys.has(key(title)));
+  const changed = [...now].filter(([title, text]) => wasByKey.has(key(title)) && wasByKey.get(key(title))!.trim() !== text.trim()).map(([title]) => title);
+  const touched = added.length + removed.length + changed.length;
+  if (!touched) return "Changed the header";
+  const sections = Math.max(was.size, now.size) - 1;
+  if (sections >= 4 && touched - (changed.includes("when to use it") ? 1 : 0) > sections * 0.6) return "Rewrote most of it";
+  const said = [
+    added.length && `added ${listed(added)}`,
+    removed.length && `removed ${listed(removed)}`,
+    changed.length && `changed ${listed(changed)}`,
+  ].filter(Boolean) as string[];
+  const line = said.join(", ");
+  // A long list says how many parts, not which.
+  const short = line.length <= 80 ? line : `changed ${touched} parts`;
+  return short[0]!.toUpperCase() + short.slice(1);
+}
+
+/**
+ * The skill's versions, each with a line that says what it changed: for the history on the skill's page. A version
+ * Scarlet wrote is matched to the request that asked for it, the latest one that saved this skill after the version before.
+ */
+export function skillHistory(ctx: Ctx, skillId: string) {
+  const versions = ctx.repos.skillVersions.list(skillId);
+  const saves = skillEdits(ctx, skillId).filter(task => task.resultSkillId === skillId);
+  return versions.map((v, i) => {
+    const before = versions[i - 1];
+    if (v.author?.type === "agent" && v.createdAt) {
+      const after = before?.createdAt ?? "";
+      const task = saves.filter(t => t.createdAt && t.createdAt > after && t.createdAt <= v.createdAt!).at(-1);
+      const learning = task?.context.learningId ? ctx.repos.learnings.get(task.context.learningId) : undefined;
+      if (learning) return { ...v, note: learning.rule, from: "learning" as const };
+      if (task) return { ...v, note: task.instruction, from: "request" as const };
+    }
+    if (!before) return { ...v, note: v.author?.type === "scarlet" ? "Came with Scarlet" : "First version" };
+    const same = versions.slice(0, i - 1).findLast(earlier => earlier.content === v.content);
+    return { ...v, note: same ? `Restored v${same.version}` : versionChange(before.content, v.content) };
+  });
+}
+
 /** Keep an existing global definition, then prefer personal and most recently edited copies. */
 export function migrateGlobalSkills(ctx: Ctx) {
   ctx.db.transaction(() => {

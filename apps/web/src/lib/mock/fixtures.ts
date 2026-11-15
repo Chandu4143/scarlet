@@ -680,7 +680,8 @@ export function buildDb(chatLayouts = false): MockDb {
   for (const s of skills) {
     const list: SkillVersion[] = [];
     for (let v = 1; v <= s.version; v++) {
-      list.push({ version: v, content: v === s.version ? s.content : s.content.replace("# ", `# (v${v}) `), author: v === 1 ? editor : agentClaude, createdAt: minutesAgo(60 * 24 * (10 - v)) });
+      list.push({ version: v, content: v === s.version ? s.content : s.content.replace("# ", `# (v${v}) `), author: v === 1 ? editor : agentClaude, createdAt: minutesAgo(60 * 24 * (10 - v)),
+        note: v === 1 ? "First version" : "Changed the opening" });
     }
     skillVersions[s.id] = list;
   }

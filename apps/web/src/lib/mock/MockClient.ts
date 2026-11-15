@@ -1304,7 +1304,7 @@ export class MockClient implements ScarletApi {
       current.version += 1;
       current.updatedAt = now();
       (this.db.skillVersions[skillId] ??= []).push({ version: current.version, content: current.content,
-        author: { type: "agent", id: task.agent, name: AGENT_NAMES[task.agent], model: task.model }, createdAt: current.updatedAt });
+        author: { type: "agent", id: task.agent, name: AGENT_NAMES[task.agent], model: task.model }, createdAt: current.updatedAt, note: body.prompt.trim(), from: "request" });
       this.emit({ type: "skill.updated", skill: { ...current } });
       this.updateTask(task, { state: "done", resultSkillId: skillId, summary: "Added it as a section at the end of the instructions.", finishedAt: now() });
     })();
@@ -1341,7 +1341,7 @@ export class MockClient implements ScarletApi {
       skill.version += 1;
       skill.updatedAt = now();
       (this.db.skillVersions[skill.id] ??= []).push({ version: skill.version, content: skill.content,
-        author: { type: "agent", id: "claude", name: AGENT_NAMES.claude }, createdAt: skill.updatedAt });
+        author: { type: "agent", id: "claude", name: AGENT_NAMES.claude }, createdAt: skill.updatedAt, note: learning.rule, from: "learning" });
       this.emit({ type: "skill.updated", skill: { ...skill } });
       learning.state = "saved";
       this.emit({ type: "learning.updated", projectId, learning: { ...learning } });
@@ -1374,7 +1374,8 @@ export class MockClient implements ScarletApi {
     Object.assign(skill, body, { scope: "team", projectId: null, ownerId: null, agents: [], updatedAt: now() });
     if (contentChanged) {
       skill.version += 1;
-      (this.db.skillVersions[skillId] ??= []).push({ version: skill.version, content: skill.content, author: this.human(), createdAt: now() });
+      // The engine names a save by the parts it changed; the demo says only that the editor changed it.
+      (this.db.skillVersions[skillId] ??= []).push({ version: skill.version, content: skill.content, author: this.human(), createdAt: now(), note: "Changed the skill" });
     }
     this.emit({ type: "skill.updated", skill: { ...skill } });
     return this.latency({ skill }, 200);

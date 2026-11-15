@@ -1248,6 +1248,13 @@ export const SkillVersion = z.object({
   content: z.string(),
   author: Author.optional(),
   createdAt: z.string().datetime().optional(),
+  /**
+   * What this version changed, in one line, for the skill's history. A version Scarlet wrote for a request carries
+   * the editor's words for it, or the rule they approved in Learnings (`from` says which). Any other version is named
+   * from its difference with the one before: the parts of the skill it added, removed or changed.
+   */
+  note: z.string().optional(),
+  from: z.enum(["request", "learning"]).optional(),
 });
 export type SkillVersion = z.infer<typeof SkillVersion>;
 
