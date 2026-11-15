@@ -84,7 +84,7 @@ To build an Early Access update, select **Actions → Desktop → Run workflow**
 
 The root package version sets the start of each release series. The patch number increases with the commit’s first-parent distance from the baseline. Reruns reuse the version, concurrent pushes get distinct versions, and a push containing several commits can skip numbers. Run `pnpm release:version for-commit` in a full clone to see a commit’s installer version. To start a new series, run `pnpm release:version set X.Y.Z` and commit all version changes together.
 
-Stable Scarlet on macOS and Windows checks the public update feed at startup and every five minutes while open. It downloads the right installer or app archive, verifies its signature and version, then offers **Restart to update**. Once an update is ready, a newer release replaces it at most every 12 hours, unless the user checks for updates in Settings. Quitting also installs a ready update. Users on 0.1.20 or earlier need to install a release containing the updater once.
+Stable Scarlet on macOS and Windows checks the public update feed at startup and every five minutes while open. It downloads the right installer or app archive, verifies its signature and version, then offers **Restart to update**. Quitting also installs a ready update. Users on 0.1.20 or earlier need to install a release containing the updater once.
 
 Set the encrypted `TAURI_SIGNING_PRIVATE_KEY` secret in the GitHub `release` environment, restricted to `main`. Its public half must match `apps/desktop/src-tauri/tauri.stable.conf.json`. Keep a secure backup. The publisher verifies all four update signatures with that pinned key before making a version visible.
 

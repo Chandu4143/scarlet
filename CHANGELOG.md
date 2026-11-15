@@ -6,7 +6,6 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
-- Scarlet no longer downloads every new release in the background: once an update is ready, it waits half a day before fetching a newer one, unless you check for updates yourself.
 - A message you're writing about the whole video stays that way when you click or scrub the timeline.
 - A time you type in your message no longer replaces the moment you picked, and taking the moment off with × keeps it off.
 - The first thing you add to an empty message box now shows its card for a moment before folding into the icon, and the card opens the same way on every computer and closes when you click elsewhere or press Esc.
