@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { runMarkdown, type TrialRow } from "../src/report.ts";
 import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
-import { positiveNumber, trialTranscripts } from "../src/run.ts";
+import { positiveNumber, selectTrialSkills, trialTranscripts } from "../src/run.ts";
 
 it("binds a live trial to the ordered source words and their timing", () => {
   const a = { text: "again", start: 0.1, end: 0.4 };
@@ -32,4 +32,12 @@ it("refuses a count or a time limit that isn't a positive number, rather than ru
   expect(positiveNumber("--trials", undefined, 3)).toBe(3);
   expect(positiveNumber("--timeout-min", "90", 120)).toBe(90);
   for (const bad of ["abc", "0", "-5", ""]) expect(() => positiveNumber("--timeout-min", bad, 120)).toThrow(/--timeout-min/);
+});
+
+it("can run a renamed custom guide alone on a case that originally used a different guide", () => {
+  const available = [{ id: "original", name: "dialogue-pass", version: 4 }, { id: "personal", name: "renamed-guide", version: 7 }];
+  const wanted = { instruction: "First cut", skillIds: ["original"], skillNames: ["dialogue-pass"] };
+  expect(selectTrialSkills(available, wanted, { exact: ["renamed-guide"], add: [] })).toEqual([available[1]]);
+  expect(selectTrialSkills(available, { ...wanted, skillIds: ["personal"], skillNames: ["old-name"] }, { add: [] })).toEqual([available[1]]);
+  expect(() => selectTrialSkills([{ ...available[1]!, enabled: false }], wanted, { exact: ["renamed-guide"], add: [] })).toThrow("unavailable");
 });

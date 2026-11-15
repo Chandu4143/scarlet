@@ -27,7 +27,7 @@ import { evaluationMarkdown, runMarkdown, type TrialRow } from "./report.ts";
 const USAGE = `Usage:
   run.ts --evaluate-task <taskId> [--case <id>] [--reference-version <v>] [--kept-side] [--refresh] [--engine <url>]
   run.ts --evaluate-case <id> [--kept-side]           (re-score the run a case was built from, offline)
-  run.ts (--cases <a,b> | --suite capability|regression) --configs <agent:model:effort,...> [--trials N] [--add-skills name,...] [--timeout-min M] (--dry-run | --yes)
+  run.ts (--cases <a,b> | --suite capability|regression) --configs <agent:model:effort,...> [--trials N] [--skills name,... | --add-skills name,...] [--timeout-min M] (--dry-run | --yes)
   run.ts --summarize <run dir>
 
 Results go to $SCARLET_EVAL_DATA/results (default: Scarlet's application support folder /evals).`;
@@ -82,25 +82,30 @@ function branchName(caseId: string, config: AgentConfig, trial: number, stamp: s
   return `eval ${caseId} ${configLabel(config)} t${trial} ${stamp}`.slice(0, 80);
 }
 
-async function resolveSkills(engine: Engine, loaded: LoadedCase, extra: string[]) {
-  const skills = await engine.skills();
-  const ids = new Set(skills.map(s => s.id));
-  const wanted = loaded.file.request;
-  const kept = wanted.skillIds.filter(id => ids.has(id));
-  for (const name of wanted.skillNames) {
-    const found = skills.find(s => s.name === name);
-    if (found && !kept.includes(found.id)) kept.push(found.id);
+interface SkillSelection { add: string[]; exact?: string[] }
+
+export function selectTrialSkills(skills: Awaited<ReturnType<Engine["skills"]>>, wanted: LoadedCase["file"]["request"], selection: SkillSelection) {
+  const available = skills.filter(s => s.enabled !== false);
+  const selected = new Map<string, (typeof available)[number]>();
+  const add = (skill: (typeof available)[number]) => selected.set(skill.id, skill);
+  if (!selection.exact) {
+    // A local ID survives a rename. Across libraries the captured name may be the only match.
+    for (const id of wanted.skillIds) {
+      const match = available.find(s => s.id === id);
+      if (match) add(match);
+    }
+    for (const name of wanted.skillNames) {
+      const match = available.find(s => s.name === name);
+      if (match) add(match);
+    }
+    if (wanted.skillNames.length && !selected.size) throw new Error(`Skills ${wanted.skillNames.join(", ")} are unavailable.`);
   }
-  if (wanted.skillNames.length && !kept.length) throw new Error(`Skills ${wanted.skillNames.join(", ")} are not installed.`);
-  for (const name of extra) {
-    const skill = skills.find(s => s.name === name && s.enabled !== false);
-    if (!skill) throw new Error(`Additional skill ${name} is unavailable.`);
-    if (!kept.includes(skill.id)) kept.push(skill.id);
+  for (const name of selection.exact ?? selection.add) {
+    const match = available.find(s => s.name === name);
+    if (!match) throw new Error(`Requested evaluation skill ${name} is unavailable.`);
+    add(match);
   }
-  return kept.map(id => {
-    const { name, version } = skills.find(s => s.id === id)!;
-    return { id, name, version };
-  });
+  return [...selected.values()].map(({ id, name, version }) => ({ id, name, version }));
 }
 
 const ACTIVE = new Set(["queued", "claimed", "running", "waiting_for_user"]);
@@ -138,7 +143,7 @@ async function reportEntrances(loaded: LoadedCase, timeline: Timeline, dir: stri
     candidateEntrancesInFade: score.candidateOnsetsInFade });
 }
 
-async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, dir: string, timeoutMs: number, extraSkills: string[]): Promise<TrialRow> {
+async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, dir: string, timeoutMs: number, selection: SkillSelection): Promise<TrialRow> {
   const caseId = loaded.file.id, projectId = loaded.file.projectId;
   const row: TrialRow = { caseId, config: configLabel(config), trial, state: "not started" };
   const busy = (await engine.tasks(projectId)).filter(t => t.kind !== "transcribe" && ACTIVE.has(t.state));
@@ -146,7 +151,7 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
   const project = await engine.project(projectId);
   const original = { branch: project.branch ?? "main", head: project.head! };
   const name = branchName(caseId, config, trial, timestamp());
-  const skills = await resolveSkills(engine, loaded, extraSkills);
+  const skills = selectTrialSkills(await engine.skills(), loaded.file.request, selection);
   const skillIds = skills.map(s => s.id);
   writeJson(join(dir, "skills.json"), skills);
   const before = await transcriptSnapshot(engine, loaded);
@@ -221,7 +226,7 @@ async function runCli(argv = process.argv.slice(2)) {
     "evaluate-task": { type: "string" }, "evaluate-case": { type: "string" }, case: { type: "string" }, cases: { type: "string" }, suite: { type: "string" },
     configs: { type: "string" }, trials: { type: "string" }, "timeout-min": { type: "string" }, "dry-run": { type: "boolean" }, yes: { type: "boolean" },
     "reference-version": { type: "string" }, "kept-side": { type: "boolean" }, refresh: { type: "boolean" }, engine: { type: "string" },
-    summarize: { type: "string" }, "add-skills": { type: "string" },
+    summarize: { type: "string" }, skills: { type: "string" }, "add-skills": { type: "string" },
   }, USAGE, argv);
 
   if (values.summarize) {
@@ -260,7 +265,9 @@ async function runCli(argv = process.argv.slice(2)) {
   const trials = Math.max(1, Math.floor(positiveNumber("--trials", values.trials, 3)));
   const timeoutMs = positiveNumber("--timeout-min", values["timeout-min"], 120) * 60_000;
   if (!caseIds.length || !configs.length) throw new Error("Choose --cases or --suite, and --configs.\n\n" + USAGE);
-  const extraSkills = list(values["add-skills"]);
+  if (values.skills !== undefined && values["add-skills"] !== undefined) throw new Error("Choose --skills or --add-skills.");
+  const selection: SkillSelection = { add: list(values["add-skills"]), exact: values.skills === undefined ? undefined : list(values.skills) };
+  if (selection.exact && !selection.exact.length) throw new Error("--skills needs at least one installed skill name.");
   const cases = caseIds.map(loadCase);
   const total = cases.length * configs.length * trials;
   const runDir = join(resultsDir(), "runs", timestamp());
@@ -271,7 +278,10 @@ async function runCli(argv = process.argv.slice(2)) {
     console.log(`Dry run: ${total} agent task(s) = ${cases.length} case(s) × ${configs.length} config(s) × ${trials} trial(s). Results → ${runDir}\n`);
     for (const loaded of cases) {
       const project = engine ? await engine.project(loaded.file.projectId).catch(() => undefined) : undefined;
-      const skillIds = engine ? await resolveSkills(engine, loaded, extraSkills).then(skills => skills.map(s => s.name)).catch(err => [`<${(err as Error).message}>`]) : [...loaded.file.request.skillNames, ...extraSkills];
+      const skills = engine ? selectTrialSkills(await engine.skills(), loaded.file.request, selection) : undefined;
+      const skillIds = skills?.map(s => s.id) ?? (selection.exact ? [] : loaded.file.request.skillIds);
+      const names = skills?.map(s => s.name) ?? selection.exact ?? [...loaded.file.request.skillNames, ...selection.add];
+      if (names.length) console.log(`  Skills: ${names.join(", ")}${skills ? "" : " (IDs resolved when connected)"}`);
       console.log(`Case ${loaded.file.id} (${loaded.file.suite}) · project ${loaded.file.projectId} · source ${loaded.file.sourceVersion}` +
         (project ? ` · editor currently on “${project.branch}” @ ${project.head}` : ""));
       for (const config of configs) for (let t = 1; t <= trials; t++) {
@@ -292,7 +302,7 @@ async function runCli(argv = process.argv.slice(2)) {
     const dir = join(runDir, loaded.file.id, slug(configLabel(config)), `trial-${t}`);
     console.log(`${loaded.file.id} · ${configLabel(config)} · trial ${t}/${trials}`);
     try {
-      rows.push(await runTrial(engine, loaded, config, t, dir, timeoutMs, extraSkills));
+      rows.push(await runTrial(engine, loaded, config, t, dir, timeoutMs, selection));
     } catch (err) {
       rows.push({ caseId: loaded.file.id, config: configLabel(config), trial: t, state: "error", error: (err as Error).message });
       console.error(`  ${(err as Error).message}`);
