@@ -55,6 +55,14 @@ jobs:
           for t in ffmpeg ffprobe; do cp apps/desktop/src-tauri/binaries/$t-*$EXT "$RUNNER_TEMP/ffmpeg/$t$EXT"; done
           echo "$RUNNER_TEMP/ffmpeg" >> "$GITHUB_PATH"
 
+      - name: Use the packaged headless browser for graphics tests
+        shell: bash
+        run: |
+          node apps/desktop/scripts/fetch-chrome.mjs
+          chrome="$GITHUB_WORKSPACE/apps/desktop/src-tauri/binaries/chrome-headless-shell/chrome-headless-shell"
+          if [ "$RUNNER_OS" = Windows ]; then chrome="$chrome.exe"; fi
+          echo "SCARLET_CHROME=$chrome" >> "$GITHUB_ENV"
+
       - name: Build (the desktop package's build script is a no-op here)
         run: pnpm -r build
 

@@ -12,9 +12,9 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { availableParallelism, homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Readable, Writable } from "node:stream";
 import { AbortError, fnum, resolveFfmpeg, runCapture } from "./exec.js";
@@ -31,7 +31,7 @@ export function chromeCandidates(platform = process.platform, env: NodeJS.Proces
       "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
       "Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
     ];
-    return [...apps.map(app => join("/Applications", app)), ...apps.map(app => join(homedir(), "Applications", app))];
+    return [...apps.map(app => posix.join("/Applications", app)), ...apps.map(app => posix.join(env.HOME || homedir(), "Applications", app))];
   }
   if (platform === "win32") {
     const roots = [env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA].filter((d): d is string => !!d);
@@ -40,7 +40,7 @@ export function chromeCandidates(platform = process.platform, env: NodeJS.Proces
   }
   const dirs = (env.PATH ?? "/usr/local/bin:/usr/bin:/bin").split(":").filter(Boolean);
   const names = ["chrome-headless-shell", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "microsoft-edge-stable"];
-  return [...names.flatMap(name => dirs.map(dir => join(dir, name))), "/snap/bin/chromium"];
+  return [...names.flatMap(name => dirs.map(dir => posix.join(dir, name))), "/snap/bin/chromium"];
 }
 
 export class ChromeNotFound extends Error {
@@ -439,30 +439,48 @@ export function pdfPageCount(pdf: Buffer): number | undefined {
   return counts.length ? Math.max(...counts) : undefined;
 }
 
-/**
- * Pictures of a PDF's pages as Chrome's viewer draws them, JPEG, `width` wide: how a harness that can't open files
- * reads a document the editor attached, such as a style guide. Pages past the end are left out.
- */
-export async function pdfPages(file: string, pages: number[], opts: { width?: number; chromePath?: string; signal?: AbortSignal; settleMs?: number } = {}): Promise<Buffer[]> {
-  const width = opts.width ?? 1000, height = Math.round(width * 1.3);
-  const { writeFile } = await import("node:fs/promises");
-  const wrapper = join(await mkdtemp(join(tmpdir(), "scarlet-pdf-")), "page.html");
+/** Rasterize the actual PDF pages. The headless browser bundled for motion graphics has no PDF viewer. */
+export async function renderPdfDocument(file: string, pageNumbers: number[], opts: { width?: number; signal?: AbortSignal } = {}) {
+  opts.signal?.throwIfAborted();
+  const { PDFiumLibrary } = await import("@hyzyla/pdfium/inline");
+  const library = await PDFiumLibrary.init({ disableBase64Warning: true });
   try {
-    await writeFile(wrapper, "<!doctype html>");
-    return await withBrowser({ htmlFile: wrapper, width, height, chromePath: opts.chromePath, signal: opts.signal }, async browser => {
-      const shots = await Promise.all(pages.map(async n => {
-        const html = join(dirname(wrapper), `page-${n}.html`);
-        await writeFile(html, `<!doctype html><html><body style="margin:0;background:#fff"><embed src="${pathToFileURL(file).href}#page=${n}&view=Fit&toolbar=0&navpanes=0" type="application/pdf" style="width:100vw;height:100vh;border:0"></body></html>`);
-        const page = await openPage(browser, pathToFileURL(html).href, { width, height, scale: 1 }, opts.signal);
-        // The viewer draws in its own process and says nothing when it has: give it a moment.
-        await new Promise(resolve => setTimeout(resolve, opts.settleMs ?? 2000));
-        const { data } = await browser.send("Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false }, page.sessionId) as { data: string };
-        return Buffer.from(data, "base64");
-      }));
-      // A page number past the end shows the last page again.
-      return shots.filter((shot, i) => i === 0 || !shot.equals(shots[i - 1]!));
-    });
+    const document = await library.loadDocument(await readFile(file, { signal: opts.signal }));
+    try {
+      const pageCount = document.getPageCount();
+      const pages: { page: number; jpeg: Buffer }[] = [];
+      for (const n of pageNumbers) {
+        opts.signal?.throwIfAborted();
+        if (!Number.isInteger(n) || n < 1 || n > pageCount) continue;
+        const page = document.getPage(n - 1);
+        try {
+          const width = opts.width ?? 1000;
+          const { originalWidth, originalHeight } = page.getOriginalSize();
+          // Fit the same portrait preview area as the document tool, including very long pages.
+          const scale = Math.min(width / originalWidth, width * 1.3 / originalHeight);
+          const raster = await page.render({
+            width: Math.max(1, Math.round(originalWidth * scale)),
+            height: Math.max(1, Math.round(originalHeight * scale)),
+          });
+          const { stdout } = await runCapture(resolveFfmpeg(), [
+            "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${raster.width}x${raster.height}`,
+            "-i", "pipe:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", "-f", "image2pipe", "pipe:1",
+          ], { stdin: Buffer.from(raster.data), signal: opts.signal });
+          pages.push({ page: n, jpeg: stdout });
+        } finally {
+          page.close();
+        }
+      }
+      return { pageCount, pages };
+    } finally {
+      document.destroy();
+    }
   } finally {
-    await rm(dirname(wrapper), { recursive: true, force: true });
+    library.destroy();
   }
+}
+
+/** JPEGs of the requested pages in order, omitting page numbers outside the document. */
+export async function pdfPages(file: string, pages: number[], opts: { width?: number; chromePath?: string; signal?: AbortSignal; settleMs?: number } = {}): Promise<Buffer[]> {
+  return (await renderPdfDocument(file, pages, opts)).pages.map(page => page.jpeg);
 }
