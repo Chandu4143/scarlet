@@ -64,7 +64,10 @@ describe.skipIf(!hasChrome())("drawing a graphic", () => {
     const output = path.join(dir, "red.mov");
     await renderGraphic({ htmlFile: html, width: 64, height: 64, fps: 30, duration: 1 / 30, output });
     const { stdout: tags } = await runCapture("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space,color_primaries,color_transfer,color_range", "-of", "csv=p=0", output]);
-    expect(tags.toString().trim()).toBe("tv,bt709,bt709,bt709");
+    // Some ffmpeg builds don't write the range into a ProRes movie; unknown reads as limited range, as tv does.
+    const [range, ...matrix] = tags.toString().trim().split(",");
+    expect(["tv", "unknown"]).toContain(range);
+    expect(matrix).toEqual(["bt709", "bt709", "bt709"]);
     // Read as BT.709 video, as the footage it is laid over is, the red is still red.
     const { stdout } = await runCapture("ffmpeg", ["-v", "error", "-i", output, "-vf", "scale=in_color_matrix=bt709:in_range=tv,format=rgb24", "-frames:v", "1", "-f", "rawvideo", "pipe:1"]);
     const [r, g, b] = [stdout[32 * 64 * 3 + 96]!, stdout[32 * 64 * 3 + 97]!, stdout[32 * 64 * 3 + 98]!];
