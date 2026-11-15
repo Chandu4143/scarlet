@@ -374,3 +374,43 @@ Each row measures from the incoming presenter picture to the aligned start of th
 For repeated trials compare mean absolute error and signed bias **on the same matched joins**, alongside coverage and candidate-wide counts of trimmed words and onsets inside fades. Missing observations stay unscored. The JSON includes individual join IDs, candidate and editor times, the first 40 published seconds, and episode and candidate digests. The editor’s timings are evaluation labels. Keep the desired delivery and exceptions in a selectable custom skill.
 
 To test one custom guide on the same frozen footage, pass `--skills skill-name` to replace the case’s selection for that run. To add a guide to the original selection, pass `--add-skills skill-name`. The source timeline and the editing request stay fixed across arms. Each trial records the selected IDs, current names and versions. Keep model, effort, source case and trial count fixed across arms.
+
+### Choosing between two recorded takes
+
+Use this experiment to measure whether a model picks the delivery an editor used. A passage has three choices. Keep the earlier rendition and join it to the later continuation, start on the later rendition, or keep the whole passage. Scarlet supplies repeated phrases and the original audio. The selected skill describes the desired edit. The model chooses. The editor’s export is used only for scoring.
+
+Use a fresh private directory for each run. A source evidence JSON contains timed words and the duration of the recording. Repeat `--episode` for other recordings and `--guide` for other Markdown guides.
+
+```sh
+python3 evals/prepare_take_pairs.py \
+  --episode example holdout "$SOURCE" "$EVIDENCE" --out "$STUDY/source"
+python3 evals/take_listening.py prepare --manifest "$STUDY/source/cases.json" \
+  --guide "$STUDY/current.md" --guide "$STUDY/candidate.md" --out "$STUDY/batch"
+```
+
+Give the runner only `batch/requests.jsonl` and the WAVs it names. Each passage appears with the same words with and without sound. A second presentation swaps the excerpts and rotates the answer letters. Lock the model, decoding settings and guides before opening the reference. Verify that the runner can identify two different spoken lines in their presented order. Each response must record the request ID, original prompt SHA-256, ordered WAV SHA-256 digests, attachment count, number of audio tokens, seed, temperature and answer text. An ambiguous answer counts as a miss on a labeled passage.
+
+On Apple silicon, the optional MLX runner accepts a local Gemma 3n model directory and performs inference offline. In a separate Python 3.12 environment the measured setup used `mlx-vlm==0.7.12`, `mlx==0.32.4`, `transformers==5.23.0` and `soundfile==0.14.0`. The 4-bit checkpoint was `mlx-community/gemma-3n-E4B-it-4bit` revision `505468a22e5703ff090e222aae9beedec49b383f`. Save the exact model revision and runtime package versions with each study. For three-option passages, use the same one-letter decoder for every arm.
+
+```sh
+python3 -B evals/run_take_listening_mlx.py --model "$MODEL_DIR" \
+  --input "$STUDY/batch/requests.jsonl" --output "$STUDY/responses.jsonl" --choice-letters ABC
+```
+
+The runner joins the two original waveforms with 750 ms of silence so the model can hear both within one audio input. Its receipts include both original hashes and the joined waveform hash. Calibrate with two spoken phrases whose words are absent from the prompt. Reverse their order and check both transcriptions. Also ask the model to identify the excerpts by letter in both orders using the experiment’s decoder. Record any failures alongside editorial accuracy. The runner writes `responses.jsonl.runtime.json` before inference and records its hash with every answer. Seal the completed batch before decoding. Keep the receipt and original batch for replay.
+
+Supply a separate private JSON object mapping each recording ID to its source word evidence and independently prepared `reference-audio.json`. For example, `{"example":{"words":"/private/path/words.json","reference":"/private/path/reference-audio.json"}}`.
+
+```sh
+python3 evals/label_take_pairs.py --manifest "$STUDY/source/cases.json" \
+  --sources "$STUDY/reference-index.json" --out "$STUDY/labels.json"
+python3 evals/take_listening.py seal --requests "$STUDY/batch/requests.jsonl" \
+  --responses "$STUDY/responses.jsonl" --runtime "$STUDY/responses.jsonl.runtime.json" \
+  --runner evals/run_take_listening_mlx.py
+python3 evals/take_listening.py decode --batch "$STUDY/batch" \
+  --responses "$STUDY/responses.jsonl" --out "$STUDY/choices.json"
+python3 evals/take_listening.py score --choices "$STUDY/choices.json" \
+  --labels "$STUDY/labels.json" --tier strict --out "$STUDY/score.json"
+```
+
+`strict` needs evidence for every word in the repeated phrase, `majority` needs a majority on each occurrence, and `provenance` uses corresponding word positions with no contradictory evidence. On partially mapped soundtracks these tiers can establish a local choice at a verified splice. Append `Global` to any tier (for example, `provenanceGlobal`) to require evidence that also holds across any unexplained audio in the final. Current reference maps contain source and editor file hashes and stream indices. For legacy maps, regenerate with `evals/tools/match_audio.py` and supply the result as `replayedReference` with its archive source record or verified inventory. The report gives each order’s accuracy, the number right in both, and the denominator. Uncertain passages, mixed edits and passages the editor removed entirely stay visible in the label file. Inspect which takes the reference favored alongside a simple always-later baseline. Whole-edit cut recall, retained-word loss and picture-to-first-word timing use the timeline graders above.
