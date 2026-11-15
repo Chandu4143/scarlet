@@ -165,8 +165,6 @@ interface PreviewProps {
     /** Every other applied edit on the working cut, drawn under the marks. */
     edits?: TimelineEdit[];
     focus?: ProgressFocus; label?: string; compareHost?: HTMLElement | null; above?: ReactNode;
-    /** Above the ruler: whose edits the timeline marks. */
-    heading?: ReactNode;
     gaps?: TimelineGap[]; skippedRanges?: TimeRange[]; onGap?(gap: TimelineGap, time: number): void;
     /** A click inside the shaded passage, when the playing side steps over it. */
     onBand?(time: number): void;
@@ -708,7 +706,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             waveform={{ media: current.media, mediaPaused: current.project.mediaPaused, source, timeline: displayedTimeline, ...sameClockBefore && {
               audioFrom: playingBefore ? sameClockBefore : undefined, scaleWith: playingBefore ? displayedTimeline : sameClockBefore } }} frameAt={frameAt} onSeek={seekFull} onSelectTime={selectTime} onScrubStart={scrubStart}
             range={simple.onRange ? shownRange : undefined} onRange={simple.onRange ? markRange : undefined} fps={fps}
-            marks={simple.marks} edits={simple.edits} gaps={simple.gaps} skippedRanges={simple.skippedRanges} onGap={simple.onGap} onBand={simple.onBand} heading={simple.heading}
+            marks={simple.marks} edits={simple.edits} gaps={simple.gaps} skippedRanges={simple.skippedRanges} onGap={simple.onGap} onBand={simple.onBand}
             highlight={simple.focus ?? (selectedEdit ? editFocus(selectedEdit, duration) : undefined)} />
         </div>
       </div>}

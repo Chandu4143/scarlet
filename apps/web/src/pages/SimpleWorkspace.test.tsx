@@ -5366,14 +5366,17 @@ const menuRow = (name: string) => [...container.querySelectorAll<HTMLElement>('[
 const cachingRing = () => moreButton().querySelector<SVGElement>(".simple-more-ring");
 const ringDrawn = (ring = cachingRing()) => Math.round(100 - Number(ring?.querySelector("circle + circle")?.getAttribute("stroke-dashoffset")));
 const exportButton = () => buttonIn(container.querySelector(".simple-tools")!, "Export")!;
+/** The header's Media button, whatever mark follows its name. */
+const mediaButton = () => container.querySelector<HTMLElement>(".simple-tools .simple-media")!;
 /** What hovering the menu's button says. */
 const moreTitle = () => moreButton().querySelector<HTMLElement>(".simple-more")!.title;
 
-it("opens Media and Export from the header and keeps project tools in the menu", async () => {
+it("opens Media, Export and History from the header and keeps project tools in the menu", async () => {
   await show();
   const back = container.querySelector<HTMLAnchorElement>('a[href="/"]');
   expect(back?.getAttribute("aria-label")).toBe("All projects");
   const tools = container.querySelector(".simple-tools")!;
+  expect([...tools.querySelectorAll("button")].map(b => b.textContent?.trim()).slice(0, 3)).toEqual(["Media", "Export", "History"]);
   for (const [name, field] of [["Media", "#media-file-types"], ["Export", "#export-format"]] as const) {
     await click(buttonIn(tools, name)!);
     await act(async () => { await vi.dynamicImportSettled(); });
@@ -5384,13 +5387,12 @@ it("opens Media and Export from the header and keeps project tools in the menu",
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(moreButton().getAttribute("aria-description")).toBeNull();
   await openMenu();
-  expect(menuItems().filter(name => !name?.startsWith("Model") && name !== "Set up a model")).toEqual(["Learnings", "Media", "History", "Transcript", "Export", "Project settings", "App settings"]);
+  expect(menuItems().filter(name => !name?.startsWith("Model") && name !== "Set up a model")).toEqual(["Learnings", "Transcript", "Export", "Project settings", "App settings"]);
   expect(container.querySelector('[role="menu"] .menu-dot')).toBeNull();
   await click(menuItem("Project settings"));
   expect(useUiStore.getState().projectSettingsOpen).toBe(true);
   useUiStore.getState().setProjectSettingsOpen(false);
-  await openMenu();
-  await click(menuItem("History"));
+  await click(buttonIn(tools, "History")!);
   expect(document.querySelector("dialog[open]")?.textContent).toContain("History");
 });
 
@@ -5462,58 +5464,54 @@ it("keeps what Scarlet is on above the message box while the Transcript is open,
   expect(transcript()).toBeNull();
 });
 
-it("caches the edit without a ring on the picture or a word on the menu's Media row, which is about the videos", async () => {
+it("caches the edit without a ring on the picture or a word on the Media button, which is about the videos", async () => {
   const caching = { ...data.renders.find(r => r.kind === "full")!, id: "rnd_caching", state: "running" as const, progress: 0.42 };
   vi.spyOn(api, "renders").mockResolvedValue({ renders: [caching], fullRenderKeys: data.fullRenderKeys });
   await show();
   await act(async () => {});
   expect(container.querySelector(".simple-cache")).toBeNull();
   expect(cachingRing()).toBeNull();
+  expect(mediaButton().title).toBe("");
   await openMenu();
-  expect(menuRow("Media").textContent).toBe("Media");
+  expect(menuItems()).not.toContain("Media");
   expect(menuItems()).not.toContain("Pause caching");
 });
 
-it("marks the menu and its Media row when a file couldn't be read or a transcription stopped, and not otherwise", async () => {
+it("marks the Media button, not the menu, when a file couldn't be read or a transcription stopped, and not otherwise", async () => {
   await show();
   await act(async () => {});
-  expect(moreButton().querySelector(".needs-you")).toBeNull();
-  // A file that couldn't be read is explained only in Media, so the menu that leads there says so.
+  expect(mediaButton().querySelector(".menu-dot")).toBeNull();
+  // A file that couldn't be read is explained only in Media, so the button that leads there says so.
   const [broken, silent] = data.media.filter(m => m.kind === "video" || m.kind === "audio");
   data = { ...data, media: data.media.map(m => m.id === broken!.id ? { ...m, status: "failed" as const, error: "moov atom not found" } : m) };
   await act(async () => useProjectStore.setState({ current: data }));
-  expect(moreButton().querySelector(".needs-you")).not.toBeNull();
-  expect(moreButton().getAttribute("aria-description")).toBe(`Couldn’t read ${broken!.name}`);
+  expect(moreButton().querySelector(".needs-you")).toBeNull();
+  expect(mediaButton().querySelector(".menu-dot")?.getAttribute("aria-label")).toBe(`Couldn’t read ${broken!.name}`);
+  expect(mediaButton().title).toContain(`Couldn’t read ${broken!.name}`);
   await openMenu();
-  expect(menuRow("Media").querySelector(".menu-dot")?.getAttribute("aria-label")).toBe(`Couldn’t read ${broken!.name}`);
-  expect(menuRow("Media").title).toContain(`Couldn’t read ${broken!.name}`);
-  expect(menuRow("Learnings").querySelector(".menu-dot")).toBeNull();
+  expect(container.querySelector('[role="menu"] .menu-dot')).toBeNull();
   // So is a recording whose transcription stopped before it had a transcript.
   const stopped = { ...data.tasks[0]!, id: "task_transcribe_stopped", kind: "transcribe" as const, agent: "api" as const, state: "failed" as const, interrupted: true,
     error: "Transcription was interrupted.", instruction: `Transcribe ${silent!.name}`, context: { mediaId: silent!.id }, changeIds: [], createdAt: new Date().toISOString() };
   data = { ...data, media: data.media.map(m => m.id === silent!.id ? { ...m, transcriptId: undefined } : m), tasks: [...data.tasks, stopped] };
   await act(async () => useProjectStore.setState({ current: data }));
-  expect(moreButton().getAttribute("aria-description")).toBe("2 files need attention");
+  expect(mediaButton().querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("2 files need attention");
 });
 
-it("marks the menu and its Media row when a file failed to import, until Media's list of imports lets it go", async () => {
+it("marks the Media button when a file failed to import, until Media's list of imports lets it go", async () => {
   vi.spyOn(api, "importMedia").mockRejectedValue(new Error("Scarlet couldn’t read this file."));
   await show();
   await act(async () => { await enqueueImports(PRJ, ["/Users/me/Movies/drone.mov"]); });
-  expect(moreButton().querySelector(".needs-you")).not.toBeNull();
-  expect(moreButton().getAttribute("aria-description")).toBe("Some files need attention");
-  await openMenu();
-  // The row the mark is about carries it, and says the same on hover.
-  expect([...container.querySelectorAll('[role="menu"] .menu-dot')]).toEqual([menuRow("Media").querySelector(".menu-dot")]);
-  expect(menuRow("Media").querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("Some files need attention");
-  expect(menuRow("Media").title).toBe("Some files need attention");
+  expect(moreButton().querySelector(".needs-you")).toBeNull();
+  expect(mediaButton().querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("Some files need attention");
+  expect(mediaButton().title).toBe("Some files need attention");
   // Media lists the file with why it failed. Dismissed there, nothing is marked.
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   await vi.waitFor(() => expect(document.querySelector('dialog[open] [aria-label="Dismiss"]')).not.toBeNull());
   expect(document.querySelector("dialog[open]")?.textContent).toContain("Scarlet couldn’t read this file.");
   await click(document.querySelector('dialog[open] [aria-label="Dismiss"]')!);
-  expect(moreButton().querySelector(".needs-you")).toBeNull();
+  expect(mediaButton().querySelector(".menu-dot")).toBeNull();
   expect(container.querySelector(".simple-banner")).toBeNull();
 });
 
@@ -5617,8 +5615,8 @@ it("says how far a video's cache has got on the menu's Media row, with Pause und
   useProjectStore.setState({ updateProject });
   await show();
   await act(async () => {});
-  // Caching needs nothing from the editor, so the menu isn't marked for it. Media is inside the menu, so its button
-  // shows the caching instead: a ring drawn as far as the cache has got, named on hover in the Media row's words.
+  // Caching needs nothing from the editor, so the menu isn't marked for it. Pausing it is inside the menu, so its
+  // button shows the caching instead: a ring drawn as far as the cache has got, named on hover.
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(ringDrawn()).toBe(30);
   expect(cachingRing()!.classList.contains("is-unknown")).toBe(false);
@@ -5626,15 +5624,14 @@ it("says how far a video's cache has got on the menu's Media row, with Pause und
   expect(moreButton().getAttribute("aria-description")).toBe("Caching 30%");
   // The menu button draws the ring without repeating its status in text.
   expect(moreButton().textContent).toBe("");
+  expect(mediaButton().title).toBe(rest.length ? `${rest.length} of ${rest.length + 1} videos cached` : "Caching for playback");
   await openMenu();
-  expect(menuRow("Media").querySelector(".menu-value")?.textContent).toBe("Caching 30%");
-  expect(menuRow("Media").title).toBe(rest.length ? `${rest.length} of ${rest.length + 1} videos cached` : "Caching for playback");
   await click(menuItem("Pause caching"));
   expect(updateProject).toHaveBeenCalledWith({ mediaPaused: true });
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 
-it("draws a ring around the menu's button only while videos cache, under the mark for what needs the editor", async () => {
+it("draws a ring around the menu's button only while videos cache, and leaves a file that needs the editor to the Media button", async () => {
   const [first, ...rest] = data.media.filter(m => m.kind === "video");
   const others = rest.map(m => ({ mediaId: m.id, state: "ready" as const }));
   const caches = vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [{ mediaId: first!.id, state: "ready" }, ...others] });
@@ -5660,14 +5657,15 @@ it("draws a ring around the menu's button only while videos cache, under the mar
   expect(cachingRing()!.classList.contains("is-unknown")).toBe(false);
   expect(ringDrawn()).toBe(71);
   expect(moreTitle()).toBe("Caching 71%");
-  // A file that needs the editor still marks the button, and is said first.
+  // A file that needs the editor marks the Media button, which says it first, and not the menu.
   const broken = rest[0] ?? first!;
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "failed" as const, error: "moov atom not found" } : m) });
-  expect(moreButton().querySelector(".needs-you")).not.toBeNull();
+  expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(cachingRing()).not.toBeNull();
-  expect(moreTitle()).toBe(`Couldn’t read ${broken.name}. Caching 71%`);
+  expect(moreTitle()).toBe("Caching 71%");
+  expect(mediaButton().title).toMatch(new RegExp(`^Couldn’t read ${broken.name}\\. `));
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "ready" as const, error: undefined } : m) });
-  // Paused, nothing is caching: the ring is gone, and nothing under the header says so. The menu's Media row does.
+  // Paused, nothing is caching: the ring is gone, and nothing under the header says so. The menu's Resume caching row does.
   await cachesBecome({ state: "uncached", queued: true }, { project: { ...data.project, mediaPaused: true } });
   expect(cachingRing()).toBeNull();
   expect(container.querySelector(".simple-banner")).toBeNull();
@@ -5691,9 +5689,8 @@ it("says that caching is paused once, on the menu's Media row with Resume under 
   expect(container.querySelector(".simple-banner")).toBeNull();
   expect(container.querySelector("#simple-chat")!.textContent).not.toMatch(/paused|Resume/i);
   expect(moreButton().querySelector(".needs-you")).toBeNull();
+  expect(mediaButton().title).toBe("Caching is paused");
   await openMenu();
-  expect(menuRow("Media").querySelector(".menu-value")?.textContent).toBe("Paused");
-  expect(menuRow("Media").title).toBe("Caching is paused");
   await click(menuItem("Resume caching"));
   expect(updateProject).toHaveBeenCalledExactlyOnceWith({ mediaPaused: false });
 });
@@ -7800,8 +7797,7 @@ it("opens a clip from Media at its start, without the cut's marks, and returns t
   await act(async () => {});
   expect(container.querySelectorAll(".simple-timeline-mark").length).toBeGreaterThan(0);
   usePlayerStore.setState({ time: 12.5 });
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   const play = await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; });
   await click(play);
@@ -7829,8 +7825,7 @@ it("returns the cut to an open cut's join when a clip from Media was played over
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Keep the image test” · After");
   // The editor is inside the cut's passage, on that earlier version's clock.
   await act(async () => usePlayerStore.setState({ time: 11 }));
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   const play = await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; });
   await click(play);
@@ -7890,8 +7885,7 @@ it("bookmarks a place in the video itself while a suggestion, an open cut or a c
   expect(editPanel()).toBeNull();
   // Behind a clip from Media, it is where the video was left.
   await act(async () => usePlayerStore.setState({ time: 12.5 }));
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   const play = await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; });
   await click(play);
@@ -7909,8 +7903,7 @@ const transcriptHeading = () => {
 it("names a clip from Media once on the Transcript's heading, and keeps Mark unused words on a row under it", async () => {
   await show();
   await act(async () => {});
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   const play = await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; });
   await click(play);
@@ -8409,9 +8402,10 @@ it("gives Space back to the player after a row of the menu is clicked, and after
   expect(await spaceWhilePaused()).toBe(true);
   // A row that opens a drawer: closed again, the drawer hands focus back to what had it, which isn't ⋯ either.
   await pointerClick(more);
-  await pointerClick(menuItem("History"));
+  await pointerClick(menuItem("Export"));
+  await act(async () => { await vi.dynamicImportSettled(); });
   const drawer = document.querySelector<HTMLElement>("dialog[open]")!;
-  expect(drawer.textContent).toContain("History");
+  expect(drawer.querySelector("#export-format")).not.toBeNull();
   await pointerClick(drawer.querySelector<HTMLElement>('[aria-label="Close"]')!);
   expect(document.querySelector("dialog[open]")).toBeNull();
   expect(document.activeElement).toBe(document.body);
@@ -9233,8 +9227,7 @@ it("leaves a clip the editor started from Media playing when a suggestion's appl
   await click(buttonIn(container.querySelector('[aria-label="Suggestion"]')!, "Apply")!);
   expect(container.querySelector('[aria-label="Suggestion"]')).toBeNull();
   // While the engine works, the editor plays a clip from Media. Nothing they review is on screen then.
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   await click(await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; }));
   expect(container.querySelector('[aria-label="Source preview"]')).not.toBeNull();
@@ -9933,8 +9926,7 @@ it("plays a suggestion only on the editor's press on its line: its card comes ba
 it("starts a clip played from Media once: once it plays, nothing tells its player to start again", async () => {
   await show();
   await act(async () => {});
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   const row = await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; });
   await click(row);
@@ -9949,8 +9941,7 @@ it("starts a clip played from Media once: once it plays, nothing tells its playe
   await act(async () => usePlayerStore.setState({ playing: false }));
   expect(clip().autoplay).toBe(false);
   // Played again from Media, it starts again.
-  await openMenu();
-  await click(menuRow("Media"));
+  await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
   await click(await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; }));
   expect(clip().autoplay).toBe(true);
@@ -10619,8 +10610,7 @@ it("leaves full screen when Revise hands the keyboard to the message box, which 
 it("takes a clip that's already showing back to its start, and plays it, when it is played from Media again", async () => {
   await show();
   const fromMedia = async () => {
-    await openMenu();
-    await click(menuRow("Media"));
+    await click(mediaButton());
     await act(async () => { await vi.dynamicImportSettled(); });
     await click(await vi.waitFor(() => { const b = container.querySelector<HTMLButtonElement>('button[aria-label^="Preview source"]'); if (!b) throw new Error("no Media row yet"); return b; }));
   };
@@ -10714,26 +10704,40 @@ it("puts a marked stretch on the message beside the edit that's open, which stay
   expect((useUiStore.getState().agentContext as AgentContext).changeId).toBeUndefined();
 });
 
-it("keeps one list of every edit open at a time, and names the request the timeline marks above the ruler", async () => {
+it("keeps one list of every edit open at a time, and puts a request's edits on the timeline when its band is pressed", async () => {
   earlierRequestOnly(false);
   const later = laterRequest("chg_later", false);
   const intro = { changeId: "chg_later", spot: 1, label: "intro fade", range: { start: 0, end: 1 }, previous: [] };
   later.lists.chg_later = [{ changeId: "chg_later", spot: 0, label: "outro fade", range: { start: 13, end: 15 }, previous: [] }, intro];
-  const change = { ...later.change, timelineEdits: [{ label: "outro fade", range: { start: 13, end: 15 } }, { label: "intro fade", range: intro.range }] };
-  data = { ...data, changes: [...data.changes, change] };
+  // Each request has its band: the zooms asked for first, then the fades.
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const request = (id: string, instruction: string, changeId: string) => Task.parse({ id, projectId: PRJ, kind: "edit", agent: "claude",
+    instruction, state: "done", createdBy: { type: "human", name: "Editor" }, changeIds: [changeId], createdAt: at, finishedAt: at });
+  const change = { ...later.change, taskId: "task_fades", timelineEdits: [{ label: "outro fade", range: { start: 13, end: 15 } }, { label: "intro fade", range: intro.range }] };
+  data = { ...data, changes: [...data.changes.map(c => c.id === "chg_approved_2" ? { ...c, taskId: "task_zooms" } : c), change],
+    tasks: [request("task_zooms", "Frame the screen", "chg_approved_2"), request("task_fades", "Fade both ends", "chg_later")] };
+  later.lists[threadWith("chg_later").id] = later.lists.chg_later!;
+  later.lists[threadWith("chg_approved_2").id] = later.lists[later.earlier]!;
   useProjectStore.setState({ current: data });
   await showFolded();
   await act(async () => {});
-  // The latest request has the timeline. The line above the ruler says whose dots they are, and how many.
-  const heading = () => container.querySelector<HTMLElement>(".timeline-heading");
-  expect(heading()?.querySelector(".timeline-whose")?.textContent).toBe(threadWith("chg_later").title);
-  expect(heading()?.querySelector(".timeline-whose-count")?.textContent).toBe("· 2 edits");
-  // Its name brings the request into view in the chat.
-  const scrolled = vi.fn();
-  turnFor("chg_later").querySelector<HTMLElement>(".simple-pass")!.scrollIntoView = scrolled;
-  await click(heading()!.querySelector<HTMLElement>(".timeline-whose")!);
-  await act(async () => { await new Promise(resolve => requestAnimationFrame(() => resolve(undefined))); });
-  expect(scrolled).toHaveBeenCalled();
+  // Nothing above the ruler says whose dots they are: the latest request's band does, a shade lighter.
+  expect(container.querySelector(".timeline-heading")).toBeNull();
+  const band = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".unit-msg")!;
+  expect(band("chg_later").classList.contains("is-marked")).toBe(true);
+  expect(band("chg_approved_2").classList.contains("is-marked")).toBe(false);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
+  // Pressing the earlier request's band puts its three edits on the timeline, and its band takes the shade.
+  await click(band("chg_approved_2"));
+  await act(async () => {});
+  expect(band("chg_approved_2").classList.contains("is-marked")).toBe(true);
+  expect(band("chg_later").classList.contains("is-marked")).toBe(false);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2", "3"]);
+  // And the latest's band brings its own back.
+  await click(band("chg_later"));
+  await act(async () => {});
+  expect(band("chg_later").classList.contains("is-marked")).toBe(true);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
   // Opening one request's list of every edit closes another's, so two "Hide" links never stand for one timeline.
   const toggle = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".simple-pass-toggle")!;
   await click(toggle("chg_approved_2"));
@@ -10742,14 +10746,16 @@ it("keeps one list of every edit open at a time, and names the request the timel
   expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("true");
   expect(toggle("chg_approved_2").getAttribute("aria-expanded")).toBe("false");
   expect([...container.querySelectorAll(".simple-pass-toggle")].filter(t => t.textContent === "Hide")).toHaveLength(1);
-  // An open card names its own edit: the line waits while it is open.
+  // A request's band with an edit of it open leaves the card and shows that request's edits.
   await click(editRows("chg_later")[0]!);
   await act(async () => {});
   expect(container.querySelector(".edit-card")).not.toBeNull();
-  expect(heading()).toBeNull();
-  await press("Escape");
+  await click(band("chg_approved_2"));
   await act(async () => {});
-  expect(heading()?.querySelector(".timeline-whose")?.textContent).toBe(threadWith("chg_later").title);
+  expect(container.querySelector(".edit-card")).toBeNull();
+  expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("false");
+  expect(band("chg_approved_2").classList.contains("is-marked")).toBe(true);
+  expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2", "3"]);
 });
 
 it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flagged edit, when it comes next in the list", () => {
