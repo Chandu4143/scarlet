@@ -170,22 +170,32 @@ function newClipEdges(before: Timeline | null, next: Timeline, media: ReadonlyAr
   return edges;
 }
 
-const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that sound would play louder than the edit started. Silence one copy only where they overlap, so the sound either clip plays alone stays, or lower the copies until their volumes add up to the level it started at, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
+const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that stretch would play louder than the edit started. Make the change named for it, which turns down the copy the edit added or changed over that stretch alone and leaves the mix the edit started from everywhere else, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
 
-/** A doubled pair as the refusal names it, with the one change that silences a copy and keeps what each plays alone. */
+/**
+ * A louder stretch as the refusal names it, with the change that turns down the copy the edit added or changed there
+ * alone: split off just that stretch of it, so what it plays before and after stays as it was.
+ */
 export function doubledSoundText(d: LouderDoubledSound, next: Timeline): string {
   const clips = new Map(next.tracks.flatMap(t => t.clips.map(c => [c.id, c] as const)));
   const [a, b] = d.clipIds.map(id => clips.get(id) as MediaClip);
-  // The exact seconds, so a split there leaves no sliver of either copy doubled or silenced.
-  const from = Math.max(a!.timelineIn, b!.timelineIn), to = Math.min(clipEnd(a!), clipEnd(b!));
   const t = (n: number) => String(+n.toFixed(6));
-  const pair = `clips ${a!.id} and ${b!.id} both play ${d.mediaId} from ${t(timelineToSource(a!, from))} to ${t(timelineToSource(a!, to))} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
-  // One clip of the two starts where they overlap and one ends there, so either one plays only inside the overlap or each
-  // plays past it on one side, where a single split leaves its own sound.
-  const inside = [b!, a!].find(c => c.timelineIn >= from - 1e-6 && clipEnd(c) <= to + 1e-6);
-  if (inside) return `${pair}: ${inside.id} plays only there, so set its volume to 0`;
-  const later = a!.timelineIn <= b!.timelineIn ? b! : a!;
-  return `${pair}: each also plays on its own outside that, so splitClip ${later.id} at ${t(to)}, which keeps the part after it as a new clip with its sound, and set ${later.id}'s volume to 0`;
+  const { start: from, end: to } = d.overlap;
+  const pair = `clips ${a!.id} and ${b!.id} both play ${d.mediaId} from ${t(d.source.start)} to ${t(d.source.end)} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
+  const quiet = clips.get(d.turnDown.clipId) as MediaClip;
+  const volume = t(d.turnDown.volume);
+  // An id for a piece split off it that no clip has yet.
+  const fresh = (name: string) => { let id = `${quiet.id}-${name}`; for (let n = 2; clips.has(id); n++) id = `${quiet.id}-${name}-${n}`; return id; };
+  const before = quiet.timelineIn < from - 1e-6, after = clipEnd(quiet) > to + 1e-6;
+  if (!before && !after) return `${pair}: ${quiet.id} plays only there, so set its volume to ${volume}`;
+  if (!before) {
+    const rest = fresh("after");
+    return `${pair}: ${quiet.id} plays on after that, so splitClip ${quiet.id} at ${t(to)} with newClipId ${rest}, which keeps the part after it as ${rest} with its sound, and set ${quiet.id}'s volume to ${volume}`;
+  }
+  const louder = fresh("louder");
+  if (!after) return `${pair}: ${quiet.id} plays before that as the edit started, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, which keeps the part before it as it was, and set ${louder}'s volume to ${volume}`;
+  const rest = fresh("after");
+  return `${pair}: ${quiet.id} plays on either side of that, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, then splitClip ${louder} at ${t(to)} with newClipId ${rest}, which keeps the parts either side as they were, and set ${louder}'s volume to ${volume}`;
 }
 
 const OPS_DOC = `Op types (all times are seconds; timeline times are positions in the edit, source times are positions in the media file):
@@ -2404,7 +2414,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, where they overlap and both levels. Silence one of them only there, so sound either plays alone stays, or lower them to the level it started at, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, the stretch that got louder and both levels. Make the change it names, which turns down the copy the edit added or changed over that stretch alone, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {

@@ -100,9 +100,9 @@ describe("doubled sound", () => {
     next.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-a" }));
     next.tracks[0]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-v" }));
     expect(introducedDoubledSound(once, next, media)).toEqual([{ mediaId: "media-a", clipIds: ["late-v", "late-a"],
-      overlap: { start: 10, end: 12 }, source: { start: 0, end: 2 }, level: { before: 1, after: 2 } }]);
+      overlap: { start: 10, end: 12 }, source: { start: 0, end: 2 }, level: { before: 1, after: 2 }, turnDown: { clipId: "late-a", volume: 0 } }]);
     // From an empty timeline the report's two copies at unity are twice unity.
-    expect(introducedDoubledSound(null, reported(), media)).toEqual([{ ...doubledSound(reported(), media)[0]!, level: { before: 1, after: 2 } }]);
+    expect(introducedDoubledSound(null, reported(), media)).toEqual([{ ...doubledSound(reported(), media)[0]!, level: { before: 1, after: 2 }, turnDown: { clipId: "audio-clip", volume: 0 } }]);
   });
 
   it("leaves a copy of a moment the base already layered, at the level it played it", () => {
@@ -121,10 +121,48 @@ describe("doubled sound", () => {
       { op: "updateClip", clipId: "video-clip", patch: { volume: 1 } },
       { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } },
     ]);
-    expect(introducedDoubledSound(halves, raised, media)).toEqual([{ ...doubledSound(raised, media)[0]!, level: { before: 1, after: 2 } }]);
+    expect(introducedDoubledSound(halves, raised, media)).toEqual([{ ...doubledSound(raised, media)[0]!, level: { before: 1, after: 2 }, turnDown: { clipId: "audio-clip", volume: 0 } }]);
     // Raising one of them to 1 is 1.5.
     const one = applyOps(halves, [{ op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }]);
-    expect(introducedDoubledSound(halves, one, media).map(d => d.level)).toEqual([{ before: 1, after: 1.5 }]);
+    // It comes back to 0.5, where the two add up to the 1 the base played, not to 0, which would leave it quieter.
+    expect(introducedDoubledSound(halves, one, media).map(d => [d.level, d.turnDown])).toEqual([[{ before: 1, after: 1.5 }, { clipId: "audio-clip", volume: 0.5 }]]);
+  });
+
+  it("reports only the stretch an extended layer made louder, and turns down the layer there alone", () => {
+    // Camera sound for 10 s with a second copy layered on purpose over its first 5 s, then that layer extended to 10 s.
+    const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })], [makeMediaClip("media-a", 0, 5, 0, { id: "layer" })]);
+    const extended = applyOps(base, [{ op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } }]);
+    expect(introducedDoubledSound(base, extended, media)).toEqual([{ mediaId: "media-a", clipIds: ["camera", "layer"],
+      overlap: { start: 5, end: 10 }, source: { start: 5, end: 10 }, level: { before: 1, after: 2 }, turnDown: { clipId: "layer", volume: 0 } }]);
+    // With the layer first in the pair (on V1, the camera sound on A1), it is still the layer that is turned down.
+    const flipped = timeline([makeMediaClip("media-a", 0, 5, 0, { id: "layer" })], [makeMediaClip("media-a", 0, 10, 0, { id: "camera" })]);
+    const flippedExtended = applyOps(flipped, [{ op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } }]);
+    expect(introducedDoubledSound(flipped, flippedExtended, media).map(d => [d.clipIds, d.turnDown.clipId])).toEqual([[["layer", "camera"], "layer"]]);
+  });
+
+  it("reports one stretch per level: an edge elsewhere doesn't split it, and a different starting level does", () => {
+    const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })], [makeMediaClip("media-a", 0, 5, 0, { id: "layer" })]);
+    // A quiet copy of 0–7 s far along the timeline, not in sync with the others, adds an edge at 7 s and no level.
+    base.tracks.push({ ...structuredClone(base.tracks[1]!), id: "a2", clips: [makeMediaClip("media-a", 0, 7, 30, { id: "echo", volume: 0.5 })] });
+    const extended = applyOps(base, [{ op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } }]);
+    expect(introducedDoubledSound(base, extended, media).map(d => [d.overlap, d.level])).toEqual([[{ start: 5, end: 10 }, { before: 1, after: 2 }]]);
+
+    // The camera at 0.8 played 0–7 s, and nothing played 7–10 s, which is held to unity: two stretches, each with its fix.
+    const short = timeline([makeMediaClip("media-a", 0, 7, 0, { id: "camera", volume: 0.8 })], [makeMediaClip("media-a", 0, 5, 0, { id: "layer" })]);
+    const both = applyOps(short, [
+      { op: "updateClip", clipId: "camera", patch: { sourceOut: 10 } },
+      { op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } },
+    ]);
+    expect(introducedDoubledSound(short, both, media).map(d => [d.overlap, d.level, d.turnDown])).toEqual([
+      [{ start: 5, end: 7 }, { before: 0.8, after: 1.8 }, { clipId: "layer", volume: 0 }],
+      [{ start: 7, end: 10 }, { before: 1, after: 1.8 }, { clipId: "layer", volume: 0.2 }],
+    ]);
+  });
+
+  it("turns down the copy whose volume the edit raised, not the one it left alone", () => {
+    const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })], [makeMediaClip("media-a", 0, 10, 0, { id: "layer", volume: 0.5 })]);
+    const raised = applyOps(base, [{ op: "updateClip", clipId: "camera", patch: { volume: 1.5 } }]);
+    expect(introducedDoubledSound(base, raised, media).map(d => [d.level, d.turnDown])).toEqual([[{ before: 1.5, after: 2 }, { clipId: "camera", volume: 1 }]]);
   });
 
   it("leaves one clip's own volume, with no second copy", () => {
