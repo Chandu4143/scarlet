@@ -55,7 +55,9 @@ jobs:
           for t in ffmpeg ffprobe; do cp apps/desktop/src-tauri/binaries/$t-*$EXT "$RUNNER_TEMP/ffmpeg/$t$EXT"; done
           echo "$RUNNER_TEMP/ffmpeg" >> "$GITHUB_PATH"
 
-      - name: Use the packaged headless browser for graphics tests
+      # Ubuntu's preinstalled Chrome has the runner's AppArmor profile for its browser sandbox.
+      - name: Use the packaged headless browser for Mac and Windows graphics tests
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           node apps/desktop/scripts/fetch-chrome.mjs
