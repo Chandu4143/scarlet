@@ -21,6 +21,10 @@ def probe_frames(movie, cache, key, hwaccel=None):
     data = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_packets",
                                     "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(movie)], text=True)
     pts = np.array(sorted(float(line.split(",")[0]) for line in data.splitlines() if line.split(",")[0].strip()))
+    # The audio alignment uses seconds relative to the start of the container, even with a delayed video stream.
+    origin = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=start_time",
+                                      "-of", "default=nw=1:nk=1", str(movie)], text=True).strip()
+    pts -= float(origin)
     raw = cache / (key + "-80x46.gray")
     receipt = raw.with_suffix(".sha256")
     source_hash = sha(movie)
@@ -163,7 +167,7 @@ def verify(root, cache, insets=(), hwaccel=None, margin=.002):
                  for u in left[k] for v in right[k] if u + 1 != v]
         if len(pairs) == 1:
             k, pair, outgoing, incoming = pairs[0]
-            observations.append({"join": i, "publishedFrame": k, "pair": pair, "outgoing": outgoing, "incoming": incoming})
+            observations.append({"join": i, "publishedFrame": k, "publishedTime": float(final_pts[k]), "pair": pair, "outgoing": outgoing, "incoming": incoming})
     doc = {"sourceId": source_hash, "publishedSha256": final_hash, "sourceFrames": len(source_pts),
            "publishedFrames": len(final_pts), "referenceJoins": len(audio["joins"]), "minimumMargin": margin,
            "method": "A unique cut with three matching consecutive source pictures on each side. Both spatial detail and motion must match.",

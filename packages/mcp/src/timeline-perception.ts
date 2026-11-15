@@ -4,6 +4,7 @@
  * still verify its own edit. Scarlet reports; the model decides.
  */
 import { clipDuration, formatTimecode, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
+import type { PictureEntrance } from "./picture-entrance.js";
 import { normalizeTranscriptToken } from "@scarlet/shared";
 import { captionSourceClips, dbfs, isTag, wordsByMidpoint } from "./analysis.js";
 
@@ -26,14 +27,15 @@ const eps = 1e-4;
 /** A longer overlap, or one clip inside another, is a layer rather than a crossfaded cut. */
 export const MAX_CROSSFADE = 1;
 
-function audible(project: Project | undefined, clip: MediaClip, muted: boolean) {
+type AudioInventory = { media: readonly { id: string; kind: string; hasAudio?: boolean }[] };
+function audible(project: AudioInventory | undefined, clip: MediaClip, muted: boolean) {
   if (muted || !clip.enabled || clip.volume <= 0) return false;
   const asset = project?.media.find(m => m.id === clip.mediaId);
   return !asset || asset.kind === "audio" || asset.hasAudio !== false;
 }
 
 /** Every join between kept source ranges on the audible tracks, in playback order. */
-export function timelineJoins(tl: Timeline, project?: Project): TimelineJoin[] {
+export function timelineJoins(tl: Timeline, project?: AudioInventory): TimelineJoin[] {
   const found: Array<TrackJoin & { at: number }> = [];
   for (const track of tl.tracks) {
     if (track.kind === "caption") continue;
@@ -230,6 +232,7 @@ const STRIP_STEP = .02, STRIP_REACH = .3;
 const wordMargin = .03;
 
 export interface JoinAudit {
+  pictureEntrance?: PictureEntrance;
   join: number;
   at: number;
   trackId: string;

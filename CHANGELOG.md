@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- Scarlet can measure the wait between a picture cut and the next spoken word when you ask it to tighten an entrance.
 - Scarlet now uses all its editing tools on every request: frame inspection, edit comparison, captions and import/export can no longer be turned off. Settings › Tools & skills lists the tools below your skills.
 - A message you're writing about the whole video stays that way when you click or scrub the timeline.
 - A time you type in your message no longer replaces the moment you picked, and taking the moment off with × keeps it off.

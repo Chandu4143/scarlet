@@ -14,6 +14,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { cli, isMain, list, main } from "./args.ts";
 import { listCases, loadCase, type LoadedCase } from "./case.ts";
+import { scoreEntrances } from "./entrances.ts";
+import type { Timeline } from "../../packages/timeline/src/index.ts";
 import { Engine, type TaskRecord } from "./engine.ts";
 import { fetchWords } from "./evidence.ts";
 import type { EventLike } from "./metrics.ts";
@@ -25,7 +27,7 @@ import { evaluationMarkdown, runMarkdown, type TrialRow } from "./report.ts";
 const USAGE = `Usage:
   run.ts --evaluate-task <taskId> [--case <id>] [--reference-version <v>] [--kept-side] [--refresh] [--engine <url>]
   run.ts --evaluate-case <id> [--kept-side]           (re-score the run a case was built from, offline)
-  run.ts (--cases <a,b> | --suite capability|regression) --configs <agent:model:effort,...> [--trials N] [--timeout-min M] (--dry-run | --yes)
+  run.ts (--cases <a,b> | --suite capability|regression) --configs <agent:model:effort,...> [--trials N] [--add-skills name,...] [--timeout-min M] (--dry-run | --yes)
   run.ts --summarize <run dir>
 
 Results go to $SCARLET_EVAL_DATA/results (default: Scarlet's application support folder /evals).`;
@@ -80,7 +82,7 @@ function branchName(caseId: string, config: AgentConfig, trial: number, stamp: s
   return `eval ${caseId} ${configLabel(config)} t${trial} ${stamp}`.slice(0, 80);
 }
 
-async function resolveSkills(engine: Engine, loaded: LoadedCase): Promise<string[]> {
+async function resolveSkills(engine: Engine, loaded: LoadedCase, extra: string[]) {
   const skills = await engine.skills();
   const ids = new Set(skills.map(s => s.id));
   const wanted = loaded.file.request;
@@ -90,7 +92,15 @@ async function resolveSkills(engine: Engine, loaded: LoadedCase): Promise<string
     if (found && !kept.includes(found.id)) kept.push(found.id);
   }
   if (wanted.skillNames.length && !kept.length) throw new Error(`Skills ${wanted.skillNames.join(", ")} are not installed.`);
-  return kept;
+  for (const name of extra) {
+    const skill = skills.find(s => s.name === name && s.enabled !== false);
+    if (!skill) throw new Error(`Additional skill ${name} is unavailable.`);
+    if (!kept.includes(skill.id)) kept.push(skill.id);
+  }
+  return kept.map(id => {
+    const { name, version } = skills.find(s => s.id === id)!;
+    return { id, name, version };
+  });
 }
 
 const ACTIVE = new Set(["queued", "claimed", "running", "waiting_for_user"]);
@@ -118,7 +128,17 @@ async function waitForTask(engine: Engine, taskId: string, timeoutMs: number, lo
   }
 }
 
-async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, dir: string, timeoutMs: number): Promise<TrialRow> {
+async function reportEntrances(loaded: LoadedCase, timeline: Timeline, dir: string, headline: Record<string, number | null>) {
+  const score = await scoreEntrances(loaded, timeline);
+  if (!score) return;
+  writeJson(join(dir, "picture-entrances.json"), score);
+  Object.assign(headline, { verifiedPictureCuts: score.summary.verifiedPictures, eligibleEditorEntrances: score.summary.eligibleEditorEntrances,
+    matchedPictureEntrances: score.summary.matched, pictureEntranceErrorMs: score.summary.meanAbsoluteErrorMs,
+    pictureEntranceBiasMs: score.summary.meanErrorMs, candidateTrimmedEntrances: score.candidateTrimmedWords,
+    candidateEntrancesInFade: score.candidateOnsetsInFade });
+}
+
+async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, dir: string, timeoutMs: number, extraSkills: string[]): Promise<TrialRow> {
   const caseId = loaded.file.id, projectId = loaded.file.projectId;
   const row: TrialRow = { caseId, config: configLabel(config), trial, state: "not started" };
   const busy = (await engine.tasks(projectId)).filter(t => t.kind !== "transcribe" && ACTIVE.has(t.state));
@@ -126,7 +146,9 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
   const project = await engine.project(projectId);
   const original = { branch: project.branch ?? "main", head: project.head! };
   const name = branchName(caseId, config, trial, timestamp());
-  const skillIds = await resolveSkills(engine, loaded);
+  const skills = await resolveSkills(engine, loaded, extraSkills);
+  const skillIds = skills.map(s => s.id);
+  writeJson(join(dir, "skills.json"), skills);
   const before = await transcriptSnapshot(engine, loaded);
   writeJson(join(dir, "transcripts.json"), { before });
   await engine.switchBranch(projectId, { name, from: loaded.file.sourceVersion, expectedHead: original.head, expectedBranch: original.branch });
@@ -155,14 +177,20 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
       const lock = readJson<{ case: string; files: Record<string, string> }>(checkedPath(dataDir(), join(dataDir(), "episode.lock.json")));
       if (lock.case !== caseId) throw new Error("The frozen episode belongs to a different case.");
       const timeline = join(dir, "applied-timeline.json");
-      writeJson(timeline, await engine.timeline(projectId, evaluation.score.versions.applied));
+      const applied = await engine.timeline(projectId, evaluation.score.versions.applied);
+      writeJson(timeline, applied);
+      await reportEntrances(loaded, applied, dir, evaluation.score.headline);
       const published = JSON.parse(execFileSync("python3", ["-B", join(REPO_ROOT, "evals/score_audio_reference.py"),
-        "--reference", reference, "--case-dir", loaded.dir, "--timeline", timeline, "--verified-keeps"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
-        { referenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null };
+        "--reference", reference, "--case-dir", loaded.dir, "--timeline", timeline, "--verified-keeps", "--matched-joins"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
+        { referenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null;
+          spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null } };
       if (published.referenceSha256 !== lock.files["reference-audio.json"]) throw new Error("The published reference differs from its frozen digest.");
       writeJson(join(dir, "published-words.json"), published);
       Object.assign(evaluation.score.headline, { verifiedPublishedWords: published.verifiedPublishedWords,
-        missingVerifiedWords: published.missingVerifiedWords, verifiedWordRecall: published.verifiedWordRecall });
+        missingVerifiedWords: published.missingVerifiedWords, verifiedWordRecall: published.verifiedWordRecall,
+        ...(published.spacing && { editorWordRemovingCuts: published.spacing.editorWordRemovingCuts,
+          recoveredWordRemovingCuts: published.spacing.recoveredWordRemovingCuts, matchedAudioJoins: published.spacing.sharedJoins,
+          matchedPauseErrorMs: published.spacing.meanAbsErrorMs }) });
     }
     writeJson(join(dir, "evaluation.json"), evaluation);
     writeText(join(dir, "summary.md"), evaluationMarkdown(evaluation));
@@ -193,7 +221,7 @@ async function runCli(argv = process.argv.slice(2)) {
     "evaluate-task": { type: "string" }, "evaluate-case": { type: "string" }, case: { type: "string" }, cases: { type: "string" }, suite: { type: "string" },
     configs: { type: "string" }, trials: { type: "string" }, "timeout-min": { type: "string" }, "dry-run": { type: "boolean" }, yes: { type: "boolean" },
     "reference-version": { type: "string" }, "kept-side": { type: "boolean" }, refresh: { type: "boolean" }, engine: { type: "string" },
-    summarize: { type: "string" },
+    summarize: { type: "string" }, "add-skills": { type: "string" },
   }, USAGE, argv);
 
   if (values.summarize) {
@@ -204,12 +232,21 @@ async function runCli(argv = process.argv.slice(2)) {
 
   if (values["evaluate-task"] || values["evaluate-case"]) {
     const edgeOptions = values["kept-side"] ? KEPT_SIDE_EDGE_OPTIONS : DEFAULT_EDGE_OPTIONS;
+    const caseId = values["evaluate-case"] ?? values.case;
+    const loaded = caseId ? loadCase(caseId) : undefined;
+    const engine = values["evaluate-case"] ? undefined : await Engine.connect({ url: values.engine });
     const evaluation = values["evaluate-case"]
-      ? await evaluateCaseOrigin(loadCase(values["evaluate-case"]), { edgeOptions })
-      : await evaluateTask(await Engine.connect({ url: values.engine }), values["evaluate-task"]!, {
-        loaded: values.case ? loadCase(values.case) : undefined, referenceVersion: values["reference-version"], edgeOptions, refreshEvidence: values.refresh,
+      ? await evaluateCaseOrigin(loaded!, { edgeOptions })
+      : await evaluateTask(engine!, values["evaluate-task"]!, {
+        loaded, referenceVersion: values["reference-version"], edgeOptions, refreshEvidence: values.refresh,
       });
     const dir = join(resultsDir(), "tasks", fileComponent(evaluation.taskId), timestamp() + (values["kept-side"] ? "-kept-side" : ""));
+    if (loaded && existsSync(checkedPath(dataDir(), join(dataDir(), "pictures.json")))) {
+      const version = evaluation.score.versions.applied;
+      const tl = loaded.timeline(version) ?? await engine?.timeline(loaded.file.projectId, version);
+      if (!tl) throw new Error("The evaluated timeline is absent from the frozen case.");
+      await reportEntrances(loaded, tl, dir, evaluation.score.headline);
+    }
     writeJson(join(dir, "evaluation.json"), evaluation);
     const md = evaluationMarkdown(evaluation);
     writeText(join(dir, "summary.md"), md);
@@ -223,6 +260,7 @@ async function runCli(argv = process.argv.slice(2)) {
   const trials = Math.max(1, Math.floor(positiveNumber("--trials", values.trials, 3)));
   const timeoutMs = positiveNumber("--timeout-min", values["timeout-min"], 120) * 60_000;
   if (!caseIds.length || !configs.length) throw new Error("Choose --cases or --suite, and --configs.\n\n" + USAGE);
+  const extraSkills = list(values["add-skills"]);
   const cases = caseIds.map(loadCase);
   const total = cases.length * configs.length * trials;
   const runDir = join(resultsDir(), "runs", timestamp());
@@ -233,7 +271,7 @@ async function runCli(argv = process.argv.slice(2)) {
     console.log(`Dry run: ${total} agent task(s) = ${cases.length} case(s) × ${configs.length} config(s) × ${trials} trial(s). Results → ${runDir}\n`);
     for (const loaded of cases) {
       const project = engine ? await engine.project(loaded.file.projectId).catch(() => undefined) : undefined;
-      const skillIds = engine ? await resolveSkills(engine, loaded).catch(err => [`<${(err as Error).message}>`]) : loaded.file.request.skillIds;
+      const skillIds = engine ? await resolveSkills(engine, loaded, extraSkills).then(skills => skills.map(s => s.name)).catch(err => [`<${(err as Error).message}>`]) : [...loaded.file.request.skillNames, ...extraSkills];
       console.log(`Case ${loaded.file.id} (${loaded.file.suite}) · project ${loaded.file.projectId} · source ${loaded.file.sourceVersion}` +
         (project ? ` · editor currently on “${project.branch}” @ ${project.head}` : ""));
       for (const config of configs) for (let t = 1; t <= trials; t++) {
@@ -254,7 +292,7 @@ async function runCli(argv = process.argv.slice(2)) {
     const dir = join(runDir, loaded.file.id, slug(configLabel(config)), `trial-${t}`);
     console.log(`${loaded.file.id} · ${configLabel(config)} · trial ${t}/${trials}`);
     try {
-      rows.push(await runTrial(engine, loaded, config, t, dir, timeoutMs));
+      rows.push(await runTrial(engine, loaded, config, t, dir, timeoutMs, extraSkills));
     } catch (err) {
       rows.push({ caseId: loaded.file.id, config: configLabel(config), trial: t, state: "error", error: (err as Error).message });
       console.error(`  ${(err as Error).message}`);

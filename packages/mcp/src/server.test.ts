@@ -4084,6 +4084,9 @@ it("marks a recommendation inspected only after the join on the suggestion's ver
     expect(inspected.isError).toBeFalsy();
     const joinAudit = inspected.content.flatMap(c => c.type === "text" && c.text.includes("joinAudit") ? [JSON.parse(c.text).joinAudit] : [])[0];
     expect(joinAudit[0]).toMatchObject({ at: 1.9, verdict: "clean" });
+    const nearby = inspected.content.flatMap(c => c.type === "text" ? JSON.parse(c.text).nearbyWords ?? [] : [])[0];
+    expect(nearby.start[0].words).toEqual(expect.arrayContaining([[.2, .5, "Hello"]]));
+    expect(nearby.end[0].words.length).toBeGreaterThan(0);
     expect(textOf(inspected)).toContain('"levelsDb":[');
     // The editor's count moves as soon as a cut is looked at, before any recommendation for it is saved.
     expect(mock.state.events.findLast(e => e.data?.kind === "cut_progress")?.data).toMatchObject({ changeId: "pass", looked: 1 });

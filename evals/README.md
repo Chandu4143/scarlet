@@ -290,6 +290,8 @@ runs. Results land in `results/runs/<time>/<case>/<config>/trial-<n>/` (`evaluat
 `task.json`). The mean ± spread for each case and config is in `results/runs/<time>/summary.md`. Rebuild the
 summary with `--summarize <dir>`.
 
+For audio-matched cases, read `recoveredWordRemovingCuts` against `editorWordRemovingCuts`, alongside `missingVerifiedWords`. A recovered cut joins the same two source-word occurrences across a splice. `matchedPauseErrorMs` averages absolute pause differences only on the `matchedAudioJoins` shared by both edits. Unmapped passages contribute no joins. A crossfade with quiet handles uses each word’s actual playback time. The scorer counts a crossfade touching speech as ambiguous and records unsupported mixes as unavailable.
+
 For a change to the prompt, model or transcription, run three fresh trials per configuration. Each
 trial requests a digest of the ordered word occurrences and timings actually read by the editing tools.
 `transcripts.json` compares those receipts with the frozen words and engine snapshots before and after
@@ -356,3 +358,19 @@ The scan-window set that best reproduces the original run is chosen automaticall
 - Measure with evidence independent of the system under test. Compare 10 ms levels decoded from the
   original recording with the waveform Scarlet used for its decisions.
 - Never commit user data. Everything project-derived stays in `$SCARLET_EVAL_DATA`.
+
+### Picture cut to first word
+
+For frozen single-presenter episodes with verified picture observations, score a saved timeline locally:
+
+```sh
+SCARLET_EVAL_DATA="$EPISODE" node --import tsx evals/src/entrances.ts --case "$CASE" --version "$VERSION" > entrances.json
+```
+
+Use `--timeline candidate.json` for an exported timeline. New model trials, `--evaluate-case` and `--evaluate-task --case` also write `picture-entrances.json` when the episode contains picture evidence. The grader checks the frozen inputs. Older picture observations resolve the frame timestamp with FFprobe against the hash-checked finished movie. New observations store the presentation timestamp directly. Prepare a reference with the existing audio and picture tools. Candidate media and the editor reference stay outside Git.
+
+Each row measures from the incoming presenter picture to the aligned start of the incoming take’s first spoken word. Positive values mean the picture leads the voice. Negative values mean the voice starts first. Both neighboring source-word occurrences must match uniquely. Scarlet uses the actual audio placement and first displayed project frame. The reference uses the verified published frame timestamp and its independently mapped soundtrack. Uncertain word boundaries, a partial word, an onset under an audio fade, or an unmatched picture have their own outcomes. A different camera or a picture cut under a covering layer may lack comparable evidence.
+
+For repeated trials compare mean absolute error and signed bias **on the same matched joins**, alongside coverage and candidate-wide counts of trimmed words and onsets inside fades. Missing observations stay unscored. The JSON includes individual join IDs, candidate and editor times, the first 40 published seconds, and episode and candidate digests. The editor’s timings are evaluation labels. Keep the desired delivery and exceptions in a selectable custom skill.
+
+To run a style experiment on an existing frozen case, pass `--add-skills skill-name` to the trial runner. It adds the named installed guide to the case’s selected guides and records the selected IDs, names and versions in each trial. Keep model, effort, source case and trial count fixed across arms.

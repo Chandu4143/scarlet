@@ -50,8 +50,8 @@ def stats(tp, fp, fn):
                 f1=2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else None)
 
 
-def reference_pieces(ref):
-    if ref['unmappedFinal']:
+def reference_pieces(ref, *, mapped_only=False):
+    if ref['unmappedFinal'] and not mapped_only:
         raise ValueError('The final contains unexplained audio. Source-wide cut labels require complete mapping.')
     if ref.get('externalFinal') or ref.get('uncertainRetainedSource') or ref.get('excludeJoinsTouchingFinalIntervals'):
         raise ValueError('This single-source scorer does not interpret external passages or annotated source/join exclusions.')
@@ -67,17 +67,19 @@ def reference_pieces(ref):
         a, b = s['finalStart'], s['finalEnd']
         if abs((s['rawEnd'] - s['rawStart']) - (b - a)) > .002:
             raise ValueError('Reference piece speed differs from the expected correlation model.')
-        if result and abs(a - result[-1].playback(result[-1].end)) > .002:
+        if result and (a < result[-1].playback(result[-1].end) - .002 or
+                       not mapped_only and abs(a - result[-1].playback(result[-1].end)) > .002):
             raise ValueError('Gap or overlap in reference playback.')
         result.append(Piece(s['rawStart'], s['rawEnd'], a, 1, shifts.get(a, (0, 0)), shifts.get(b, (0, 0))))
-    if not result or abs(result[0].at) > .002 or abs(result[-1].playback(result[-1].end) - ref['finalDuration']) > .002:
+    if not mapped_only and (not result or abs(result[0].at) > .002 or abs(result[-1].playback(result[-1].end) - ref['finalDuration']) > .002):
         raise ValueError('Reference does not cover the full program.')
     return result
 
 
-def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False):
+def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False, matched_joins=False):
     result = []
-    for track in tl['tracks']:
+    fades = {}
+    for track_index, track in enumerate(tl['tracks']):
         if track.get('muted') or track['kind'] == 'caption':
             continue
         for c in track['clips']:
@@ -91,7 +93,10 @@ def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False):
                 raise ValueError('More than one audible recording. Supply a single-source cut and its evidence.')
             if c['sourceOut'] <= c['sourceIn'] or c.get('speed', 1) <= 0:
                 raise ValueError('Invalid source range or clip speed.')
-            result.append(Piece(c['sourceIn'], c['sourceOut'], c['timelineIn'], c.get('speed', 1)))
+            piece = Piece(c['sourceIn'], c['sourceOut'], c['timelineIn'], c.get('speed', 1))
+            result.append(piece)
+            if matched_joins:
+                fades[piece] = (track_index, c.get('audioFadeIn', 0), c.get('audioFadeOut', 0))
     if source_coverage_only:
         # The word-recall metric takes a union on this recording. Crossfades and other tracks
         # do not affect that coverage, even when their playback positions overlap.
@@ -100,9 +105,19 @@ def timeline_pieces(tl, media, silent_media=(), *, source_coverage_only=False):
     for s in sorted(result, key=lambda p: p.at):
         p = merged[-1] if merged else None
         if p and s.at < p.playback(p.end) - .001:
-            raise ValueError('Overlapping audible clips need multitrack scoring.')
+            overlap = p.playback(p.end) - s.at
+            # Two adjacent fades preserve the actual playback clocks on both sides of a splice.
+            # Unrelated mixes, layered tracks and three-way overlaps have no single audible join.
+            continuous_fade = (matched_joins and p in fades and fades[p][0] == fades[s][0] and
+                               overlap <= min(fades[p][2], fades[s][1]) + .001 and
+                               p.at < s.at and p.playback(p.end) < s.playback(s.end) and
+                               (len(merged) < 2 or merged[-2].playback(merged[-2].end) <= s.at + .001))
+            if not continuous_fade:
+                raise ValueError('Overlapping audible clips need multitrack scoring.')
         if p and p.speed == s.speed and abs(p.end - s.start) < .001 and abs(p.playback(p.end) - s.at) < .001:
             merged[-1] = Piece(p.start, s.end, p.at, p.speed)
+            if matched_joins:
+                fades[merged[-1]] = (fades[s][0], fades[p][1], fades[s][2])
         else:
             merged.append(s)
     return merged
@@ -137,7 +152,7 @@ def pair_gap(words, a, b, left, right):
     return 1000 * max(0, b.playback(words[right]['start']) - a.playback(words[left]['end']))
 
 
-def join_spacing(words, reference, candidate):
+def join_spacing(words, reference, candidate, *, join_times=None):
     rpages, cpages = by_piece(words, reference), by_piece(words, candidate)
     rseq = [(n, i) for n, page in enumerate(rpages) for i in page]
     cseq = [(n, i) for n, page in enumerate(cpages) for i in page]
@@ -145,17 +160,21 @@ def join_spacing(words, reference, candidate):
     for (a, left), (b, right) in zip(cseq, cseq[1:]):
         pairs.setdefault((left, right), []).append((a, b))
     rkeys = Counter((left, right) for (a, left), (b, right) in zip(rseq, rseq[1:]) if a != b)
-    lexical_known = shared_words_uncut = 0
+    lexical_known = shared_words_uncut = word_removals = 0
     matched = []
+    ambiguous_fades = recovered_word_removals = 0
     for (a, left), (b, right) in zip(rseq, rseq[1:]):
         if a == b or b != a + 1:
             continue
         p, q = reference[a], reference[b]
+        if join_times is not None and (q.at not in join_times or abs(p.playback(p.end) - q.at) > .002):
+            continue
         if not stable_limiting_id(words, p, 'out', left) or not stable_limiting_id(words, q, 'in', right):
             continue
         if rkeys[(left, right)] != 1:
             continue
         lexical_known += 1
+        word_removals += right > left + 1
         where = pairs.get((left, right), [])
         if len(where) != 1:
             continue
@@ -164,6 +183,13 @@ def join_spacing(words, reference, candidate):
             shared_words_uncut += 1
             continue
         if j != i + 1:
+            continue
+        recovered_word_removals += right > left + 1
+        outgoing, incoming = candidate[i], candidate[j]
+        overlap_end = outgoing.playback(outgoing.end)
+        if incoming.at < overlap_end - .001 and (outgoing.playback(words[left]['end']) > incoming.at or
+                                                  incoming.playback(words[right]['start']) < overlap_end):
+            ambiguous_fades += 1
             continue
         ref_gap = pair_gap(words, p, q, left, right)
         cand_gap = pair_gap(words, candidate[i], candidate[j], left, right)
@@ -174,7 +200,10 @@ def join_spacing(words, reference, candidate):
     absolute = [abs(e) for e in errors]
     longer = sum(e > 200 for e in errors)
     shorter = sum(e < -200 for e in errors)
-    return dict(referenceJoins=max(len(reference) - 1, 0), eligibleJoins=lexical_known,
+    return dict(referenceJoins=len(join_times) if join_times is not None else max(len(reference) - 1, 0), eligibleJoins=lexical_known,
+                editorWordRemovingCuts=word_removals, ambiguousCrossfadedJoins=ambiguous_fades,
+                recoveredWordRemovingCuts=recovered_word_removals,
+                meanAbsErrorMs=round(sum(absolute) / len(absolute), 2) if absolute else None,
                 candidateJoins=max(len(candidate) - 1, 0), sharedJoins=len(matched), sameWordsUnedited=shared_words_uncut,
                 longerByOver200Ms=longer, shorterByOver200Ms=shorter,
                 longerByOver200MsPct=100 * longer / len(errors) if errors else None,
@@ -297,7 +326,10 @@ def main():
     selected.add_argument('--evaluation', type=Path, help='evaluation.json referencing a timeline stored in --case-dir')
     parser.add_argument('--tier', default='applied', choices=['applied', 'proposed'])
     parser.add_argument('--verified-keeps', action='store_true', help='Recall of definitely published word occurrences on a partial or complete map')
+    parser.add_argument('--matched-joins', action='store_true', help='With --verified-keeps, score joined source word pairs at mapped editor cuts')
     args = parser.parse_args()
+    if args.matched_joins and not args.verified_keeps:
+        parser.error('--matched-joins requires --verified-keeps')
     case = read_json(args.case_dir / 'case.json') if args.case_dir else None
     if args.evidence:
         evidence = read_json(args.evidence)
@@ -332,6 +364,14 @@ def main():
     silent = {m['id'] for m in case['media'] if m['kind'] not in ('audio', 'video') or m.get('hasAudio') is False} if case else set()
     pieces = timeline_pieces(candidate, evidence['mediaId'], silent, source_coverage_only=args.verified_keeps)
     result = verified_keeps(evidence['words'], reference, pieces) if args.verified_keeps else score(words, reference, pieces)
+    if args.matched_joins:
+        ref_pieces = reference_pieces(reference, mapped_only=True)
+        try:
+            ordered = timeline_pieces(candidate, evidence['mediaId'], silent, matched_joins=True)
+        except ValueError as exc:
+            result['spacingUnavailable'] = str(exc)
+        else:
+            result['spacing'] = join_spacing(words, ref_pieces, ordered, join_times={j['finalTime'] for j in reference['joins']})
     result.update(mediaId=evidence['mediaId'], timeline=candidate['version'],
                   referenceSha256=hashlib.sha256(args.reference.read_bytes()).hexdigest())
     print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))

@@ -4,7 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from score_audio_reference import Piece, reference_pieces, score, timeline_pieces
+from score_audio_reference import Piece, join_spacing, reference_pieces, score, timeline_pieces
 
 
 class AudioReferenceScoreTests(unittest.TestCase):
@@ -34,6 +34,40 @@ class AudioReferenceScoreTests(unittest.TestCase):
         self.assertEqual(by_source_time['removedWords']['f1'], 1)
         self.assertEqual(by_source_time['order']['invertedPairs'], 16)
         self.assertEqual(by_source_time['spacing']['sharedJoins'], 0)
+
+    def test_partial_reference_counts_only_mapped_word_removing_joins(self):
+        def span(raw, at):
+            return dict(rawStart=raw, rawEnd=raw+2, finalStart=at, finalEnd=at+2)
+        reference = dict(frameRate=30, finalDuration=7, unmappedFinal=[dict(finalStart=2, finalEnd=3)],
+                         segments=[span(0, 0), span(4, 3), span(8, 5)],
+                         joins=[dict(finalTime=5, earliestFinal=5, latestFinal=5)])
+        pieces = reference_pieces(reference, mapped_only=True)
+        joined = join_spacing(self.words, pieces, pieces, join_times={5})
+        self.assertEqual((joined['eligibleJoins'], joined['editorWordRemovingCuts'], joined['recoveredWordRemovingCuts']), (1, 1, 1))
+        self.assertEqual(joined['meanAbsErrorMs'], 0)
+        uncut = join_spacing(self.words, pieces, [Piece(0, 10, 0)], join_times={5})
+        self.assertEqual((uncut['recoveredWordRemovingCuts'], uncut['meanAbsErrorMs']), (0, None))
+        with self.assertRaisesRegex(ValueError, 'unexplained audio'):
+            reference_pieces(reference)
+
+    def test_word_join_across_quiet_fades_and_ambiguity_when_the_next_word_starts_in_the_mix(self):
+        clips = [dict(kind='media', mediaId='mic', sourceIn=0, sourceOut=2, timelineIn=0, audioFadeOut=.1),
+                 dict(kind='media', mediaId='mic', sourceIn=4, sourceOut=6, timelineIn=1.9, audioFadeIn=.1)]
+        timeline = {'tracks': [{'kind': 'audio', 'clips': clips}]}
+        candidate = timeline_pieces(timeline, 'mic', matched_joins=True)
+        reference = [Piece(0, 2, 0), Piece(4, 6, 2)]
+        quiet = join_spacing(self.words, reference, candidate)
+        self.assertEqual((quiet['recoveredWordRemovingCuts'], quiet['meanAbsErrorMs']), (1, 100))
+        self.words[4]['start'] = 4.01
+        ambiguous = join_spacing(self.words, reference, candidate)
+        self.assertEqual((ambiguous['recoveredWordRemovingCuts'], ambiguous['ambiguousCrossfadedJoins'], ambiguous['meanAbsErrorMs']), (1, 1, None))
+        clips[1]['audioFadeIn'] = 0
+        with self.assertRaisesRegex(ValueError, 'Overlapping'):
+            timeline_pieces(timeline, 'mic', matched_joins=True)
+        clips[1]['audioFadeIn'] = .1
+        timeline['tracks'].append({'kind': 'audio', 'clips': [clips.pop()]})
+        with self.assertRaisesRegex(ValueError, 'Overlapping'):
+            timeline_pieces(timeline, 'mic', matched_joins=True)
 
     def test_output_clock_and_missing_content(self):
         extra_gap = self.score([Piece(8, 12, 0), Piece(0, 4, 4.2)])
