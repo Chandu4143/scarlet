@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import type { ProjectSummary } from "@scarlet/shared";
+import { importLinkFilename, type ProjectSummary } from "@scarlet/shared";
 import type { MediaAsset } from "@scarlet/timeline";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { api, engineUnavailable, errorMessage, IS_DESKTOP } from "../../lib/client";
@@ -41,16 +41,7 @@ export type ImportSource = File | string;
 export function filename(source: ImportSource) {
   if (typeof source !== "string") return source.name;
   if (!isLink(source)) return source.split(/[\\/]/).pop() || source;
-  const last = linkFile(source);
-  if (!last) return source;
-  try { return decodeURIComponent(last); } catch { return last; }
-}
-
-/** A link's last part as its address spells it, when that reads as a file's name. */
-function linkFile(link: string) {
-  let last: string | undefined;
-  try { last = new URL(link).pathname.split("/").pop(); } catch { return undefined; }
-  return last?.includes(".") ? last : undefined;
+  return importLinkFilename(source)?.name ?? source;
 }
 
 interface ProjectImports {
@@ -183,8 +174,9 @@ export function resumeImports(projectId: string, media: readonly MediaAsset[]) {
     if (i.importId) return media.find(m => m.importId === i.importId);
     // Older queues recorded only the filename and when the file was chosen. A link that arrived before its name was
     // decoded is named as its address spells it.
-    const names = [filename(i.source), isLink(i.source) && linkFile(i.source)];
-    return media.find(m => names.includes(m.name) && (m.provenance?.createdAt ?? "") >= i.at);
+    const link = isLink(i.source) ? importLinkFilename(i.source) : undefined;
+    const name = link?.name ?? filename(i.source);
+    return media.find(m => (m.name === name || m.name === link?.encoded) && (m.provenance?.createdAt ?? "") >= i.at);
   };
   const matchFormat = waiting.some(i => i.setsFormat) ? resumeFirstClip(projectId) : undefined;
   const jobs: Promise<void>[] = [];

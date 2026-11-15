@@ -12,7 +12,7 @@ import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { humanDuration } from "../logText.js";
 import type { MediaWithStatus } from "../repo/projects.js";
-import type { Task, User } from "@scarlet/shared";
+import { decodeImportFilename, importLinkFilename, type Task, type User } from "@scarlet/shared";
 import { cancelTask, createTask, hasTranscript, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { availableTranscriptionProvider, getTranscriptionProvider, effectiveProviderName, type importTranscriptionPolicy, type TranscriptionProvider } from "../transcribe/index.js";
@@ -120,13 +120,7 @@ function safeExt(name: string): string {
 
 function filenameFromResponse(cd: string | undefined, url: string): string {
   const m = cd && (/filename\*=UTF-8''([^;]+)/i.exec(cd) ?? /filename="?([^";]+)"?/i.exec(cd));
-  let name = m?.[1];
-  if (!name) {
-    name = new URL(url).pathname.split("/").pop();
-    if (!name?.includes(".")) return "download";
-  }
-  // A plain name can hold a "%" that isn't an escape: "100% done.mp4".
-  try { return decodeURIComponent(name); } catch { return name; }
+  return m?.[1] ? decodeImportFilename(m[1]) : importLinkFilename(url)?.name ?? "download";
 }
 
 /** Hash incoming bytes as they are staged, without rereading an upload or download. */

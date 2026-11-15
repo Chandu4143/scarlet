@@ -341,11 +341,12 @@ it("carries on with a list saved before first files were marked", async () => {
 });
 
 it.each([
-  ["without the address's escapes", "Café take.mp4"],
-  ["with them, as a file that arrived before names were decoded", "Caf%C3%A9%20take.mp4"],
-])("knows a link saved before imports were marked has arrived by the name the engine gave it, %s", async (_, name) => {
+  ["Caf%C3%A9%20take.mp4", "Café take.mp4"],
+  ["Caf%C3%A9%20take.mp4", "Caf%C3%A9%20take.mp4"],
+  ["Caf%C3%A9%20take%2Emp4", "Café take.mp4"],
+])("recognises a saved link ending in %s when its file is named %s", async (segment, name) => {
   const at = "2026-11-06T20:00:00.000Z";
-  const link = "https://example.com/clips/Caf%C3%A9%20take.mp4";
+  const link = `https://example.com/clips/${segment}`;
   const { resumeImports } = await relaunch(JSON.stringify([{ projectId: "prj", source: link, at }]));
   const arrived = { ...video(name, 1920, 1080, 30), provenance: { by: "human", createdAt: at } } as MediaAsset;
   await resumeImports("prj", [arrived]);

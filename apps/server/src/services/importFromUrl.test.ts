@@ -217,6 +217,11 @@ it("names a download after the address, without its percent-escapes, when the se
   answers();
   const cafe = (await importUrl("https://media.example/clips/Caf%C3%A9%20title%20card.png?sig=abc")).body.media;
   expect(cafe).toMatchObject({ name: "Café title card.png", path: `${cafe.id}.png` });
+  answers();
+  const escapedDot = (await importUrl("https://media.example/clips/intro%2Emp4?sig=abc")).body.media;
+  expect(escapedDot).toMatchObject({ name: "intro.mp4", path: `${escapedDot.id}.mp4` });
+  answers();
+  expect((await importUrl("https://media.example/clips/intro%252Emp4")).body.media.name).toBe("download");
   // "%zz" isn't an escape, so the name stays as the address spells it.
   answers();
   expect((await importUrl("https://media.example/clips/100%25%20done%zz.png")).body.media).toMatchObject({ name: "100%25%20done%zz.png" });
