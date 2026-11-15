@@ -14,7 +14,8 @@ import { QueuedImg, useStillTurn } from "./QueuedImg";
 import { TimelineRuler } from "./TimelineRuler";
 import { Icon } from "../ui/primitives";
 import { useTimelineZoom } from "./useTimelineZoom";
-import { rangeEdges, useRangeSelect } from "./TimelineRange";
+import { FloatingScrubLoupe, type ScrubLens } from "./FloatingScrubLoupe";
+import { LOUPE_PX_PER_FRAME, rangeEdges, useRangeSelect } from "./TimelineRange";
 import { useArrival, useLaneHold, wavePhase } from "./laneLoading";
 import type { ProgressFocus } from "../player/SimpleProgress";
 import { editUnder, layoutEdits, type EditLayout, type TimelineEdit } from "./timelineEdits";
@@ -514,7 +515,14 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     return () => observer.disconnect();
   }, []);
   const track = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ id: number; start: number; span: number; lifetime: AbortController; finish?: () => void; time?: number; x: number; x0?: number; paint?: number } | null>(null);
+  const [lens, setLens] = useState<ScrubLens>();
+  const drag = useRef<{
+    id: number; start: number; span: number; lifetime: AbortController; finish?: () => void;
+    time?: number; x: number; x0: number; y0: number; paint?: number;
+    fine?: { x: number; frame: number };
+  } | null>(null);
+  const lastFrame = Math.max(0, Math.ceil(end * fps - 1e-6) - 1);
+  const firstFrame = Math.min(lastFrame, Math.max(0, Math.ceil(start * fps - 1e-6)));
   useLayoutEffect(() => () => {
     // A new working cut builds the timeline again. A drag held just then ends with the timeline it was on: the video
     // it paused carries on as it was, instead of staying paused under a pointer that no longer moves anything.
@@ -727,7 +735,14 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     gesture.paint = undefined;
     const rect = slider.current!.getBoundingClientRect();
     if (rect.width <= 0) return;
-    const time = gesture.start + gesture.span * Math.max(0, Math.min(1, (gesture.x - rect.left) / rect.width));
+    let time = gesture.start + gesture.span * Math.max(0, Math.min(1, (gesture.x - rect.left) / rect.width));
+    if (gesture.fine) {
+      const delta = Math.round((gesture.x - gesture.fine.x) / LOUPE_PX_PER_FRAME);
+      const frame = Math.max(firstFrame, Math.min(lastFrame, gesture.fine.frame + delta));
+      time = frame / fps;
+      const at = Math.max(0, Math.min(100, (time - gesture.start) / gesture.span * 100));
+      setLens(previous => previous?.frame === frame && previous.at === at ? previous : { frame, at });
+    }
     if (time === gesture.time) return;
     gesture.time = time;
     onSeek(time);
@@ -740,9 +755,10 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     seek();
     if (e.type === "pointerup" && gesture.time !== undefined) onSelectTime?.(gesture.time);
     // A click away from the marked range, not a scrub, takes it off.
-    if (e.type === "pointerup" && range && onRange && gesture.time !== undefined && Math.abs(gesture.x - (gesture.x0 ?? gesture.x)) <= 3
+    if (e.type === "pointerup" && !gesture.fine && range && onRange && gesture.time !== undefined && Math.abs(gesture.x - gesture.x0) <= 3
       && (gesture.time < range.start || gesture.time > range.end)) onRange(undefined);
     drag.current = null;
+    if (gesture.fine) setLens(undefined);
     gesture.lifetime.abort();
     gesture.finish?.();
   };
@@ -766,9 +782,9 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     <button type="button" className="timeline-fit" aria-label="Fit timeline" title="Show full timeline (0)" disabled={intendedSpan >= total} onClick={() => fitRange()}>Fit</button>
   </div>;
   return <div className="timeline-panel" onKeyDown={e => handleZoomKey(e.nativeEvent)}>
-    <div ref={track} className={marking.marking ? "timeline-track is-marking" : "timeline-track"}><ScrubPreview start={from} duration={span} pictureAspect={pictureAspect} frameAt={frameAt} hoverVideo={hoverVideo} note={markNote || editNote || gapNote}>
+    <div ref={track} className={marking.marking ? "timeline-track is-marking" : "timeline-track"}><ScrubPreview suspended={!!lens} start={from} duration={span} pictureAspect={pictureAspect} frameAt={frameAt} hoverVideo={hoverVideo} note={markNote || editNote || gapNote}>
     <div ref={slider} className="timeline-slider" role="slider" tabIndex={total ? 0 : -1} aria-disabled={!total}
-      aria-label="Position in the video" aria-valuemin={start} aria-valuemax={end} aria-valuenow={position} aria-valuetext={playbackClock(position)}
+      aria-label="Position in the video" aria-description="Drag up from the picture or waveform to scrub one frame at a time." aria-valuemin={start} aria-valuemax={end} aria-valuenow={position} aria-valuetext={playbackClock(position)}
       onPointerDown={e => {
         if (!total || e.button !== 0 || !e.isPrimary || drag.current) return;
         if (onRange) {
@@ -781,12 +797,16 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         stopZoom();
         e.currentTarget.setPointerCapture(e.pointerId);
         const lifetime = new AbortController();
-        drag.current = { id: e.pointerId, start: from, span, x: e.clientX, x0: e.clientX, lifetime, finish: onScrubStart?.(lifetime.signal) };
+        drag.current = { id: e.pointerId, start: from, span, x: e.clientX, x0: e.clientX, y0: e.clientY, lifetime, finish: onScrubStart?.(lifetime.signal) };
         seek();
       }}
       onPointerMove={e => {
         const gesture = drag.current;
         if (gesture?.id !== e.pointerId) return;
+        if (!gesture.fine && gesture.y0 - e.clientY >= 24 && gesture.time !== undefined && fps > 0 && Number.isFinite(fps)) {
+          // Enter at the last coarse position. Movement from here is relative, independent of the timeline zoom.
+          gesture.fine = { x: e.clientX, frame: Math.round(gesture.time * fps) };
+        }
         gesture.x = e.clientX;
         gesture.paint ??= requestAnimationFrame(seek);
       }}
@@ -846,9 +866,11 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       {typedTimes?.filter(time => time >= from && time <= to).map(time =>
         <span key={time} className="timeline-message-time" aria-hidden="true" data-time={time} style={{ left: `${percent(time)}%` }} />)}
       {marking.layer}
+      {lens && <FloatingScrubLoupe lens={lens} first={firstFrame} last={lastFrame} fps={fps}
+        frameAt={frameAt} sheet={sheet} pictureAspect={pictureAspect} />}
       {position >= from && position <= to && <>
-        <span aria-hidden="true" className={gliding ? "timeline-playhead-time is-gliding" : "timeline-playhead-time"}
-          style={{ left: `min(${percent(position)}%, calc(100% - var(--timeline-tools-space)))`, transform: `translateX(-${percent(position)}%)` }}>{playbackClock(position)}</span>
+        {!lens && <span aria-hidden="true" className={gliding ? "timeline-playhead-time is-gliding" : "timeline-playhead-time"}
+          style={{ left: `min(${percent(position)}%, calc(100% - var(--timeline-tools-space)))`, transform: `translateX(-${percent(position)}%)` }}>{playbackClock(position)}</span>}
         <div aria-hidden="true" className={gliding ? "timeline-playhead is-gliding" : "timeline-playhead"} style={{ left: `${percent(position)}%` }} />
       </>}
     </div>

@@ -184,7 +184,7 @@
   .watch-monitor .monitor-clock { white-space: normal; }
 }
 .scrub-preview { width: max(96px, var(--scrub-picture-width)); }
-.scrub-preview :is(video, img) { width: var(--scrub-picture-width); }
+.scrub-preview canvas { width: var(--scrub-picture-width); }
 @media (hover: hover) {
   .watch-monitor { border-color: transparent; }
   .video-frame[data-picture]::after {
@@ -315,6 +315,27 @@
   font: 11px/14px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
 /* While a range is drawn, its own times are the ones to read: the bubble under the pointer steps aside. */
 .timeline-track.is-marking .scrub-preview { display: none; }
+/* The precision scrubber floats above the filmstrip, with its timestamp on the enlarged frame. */
+.scrub-loupe {
+  --half: min(50%, calc(var(--lens-width) / 2)); position: absolute; z-index: 11; bottom: calc(100% + 7px);
+  left: clamp(var(--half), var(--lens-at), calc(100% - var(--half))); transform: translateX(-50%);
+  width: min(100%, var(--lens-width)); display: grid; justify-items: center; align-items: end;
+  pointer-events: none; filter: drop-shadow(0 4px 9px rgb(0 0 0 / 50%));
+}
+.scrub-loupe-rail, .scrub-loupe-hero { grid-area: 1 / 1; }
+.scrub-loupe-rail { position: relative; width: 100%; height: calc(var(--lens-cell) / var(--lens-aspect) + 4px);
+  margin-bottom: 8px; overflow: hidden; background: #191917; border: 2px solid #302f2b; border-radius: 8px; box-shadow: 0 0 0 1px #68655f; }
+.scrub-loupe-film { position: absolute; top: 0; bottom: 0; left: 50%; }
+@media (prefers-reduced-motion: no-preference) { .scrub-loupe-film { transition: transform 90ms ease-out; } }
+.scrub-loupe-cell { position: absolute; top: 0; bottom: 0; width: var(--lens-cell); overflow: hidden; border-right: 1px solid #242320; opacity: .8; }
+.scrub-loupe-hero { position: relative; width: min(100%, var(--lens-hero)); padding: 3px 3px 1px; border-radius: 8px; background: #e9e7df;
+  color: #20201e; box-shadow: 0 2px 7px rgb(0 0 0 / 55%); }
+.scrub-loupe-hero::after { content: ""; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: #e9e7df; border-bottom: 0; }
+.scrub-loupe-picture { position: relative; display: block; width: 100%; aspect-ratio: var(--lens-aspect); overflow: hidden; border-radius: 5px; background: #171715; }
+.scrub-loupe :is(.scrub-loupe-picture, .scrub-loupe-cell) img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; max-width: none; object-fit: fill; }
+.scrub-loupe-time { display: block; text-align: center; font: 600 11px/18px var(--font-mono); font-variant-numeric: tabular-nums; }
+
 .timeline-track.is-marking .timeline-playhead-time { visibility: hidden; }
 /* The close-up, as precise seeking: a strip of pictures, one a frame, slides under a line fixed in its middle. */
 .timeline-range-loupe { --loupe-picture: 88px; --loupe-half: calc(var(--loupe-picture) * 3.5 + 9px); position: absolute; z-index: 11; bottom: calc(100% + 8px);
