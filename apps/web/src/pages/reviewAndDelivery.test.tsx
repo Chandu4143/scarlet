@@ -1312,6 +1312,19 @@ it("does not throw when the chosen caption track is removed while Export is open
   expect(exportButton()!.disabled).toBe(false);
 });
 
+it("waits for the timeline of a new head before it exports captions", async () => {
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  expect(exportButton()!.disabled).toBe(false);
+  // An edit lands while the sheet is open: the head moves before its timeline is loaded.
+  await act(async () => useProjectStore.setState({ current: { ...data, project: { ...data.project, head: "v-next" } } }));
+  expect(exportButton()!.disabled).toBe(true);
+  await act(async () => useProjectStore.setState({ current: {
+    ...data, project: { ...data.project, head: "v-next" }, timeline: { ...data.timeline!, version: "v-next" },
+  } }));
+  expect(exportButton()!.disabled).toBe(false);
+});
+
 it("offers a caption track picker only when more than one caption track is visible", async () => {
   const extra = { id: "c2", kind: "caption" as const, name: "Titles", muted: false, hidden: false, clips: [] };
   const timeline = { ...data.timeline!, tracks: [...data.timeline!.tracks, extra] };

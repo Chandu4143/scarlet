@@ -93,7 +93,7 @@ it("shifts a range so 0 is the range start, and answers 404 when there is no cap
   expect(missed.json).toMatchObject({ error: { code: "no_captions_in_range", message: NO_CAPTIONS_IN_RANGE } });
 });
 
-it("refuses an empty caption track or a range with no cues, and 404 when every caption track is hidden", async () => {
+it("refuses an empty caption track or a range with no cues, and 404 when every caption track is hidden or a hidden one is asked for", async () => {
   await addCaptions([{ op: "addTrack", track: { id: "cap", kind: "caption", name: "Captions" } }]);
   const empty = await api("GET", `/projects/${project.id}/versions/head/export.srt`);
   expect(empty.status).toBe(400);
@@ -115,4 +115,9 @@ it("refuses an empty caption track or a range with no cues, and 404 when every c
   const refused = await api("GET", `/projects/${hidden.id}/versions/head/export.srt`);
   expect(refused.status).toBe(404);
   expect(refused.json).toMatchObject({ error: { code: "no_caption_track" } });
+  for (const format of ["srt", "vtt"]) {
+    const byId = await api("GET", `/projects/${hidden.id}/versions/head/export.${format}?trackId=cap`);
+    expect(byId.status).toBe(404);
+    expect(byId.json).toMatchObject({ error: { code: "track_hidden" } });
+  }
 });

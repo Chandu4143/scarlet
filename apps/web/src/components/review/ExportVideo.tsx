@@ -74,6 +74,9 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   const custom = format === "mp4" && (!!range || !!targetHeight || quality !== "delivery");
   const level = QUALITY[quality];
   const sampleOnly = IS_MOCK && custom;
+  // The track picker reads the loaded timeline, and the export asks for the project's head. Until the two are the
+  // same version, a track picked here may not be in the version that would be saved.
+  const timelineBehind = captions && current.timeline?.version !== project.head;
   const noCaptionTrack = captions && captionTrackChoices.length === 0;
   // The picker can still hold a trackId after that track is gone; the effect below
   // clears it, but this render must not throw track_not_found first.
@@ -92,7 +95,7 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
       losses: handoffLosses(project, current.timeline),
     };
   }, [project, current.timeline]);
-  const invalid = !hasCut || !duration || invalidRange || sampleOnly || noCaptionTrack || noCaptionsInRange;
+  const invalid = !hasCut || !duration || invalidRange || sampleOnly || timelineBehind || noCaptionTrack || noCaptionsInRange;
   const size = targetHeight ? `${Math.round(width * targetHeight / height / 2) * 2} × ${targetHeight}` : "Project size";
   const submit = () => {
     if (busy || invalid) return;

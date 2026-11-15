@@ -64,6 +64,12 @@ describe("caption sidecars", () => {
     expect(timelineToVtt(tl)).not.toContain("A < B");
   });
 
+  it("drops whitespace-only lines inside a cue, so the cue after them is still read", () => {
+    const tl = cut([line("first", 0, 1, "First\n   \nLast"), line("tab", 1, 2, "\t\nSecond\n \t ")]);
+    expect(timelineToSrt(tl)).toBe("1\n00:00:00,000 --> 00:00:01,000\nFirst\nLast\n\n2\n00:00:01,000 --> 00:00:02,000\nSecond\n");
+    expect(timelineToVtt(tl)).toBe("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nFirst\nLast\n\n00:00:01.000 --> 00:00:02.000\nSecond\n");
+  });
+
   it("sorts cues by start, leaves overlapping lines as they are, and skips hidden tracks, disabled clips and empty text", () => {
     const tl = emptyTimeline("project");
     tl.tracks.push({
@@ -97,7 +103,9 @@ describe("caption sidecars", () => {
       "Overlap",
       "",
     ].join("\n"));
-    expect(timelineToSrt(tl, { trackId: "hidden" })).toBe("1\n00:00:00,000 --> 00:00:01,000\nHidden\n");
+    // A hidden track stays out even when it is asked for by id.
+    expect(() => timelineToSrt(tl, { trackId: "hidden" })).toThrow(CaptionExportError);
+    expect(() => timelineToVtt(tl, { trackId: "hidden" })).toThrow("That caption track is hidden. Show it, then export again.");
   });
 
   it("keeps only cues that overlap a range, shifts them so 0 is the range start, and clips a cue that begins before it", () => {

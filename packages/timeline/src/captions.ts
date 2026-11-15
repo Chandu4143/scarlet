@@ -17,6 +17,7 @@ export interface CaptionExportOptions {
 export type CaptionExportErrorCode =
   | "no_caption_track"
   | "track_not_found"
+  | "track_hidden"
   | "not_caption_track"
   | "no_captions_in_range"
   | "bad_range";
@@ -41,6 +42,7 @@ export const NO_CAPTION_TRACK = "There’s no caption track to export. Ask Scarl
 export const NO_CAPTIONS_IN_RANGE = "There are no captions in this range.";
 const TRACK_NOT_FOUND = "That caption track isn’t in this version.";
 const NOT_CAPTION_TRACK = "That track isn’t captions.";
+const TRACK_HIDDEN = "That caption track is hidden. Show it, then export again.";
 const BAD_RANGE_START = "Range start must be at least 0.";
 
 function captionExportTrack(timeline: Timeline, trackId?: string): Track {
@@ -48,6 +50,7 @@ function captionExportTrack(timeline: Timeline, trackId?: string): Track {
     const track = timeline.tracks.find(t => t.id === trackId);
     if (!track) throw new CaptionExportError(TRACK_NOT_FOUND, "track_not_found");
     if (track.kind !== "caption") throw new CaptionExportError(NOT_CAPTION_TRACK, "not_caption_track");
+    if (track.hidden) throw new CaptionExportError(TRACK_HIDDEN, "track_hidden");
     return track;
   }
   const track = timeline.tracks.find(t => t.kind === "caption" && !t.hidden);
@@ -63,7 +66,7 @@ export function captionExportRange(start?: number, end?: number): { start: numbe
 }
 
 export function captionExportHttpStatus(code: CaptionExportErrorCode): 400 | 404 {
-  return code === "no_caption_track" || code === "track_not_found" ? 404 : 400;
+  return code === "no_caption_track" || code === "track_not_found" || code === "track_hidden" ? 404 : 400;
 }
 
 function pad(value: number, width: number): string {
@@ -83,9 +86,9 @@ export function formatCaptionTime(seconds: number, decimal: "," | "."): string {
   return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secs, 2)}${decimal}${pad(millis, 3)}`;
 }
 
-/** Keep multi-line cues, but drop blank lines so a WebVTT cue is not cut short. */
+/** Keep multi-line cues, but drop blank or whitespace-only lines: either one ends a SubRip or WebVTT cue early. */
 function cueText(text: string): string {
-  return text.replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "").replace(/\n{2,}/g, "\n");
+  return text.replace(/\r\n?/g, "\n").split("\n").filter(line => line.trim()).join("\n");
 }
 
 function escapeVtt(text: string): string {
