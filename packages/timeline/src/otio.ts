@@ -118,29 +118,39 @@ export function toOtio(project: Project, timeline: Timeline, opts: OtioExportOpt
   };
 }
 
-/** A track's clips can overlap, where one track of another app can't. Give overlapping clips parallel
- * layers, with each new clip above every earlier clip it overlaps. */
-export function trackLayers(clips: Clip[], includeDisabled = false): Clip[][] {
+/**
+ * A track's clips can overlap, where one track of another app can't. Give overlapping clips parallel layers.
+ * A picture is drawn over the clips stored before it, so on a picture track each clip goes above every earlier clip it
+ * overlaps. Sound has no order, so on a sound track each clip takes the lowest layer free for its whole length: a
+ * run of crossfades alternates between two layers instead of climbing one a join.
+ */
+export function trackLayers(clips: Clip[], includeDisabled = false, sound = false): Clip[][] {
   const lanes: Array<{ clips: Clip[]; end: number }> = [{ clips: [], end: 0 }];
-  for (const clip of clips) {
-    if (clip.enabled === false && !includeDisabled) continue;
+  // After ripples, neighbours can overlap in the thirteenth decimal. That is a join, not a second layer.
+  const overlaps = (lane: { clips: Clip[]; end: number }, clip: Clip, end: number) =>
+    lane.end > clip.timelineIn + 1e-6 && lane.clips.some((c) => c.timelineIn < end - 1e-6 && clip.timelineIn < clipEnd(c) - 1e-6);
+  const order = clips.filter((c) => c.enabled !== false || includeDisabled);
+  if (sound) order.sort((a, b) => a.timelineIn - b.timelineIn);
+  for (const clip of order) {
     const end = clipEnd(clip);
-    let lane = lanes.length - 1;
-    while (lane >= 0) {
-      const prior = lanes[lane]!;
-      // After ripples, neighbours can overlap in the thirteenth decimal. That is a join, not a second layer.
-      if (prior.end > clip.timelineIn + 1e-6 && prior.clips.some((c) => c.timelineIn < end - 1e-6 && clip.timelineIn < clipEnd(c) - 1e-6)) break;
-      lane--;
+    let target: number;
+    if (sound) {
+      target = lanes.findIndex((lane) => !overlaps(lane, clip, end));
+      if (target < 0) target = lanes.length;
+    } else {
+      let lane = lanes.length - 1;
+      while (lane >= 0 && !overlaps(lanes[lane]!, clip, end)) lane--;
+      target = lane + 1;
     }
-    const target = lanes[lane + 1] ?? (lanes[lane + 1] = { clips: [], end: 0 });
-    target.clips.push(clip);
-    target.end = Math.max(target.end, end);
+    const into = lanes[target] ?? (lanes[target] = { clips: [], end: 0 });
+    into.clips.push(clip);
+    into.end = Math.max(into.end, end);
   }
   return lanes.map(lane => lane.clips);
 }
 
 function otioTracks(track: Track, kind: "Video" | "Audio", rate: number, media: Map<string, MediaAsset>, opts: OtioExportOptions): unknown[] {
-  return trackLayers(track.clips).map((clips, layer) => otioTrack(track, clips, layer, kind, rate, media, opts));
+  return trackLayers(track.clips, false, kind === "Audio").map((clips, layer) => otioTrack(track, clips, layer, kind, rate, media, opts));
 }
 
 function otioTrack(

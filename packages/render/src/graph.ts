@@ -622,10 +622,14 @@ async function writeFilterGraph(
       ...transformChain(tf, W, H),
     ];
     if (p.pos > 0) chain.push(`setpts=PTS+round(${fnum(p.pos)}/TB)`);
+    // A colour can be the picture a transition leaves: it fades, dips or moves on the output clock as footage does.
+    const moves = motionsOf(clip.id);
+    chain.push(...motionFilters(moves, W, c => ffColor(c)));
     const lbl = label("c");
     lines.push(`${chain.join(",")}${lbl}`);
     const pos = overlayPosition(tf, "t");
-    overlay(lbl, pos.x, pos.y, p);
+    const moved = motionOffsets(moves, W, H);
+    overlay(lbl, moved.x ? `${pos.x}+${moved.x}` : pos.x, moved.y ? `${pos.y}+${moved.y}` : pos.y, p);
   };
 
   const audioForMedia = (clip: MediaClip, idx: number, p: Placement, skip: number) => {
