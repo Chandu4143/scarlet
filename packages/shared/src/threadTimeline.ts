@@ -72,6 +72,8 @@ interface SavedEdit extends ThreadEdit {
   resaved?: boolean;
   /** The footage this edit's save put back where the edit was named, in the clock of the version it saved. */
   putBack?: TimeRange;
+  /** What a moved marker still says, when its `todo` comes from that and not from words this change wrote. */
+  markerSays?: string;
 }
 
 /** A cut Scarlet named no edit for, in a video it built from the pieces to keep. */
@@ -286,7 +288,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       edit.previous = [...replaced.previous, { changeId: replaced.changeId, spot: replaced.spot }];
       // As with a revision made here: the editor was asked to check the edit, so its new version is theirs to check.
       if (replaced.check && !edit.check) edit.check = REVISED_CHECK;
-      if (edit.marker && !edit.todo && replaced.todo) edit.todo = replaced.todo;
+      if (edit.marker && replaced.todo && (!edit.todo || edit.todo === edit.markerSays)) edit.todo = replaced.todo;
       edits[prior] = edit;
     }
   }
@@ -379,6 +381,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
         edit.marker = true;
         const todo = edit.check ?? classified.asks[spot];
         if (todo) edit.todo = todo;
+        if (!edit.check && todo && !classified.restated[spot]) edit.markerSays = todo;
       }
       if (found && edit.named && kind === "other" && range.start === range.end) edit.still = true;
       // Only a save that took footage out at the point can have moved a cut's join there. A punch-in or a title named on a
@@ -394,7 +397,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
         // or not Scarlet flagged it again. The old reason was about the old version.
         if (replaced.check && !edit.check) edit.check = REVISED_CHECK;
         // A revised marker that doesn't say again what to do still asks what it asked.
-        if (edit.marker && !edit.todo && replaced.todo) edit.todo = replaced.todo;
+        if (edit.marker && replaced.todo && (!edit.todo || edit.todo === edit.markerSays)) edit.todo = replaced.todo;
         edits[prior] = edit;
       } else edits.push(edit);
       // A marker left for the editor asks them to do something, so it waits on them until they say it's done.
@@ -416,7 +419,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
 }
 
 /** A saved edit as it is listed, without what only placing it on the working cut needs. */
-const listed = ({ version: _version, named: _named, still: _still, resaved: _resaved, putBack: _putBack, ...edit }: SavedEdit): Omit<ThreadEdit, "at"> => edit;
+const listed = ({ version: _version, named: _named, still: _still, resaved: _resaved, putBack: _putBack, markerSays: _markerSays, ...edit }: SavedEdit): Omit<ThreadEdit, "at"> => edit;
 
 /** The edits one applied change made, in its own clock, as History lists them under its version. */
 export function changeEdits(change: Change): Omit<ThreadEdit, "at">[] {
@@ -540,7 +543,7 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
     const start = back?.(span.start, "right"), end = back?.(span.end, "left");
     return typeof start === "number" && typeof end === "number" && start <= removed.start + 0.5 / fps && end >= removed.end - 0.5 / fps;
   });
-  for (const { version, named, still, resaved, putBack, ...edit } of edits) {
+  for (const { version, named, still, resaved, putBack, markerSays: _markerSays, ...edit } of edits) {
     if (!maps.has(version)) {
       const source = read(version);
       maps.set(version, source ? makeTimeMap(source, head, fps) : null);

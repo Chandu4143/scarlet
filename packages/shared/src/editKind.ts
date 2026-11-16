@@ -19,8 +19,11 @@ type Op = Record<string, unknown>;
  * `marker`: a marker left on the timeline, which changes nothing the editor sees or hears.
  */
 type Facet = EditKind | "framing" | "picture" | "marker" | "neutral";
-/** `ask`: what a to-do marker asks of the editor, in its own words. */
-type Placed = { facet: Facet; range?: TimeRange; ask?: string };
+/**
+ * `ask`: what a to-do marker asks of the editor, in its own words. `restated`: this step wrote those words, as against
+ * a move of a marker that only still says them.
+ */
+type Placed = { facet: Facet; range?: TimeRange; ask?: string; restated?: boolean };
 type MarkerFields = { time?: unknown; text?: unknown; kind?: unknown; resolved?: unknown };
 
 const AUDIO_KEYS = new Set(["volume", "audioFadeIn", "audioFadeOut"]);
@@ -166,7 +169,7 @@ function opFacets(change: Change, { before, after, media }: Clocks): Placed[] {
         const kind = patch?.kind ?? saved?.kind;
         const at = time !== undefined ? now(time) : undefined;
         return [{ facet: "marker", range: at !== undefined ? { start: at, end: at } : undefined,
-          ...(kind === "todo" && text?.trim() && { ask: text.trim() }) }];
+          ...(kind === "todo" && text?.trim() && { ask: text.trim(), restated: typeof patch?.text === "string" }) }];
       }
       case "removeMarker":
         return [{ facet: "neutral" }];
@@ -235,10 +238,13 @@ export function editKinds(change: Change, ranges: TimeRange[], clocks: Clocks = 
 /**
  * `editKinds`, and for each edit whether all it did was leave markers for the editor, such as a spot for footage the
  * project doesn't have. Nothing the editor sees or hears changed there: such an edit's kind is `other`, and `asks`
- * holds what its to-do markers ask of the editor, in their own words, when they say.
+ * holds what its to-do markers ask of the editor, in their own words, when they say. `restated` says whether this change
+ * wrote those words, rather than only moving a marker that already said them.
  */
 export function classifyEdits(change: Change, ranges: TimeRange[], clocks: Clocks = {},
-  rippleJoins?: readonly { range: TimeRange; facet?: "restore" }[]): { kinds: EditKind[]; markers: boolean[]; asks: (string | undefined)[] } {
+  rippleJoins?: readonly { range: TimeRange; facet?: "restore" }[]): {
+  kinds: EditKind[]; markers: boolean[]; asks: (string | undefined)[]; restated: boolean[];
+} {
   // Known joins stand for the steps, so only the markers are read from them, and only when there are any.
   const marks = rippleJoins && ((change.ops ?? []) as Op[]).some(op => op.op === "addMarker" || op.op === "updateMarker");
   const steps = !rippleJoins || marks ? opFacets(change, clocks).filter(f => f.facet !== "neutral") : [];
@@ -268,5 +274,6 @@ export function classifyEdits(change: Change, ranges: TimeRange[], clocks: Clock
       const asked = [...new Set(here.flatMap(f => f.ask ? [f.ask] : []))];
       return asked.length ? asked.join(" ") : undefined;
     }),
+    restated: found.map(({ verdict, here }) => verdict === "marker" && here.some(f => f.ask && f.restated)),
   };
 }

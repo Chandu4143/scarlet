@@ -426,6 +426,26 @@ describe("a doubt a later request raises about an edit already in the video", ()
     expect(threadEditList(thread([marks, replaced]))).toMatchObject([{ marker: true, todo: "Add the Sol boat render", check: REVISED_CHECK }]);
   });
 
+  it("keeps Scarlet's to-do through a move when the saved timeline only says what the marker still says", () => {
+    const boat = { id: "boat", time: 144.21, kind: "todo" as const, text: "Comparison footage needed", resolved: false };
+    const v2 = { ...head, version: "v2", markers: [boat] }, v3 = { ...head, version: "v3", markers: [{ ...boat, time: 146 }] };
+    const versions: Record<string, typeof head> = { v1: earlier, v2, v3 };
+    const read = (version: string) => versions[version];
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2", ops: [{ op: "addMarker", marker: boat }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 144.21, end: 144.21 }, check: "Add the other boat renders" }] };
+    const moved = { ...change, id: "moved", fromVersion: "v2", toVersion: "v3", createdAt: "2026-01-02T00:00:00Z",
+      ops: [{ op: "updateMarker", markerId: "boat", patch: { time: 146 } }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 146, end: 146 }, replaces: { changeId: "marks", spot: 0 } }] };
+    const tree = [...links, { version: "v3", parent: "v2" }];
+    expect(threadTimeline(thread([marks, moved]), v3, tree, read, 30)).toMatchObject([{ changeId: "moved", marker: true,
+      todo: "Add the other boat renders", check: REVISED_CHECK }]);
+    // Rewritten by the revision, it asks what the marker now says.
+    const reworded = { ...moved, ops: [{ op: "updateMarker", markerId: "boat", patch: { time: 146, text: "Add the Sol boat render" } }] };
+    const v3b = { ...v3, markers: [{ ...boat, time: 146, text: "Add the Sol boat render" }] };
+    expect(threadTimeline(thread([marks, reworded]), v3b, tree, (v: string) => v === "v3" ? v3b : read(v), 30))
+      .toMatchObject([{ marker: true, todo: "Add the Sol boat render" }]);
+  });
+
   it("holds a to-do marker Scarlet gave no reason to look among what needs the editor, asking what the marker says", () => {
     const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2",
       ops: [{ op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Add the other boat renders", resolved: false } }],
