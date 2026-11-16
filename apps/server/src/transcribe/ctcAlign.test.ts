@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ffmpeg from "../render/ffmpeg.js";
 import { AudioLane } from "../services/audioWork.js";
 import {
-  alignGroup, alignmentGroups, applyTimings, CLASSES, ctcAlign, FRAME_SAMPLES, framesFor, planChunks, SAMPLE_RATE, SPANISH_CTC_LETTERS,
+  alignerHeard, alignGroup, alignmentGroups, applyTimings, CLASSES, ctcAlign, FRAME_SAMPLES, framesFor, planChunks, SAMPLE_RATE, SPANISH_CTC_LETTERS,
   SEPARATOR, stitchChunks, unplacedGaps, WILDCARD, wordLabels,
 } from "./ctcAlign.js";
 import { LocalWhisperModel } from "./localModel.js";
@@ -207,6 +207,8 @@ describe("grouping and fallback", () => {
     expect(out[0]).toMatchObject({ start: 0.1, end: 3, text: "a b c" });
     expect(out[1]).toMatchObject({ start: 3, end: 6 });
     expect(out[1]!.words[1]).toEqual(expect.objectContaining({ text: "e" }));
+    // What the aligner heard goes with each word it tried: b scored too low, and e was never tried.
+    expect(out.flatMap(s => s.words).map(w => alignerHeard.get(w))).toEqual([true, false, true, true, undefined, true]);
   });
 
   describe("on the sound between placed words", () => {

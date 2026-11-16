@@ -431,8 +431,10 @@ export function applyTimings(segments: readonly TranscriptSegment[], timings: Re
   let at = 0;
   return segments.map(seg => {
     const next = seg.words.map(w => {
-      const t = times[at++]!;
-      return t.start === w.start && t.end === w.end ? w : { ...w, start: round(t.start), end: round(t.end) };
+      const timing = timings[at], t = times[at++]!;
+      const out = t.start === w.start && t.end === w.end ? w : { ...w, start: round(t.start), end: round(t.end) };
+      if (timing) alignerHeard.set(out, timing.score >= minScore && timing.end >= timing.start);
+      return out;
     });
     if (!next.length) return seg;
     return { ...seg, start: Math.min(seg.start, next[0]!.start), end: next.reduce((end, w) => Math.max(end, w.end), seg.end), words: next };
@@ -440,3 +442,10 @@ export function applyTimings(segments: readonly TranscriptSegment[], timings: Re
 }
 
 export const round = (seconds: number) => Math.round(seconds * 1000) / 1000;
+
+/**
+ * Whether the aligner heard each word it placed or tried, for what runs next in the same process. A word Whisper
+ * invented over a silence scores near 0 (at most 0.17 on one recording), and one muttered 25 dB under the speech
+ * still scores near 1: its letters are in the sound. Nothing is kept for a word aligned in an earlier run.
+ */
+export const alignerHeard = new WeakMap<TranscriptWord, boolean>();

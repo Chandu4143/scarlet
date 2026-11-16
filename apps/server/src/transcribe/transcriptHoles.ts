@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { gapSound, speakingLevel, type GapLevels } from "@scarlet/mcp/gap-sound";
 import { normalizeTranscriptToken } from "@scarlet/shared";
 import { newId, type TimeRange, type TranscriptSegment, type TranscriptWord } from "@scarlet/timeline";
-import { SAMPLE_RATE } from "./ctcAlign.js";
+import { alignerHeard, SAMPLE_RATE } from "./ctcAlign.js";
 import { openWav, pcmWavHeader } from "./wordAlign.js";
 
 /** A stretch without words is read again from this length. Shorter ones are the pauses inside a sentence. */
@@ -153,9 +153,13 @@ const LINE_PAD = 0.05;
  * often: on one recording fourteen of them stood over waits of up to 40 s, a pass read each as a line and kept the
  * wait around it, and the editor's cut had none of them. A spoken line's loudest moment reaches near the level the
  * recording's other lines reach, so a segment quiet throughout is taken out whole; a segment with one loud word keeps
- * all its words.
+ * all its words. A quiet line is also a muttered aside, though: "You can get a screenshot of that." sat 25 dB under
+ * the speech on the same recording. The aligner tells them apart (`heard`): it finds the letters of an aside in the
+ * sound and none of an invented line's, so a quiet segment whose words it placed stays. Without the aligner's word,
+ * only a segment under UNHEARD_DBFS goes.
  */
-export function withoutUnheardSegments(segments: TranscriptSegment[], levels: GapLevels): { segments: TranscriptSegment[]; dropped: TranscriptSegment[] } {
+export function withoutUnheardSegments(segments: TranscriptSegment[], levels: GapLevels,
+  heard: (word: TranscriptWord) => boolean | undefined = () => undefined): { segments: TranscriptSegment[]; dropped: TranscriptSegment[] } {
   const step = levels.rms.length ? (levels.to - levels.from) / levels.rms.length : 0;
   if (!step) return { segments, dropped: [] };
   const peakOf = (seg: TranscriptSegment) => {
@@ -171,10 +175,14 @@ export function withoutUnheardSegments(segments: TranscriptSegment[], levels: Ga
   const peaks = segments.map(peakOf);
   const measured = peaks.filter((p): p is number => p !== undefined).sort((a, b) => a - b);
   const typical = measured.length >= LINES_FOR_LEVEL ? measured[Math.floor(measured.length / 2)]! : undefined;
-  const unheard = (peak: number | undefined) => peak !== undefined &&
-    (peak < UNHEARD_DBFS || (typical !== undefined && peak <= typical - UNHEARD_BELOW_LINES_DB));
-  const dropped = segments.filter((_, i) => unheard(peaks[i]));
-  return dropped.length ? { segments: segments.filter((_, i) => !unheard(peaks[i])), dropped } : { segments, dropped };
+  const notHeard = (seg: TranscriptSegment) => {
+    const verdicts = seg.words.map(heard).filter((v): v is boolean => v !== undefined);
+    return verdicts.length > 0 && verdicts.filter(Boolean).length * 2 < verdicts.length;
+  };
+  const unheard = segments.map((seg, i) => peaks[i] !== undefined &&
+    (peaks[i]! < UNHEARD_DBFS || (typical !== undefined && peaks[i]! <= typical - UNHEARD_BELOW_LINES_DB && notHeard(seg))));
+  const dropped = segments.filter((_, i) => unheard[i]);
+  return dropped.length ? { segments: segments.filter((_, i) => !unheard[i]), dropped } : { segments, dropped };
 }
 
 /** Where a stretch of the recording sits in the audio laid end to end. */
@@ -264,7 +272,7 @@ export async function fillTranscriptHoles(input: { wav: string; segments: Transc
   read?(wav: string): Promise<TranscriptSegment[]>; align(found: TranscriptSegment[]): Promise<TranscriptSegment[]>; log(message: string): void }) {
   const { wav, signal } = input;
   const levels = await wavLevels(wav, signal);
-  const heardOnly = withoutUnheardSegments(input.segments, levels);
+  const heardOnly = withoutUnheardSegments(input.segments, levels, word => alignerHeard.get(word));
   if (heardOnly.dropped.length) {
     const lines = heardOnly.dropped.map(s => `“${s.text.trim()}” at ${s.words[0]!.start.toFixed(1)} s`);
     input.log(`[transcribe] took out ${lines.length} ${lines.length === 1 ? "line" : "lines"} Whisper wrote over quiet: ${lines.slice(0, 6).join(", ")}${lines.length > 6 ? ", …" : ""}`);

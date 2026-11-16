@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import type { TranscriptSegment } from "@scarlet/timeline";
+import type { TranscriptSegment, TranscriptWord } from "@scarlet/timeline";
 import { fillTranscriptHoles, heardInHoles, transcriptHoles, wavLevels, withHoleWords, withoutUnheardSegments, wordsOnSound, writeHoleAudio } from "./transcriptHoles.js";
 
 const RATE = 16000;
@@ -128,20 +128,26 @@ function levelsOf(seconds: number, at: Array<[number, number, number]>, floorDb 
 }
 
 it("takes out a line Whisper wrote over a wait, and keeps a quiet line that was said", () => {
-  // Five lines at speaking level, one said softly (8 dB under), and "Thank you." over a wait that only reaches -45 dB.
+  // Five lines at speaking level, one said softly (8 dB under), a muttered aside 20 dB under that the aligner placed,
+  // and "Thank you." over a wait that only reaches -45 dB, which it didn't.
+  const aside = seg(["get", 14, 14.3], ["that", 14.4, 15]);
+  const invented = seg(["Thank", 20, 20.4], ["you.", 30, 30.5]);
   const lines = [seg(["one", 1, 2]), seg(["two", 3, 4]), seg(["three", 5, 6]), seg(["four", 7, 8]), seg(["five", 9, 10]),
-    seg(["softly", 11, 12]), seg(["Thank", 20, 20.4], ["you.", 30, 30.5])];
-  const levels = levelsOf(40, [[1, 2, -26], [3, 4, -25], [5, 6, -27], [7, 8, -26], [9, 10, -24], [11, 12, -34], [20, 20.4, -45], [30, 30.5, -47]]);
-  const { segments, dropped } = withoutUnheardSegments(lines, levels);
+    seg(["softly", 11, 12]), aside, invented];
+  const levels = levelsOf(40, [[1, 2, -26], [3, 4, -25], [5, 6, -27], [7, 8, -26], [9, 10, -24], [11, 12, -34], [14, 15, -46], [20, 20.4, -45], [30, 30.5, -47]]);
+  const heard = (w: TranscriptWord) => invented.words.includes(w) ? false : true;
+  const { segments, dropped } = withoutUnheardSegments(lines, levels, heard);
   expect(dropped.map(s => s.text)).toEqual(["Thank you."]);
-  expect(segments.map(s => s.text)).toEqual(["one", "two", "three", "four", "five", "softly"]);
+  expect(segments.map(s => s.text)).toEqual(["one", "two", "three", "four", "five", "softly", "get that"]);
+  // Without the aligner's word, a quiet line can't be told from an aside, and stays.
+  expect(withoutUnheardSegments(lines, levels).dropped).toEqual([]);
 });
 
 it("keeps a segment whole when one of its words reaches speaking level", () => {
   const lines = [seg(["one", 1, 2]), seg(["two", 3, 4]), seg(["three", 5, 6]), seg(["four", 7, 8]),
     seg(["and", 9, 9.2], ["then", 9.3, 10])];
   const levels = levelsOf(12, [[1, 2, -26], [3, 4, -26], [5, 6, -26], [7, 8, -26], [9, 9.2, -50], [9.3, 10, -27]]);
-  expect(withoutUnheardSegments(lines, levels).dropped).toEqual([]);
+  expect(withoutUnheardSegments(lines, levels, () => false).dropped).toEqual([]);
 });
 
 it("takes out every line of a silent track, which has no level of its own to compare with", () => {
