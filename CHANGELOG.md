@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- A spot Scarlet marked for footage it doesn't have now says on its card what to add there, and no longer shows on the timeline as a cut.
 - When you click the message box for an open edit, the cut icon shimmers in place of the popup.
 - Numbered markers appear on the timeline as Scarlet applies edits during a dialogue pass.
 - The token count in an edit’s heading updates as Codex works.

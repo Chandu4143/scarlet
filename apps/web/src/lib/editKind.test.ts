@@ -50,6 +50,21 @@ describe("the note on an applied edit's card", () => {
       recheck: "2026-11-14T17:52:00.000Z" })).toBe("Kept the quotation into the reaction. Black gap and overlapping lines.");
   });
 
+  it("says what a marker asks of the editor when Scarlet's sentence leaves it out", () => {
+    const marked = "Marked “throw it on the screen now” where the boat comparison belongs.";
+    expect(editNote(edit({ label: "Boat comparison footage", check: "Add the other boat renders", summary: marked, marker: true })))
+      .toBe("Marked “throw it on the screen now” where the boat comparison belongs. Add the other boat renders.");
+    // Said already, it isn't said twice.
+    const asked = "Marked where the boat comparison belongs: add the other boat renders.";
+    expect(editNote(edit({ label: "Boat comparison footage", check: "Add the other boat renders", summary: asked, marker: true }))).toBe(asked);
+  });
+
+  it("draws a marker at a point as a plain line, not a red cut", () => {
+    const focus = editFocus(edit({ kind: "other", marker: true, at: 144, range: { start: 142.5, end: 145.5 } }), 3000);
+    expect(focus).toMatchObject({ band: { start: 144, end: 144 }, tone: "kept" });
+    expect(focus?.bandLabel).toBeUndefined();
+  });
+
   it("reads an edit saved without a summary as its title, then its reason to look", () => {
     expect(editNote(edit({ label: "Trim the false start" }))).toBe("Trim the false start");
     expect(editNote(edit({ label: "Raise narration volume.", check: "Room tone comes up with it" }))).toBe("Raise narration volume. Room tone comes up with it");

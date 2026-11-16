@@ -391,4 +391,21 @@ describe("a doubt a later request raises about an edit already in the video", ()
     const undone = threadTimeline(framing, { ...head, version: "undo" }, [...links, { version: "undo", parent: "v2", revertsVersion: "v2" }], () => earlier, 30);
     expect(undone.filter(e => e.elsewhere).map(e => [e.changeId, e.check])).toEqual([["pass", flags[0]!.check]]);
   });
+
+  it("tells an edit that only left a marker for the editor from one that changed the video", () => {
+    // Asked on camera to put comparison footage on screen, Scarlet had none and marked the spots instead (Nov 16 2026).
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2", ops: [
+      { op: "addMarker", marker: { id: "fall", time: 118.28, kind: "todo", text: "Comparison footage needed", resolved: false } },
+      { op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Comparison footage needed", resolved: false } }],
+      timelineEdits: [
+        { label: "Fall Guys comparison footage", range: { start: 118.28, end: 120.07 }, check: "Add the Opus and Sol gameplay captures" },
+        { label: "Boat comparison footage", range: { start: 144.21, end: 144.21 }, check: "Add the other boat renders" }] };
+    const edits = threadTimeline(thread([marks]), head, links, () => earlier, 30);
+    expect(edits.map(e => [e.label, e.marker])).toEqual([["Fall Guys comparison footage", true], ["Boat comparison footage", true]]);
+
+    // A zoom named where a marker also sits changed the picture there: it is a zoom, not a marker.
+    const zoomed = { ...marks, id: "zoomed", ops: [marks.ops[0]!, { op: "updateClip", clipId: "missing", patch: { transform: { scale: 1.2 } } }],
+      timelineEdits: [marks.timelineEdits[0]!] };
+    expect(threadTimeline(thread([zoomed]), head, links, () => earlier, 30)[0]?.marker).toBeUndefined();
+  });
 });
