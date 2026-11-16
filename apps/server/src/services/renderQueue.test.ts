@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi, onTestFinished } from "vitest";
@@ -161,7 +161,7 @@ it("renders a dissolve in a playback window whose outgoing clip has already ende
   expect([stdout[0], stdout[2]]).toEqual([expect.closeTo(125, -1), expect.closeTo(125, -1)]);
 });
 
-it.each(["queued", "done", "done with changed sources"] as const)("recovers the old transition fingerprint for a %s export", async state => {
+it.each(["queued", "done", "done with changed sources"] as const)("keeps the saved destination for a %s export with an older transition fingerprint", async state => {
   const { ctx } = workspace;
   ctx.repos.settings.update({ render: { hwaccel: "none" } });
   const timeline = timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 30 }]);
@@ -192,12 +192,22 @@ it.each(["queued", "done", "done with changed sources"] as const)("recovers the 
   if (state === "done with changed sources") {
     ctx.paths.ensureProject(project.id);
     writeFileSync(join(ctx.paths.media(project.id), "camera.mp4"), "new footage");
-    expect(ctx.renders.exports()).toMatchObject([{ id: render.id, state: "done", previewContentKey: oldFingerprint }]);
+  }
+  if (state !== "queued") {
+    const file = join(ctx.paths.renders(project.id), done.path!);
+    writeFileSync(file, "previous render");
+    expect(ctx.renders.exports()).toMatchObject([{ ...done, previewContentKey: oldFingerprint }]);
+    expect(readFileSync(file, "utf8")).toBe("previous render");
     expect(encode).toHaveBeenCalledTimes(1);
+    const requested = ctx.renders.request(input);
+    expect(requested.id).not.toBe(done.id);
+    await settle();
+    expect(ctx.repos.renders.get(requested.id)).toMatchObject({ state: "done" });
+    expect(readFileSync(file, "utf8")).toBe("previous render");
+    expect(encode).toHaveBeenCalledTimes(2);
     return;
   }
-  if (state === "queued") ctx.renders.recover();
-  else expect(ctx.renders.exports()).toMatchObject([{ id: render.id, path: null, export: { owner, ...save } }]);
+  ctx.renders.recover();
   await settle();
   expect(ctx.repos.renders.get(render.id)).toMatchObject({ state: "done", previewContentKey: render.previewContentKey, export: { owner, ...save } });
   expect(encode).toHaveBeenCalledTimes(2);

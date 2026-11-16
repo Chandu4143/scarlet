@@ -192,7 +192,7 @@ it.each(["unchanged", "revoked", "legacy"])("recovers a paused import with %s tr
   } finally { cloud.mockRestore(); }
 });
 
-it.each(["revoked", "paused"] as const)("recovers a ready import after restart with %s transcription", async condition => {
+it.each(["revoked", "paused", "archived"] as const)("recovers a ready import after restart with %s transcription", async condition => {
   const { ctx } = workspace;
   ctx.repos.settings.update({ transcription: { provider: "openai" } });
   const { revision } = ctx.repos.settings.transcriptionPolicy();
@@ -204,7 +204,7 @@ it.each(["revoked", "paused"] as const)("recovers a ready import after restart w
     ctx.repos.settings.update({ transcription: { provider: "none" } });
     ctx.repos.settings.update({ transcription: { provider: "openai" } });
   } else {
-    ctx.repos.projects.update(project.id, { mediaPaused: true });
+    ctx.repos.projects.update(project.id, condition === "paused" ? { mediaPaused: true } : { archived: true });
   }
   const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe").mockResolvedValue({ segments: [] });
   try {
@@ -212,8 +212,9 @@ it.each(["revoked", "paused"] as const)("recovers a ready import after restart w
     workspace = openWorkspace({}, { OPENAI_API_KEY: "fixture" });
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
     expect(cloud).not.toHaveBeenCalled();
-    if (condition === "paused") {
-      expect((await api("PATCH", projectsPath(), { mediaPaused: false })).status).toBe(200);
+    if (condition !== "revoked") {
+      const resume = condition === "paused" ? { mediaPaused: false } : { archived: false };
+      expect((await api("PATCH", projectsPath(), resume)).status).toBe(200);
       while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
       expect(cloud).toHaveBeenCalledTimes(1);
       expect(workspace.ctx.repos.projects.getMedia("ready-clip")?.transcriptId).toBeDefined();

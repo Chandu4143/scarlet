@@ -183,7 +183,7 @@ export class RenderQueue {
             continue;
           }
         }
-        const owner = render.export?.owner;
+        const owner = render.demandPid && render.export?.owner;
         const queued = this.ctx.repos.renders.put({ ...render, state: "queued", progress: 0, queuePid: process.pid, ...(owner && { demandPid: process.pid }) });
         this.ctx.db.afterCommit(() => {
           if (owner) this.owners.set(queued.id, new Map([[owner, "viewer"]]));
@@ -504,25 +504,7 @@ export class RenderQueue {
 
   /** Exports the desktop app still has to save, or to report as failed. */
   exports(): Render[] {
-    const owed = () => this.ctx.repos.renders.select("json_extract(json, '$.export.owner') IS NOT NULL AND state IN ('queued','running','done','failed')", [], "created_at");
-    const completed = (render: Render) => render.state === "done" && render.previewContentKey && render.projectSettings && isVideoExport(render);
-    const rows = owed();
-    if (!rows.some(completed)) return rows;
-    let requeued = false;
-    this.ctx.db.transaction(() => {
-      for (const render of owed()) {
-        if (!completed(render) || !this.ctx.repos.versions.exists(render.projectId, render.version)) continue;
-        const project = this.ctx.repos.projects.get(render.projectId);
-        if (!project || !this.version(project, render.version).hasTransitions || this.isCurrent(render, project)) continue;
-        // A completed file represents the editor's original sources. Only replace a file we can
-        // prove came from the old transition renderer and can rebuild from those same sources.
-        if (render.previewContentKey !== this.contentKeyOf(render, project, true)) continue;
-        this.ctx.repos.renders.put({ ...render, state: "queued", progress: 0, path: null, finishedAt: undefined });
-        requeued = true;
-      }
-    }, "immediate")();
-    if (requeued) this.recover();
-    return owed();
+    return this.ctx.repos.renders.select("json_extract(json, '$.export.owner') IS NOT NULL AND state IN ('queued','running','done','failed')", [], "created_at");
   }
 
   stopProject(projectId: string, previewsOnly = false) {

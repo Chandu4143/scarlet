@@ -358,9 +358,7 @@ export function renderRoutes(ctx: Ctx) {
       return playbackFile(c.req.raw, render);
     }
     if (render.state !== "done" || !render.path) throw notFound("render file (not finished)");
-    // An export still owed can be rebuilt under the same id after an upgrade.
-    const cacheControl = render.export ? "private, no-store" : "private, max-age=31536000, immutable";
-    return serveFile(c.req.raw, join(ctx.paths.renders(render.projectId), render.path), { cacheControl });
+    return serveFile(c.req.raw, join(ctx.paths.renders(render.projectId), render.path), { cacheControl: "private, max-age=31536000, immutable" });
   });
 
   r.get("/projects/:id/renders", (c) => {
