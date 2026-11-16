@@ -87,13 +87,14 @@
 /* What the message revises, as a tag inside the box before the text. Its × makes the message a new edit. */
 .composer-tag { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 3px; max-width: 55%; margin-right: 4px; padding: 0 2px 0 7px;
   border: 1px solid var(--color-line); border-radius: 4px; font-size: 11.5px; line-height: 20px; color: var(--color-muted); white-space: nowrap; }
-.composer-aim { flex: 0 1 auto; align-self: flex-start; min-width: 0; max-width: 48%; margin-top: 3px; }
-.composer-aim-button { display: flex; align-items: center; gap: 4px; max-width: 100%; min-height: 26px; padding: 0 5px 0 7px;
+.composer-aim { flex: 0 1 auto; align-self: flex-start; display: flex; align-items: center;
+  min-width: 0; max-width: 48%; min-height: 26px; margin-top: 3px; padding: 0 7px;
   border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); color: var(--color-fg);
-  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer; }
-.composer-aim-button:is(:hover, [aria-expanded="true"]) { background: var(--color-raised); }
+  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.composer-aim-button { flex: none; display: flex; align-items: center; gap: 2px; min-height: 22px; margin-inline-start: 3px; padding: 0 3px;
+  border: 0; border-radius: 4px; background: none; color: var(--color-muted); cursor: pointer; }
+.composer-aim-button:is(:hover, [aria-expanded="true"]) { background: var(--color-raised); color: var(--color-fg); }
 .composer-aim-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.composer-aim-more, .composer-aim-button > svg { flex: none; color: var(--color-muted); }
 .composer-aim-button > svg { transform: rotate(90deg); }
 .composer-aim-button[aria-expanded="true"] > svg { transform: rotate(-90deg); }
 .composer-aim-card { position: absolute; z-index: 6; bottom: calc(100% + 8px); left: 0; min-width: min(176px, 100%); width: max-content;
@@ -103,6 +104,17 @@
   color: var(--color-fg); font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .composer-aim-clear { flex: none; display: inline-grid; place-items: center; width: 26px; height: 28px; padding: 0; border: 0;
   border-radius: 5px; background: none; color: var(--color-muted); cursor: pointer; }
+.composer-aim > .composer-aim-clear { width: 20px; min-width: 0; height: 22px; margin-inline-start: 3px; border-radius: 4px; overflow: hidden; }
+@media (hover: hover) and (pointer: fine) {
+  .composer-aim:not(:hover, :focus-within) > .composer-aim-clear {
+    width: 0; margin-inline-start: 0; opacity: 0; pointer-events: none; transition-delay: 0s;
+  }
+}
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .composer-aim > .composer-aim-clear {
+    transition: width 160ms cubic-bezier(.2, .8, .2, 1), margin-inline-start 160ms cubic-bezier(.2, .8, .2, 1), opacity 100ms ease-out 30ms;
+  }
+}
 .composer-aim-clear:hover:not(:disabled) { background: var(--color-raised); color: var(--color-fg); }
 .composer-aim-clear:disabled { color: var(--color-dim); cursor: default; }
 /* Hover or focus on the target lights what the message is about on the timeline. */
