@@ -76,6 +76,25 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(threadTimeline(thread([close]), head, links, () => earlier, 30)).toHaveLength(2);
   });
 
+  it("lists a flagged edit once when its own run names it again on the same footage in other words", () => {
+    // Matt's pass named the cube solve it held three times, each save in new words, and keeping it brought up the next (2026-11-16).
+    const save = (id: string, at: string, label: string, check: string, taskId = "run") => ({ ...change, id, taskId, createdAt: at,
+      fromVersion: "v1", toVersion: "v1", timelineEdits: [{ label, range: { start: 830.77, end: 832.83 }, check }] });
+    const first = save("round4", "2026-01-02T00:00:00Z", "Kept the cube solve animation", "The cube animates for 2.1 seconds before Matt speaks.");
+    const again = save("round5", "2026-01-03T00:00:00Z", "Held the cube solve animation", "The cube animates for 2.1 seconds before Matt speaks.");
+    const reworded = save("round6", "2026-01-04T00:00:00Z", "Held the cube solve", "The solve animation plays for 2.1 seconds before Matt speaks.");
+    const edits = threadTimeline(thread([first, again, reworded]), head, links, () => earlier, 30);
+    // One edit, under the identity the editor kept, with the latest words for why to look.
+    expect(edits.map(e => [e.changeId, e.spot, e.reviewRef, e.check])).toEqual([
+      ["round4", 0, undefined, "The solve animation plays for 2.1 seconds before Matt speaks."]]);
+    // A later request's doubt about it is new, and so is one about different footage.
+    const later = save("revise", "2026-01-05T00:00:00Z", "Kept the cube solve animation", "Matt starts talking over the solve.", "another");
+    expect(threadTimeline(thread([first, later]), head, links, () => earlier, 30).map(e => e.reviewRef))
+      .toEqual([{ changeId: "revise", spot: 0 }]);
+    const longer = { ...reworded, timelineEdits: [{ ...reworded.timelineEdits[0]!, range: { start: 830.77, end: 834 } }] };
+    expect(threadTimeline(thread([first, longer]), head, links, () => earlier, 30)).toHaveLength(2);
+  });
+
   it("translates surviving footage after an earlier ripple and keeps close dialogue joins distinct on older projects", () => {
     const afterRipple = { ...timelineFromKeepRanges("project", "interview", [{ start: 5, end: 3468 }]), version: "v2" };
     const prior = { ...change, ranges: [{ start: 19, end: 22 }] };

@@ -513,13 +513,33 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
   // cut, is the edit already listed. It keeps its first identity, which is the change that made it and plays its
   // Before and After, and takes the latest reason to look.
   const listedAs = new Map<string, Array<{ at: number; changeId: string; edit: ThreadEdit }>>();
+  // A run that saves the video again also words the edits it lists again: on Matt's pass each save named the same
+  // 2.1 seconds of a cube solve it had held, flagged, as "Kept the cube solve animation", then "Held the cube solve
+  // animation", then "Held the cube solve", and with the reason to look said again in other words. Each listed as a
+  // new edit to check, so keeping it brought the next one up (2026-11-16). A flagged edit its own run names again on
+  // the very same footage is the edit already listed, whatever the words, and asks nothing new: the editor's answer
+  // stands. A doubt a later request raises, or one about an edit its save moved or changed, still asks again.
+  const runOf = new Map(thread.changes.map(item => [item.id, item.taskId]));
+  const sameRun = (a: ThreadEdit, b: ThreadEdit) => !!runOf.get(a.changeId) && runOf.get(a.changeId) === runOf.get(b.changeId);
+  // A save's kind for a stretch says what that save did there, so the hold read as "restore" in the save that put its
+  // footage back. What's in the video is the same; a zoom, a caption or a sound fix on those frames is another edit.
+  const footageKind = (kind: ThreadEdit["kind"]) => !kind || kind === "cut" || kind === "restore" || kind === "other" ? "footage" : kind;
+  const sameFootage = (a: ThreadEdit, b: ThreadEdit) => footageKind(a.kind) === footageKind(b.kind) &&
+    Math.abs(a.range.start - b.range.start) <= 1 / fps && Math.abs(a.range.end - b.range.end) <= 1 / fps;
+  const restated = (first: ThreadEdit, later: ThreadEdit) => !!first.check && !!later.check && !later.recheck &&
+    first.changeId !== later.changeId && sameRun(first, later) && sameFootage(first, later);
+  const flaggedSoFar: ThreadEdit[] = [];
   const sameAs = (edit: ThreadEdit, named: boolean | undefined) => {
     if (!named || edit.previous.length) return undefined;
     const words = edit.label.trim().toLowerCase(), at = edit.at ?? edit.range.start;
     const listed = listedAs.get(words) ?? [];
-    const same = listed.find(other => other.changeId !== edit.changeId && Math.abs(other.at - at) <= SAME_PLACE);
-    if (!same) listedAs.set(words, [...listed, { at, changeId: edit.changeId, edit }]);
-    return same?.edit;
+    const same = listed.find(other => other.changeId !== edit.changeId && Math.abs(other.at - at) <= SAME_PLACE)?.edit ??
+      flaggedSoFar.find(other => restated(other, edit));
+    if (!same) {
+      listedAs.set(words, [...listed, { at, changeId: edit.changeId, edit }]);
+      if (edit.check) flaggedSoFar.push(edit);
+    }
+    return same;
   };
   // A pass also names cuts an earlier save of its request made, to say they need a look: on Matt's interview the cut
   // of "This is, what do I say?" was made by one save and flagged by the next, and showed as two edits, the flagged one
@@ -529,7 +549,7 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     const sameSave = first.reviewChangeId === later.changeId;
     if (later.check || later.summary || later.reason) first.reviewChangeId = later.changeId;
     if (later.check) {
-      const changed = later.check !== first.check;
+      const changed = later.check !== first.check && !restated(first, later);
       if (changed) first.reviewRef = { changeId: later.changeId, spot: later.spot };
       if (changed || later.recheck) {
         first.recheck = later.recheck;
