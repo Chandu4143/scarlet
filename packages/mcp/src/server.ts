@@ -30,7 +30,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, RESTART_WITHIN_SECONDS, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
-import type { Author, Change, MediaAsset, TimeRange } from "@scarlet/timeline";
+import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
 import {
   applyOps,
   audioCrossfadeOps,
@@ -499,9 +499,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    */
   const edgeWaitMs = ctx.alignmentWaitMs ?? EDGE_WAIT_MS;
   const wordLists = new Map<string, TranscriptWord[]>();
-  const aligningWords = new Map<string, { words: TranscriptWord[]; through: number; at: number }>();
+  const aligningWords = new Map<string, { words: TranscriptWord[]; through: number; at: number; saved: string }>();
   const readingWords = new Map<string, Promise<TranscriptWord[] | null>>();
   const recordedTranscripts = new Map<string, string>();
+  /** Which save of a transcript this is. The engine saves it again at every turn of alignment, with a new time. */
+  const transcriptSave = (t: Pick<Transcript, "id" | "createdAt" | "aligning">) => JSON.stringify([t.id, t.createdAt, t.aligning?.through]);
   function readWords(mediaId: string, prepareMissing: boolean): Promise<TranscriptWord[] | null> {
     const ready = wordLists.get(mediaId);
     if (ready) return Promise.resolve(ready);
@@ -511,7 +513,15 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const key = JSON.stringify([mediaId, prepareMissing]);
     let job = readingWords.get(key);
     if (!job) {
-      job = getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(async t => {
+      // While the words are placed, the transcript is asked first for how far alignment is, without its words: an hour's
+      // words were read again every couple of seconds, and most reads found the save they had.
+      const unchanged = partial ? client.transcript(mediaId, { from: 0, to: 0, granularity: "segment" })
+        .then(head => transcriptSave(head) === partial.saved, () => false) : Promise.resolve(false);
+      job = unchanged.then(same => {
+        if (!same) return undefined;
+        partial!.at = Date.now();
+        return partial!.words;
+      }).then(kept => kept ?? getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(async t => {
         const words = t?.segments.length ? flattenWords(t) : null;
         if (ctx.task?.context.recordTranscriptDigests && words) {
           const sha256 = wordDigest(words);
@@ -520,13 +530,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
             if (result.posted) recordedTranscripts.set(mediaId, sha256);
           }
         }
-        if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now() });
+        if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now(), saved: transcriptSave(t!) });
         else if (words) {
           aligningWords.delete(mediaId);
           wordLists.set(mediaId, words);
         }
         return words;
-      });
+      }));
       readingWords.set(key, job);
       void job.catch(() => {}).finally(() => readingWords.delete(key));
     }

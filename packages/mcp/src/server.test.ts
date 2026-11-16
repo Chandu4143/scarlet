@@ -3849,6 +3849,30 @@ it("reads a transcript whose words are still being placed on the audio, and hold
   }
 });
 
+it("reads the words again while they are placed only once alignment has saved more of them", async () => {
+  const original = { transcripts: mock.state.transcripts };
+  mock.state.transcripts = { m1: { ...estimated, createdAt: "2026-11-16T10:00:00.000Z" } };
+  const editor = await connect(undefined, undefined, undefined, 0);
+  const reads = () => mock.requests.filter(r => r.path.endsWith("/media/m1/transcript")).map(r => r.query.get("granularity") ?? "word");
+  const read = async () => textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 4 } }) as CallToolResult);
+  try {
+    const before = reads().length;
+    expect(await read()).toContain("#4 2.20-2.40 Um,");
+    // Nothing new was saved: a read without the words says so, and the words read before serve.
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    expect(await read()).toContain("#4 2.20-2.40 Um,");
+    expect(reads().slice(before)).toEqual(["word", "segment"]);
+    // The next turn of alignment saves the transcript again, and its words are read.
+    mock.state.transcripts = { m1: { ...estimated, aligning: { through: 2.5 }, createdAt: "2026-11-16T10:00:03.000Z" } };
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    expect(await read()).toContain("Times after 2.5 s are estimates");
+    expect(reads().slice(before)).toEqual(["word", "segment", "segment", "word"]);
+  } finally {
+    Object.assign(mock.state, original);
+    await editor.close();
+  }
+});
+
 it("refuses a word reference read from a list that has changed since, instead of cutting beside other words", async () => {
   const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform, transcripts: mock.state.transcripts };
   const tl = emptyTimeline(mock.state.project.id);
