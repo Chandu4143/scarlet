@@ -461,10 +461,11 @@ export class ScarletClient {
     return this.withResource("changes", changeId, path => this.request<{ draft?: Timeline; ontoVersion?: string; removed?: TimeRange[] }>(
       "POST", `${path}/cut-review?view=draft`, { restoredCuts, ontoVersion }, { signal }));
   }
-  assessCuts(changeId: string, fromVersion: string, toVersion: string, assessments: Omit<CutAssessment, "provisional" | "askOrder" | "revised">[]) {
-    // A published or revised call keeps its note and decision with the editor.
+  assessCuts(changeId: string, fromVersion: string, toVersion: string, assessments: Array<Omit<CutAssessment, "provisional" | "askOrder" | "revised"> & { amend?: boolean }>) {
+    // A published or revised call keeps its note and decision with the editor, unless Scarlet amends the note of one still waiting.
     return this.withResource("changes", changeId, path => this.post<{ total: number; assessed: number; needsDecision: number;
-      heldForEditor?: number[]; editorPreference?: string; heldRevised?: number[]; editorRequest?: string; heldCalls?: number[]; existingCalls?: string }>(
+      heldForEditor?: number[]; editorPreference?: string; heldRevised?: number[]; editorRequest?: string; heldCalls?: number[]; existingCalls?: string;
+      amended?: number[]; amendedCalls?: string }>(
       `${path}/cut-assessments`, { fromVersion, toVersion, assessments }));
   }
   saveCutChoices(changeId: string, body: CutChoicesRequest) {
