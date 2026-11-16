@@ -1932,12 +1932,16 @@ it("opens a marker Scarlet left for the editor as a to-do: what to add first, no
     ] }));
   const createTask = vi.fn();
   useProjectStore.setState({ createTask });
+  const timeline = vi.spyOn(api, "timeline").mockImplementation(async (_, version = "head") => ({ timeline: { ...data.timeline!, version } }));
   await show();
   await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
   const panel = editPanel()!;
   expect(panel.querySelector(".edit-card-title")?.textContent)
     .toBe("Add the other boat renders. Marked “throw it on the screen now” where the boat comparison belongs.");
+  // With no Before to show, the version before it isn't read.
+  const earlier = data.changes.find(c => c.id === "chg_approved_2")!.fromVersion;
+  expect(timeline.mock.calls.filter(([, version]) => version === earlier)).toEqual([]);
   expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("To do");
   // Nothing in the video changed there, so there's no Before to play and no Undo edit.
   expect(panel.querySelector(".review-compare, .edit-card-before, .edit-card-undo")).toBeNull();

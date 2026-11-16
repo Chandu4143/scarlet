@@ -25,21 +25,20 @@ const NAMED = 3;
  */
 export function madeSentence(listed: readonly Listed[], length: (seconds: number) => string, eachPlace = false): SentencePart[] {
   // An edit another request made is listed for a doubt this one raised about it. This request didn't make it.
-  const all = listed.filter(e => !e.elsewhere);
   // A marker changed nothing in the video: it is a spot left for the editor, counted on its own.
-  const marked = all.filter(e => e.marker && !e.beforeCut);
-  const edits = all.filter(e => !marked.includes(e));
-  const cuts = edits.filter(e => e.beforeCut);
-  const places = new Map<string, { edit: Listed; places: number }>();
-  edits.forEach((edit, i) => {
-    if (edit.beforeCut) return;
-    const key = eachPlace ? String(i) : edit.label, same = places.get(key);
-    if (same) same.places++; else places.set(key, { edit, places: 1 });
+  const cuts: Listed[] = [];
+  const places = new Map<string, { edit: Listed; places: number }>(), spots = new Map<string, { edit: Listed; places: number }>();
+  listed.forEach((edit, i) => {
+    if (edit.elsewhere) return;
+    if (edit.beforeCut) return void cuts.push(edit);
+    const group = edit.marker ? spots : places;
+    const key = eachPlace ? String(i) : edit.label, same = group.get(key);
+    if (same) same.places++; else group.set(key, { edit, places: 1 });
   });
-  const others = [...places.values()];
-  if (!cuts.length && !others.length && !marked.length) return [];
+  const others = [...places.values()], marked = [...spots.values()];
+  if (cuts.length + others.length + marked.length === 0) return [];
   if (cuts.length + others.length + marked.length === 1) {
-    const only = cuts[0] ?? others[0]?.edit ?? marked[0]!, many = others[0]?.places ?? 1;
+    const { edit: only, places: many } = cuts[0] ? { edit: cuts[0], places: 1 } : others[0] ?? marked[0]!;
     const said = (only.summary || only.label).trim();
     if (many === 1) return [/[.!?]$/.test(said) ? said : `${said}.`];
     return [`${only.label.replace(/[.!?]+$/, "")}, in `, { strong: plural(many, "place") }, "."];
