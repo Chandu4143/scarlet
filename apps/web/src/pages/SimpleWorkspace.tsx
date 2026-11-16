@@ -39,7 +39,8 @@ import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Drawer, Icon, Loading } from "../components/ui/primitives";
 import { api, errorMessage } from "../lib/client";
 import { appLog } from "../lib/appLog";
-import { clock as clockLabel, lengthLabel, plural, removedSeconds } from "../lib/format";
+import { clock as clockLabel, clockRange, lengthLabel, plural, removedSeconds } from "../lib/format";
+import { editPlaybackRange } from "../lib/editPlaybackRange";
 import { madeSentence, type SentencePart } from "../lib/madeSentence";
 import { editFocus, editKindWord, editNote } from "../lib/editKind";
 import { player, type Audition } from "../lib/player";
@@ -2415,7 +2416,8 @@ export function SimpleWorkspace() {
     : shownEdit?.beforeCut ? focusAround({ start: shownAt!, end: shownAt! }, cutDuration ?? 0,
       `Removed · ${lengthLabel(shownEdit.beforeCut.removed.end - shownEdit.beforeCut.removed.start)}`)
     // Any other edit is drawn for what it did: a sound fix or a zoom keeps its footage, so After plays it.
-    : reviewRange ? focusAround(reviewRange, cutDuration ?? 0, undefined, { tone: "kept" })
+    // A doubt Scarlet left is the passage it asks the editor to look at or hear: amber, as what waits on them is.
+    : reviewRange ? focusAround(reviewRange, cutDuration ?? 0, "Check", { tone: "check" })
     : shownEdit ? editFocus(shownEdit, cutDuration ?? 0) : undefined;
   const playerView = suggestion || appliedCut ? undefined : !listening && focusThread && !source ? threadTimeline : undefined;
   // Each applied edit's dot names it, says where it sits and how long it runs, and quotes the change it came from.
@@ -2794,6 +2796,11 @@ export function SimpleWorkspace() {
   const openEditKey = reviewingEdit && editKey(reviewingEdit);
   const openEditNow = useRef(openEditKey);
   openEditNow.current = openEditKey;
+  const playCheck = () => {
+    if (!reviewRange) return;
+    player.seek(editPlaybackRange(reviewRange, cutDuration ?? 0).start, true);
+    player.play();
+  };
   const editCard = reviewingEdit && shownChange && focusThread && !editSentBack ? <section className="edit-card" role="region" aria-label="Applied edit">
     {/* Whose footage is playing, and nothing else: the lit icon in the row under it is the way back, and names its key. */}
     {visiting && <div className="edit-card-switched" role="status">
@@ -2809,6 +2816,10 @@ export function SimpleWorkspace() {
       {/* It's on up to two lines, so an edit with a short note is a single line. A clipped note opens on a click. */}
       <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} />
       {!beforeCut && shownKind && <span className={reviewingEdit.kind === "restore" ? "edit-card-length is-added" : "edit-card-length is-kind"}>{shownKind}</span>}
+      {/* Scarlet asks the editor to look or listen at a part of the video, which the timeline marks. It is a pill like the
+          edit's kind, in amber: a press plays just that part, and its times are on hover. */}
+      {reviewRange && <button type="button" className="edit-card-length is-check" onClick={playCheck}
+        title={`Play the part to check, ${checkSpan(reviewRange)}`}>Check</button>}
       <span className="edit-card-side">
         {/* A cut's words open under this row, behind a small icon. An edit that isn't a cut has none. */}
         {scriptKey && <TranscriptLink open={scriptOpen} toggle={() => setScriptFor(scriptOpen ? undefined : scriptKey)} />}
@@ -3396,4 +3407,9 @@ export function SimpleWorkspace() {
     {panel === "export" && <ExportSheet hasCut={hasCut} onClose={() => setPanel(null)} />}
     {panel === "shorts" && <MakeShortsSheet onClose={() => setPanel(null)} />}
   </EditHoverContext.Provider>;
+}
+
+/** The passage Scarlet asks the editor to check, as the clock reads it: one time for a moment, from and to for a stretch. */
+function checkSpan({ start, end }: TimeRange) {
+  return end - start < 0.05 ? clockLabel(start) : clockRange(start, end);
 }

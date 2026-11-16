@@ -114,6 +114,9 @@
 /* An edit that keeps its footage (a sound fix, a zoom, a title): outlined, not hatched red, since After plays it.
    Footage an edit put back is green. */
 .simple-timeline-band.is-kept { background: rgba(244, 241, 233, .06); border: 1.5px solid rgba(244, 241, 233, .55); }
+/* The passage Scarlet asks the editor to look at or hear: amber, as everything that waits on them is. */
+.simple-timeline-band.is-check { background: rgba(237, 194, 133, .10); border: 1.5px solid rgba(237, 194, 133, .75); }
+.simple-timeline-band.is-check span { color: var(--color-warn); }
 .simple-timeline-band.is-added { background: color-mix(in srgb, var(--color-ok) 14%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--color-ok) 70%, transparent); }
 /* Footage another cut in the same pass took out. On After it isn't in the media, so it greys out instead of looking
@@ -417,6 +420,10 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .edit-passage .edit-passage-cut .review-removed { padding: 0; background: none; }
 .edit-card-length.is-kind { background: rgba(244, 241, 233, .08); color: var(--color-muted); }
 .edit-card-length.is-added { background: color-mix(in srgb, var(--color-ok) 15%, transparent); color: var(--color-ok); }
+/* Where Scarlet asks for a look: the same pill, amber, and a press plays that part. */
+.edit-card-length.is-check { flex: none; border: 0; background: rgba(237, 194, 133, .14); color: var(--color-warn); font-family: inherit; cursor: pointer; }
+.edit-card-length.is-check:hover { background: rgba(237, 194, 133, .24); }
+.edit-card-length.is-check:focus-visible { outline: 2px solid var(--color-warn); outline-offset: 1px; }
 /* A call hasn't come out yet, so its mark and words are amber, not red. */
 .thread-passage.is-call .edit-passage-cut { background: rgba(237, 194, 133, .12); color: var(--color-warn); }
 .thread-passage.is-call button.edit-passage-cut:hover, .thread-passage.is-call button.edit-passage-cut[aria-expanded="true"] { background: rgba(237, 194, 133, .2); }

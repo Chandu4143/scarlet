@@ -119,6 +119,17 @@ describe("telling what an applied edit did", () => {
       { before: base, after: shorter })).toEqual(["cut", "cut"]);
   });
 
+  it("doesn't give the length a whole-video save changed to an edit it named where nothing changed", () => {
+    // Matt's pass lengthened a pickup at 9:05 and named "Pricing and model names" at 18:00, which it left as it was.
+    const longer = after(t => { t.tracks.find(k => k.kind === "video")!.clips[0]!.sourceOut = 121; });
+    const saved = { ...change([]), ranges: [{ start: 544.9, end: 546 }] };
+    expect(editKinds(saved, [{ start: 536, end: 547 }, { start: 1083, end: 1146 }], { before: base, after: longer, media: [] }, []))
+      .toEqual(["restore", "other"]);
+    // With no record of where it changed, both still go by the length.
+    expect(editKinds({ ...saved, ranges: [] }, [{ start: 536, end: 547 }, { start: 1083, end: 1146 }], { before: base, after: longer, media: [] }, []))
+      .toEqual(["restore", "restore"]);
+  });
+
   it("matches the first clip in track order when a batch edits an older timeline with duplicate ids", () => {
     const historical = after(t => {
       t.tracks[0]!.clips = [makeMediaClip("interview", 0, 2, 1, { id: "duplicate" })];
