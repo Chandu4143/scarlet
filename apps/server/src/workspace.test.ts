@@ -3666,6 +3666,8 @@ it("holds a pass until each join that divides a sentence is repaired or kept wit
   // “Do not use tools. Do, do not use tools. Now the reason is speed. It holds up. Sorry, phone. Thanks.”, a word every 0.4 s.
   const words = "Do not use tools. Do, do not use tools. Now the reason is speed. It holds up. Sorry, phone. Thanks.".split(" ")
     .map((text, i) => ({ text, start: 1 + i * .4, end: 1.3 + i * .4 }));
+  // An “I” the aligner gave no time sits after “up.”, in front of the aside that is cut: it has no sound, so it isn't a stray word.
+  words.splice(17, 0, { text: "I", start: 7.75, end: 7.75 });
   const transcript = ctx.repos.transcripts.put({ id: "mic-words", projectId: project.id, mediaId: "mic", language: "en", provider: "whispercpp",
     segments: [{ id: "seg", start: 1, end: 9, text: words.map(w => w.text).join(" "), words }], createdAt: new Date().toISOString() });
   ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20, transcriptId: transcript.id }, "ready");
@@ -3677,7 +3679,7 @@ it("holds a pass until each join that divides a sentence is repaired or kept wit
   const found = await (await check(version)).json();
   expect(found).toMatchObject({ remaining: 1, fragments: [{ at: 2.95, mediaId: "mic", out: 2.95, in: 4.55, before: "Do not use tools. Do,", after: "Now the reason is speed. It holds up.",
     removed: 4, removedStart: "do not use tools.", split: ["out"], lastWord: 4, firstWord: 9 }] });
-  // The join that took the aside out stands between two whole sentences, and is not listed.
+  // The join that took the aside out stands between two whole sentences, and is not listed. Nor is the soundless “I” before it.
   expect(found.fragments).toHaveLength(1);
   expect((await finish()).state).toBe("queued");
   await claim();

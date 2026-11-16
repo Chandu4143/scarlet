@@ -172,6 +172,12 @@ describe("divided joins", () => {
     expect(dividedJoins(tl, [media(MIC)], evidence)).toMatchObject([
       { mediaId: MIC, before: "Do not use tools. Do,", after: "Now the reason is speed.", removed: 4, removedStart: "do not use tools.", split: ["out"] }]);
   });
+
+  it("doesn't count a word the recording has no sound for as played", () => {
+    // “out there.” then an “I” the aligner gave no time, in front of an aside that was cut: nothing stray plays.
+    const ev = recording(MIC, 8, [["model", 1, 1.3], ["out", 1.4, 1.7], ["there.", 1.8, 2.1], ["I", 2.1, 2.1], ["mean,", 3, 3.3], ["wow.", 3.4, 3.7], ["This", 4.2, 4.5], ["works.", 4.6, 4.9]]);
+    expect(dividedJoins(cut("A", MIC, [[0, 2.2], [4.1, 8]]), [media(MIC)], new Map([[MIC, ev]]))).toEqual([]);
+  });
 });
 
 describe("pacing", () => {

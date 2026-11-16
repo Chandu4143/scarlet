@@ -113,7 +113,7 @@ export function dividedJoins(tl: Timeline, media: readonly MediaInfo[], evidence
     let words = said.get(clip.mediaId);
     if (!words) said.set(clip.mediaId, words = (evidence.get(clip.mediaId)?.words ?? [])
       .map((w, index) => ({ text: w.text, start: w.start, end: w.end, index, endsSentence: closesSentence(w.text) }))
-      .filter(w => w.text.trim() && !/^\s*[[(*♪].*[\])*♪]\s*$/u.test(w.text))
+      .filter(w => w.end > w.start && w.text.trim() && !/^\s*[[(*♪].*[\])*♪]\s*$/u.test(w.text))
       .sort((a, b) => (a.start + a.end) - (b.start + b.end) || a.index - b.index));
     const found = joinFragment(words, before.sourceOut, clip.sourceIn, before.sourceIn, clip.sourceOut);
     if (found) out.push({ at: Math.round(clip.timelineIn * 1000) / 1000, mediaId: clip.mediaId, ...found });

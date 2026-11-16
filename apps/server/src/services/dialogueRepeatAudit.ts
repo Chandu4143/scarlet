@@ -213,7 +213,8 @@ function dividedSentences(ctx: Ctx, project: Project, parts: Placement[]): JoinF
       }
       transcripts.set(mediaId, transcript ? flattenWords(transcript)
         .map((w, index) => ({ text: w.text, start: w.start, end: w.end, index, endsSentence: closesSentence(w.text) || lastOfSegment.has(index) }))
-        .filter(w => w.text.trim() && !names(w.text))
+        // A word the recording has no sound for takes no time and isn't heard: the join plays the words either side of it.
+        .filter(w => w.end > w.start && w.text.trim() && !names(w.text))
         .sort((a, b) => (a.start + a.end) - (b.start + b.end) || a.index - b.index) : null);
     }
     return transcripts.get(mediaId)!;
