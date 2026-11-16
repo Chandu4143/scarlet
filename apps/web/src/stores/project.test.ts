@@ -242,6 +242,24 @@ it.each([2, 4])("uses the newest project after a filing response carrying revisi
   expect(store().project).toEqual(rowRevision === 4 ? filed : intermediate);
 });
 
+it("keeps live media when a filing response carries an older copy of it", async () => {
+  const { current, project } = open();
+  const media = current.media[0]!;
+  const before = { ...project, rowRevision: 1, media: [media] };
+  useProjectStore.setState({ current: { ...current, project: before, media: [media] } });
+  const filed = { ...before, rowRevision: 2, completedThreads: { thread_a: "filed revision" } };
+  let release!: (response: { completedThreads: Record<string, string>; project: ProjectData["project"] }) => void;
+  vi.spyOn(api, "setThreadDone").mockImplementation(() => new Promise(resolve => { release = resolve; }));
+  const filing = initial.setThreadDone("thread_a", true, "filed revision");
+  const transcribed = { ...media, transcriptId: "trs_new" };
+  initial.applyEvent({ type: "media.updated", projectId: PRJ, media: transcribed });
+  release({ project: filed, completedThreads: filed.completedThreads });
+  await filing;
+
+  expect(store().project).toMatchObject({ ...filed, media: [transcribed] });
+  expect(store().media).toEqual([transcribed]);
+});
+
 it.each(["rename fails before refresh", "refresh finishes before rename fails"])("keeps a format read during a refused rename when %s", async order => {
   const { current, project } = open();
   const engine = { ...project, settings: { ...project.settings, fps: 24 },

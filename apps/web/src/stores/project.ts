@@ -546,8 +546,9 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
     },
 
     async setThreadDone(threadId, done, revision) {
-      const id = get().current?.id;
-      if (!id) return;
+      const before = get().current;
+      if (!before) return;
+      const { id } = before;
       const { completedThreads, project } = await api.setThreadDone(id, threadId, done, revision);
       let headChanged = false;
       patch(id, d => {
@@ -556,7 +557,9 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
         if (project) {
           if (olderProject(project, saved)) return {};
           headChanged = project.head !== saved.head;
-          return { project: rename ? showPendingName(project, rename.request) : project };
+          // Media has its own live state and can change without advancing the project row revision.
+          const snapshot = d.media === before.media ? project : { ...project, media: d.media };
+          return { project: rename ? showPendingName(snapshot, rename.request) : snapshot };
         }
         const updated = { ...saved.completedThreads };
         if (completedThreads[threadId]) updated[threadId] = completedThreads[threadId]!;
