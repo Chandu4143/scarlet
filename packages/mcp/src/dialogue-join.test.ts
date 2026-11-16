@@ -38,6 +38,12 @@ describe("native retake boundaries", () => {
     expect(placed.reason).toContain("start moved 0.07 s earlier onto the trough between the words in the recording (-50 dBFS");
     // A trough no lower than a sibilant's hiss is nowhere to cut.
     expect(checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.005)]).status).toBe("review");
+    // A word reference reads the edge from the words' timings, which reach only a little way into the kept “game”: it
+    // sees the trough's wall, not its floor, and leaves the edge to the check above rather than saving it there.
+    const page = at(.003);
+    const cut = wordCutRange(said, 2, 5, () => page.edges);
+    expect(cut.dips).toEqual([]);
+    expect(cut.problems.join(" ")).toContain("No measured silence between “game” and “let”");
   });
   it("only moves inward, past complete edge words, onto project frames in quiet audio", () => {
     const { p, tl } = fixture();

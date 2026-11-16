@@ -900,14 +900,22 @@ function extremeLevel(page: NonNullable<JoinPage["edges"]>, from: number, to: nu
 function dipBetween(page: NonNullable<JoinPage["edges"]>, from: number, to: number) {
   const levels = page.levels, low = extremeLevel(page, from, to, "lowest");
   const at = levels && low ? Math.floor((low.at - levels.from) / levels.step) : -1;
-  if (!levels || !low || !isDip(levels, at)) return low && { ...low, room: undefined, dip: false };
+  if (!levels || !low) return low && { ...low, room: undefined, dip: false };
   const centre = (i: number) => levels.from + (i + .5) * levels.step;
+  const roomTone = low.db <= DIP_DBFS;
+  // A trough above room tone is a dip only when its floor is inside the stretch searched: the lowest level at the
+  // stretch's end is the wall of a trough beyond it, still in sound. On one pass that edge was saved 70 ms past the
+  // trough between “game” and “let”, in “let” (2026-11-16).
+  const inside = centre(at - 1) >= from && centre(at + 1) <= to && levels.db[at - 1]! >= low.db && levels.db[at + 1]! >= low.db;
+  if (!roomTone && !(inside && isDip(levels, at))) return { ...low, room: undefined, dip: false };
   // The stretch around the lowest level that is still down in it: at room tone, or within a few dB of a trough's floor.
-  const floor = low.db <= DIP_DBFS ? DIP_DBFS : low.db + 6;
+  const floor = roomTone ? DIP_DBFS : low.db + 6;
   let first = at, last = at;
   while (first > 0 && centre(first - 1) >= from && levels.db[first - 1]! <= floor) first--;
   while (last + 1 < levels.db.length && centre(last + 1) <= to && levels.db[last + 1]! <= floor) last++;
-  return { at: (centre(first) + centre(last)) / 2, db: low.db, dip: true, room: { start: levels.from + first * levels.step, end: levels.from + (last + 1) * levels.step } };
+  const room = { start: levels.from + first * levels.step, end: levels.from + (last + 1) * levels.step };
+  // At room tone the middle of the quiet; in a trough its floor, where the sound either side is furthest.
+  return { at: roomTone ? (centre(first) + centre(last)) / 2 : centre(at), db: low.db, dip: true, room };
 }
 
 /**
