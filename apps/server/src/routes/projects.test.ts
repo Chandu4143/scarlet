@@ -58,6 +58,30 @@ it("starts a transcription the pause cut off again as soon as media processing r
   expect(ctx.repos.projects.getMedia("voice")?.transcriptId).toBeTruthy();
 });
 
+it("restarts transcription after abort cleanup when media processing is already resumed", async () => {
+  const { ctx } = workspace;
+  const finishAbort = Promise.withResolvers<void>();
+  const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe")
+    .mockImplementationOnce(({ signal }) => new Promise((_, reject) => {
+      signal!.addEventListener("abort", () => void finishAbort.promise.then(() => reject(signal!.reason)), { once: true });
+    }))
+    .mockResolvedValue({ segments: [] });
+  ctx.repos.projects.putMedia(project.id, { id: "voice", name: "Voice", path: "voice.wav", kind: "audio", duration: 60 }, "ready");
+  const { task } = await (await api("POST", "/media/voice/transcribe", {})).json();
+  try {
+    await vi.waitFor(() => expect(cloud).toHaveBeenCalledTimes(1));
+    await api("PATCH", `/projects/${project.id}`, { mediaPaused: true });
+    await api("PATCH", `/projects/${project.id}`, { mediaPaused: false });
+    expect(ctx.repos.tasks.get(task.id)?.state).toBe("running");
+  } finally {
+    finishAbort.resolve();
+  }
+  while (ctx.pending.size) await Promise.allSettled([...ctx.pending]);
+  expect(ctx.repos.tasks.get(task.id)).toMatchObject({ state: "failed", interrupted: true });
+  expect(cloud).toHaveBeenCalledTimes(2);
+  expect(ctx.repos.projects.getMedia("voice")?.transcriptId).toBeTruthy();
+});
+
 it("interrupts a transcription when the project goes to the trash, and starts it again after Restore", async () => {
   const { ctx } = workspace;
   const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe")

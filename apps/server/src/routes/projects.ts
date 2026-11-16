@@ -3,7 +3,7 @@ import { cancelTask } from "../services/tasks.js";
 import { holdTranscriptions, resumeImportsInBackground } from "../services/ingest.js";
 import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
-import { recoverTasks } from "../services/taskRecovery.js";
+import { resumeProjectTranscriptions } from "../services/taskRecovery.js";
 import { Hono } from "hono";
 import { buildThreads, EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
 import { makeShorts, planShorts } from "../services/shorts.js";
@@ -129,8 +129,7 @@ export function projectRoutes(ctx: Ctx) {
           holdTranscriptions(ctx, updated.id);
         } else {
           recoverSourcePreviews(ctx, updated.id);
-          // The pause cut this project's transcriptions off. They start again now, not at the next 30 s sweep.
-          recoverTasks(ctx);
+          resumeProjectTranscriptions(ctx, updated.id);
         }
       });
       // Unpaused or unarchived: its imports go on. Ones still held by a pause stay held.

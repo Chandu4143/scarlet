@@ -440,6 +440,25 @@ const jobs = (row: Element) => ({
   actions: [...row.querySelectorAll(".media-jobs button, .media-jobs a")].map(action => action.textContent),
 });
 
+it("pauses and resumes media processing from the library toolbar", async () => {
+  const media = [fixtureVideo({ id: "camera", name: "camera.mov" })];
+  await showMedia({ media, caches: [{ mediaId: "camera", state: "caching", progress: 0.42 }] }, async container => {
+    const update = vi.spyOn(api, "updateProject").mockImplementation(async (_id, body) => ({
+      project: { ...useProjectStore.getState().current!.project, mediaPaused: body.mediaPaused === true },
+    }));
+    const button = () => container.querySelector<HTMLButtonElement>('button[title$=" media processing"]')!;
+    expect(button().textContent).toBe("Pause");
+    await act(async () => button().click());
+    expect(update).toHaveBeenNthCalledWith(1, PRJ, { mediaPaused: true });
+    expect(button().textContent).toBe("Resume");
+    expect(jobs(container.querySelector(".media-row")!).lines[0]).toEqual(["Caching paused", "media-cache is-idle"]);
+    expect(container.querySelector('progress[aria-label="Caching camera.mov"]')).toBeNull();
+    await act(async () => button().click());
+    expect(update).toHaveBeenNthCalledWith(2, PRJ, { mediaPaused: false });
+    expect(button().textContent).toBe("Pause");
+  });
+});
+
 it("confirms a saved recording's replacement, shows its progress, and lets a failed job be retried", async () => {
   const video = fixtureVideo({ id: "camera", name: "camera.mov", transcriptId: "saved-transcript" });
   const settings = buildDb().settings;

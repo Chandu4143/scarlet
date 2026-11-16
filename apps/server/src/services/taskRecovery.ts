@@ -179,16 +179,33 @@ export function recoverTasks(ctx: Ctx, starting = false): void {
   }
 }
 
+/** A worker still stopping keeps its claim until cleanup. Check its transcription again then. */
+export function resumeProjectTranscriptions(ctx: Ctx, projectId: string): void {
+  const running = ctx.repos.tasks.select("project_id = ? AND kind = 'transcribe' AND state = 'running'", [projectId]);
+  for (const task of running) {
+    const worker = ctx.transcriptions.get(task.id);
+    const mediaId = task.context.mediaId;
+    if (!worker?.controller.signal.aborted || !mediaId) continue;
+    void ctx.track(worker.done.catch(() => {
+      if (!ctx.shutdown.aborted) resumeTranscriptions(ctx, projectId, mediaId);
+    }).catch(err => {
+      ctx.log(`[task] ${task.id} couldn’t check whether its transcription should start again: ${(err as Error).message}`);
+    }), projectId);
+  }
+  resumeTranscriptions(ctx, projectId);
+}
+
 /**
  * A transcription runs inside the engine, so quitting Scarlet stops it. Continue from its last committed audio chunk or alignment turn
  * when the engine is back, or when the project's media processing resumes. Only an interruption restarts:
  * a transcription that failed by itself waits for the editor.
  */
-function resumeTranscriptions(ctx: Ctx): void {
+function resumeTranscriptions(ctx: Ctx, projectId?: string, mediaId?: string): void {
   const interrupted = ctx.repos.tasks.select(`kind = 'transcribe' AND state = 'failed' AND json_extract(json, '$.interrupted') = 1
+    AND (? IS NULL OR project_id = ?) AND (? IS NULL OR json_extract(json, '$.context.mediaId') = ?)
     AND NOT EXISTS (SELECT 1 FROM tasks later WHERE later.kind = 'transcribe' AND later.project_id = tasks.project_id
       AND json_extract(later.json, '$.context.mediaId') = json_extract(tasks.json, '$.context.mediaId')
-      AND (later.created_at, later.rowid) > (tasks.created_at, tasks.rowid))`, [], "created_at, rowid");
+      AND (later.created_at, later.rowid) > (tasks.created_at, tasks.rowid))`, [projectId ?? null, projectId ?? null, mediaId ?? null, mediaId ?? null], "created_at, rowid");
   for (const task of interrupted) {
     try {
       const media = task.context.mediaId && ctx.repos.projects.getMedia(task.context.mediaId);

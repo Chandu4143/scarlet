@@ -100,6 +100,26 @@ it.each(["pause", "quit"])("keeps a video that was waiting to cache through a %s
   expect(engine.app().ctx.db.prepare("SELECT media_id FROM source_cache_requests").all()).toEqual([]);
 }));
 
+it.each(["requested", "queued"])("continues a %s cache when media processing resumes before its encoder stops", how => withVideos({}, {}, async engine => {
+  const finishAbort = Promise.withResolvers<void>();
+  engine.encode.mockImplementationOnce((_, _file, { signal }) => new Promise((_, reject) => {
+    signal!.addEventListener("abort", () => void finishAbort.promise.then(() => reject(signal!.reason)), { once: true });
+  }));
+  if (how === "requested") await engine.api("POST", "/media/first/playback-cache");
+  else prepareSourceProxies(engine.app().ctx, ["first", "second"], true);
+  try {
+    await vi.waitFor(() => expect(engine.encode).toHaveBeenCalledTimes(1));
+    await engine.api("PATCH", `/projects/${engine.projectId}`, { mediaPaused: true });
+    await engine.api("PATCH", `/projects/${engine.projectId}`, { mediaPaused: false });
+    expect(engine.encode).toHaveBeenCalledTimes(1);
+  } finally {
+    engine.finish();
+    finishAbort.resolve();
+  }
+  await engine.settle();
+  expect(await engine.states()).toEqual({ first: "ready", second: how === "queued" ? "ready" : "uncached" });
+}));
+
 // Only macOS is asked when a process began: elsewhere a cache stays with whatever process has its engine's id.
 it.runIf(process.platform === "darwin")("caches a video a killed engine was caching once another program has its process id", () => withVideos({}, {}, async engine => {
   // The computer has been up for days: the engine's note is from since it started, so only `ps` can say it is gone.

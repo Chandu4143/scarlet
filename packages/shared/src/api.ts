@@ -188,6 +188,7 @@ export type ProjectActivity = z.infer<typeof ProjectActivity>;
 export const ProjectSummary = z.object({
   id: Id,
   archived: z.boolean().optional(),
+  mediaPaused: Project.shape.mediaPaused,
   name: z.string(),
   settings: ProjectSettings,
   head: Id.nullable(),

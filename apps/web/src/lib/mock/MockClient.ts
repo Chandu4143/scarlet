@@ -134,12 +134,14 @@ export class MockClient implements ScarletApi {
   private summary(projectId: string): ProjectSummary {
     const s = this.db.summaries[projectId];
     if (!s) throw notFound("Project");
+    const project = this.projectById(projectId);
     s.pendingChanges = countReviewDecisions({
       changes: this.db.changes.filter(c => c.projectId === projectId),
       tasks: this.db.tasks.filter(t => t.projectId === projectId),
       notes: this.db.notes.filter(n => n.projectId === projectId),
-    }, this.projectById(projectId).completedThreads);
-    const head = this.db.timelines[this.projectById(projectId).head ?? ""];
+    }, project.completedThreads);
+    s.mediaPaused = project.mediaPaused;
+    const head = this.db.timelines[project.head ?? ""];
     s.duration = head && timelineDuration(head);
     return s;
   }
