@@ -34,8 +34,8 @@ export function changeRoutes(ctx: Ctx) {
     const result = proposeChange(ctx, c.var.user, projectId, body, () => requireProjectEditAttempt(ctx, attempt, projectId, body.taskId));
     if (c.req.query("summary") === "true") {
       const viewed = appliedReviewChange(result.change);
-      const { id, state, description, fromVersion, toVersion, ranges, timelineEdits } = viewed;
-      return c.json({ change: { id, state, description, fromVersion, toVersion, ranges, timelineEdits }, duration: result.duration, diffDescription: result.diffDescription,
+      const { id, state, description, reason, fromVersion, toVersion, ranges, timelineEdits } = viewed;
+      return c.json({ change: { id, state, description, reason, fromVersion, toVersion, ranges, timelineEdits }, duration: result.duration, diffDescription: result.diffDescription,
         ...(result.onWholeFrames && { onWholeFrames: result.onWholeFrames }), ...(result.notApplied && { notApplied: result.notApplied }) }, 201);
     }
     // The proposal is saved by now, so a failed check must not read as a failed proposal.
@@ -138,7 +138,7 @@ export function changeRoutes(ctx: Ctx) {
         if (suggestOnly) heldForEditor.push(item.index);
         const shown = previous.get(item.index);
         if (shown && (isPublishedCall(shown) || shown.askOrder !== undefined)) {
-          if (shown.reason !== item.reason || item.verdict !== shown.verdict) {
+          if (shown.reason !== item.reason || shown.summary !== item.summary || item.verdict !== shown.verdict) {
             if (shown.revised && item.verdict !== "ask") heldRevised.push(item.index);
             else heldCalls.push(item.index);
           } else if (item.inspected && !shown.inspected) {

@@ -54,6 +54,7 @@ import {
   timelineToSource,
   type Timeline,
   SUMMARY_MAX,
+  EditReason,
   WritableTimeline,
   TimelineOp,
   type CaptionClip,
@@ -828,6 +829,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const intentInput = (ctx.taskId ? intent : intent.optional()).describe(
     "Use requested only for edits the editor asked you to make. Choose suggestion for extra ideas or previews, and alternative for each option offered. Omitting intent leaves the edit in review.",
   );
+  const editReasonInput = EditReason.optional().describe(
+    "One short sentence for the card above the timeline explaining the footage cue, editorial tradeoff, or editor request that motivated this choice.",
+  );
 
   /** A ripple removal that went onto whole frames: asked as given, removed where it went, and how much later it moved first. */
   type FrameAdjustment = { asked: [number, number]; removed: [number, number]; movedBy?: number };
@@ -867,6 +871,15 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     });
   }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
+    if (ctx.author.type === "agent") {
+      const edits = body.timelineEdits ?? [];
+      const missing = edits.findIndex(edit => !edit.reason);
+      if (missing >= 0) throw new Error(`Give timelineEdits[${missing}].reason so the editor can see why you made that edit.`);
+      const proposedTogether = body.intent !== "requested" || ctx.task?.context.reviewAllCuts;
+      if (!body.reason && (!edits.length || (proposedTogether && edits.length > 1))) {
+        throw new Error("Give reason for the change so the editor can see why you made it.");
+      }
+    }
     const req: ProposeChangeRequest = {
       ...body,
       fromVersion: before && before.version !== "draft" ? before.version : undefined,
@@ -894,6 +907,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       toVersion: change.toVersion,
       affectedRanges: change.ranges,
       timelineEdits: change.timelineEdits,
+      reason: change.reason,
       duration: duration ?? (timeline ? timelineDuration(timeline) : undefined),
       diff: lines,
       ...(onWholeFrames.length && { onWholeFrames }),
@@ -1896,7 +1910,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         keepRepeat: z.union([repeatedPhrase, z.array(repeatedPhrase).min(1)]).optional().describe("For speech cuts, quote a word or phrase that deliberately repeats across the join or at the beginning or end of the kept take. Pass a list to keep several. An unacknowledged repeat comes back to you before the plan is saved."),
         productionQuote: z.string().trim().min(1).optional().describe("Optional check for a coaching cut: verify all the words in the removed production aside against the scan."),
         picture: z.enum(["safe", "uncertain", "protect"]).optional().describe("Protect preserves this range. For all other picture verdicts, decision controls whether the range is cut or staged for review."),
-        reason: z.string().trim().min(1).describe("One short sentence for the editor about what they will hear or see"),
+        reason: z.string().trim().min(1).describe("One short sentence on why you chose to cut, stage or keep this passage, shown on its card"),
+        summary: CutAssessment.shape.summary.describe("Short summary of what this decision changes or keeps, shown in the chat."),
         check: z.string().trim().min(1).max(120).optional().describe("For a cut that applies: a few words naming a doubt the editor must settle by listening or looking. Marks the cut as needing them until they keep it; omit when nothing is in doubt") }))
         .describe("For a faint line that still plays, keptQuietPhrases returns mediaId and fromWord/toWord for use here, its position on continueFrom (at), and the phrase and neighboring speech levels in dBFS.") },
     async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames, pausesFrom }) => {
@@ -2181,8 +2196,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return { content };
     });
 
-  tool("dialogue_review_save", "Record your cut, keep or ask recommendation and reason on a pending suggestion. An ask's reason is the one line the editor reads on that call, so it names what this cut takes out and what to check; cuts that would wait under the same reason are refused. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A cut goes into the video when the request finishes, or with the editor's last call when some wait for them, so it is not removed again with another tool. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
-    { changeId: z.string(), fromVersion: z.string(), toVersion: z.string(), assessments: z.array(CutAssessment.omit({ inspected: true, revised: true, askOrder: true, provisional: true })).min(1).max(500) },
+  tool("dialogue_review_save", "Record your cut, keep or ask recommendation on a pending suggestion. An ask's reason appears on its card, where it explains why you recommend it and what to listen or look for. Cuts that would wait under the same reason are refused. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A cut goes into the video when the request finishes, or with the editor's last call when some wait for them, so it is not removed again with another tool. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
+    { changeId: z.string(), fromVersion: z.string(), toVersion: z.string(), assessments: z.array(CutAssessment.omit({ inspected: true, revised: true, askOrder: true, provisional: true }).extend({
+      summary: CutAssessment.shape.summary.describe("Short summary of the proposed cut for the chat. Supply it alongside the reason shown on the card."),
+    })).min(1).max(500) },
     async ({ changeId, fromVersion, toVersion, assessments }) => {
       const { change } = await client.changeRecord(changeId);
       if (await localPausesMode() && ![ctx.taskId, ctx.task?.resumeRootId].some(id => id && id === change.taskId) &&
@@ -2230,11 +2247,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       pauseAfterWord: z.number().finite().nonnegative().optional().describe("Timeline seconds to leave between the last complete word and the start of this cut. Use 0 to trim up to the word."),
       keep: z.literal(true).optional().describe("Keep the current footage for the staged cut this request is about"),
       reason: z.string().trim().min(1).max(800).optional(),
+      summary: CutAssessment.shape.summary.describe("Short summary of the revised cut for the chat."),
       cuts: z.array(z.object({ index: z.number().int().nonnegative(), start: z.number().finite().nonnegative(), end: z.number().finite().nonnegative(), keep: z.literal(true).optional(),
-        reason: z.string().trim().min(1).max(800) })).min(1).max(50).optional().describe("Several cuts of this pass to move in one call, instead of index, start, end and reason"),
+        reason: z.string().trim().min(1).max(800), summary: CutAssessment.shape.summary })).min(1).max(50).optional().describe("Several cuts of this pass to move in one call, instead of the fields for one cut"),
       noteIds: z.array(z.string()).optional() },
-    async ({ changeId, version, index, start, end, pauseAfterWord, keep, reason, cuts, noteIds, crossfadeFrames }) => {
-      const one = index !== undefined || start !== undefined || end !== undefined || reason !== undefined || keep !== undefined || pauseAfterWord !== undefined;
+    async ({ changeId, version, index, start, end, pauseAfterWord, keep, reason, summary, cuts, noteIds, crossfadeFrames }) => {
+      const one = index !== undefined || start !== undefined || end !== undefined || reason !== undefined || summary !== undefined || keep !== undefined || pauseAfterWord !== undefined;
       if (one === !!cuts) throw new Error("Give either index, start, end and reason for one cut, or a cuts list.");
       if (pauseAfterWord !== undefined && (start !== undefined || end !== undefined || keep)) throw new Error("Give pauseAfterWord on its own with index and reason.");
       if (!cuts && (index === undefined || !reason || (pauseAfterWord === undefined && (start === undefined || end === undefined))))
@@ -2280,7 +2298,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         version = on;
         readPassage(on, { start, end }, true);
       }
-      const moves = cuts ?? [{ index: index!, start: start!, end: end!, reason: reason!, keep }];
+      const moves = cuts ?? [{ index: index!, start: start!, end: end!, reason: reason!, summary, keep }];
       const tl = await getTimeline(version ?? change.fromVersion);
       // A request about one staged cut seldom reads the recording in pages, so the sound beside each new edge is measured
       // here, as dialogue_check_join does. Without it no edge could be judged, and none snapped.
@@ -2312,7 +2330,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         const onQuietFrame = join?.status === "unchanged" ? quietFrameNote(move, range) : undefined;
         let savedIndex = move.index;
         try {
-          const saved = await client.reviseStagedCut(current, move.index, { ...range, version, crossfadeFrames, ...(pause && { requireCurrentCut: true }), keep: move.keep, reason: move.reason, taskId: ctx.taskId,
+          const saved = await client.reviseStagedCut(current, move.index, { ...range, version, crossfadeFrames, ...(pause && { requireCurrentCut: true }), keep: move.keep, reason: move.reason, summary: move.summary, taskId: ctx.taskId,
             author: ctx.author, noteIds: noteIds ?? ctx.task?.context.noteIds });
           revised = saved.change;
           savedIndex = saved.index ?? move.index;
@@ -2446,7 +2464,8 @@ ${OPS_DOC}`,
     {
       ops: z.array(z.record(z.unknown())).optional().describe("Operations to apply to the current head (see op types)"),
       timeline: z.record(z.unknown()).optional().describe("Full replacement Timeline JSON (use for initial assemblies); omit when using ops"),
-      description: z.string().min(1).describe("One short sentence about what the editor will see or hear"),
+      description: z.string().min(1).describe("One short sentence for the chat about what the editor will see or hear"),
+      reason: editReasonInput.describe("Why you proposed the whole change. Give this for an unnamed edit or when several edits share one suggestion card."),
       noteIds: z.array(z.string()).optional().describe("Review note ids this change responds to"),
       fromVersion: z.string().optional().describe("Version the ops apply to. Defaults to the version you last read with timeline_get or timeline_at; leave it out unless you mean another version."),
       range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive() }).optional().describe("Timeline range on the base version for synchronized ripple removals across all tracks, including local pauses."),
@@ -2455,12 +2474,19 @@ ${OPS_DOC}`,
       }), z.literal("asPlaced")]).optional()
         .describe("Optional camera inset during the specified clips’ overlap. Supply framing (scale, center-relative x/y, optional crop and cornerRadius), or use the preset quarter-size bottom-right inset. Omit pictureLayout to use the submitted clip transforms."),
       intent: intentInput,
-      timelineEdits: z.array(z.object({ label: z.string().min(1).max(180).describe("Short editor-facing title, at most 50 characters"), range: z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).describe("Seconds in the resulting timeline. A cut: the point where it joins, start equal to end. Any other edit, such as footage kept or changed: all of that footage as it plays, from its first second to its last"), check: z.string().trim().min(1).max(120).optional().describe("A few words naming a doubt the editor must settle by listening or looking. Marks this edit as needing the editor until they keep it; omit when nothing is in doubt"), summary: z.string().trim().min(1).max(SUMMARY_MAX).optional().describe("One sentence on what this edit did, including anything else it changed and what check points at. The edit's card shows only this sentence"), replaces: z.object({ changeId: z.string(), spot: z.number().int().nonnegative() }).optional() })).optional().describe("List each distinct edit with a short editor-facing phrase from your reply and its range. Keep overlapping edits separate. For a revision set replaces to the original change ID and zero-based edit index; give the full updated range."),
+      timelineEdits: z.array(z.object({
+        label: z.string().min(1).max(180).describe("Short editor-facing title, at most 50 characters"),
+        range: z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).describe("Seconds in the resulting timeline. For a cut, give the point where it joins with start equal to end. For any other edit, give all the footage as it plays, from its first second to its last."),
+        summary: z.string().trim().min(1).max(SUMMARY_MAX).optional().describe("A short sentence for the chat about what this edit changed, including notable side effects"),
+        reason: editReasonInput.describe("Why you made this specific edit, shown on its card. Supply one for every item."),
+        check: z.string().trim().min(1).max(120).optional().describe("A few words naming a doubt the editor must settle by listening or looking. Marks the edit as needing the editor until they keep it."),
+        replaces: z.object({ changeId: z.string(), spot: z.number().int().nonnegative() }).optional(),
+      })).optional().describe("List each distinct edit and its exact playback range in the resulting timeline. Keep overlapping edits separate. For a revision set replaces to the original change ID and zero-based edit index, and give the full updated range and reason."),
       ...(!ctx.taskId && { autoApprove: z.boolean().optional().describe("Apply a standalone edit authored directly by the editor") }),
       skipRender: z.boolean().optional().describe("Skip before/after renders (metadata-only changes like markers)"),
       withdraws: z.array(z.string()).max(20).optional().describe("Change IDs of this request's own suggestions or alternatives, still waiting for the editor, that this one replaces, such as a draft or a test. They leave the editor's review when this one is saved."),
     },
-    async ({ ops, timeline, description, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws }) => {
+    async ({ ops, timeline, description, reason, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws }) => {
       // Every clip edge the edit makes is measured on its recording, however the edit makes it: a ripple, a clip added
       // or trimmed, a whole new timeline. One pass built its video from added clips, which nothing measured, and began
       // a clip inside the end of an “uh”; the revision the editor then asked for trimmed that join by one frame, into
@@ -2476,7 +2502,7 @@ ${OPS_DOC}`,
       const before = base ? await getTimeline(base) : await headTimelineOrNull();
       if (range && (typeof pictureLayout === "object" || !before || !ops || ops.some(o => o.op !== "rippleDelete" || o.trackIds)))
         throw new Error("A bounded ripple edit takes only rippleDelete ops across all tracks on the existing timeline.");
-      const body: ProposeChangeRequest = { description, noteIds, intent, fromVersion: base, autoApprove: !ctx.taskId && autoApprove === true ? true : undefined, timelineEdits, skipRender,
+      const body: ProposeChangeRequest = { description, reason, noteIds, intent, fromVersion: base, autoApprove: !ctx.taskId && autoApprove === true ? true : undefined, timelineEdits, skipRender,
         ...(withdraws?.length && { withdraws }) };
       const frameChanges: FrameAdjustment[] = [];
       const inset = typeof pictureLayout === "object" ? pictureLayout : undefined;
@@ -2563,14 +2589,15 @@ ${OPS_DOC}`,
       joins: z.array(z.object({ leftClipId: z.string(), rightClipId: z.string() })).min(1),
       duration: z.number().finite().positive().optional().describe("Total overlap in seconds"),
       description: z.string().min(1).default("Smooth the selected dialogue joins"),
+      reason: editReasonInput,
       noteIds: z.array(z.string()).optional(),
     },
-    async ({ intent, joins, duration, description, noteIds }) => {
+    async ({ intent, joins, duration, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
       const { project } = await getProject();
       const before = await getTimeline(base);
       const ops = audioCrossfadeOps(before, project.media, joins, duration ?? 2 / project.settings.fps);
-      return propose({ intent, ops, description, noteIds }, before);
+      return propose({ intent, ops, description, reason, noteIds }, before);
     },
   );
 
@@ -2587,9 +2614,10 @@ ${OPS_DOC}`,
       color: z.string().optional().describe("dip: the colour it passes through, default black"),
       none: z.boolean().optional().describe("Take the transition off: the join is a straight cut again"),
       description: z.string().min(1).default("Transition between clips"),
+      reason: editReasonInput,
       noteIds: z.array(z.string()).optional(),
     },
-    async ({ intent, joins, template, type, duration, direction, color, none, description, noteIds }) => {
+    async ({ intent, joins, template, type, duration, direction, color, none, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
       const { project } = await getProject();
       const before = await getTimeline(base);
@@ -2605,7 +2633,7 @@ ${OPS_DOC}`,
           ...(saved && { template: saved.name }) });
       }
       const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
-      const result = await propose({ intent, ops, description, noteIds }, before);
+      const result = await propose({ intent, ops, description, reason, noteIds }, before);
       return { ...result, content: [...result.content, { type: "text" as const, text: `Joins:\n${report.join("\n")}` }] };
     },
   );
@@ -2633,9 +2661,10 @@ ${OPS_DOC}`,
       audioMediaId: z.string().optional().describe("Separate audio recording synced to the video (same source timebase)"),
       crossfade: z.number().min(0).max(2).optional().describe("Audio fade in/out per clip, seconds"),
       description: z.string().min(1).describe("Description for the reviewer"),
+      reason: editReasonInput,
       noteIds: z.array(z.string()).optional(),
     },
-    async ({ intent, mediaId, keep, layer, audioMediaId, crossfade, description, noteIds }) => {
+    async ({ intent, mediaId, keep, layer, audioMediaId, crossfade, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
       const detail = await getProject();
       const before = base ? await getTimeline(base) : detail.timeline ?? await headTimelineOrNull();
@@ -2713,7 +2742,7 @@ ${OPS_DOC}`,
         const i = rangeOf(tl, e.clipId);
         return edgeInSoundText(e, i < 0 ? `clip ${e.clipId}` : `keep[${i}]`);
       }).join("; ") + `${sounding.length > 12 ? `; and ${sounding.length - 12} more` : ""}. Nothing was saved. Move each edge onto quiet: source seconds here are those of the recording that is heard.`);
-      const result = await propose({ intent, timeline: tl, firstCut: true, description, noteIds }, before);
+      const result = await propose({ intent, timeline: tl, firstCut: true, description, reason, noteIds }, before);
       const total = ranges.reduce((acc, r) => acc + (r.end - r.start), 0);
       // What the layer covers is evidence: a wrong offset or a short recording shows here, before anything is cut.
       const inset = tl.tracks.find(t => t.id === "v2")?.clips ?? [];
@@ -2744,8 +2773,9 @@ ${OPS_DOC}`,
       destination: z.union([z.literal("new"), z.object({ replaceTrackId: z.string().min(1) })]).optional().describe("Create a new caption track or replace the cues of one named caption track."),
       trackName: z.string().optional(),
       description: z.string().min(1).default("Generate captions from the transcript"),
+      reason: editReasonInput,
     },
-    async ({ intent, mediaId, maxWords, maxChars, maxGap, style, destination, trackName, description }) => {
+    async ({ intent, mediaId, maxWords, maxChars, maxGap, style, destination, trackName, description, reason }) => {
       const detail = await client.workspace(ctx.projectId);
       const head = detail.timeline;
       if (!head) throw new Error("The project has no timeline yet; assemble an edit before generating captions.");
@@ -2805,7 +2835,7 @@ ${OPS_DOC}`,
       ops.push({ op: "addTrack", track, ...(target && { index: head.tracks.indexOf(target) }) });
       // The engine validates and applies these generated ops transactionally
       // against this base. Replaying the whole caption track here duplicates it.
-      const result = await propose({ intent, ops, description }, head);
+      const result = await propose({ intent, ops, description, reason }, head);
       // How fast each caption asks to be read, in characters a second: a measurement for the model to judge, not a limit.
       const rates = captionClips.map(c => ({ at: c.timelineIn, cps: c.text.replace(/\s+/g, " ").trim().length / Math.max(c.timelineOut - c.timelineIn, 1e-3), text: c.text }));
       const sortedRates = rates.map(r => r.cps).sort((a, b) => a - b);

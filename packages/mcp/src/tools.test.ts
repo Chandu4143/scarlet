@@ -155,7 +155,8 @@ describe("timeline_transition", () => {
     const c = await connect();
     try {
       await ok(c, "timeline_get");
-      const result = textOf(await ok(c, "timeline_transition", { joins: [{ at: 2 }], template: "$swipe" }));
+      const result = textOf(await ok(c, "timeline_transition", { joins: [{ at: 2 }], template: "$swipe",
+        reason: "The editor selected the swipe for this change of scene." }));
       expect(proposed()[0]!.ops).toEqual([{ op: "updateClip", clipId: second.id, patch: { transitionIn: { type: "push", duration: 0.4, direction: "left", template: "swipe" } } }]);
       expect(result).toContain("Joins:\n0:02.00: push over 0.40 s");
     } finally { await c.close(); }
@@ -166,9 +167,11 @@ describe("timeline_transition", () => {
     try {
       await ok(c, "timeline_get");
       expect(textOf(await call(c, "timeline_transition", { joins: [{ at: 1 }], type: "dissolve" }))).toContain("No join on v1 at 0:01.00. The nearest is at 0:02.00 (2.000 s).");
-      await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], type: "dip", duration: 0.6 });
+      await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], type: "dip", duration: 0.6,
+        reason: "A dip marks the passage of time between scenes." });
       expect(proposed()[0]!.ops[0]!.patch).toEqual({ transitionIn: { type: "dip", duration: 0.6, direction: "left" } });
-      await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], none: true });
+      await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], none: true,
+        reason: "The two angles show continuous action." });
       expect(proposed()[1]!.ops[0]!.patch).toEqual({ transitionIn: null });
     } finally { await c.close(); }
   });
@@ -204,9 +207,10 @@ describe("timeline_crossfade_audio", () => {
     const c = await connect();
     try {
       await ok(c, "timeline_get");
-      const result = JSON.parse(textOf(await ok(c, "timeline_crossfade_audio", { joins: [{ leftClipId: left.id, rightClipId: right.id }] })));
+      const reason = "The abrupt room-tone change makes the join audible.";
+      const result = JSON.parse(textOf(await ok(c, "timeline_crossfade_audio", { joins: [{ leftClipId: left.id, rightClipId: right.id }], reason })));
       const [body] = proposed();
-      expect(body).toMatchObject({ description: "Smooth the selected dialogue joins", fromVersion: "cut" });
+      expect(body).toMatchObject({ description: "Smooth the selected dialogue joins", reason, fromVersion: "cut" });
       const patch = (id: string) => body!.ops.find(op => op.op === "updateClip" && op.clipId === id)!.patch;
       // At 30 fps the overlap is 2/30 s, half of it from each side's handle.
       expect(patch(left.id)).toMatchObject({ timelineIn: 0, sourceIn: 0, sourceOut: expect.closeTo(2 + 1 / 30, 9), audioFadeOut: expect.closeTo(2 / 30, 9) });
@@ -220,7 +224,8 @@ describe("timeline_crossfade_audio", () => {
   it("takes the overlap asked for", async () => {
     const c = await connect();
     try {
-      await ok(c, "timeline_crossfade_audio", { joins: [{ leftClipId: left.id, rightClipId: right.id }], duration: .2, description: "Soften the join" });
+      await ok(c, "timeline_crossfade_audio", { joins: [{ leftClipId: left.id, rightClipId: right.id }], duration: .2, description: "Soften the join",
+        reason: "The editor asked for a longer transition into the answer." });
       const [body] = proposed();
       expect(body!.description).toBe("Soften the join");
       expect(body!.ops.find(op => op.clipId === right.id)!.patch).toMatchObject({ timelineIn: expect.closeTo(1.9, 9), sourceIn: expect.closeTo(2.9, 9), audioFadeIn: .2 });
@@ -568,7 +573,8 @@ describe("what goes to stderr when a read fails and the tool answers without it"
     const c = await connect();
     try {
       const [proposed, read] = await Promise.all([
-        ok(c, "timeline_propose", { intent: "requested", fromVersion: "unmeasured", ops: [{ op: "rippleDelete", start: 2, end: 2.5 }], description: "Tighten the pause." }),
+        ok(c, "timeline_propose", { intent: "requested", fromVersion: "unmeasured", ops: [{ op: "rippleDelete", start: 2, end: 2.5 }],
+          description: "Tighten the pause.", reason: "The half-second gap interrupts the delivery." }),
         (async () => { await new Promise(r => setTimeout(r, 20)); return await ok(c, "notes_list", {}); })(),
       ]);
       expect(proposed.content.at(-1)).toEqual({ type: "text",
@@ -579,7 +585,8 @@ describe("what goes to stderr when a read fails and the tool answers without it"
       expect(logged()).toContain("[scarlet-mcp] failed to measure the edit's new clip edges: Scarlet server error 500 (engine_error): The waveform cache is locked.");
       // A call that measured everything ends with its own answer.
       mock.state.extra = undefined;
-      const clean = await ok(c, "timeline_propose", { intent: "requested", fromVersion: "unmeasured", ops: [{ op: "rippleDelete", start: 2, end: 2.5 }], description: "Tighten the pause." });
+      const clean = await ok(c, "timeline_propose", { intent: "requested", fromVersion: "unmeasured", ops: [{ op: "rippleDelete", start: 2, end: 2.5 }],
+        description: "Tighten the pause.", reason: "The half-second gap interrupts the delivery." });
       expect(textOf(clean)).not.toContain("Not measured");
     } finally { await c.close(); }
   });

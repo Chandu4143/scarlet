@@ -385,7 +385,7 @@ interface PassCall { index: number; askOrder?: number;
   start: number;
   /** Where its cut is on the working cut. None while it isn't there as it was staged, so nothing on the timeline is its. */
   at?: number;
-  reason: string; state: CallState; version: number;
+  summary: string; state: CallState; version: number;
   /** The request about this cut that Scarlet is on, or the next one waiting, while it's sent back. */
   run?: Task;
   /** What the last version was and the note that sent it back, for a revised call. */
@@ -569,18 +569,18 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       const word = sent ? "Revising…" : revised ? REVISED_CHECK : undefined;
       const at = (e as ThreadEdit).at ?? e.range.start;
       // Listed with the calls, it has the number it has among them.
-      return [{ key, at, mark: at as number | undefined, hover: { threadId: thread.id, editKey: key }, label: e.label, n: 0, num: pass?.editNumbers.get(key)?.n,
+      return [{ key, at, mark: at as number | undefined, hover: { threadId: thread.id, editKey: key }, label: (e.reason && e.summary) || e.label, n: 0, num: pass?.editNumbers.get(key)?.n,
         state: word, value: editRemoved(e) ?? editKindWord(e), word, revised,
         // Scarlet is on that revision now, so its word moves; one still waiting its turn sits still.
         busy: isWorking(sent),
         needs: !!e.check && !seen && !sent, sentBack: !!e.check && !seen && !!sent,
         // Ticked once the editor has kept it: a flagged edit they reviewed, or any edit they pressed Keep on.
         decided: (!!e.check && seen) || kept.has(reviewKey(e)),
-        version: e.previous.length ? e.previous.length + 1 : 0, title: revised ? undefined : e.check,
+        version: e.previous.length ? e.previous.length + 1 : 0, title: revised || e.reason ? undefined : e.check,
         on: !!showing && matchesEdit(showing, e), open: () => actions.openEdit(thread, e), fresh: fresh.has(e.changeId) }];
     }),
     // A call goes by its number, as on its card and on the timeline.
-    ...(pass?.calls ?? []).map(c => ({ key: callRowKey(c), at: c.start, mark: c.at, hover: { threadId: thread.id, call: c.index }, label: c.reason, n: c.n, num: c.n as number | undefined, needs: c.state === "open", sentBack: c.state === "revising",
+    ...(pass?.calls ?? []).map(c => ({ key: callRowKey(c), at: c.start, mark: c.at, hover: { threadId: thread.id, call: c.index }, label: c.summary, n: c.n, num: c.n as number | undefined, needs: c.state === "open", sentBack: c.state === "revising",
       decided: c.state === "approved" || c.state === "skipped",
       state: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : c.version > 1 ? `v${c.version}` : undefined,
       value: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : undefined,
@@ -2113,7 +2113,7 @@ export function SimpleWorkspace() {
       const past = revisionInput?.index === a.index ? history.slice(0, -1) : history;
       const edit = overrideForCall(a.index);
       const at = edit ? (edit.version === head ? edit.range.start : undefined) : placeCut(a)?.start;
-      return { index: a.index, askOrder: a.askOrder, n: callNo.get(a.index)!, start: listedAt.get(a.index)!, at, reason: a.reason, version: past.length + 1, earlier: past.at(-1),
+      return { index: a.index, askOrder: a.askOrder, n: callNo.get(a.index)!, start: listedAt.get(a.index)!, at, summary: a.summary || a.reason, version: past.length + 1, earlier: past.at(-1),
         run: cutRuns.get(a.index),
         state: sentBack(a.index) ? "revising" : passChoices[a.index] === undefined ? "open" : passChoices[a.index] === approves(a) ? "approved" : "skipped" };
     }),
@@ -2738,7 +2738,7 @@ export function SimpleWorkspace() {
           ones still to check is on hover. Any other flagged edit leads with that place. */}
       {shownPassNo ? <span className="edit-card-count" title={editPlace >= 0 ? `${editPlace + 1} of ${flaggedRows.length} still to check` : undefined}>{shownPassNo}</span>
         : editPlace >= 0 && <span className="edit-card-count" title="Edits still to check">{editPlace + 1} of {flaggedRows.length}</span>}
-      {/* The note is Scarlet's sentence on what the edit did and nothing else, flagged or not: no amber, no second part. */}
+      {/* The note explains the choice and includes any cue for the editor to check. */}
       {/* It's on up to two lines, so an edit with a short note is a single line. A clipped note opens on a click. */}
       <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit)} />
       {!beforeCut && shownKind && <span className={reviewingEdit.kind === "restore" ? "edit-card-length is-added" : "edit-card-length is-kind"}>{shownKind}</span>}
@@ -2818,10 +2818,13 @@ export function SimpleWorkspace() {
 
   // A suggestion that isn't a dialogue pass opens the same card on top of the timeline, as the same single row:
   // Scarlet's words for it, the Before icon, then Revise (R) and Apply (A). Esc closes it.
+  const suggestionNote = suggestion && (suggestion.reason
+    || [...new Set(suggestion.timelineEdits?.flatMap(edit => edit.reason ? [edit.reason] : []))].join(" ")
+    || suggestion.description);
   const suggestCard = !editOpen && !callCard && suggestion && suggestionThread ? <section className="edit-card is-suggestion" role="region" aria-label="Suggestion">
     {stripError && <p className="text-bad" role="alert">{stripError}</p>}
     <div className="edit-card-bar">
-      <EditNote key={suggestion.id} text={suggestion.description} />
+      <EditNote key={suggestion.id} text={suggestionNote!} />
       <span className="edit-card-side">
         <BeforeToggle on={side === "before"} shortcutActive={workspaceActive}
           toggle={() => setSide(side === "after" ? "before" : "after")} />

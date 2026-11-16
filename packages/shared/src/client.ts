@@ -437,7 +437,7 @@ export class ScarletClient {
   proposeChangeSummary(projectId: string, body: ProposeChangeRequest) {
     // Older engines return the full response when they receive the summary query.
     return this.post<{
-      change: Pick<Change, "id" | "state" | "description" | "fromVersion" | "toVersion" | "ranges" | "timelineEdits">;
+      change: Pick<Change, "id" | "state" | "description" | "reason" | "fromVersion" | "toVersion" | "ranges" | "timelineEdits">;
       duration?: number; diffDescription?: string[]; timeline?: Timeline;
       /** Removals inside a selected passage the engine put on whole frames. Older engines omit it. */
       onWholeFrames?: Array<{ asked: [number, number]; removed: [number, number] }>;

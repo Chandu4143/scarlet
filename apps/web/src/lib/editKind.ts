@@ -11,12 +11,13 @@ export function editKindWord(edit: Pick<ThreadEdit, "kind">): string | undefined
   return edit.kind && WORDS[edit.kind];
 }
 
-/**
- * The one note an applied edit's card shows: Scarlet's sentence on what the edit did. An edit saved before Scarlet wrote
- * one reads as its title, then its reason to look, as plain text.
- */
-export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary"> & Pick<Partial<ThreadEdit>, "recheck">): string {
-  // A doubt raised once the edit was in the video isn't in the sentence Scarlet wrote as it made it, so it follows.
+/** The card shows why Scarlet made the edit, followed by any cue for the editor to check. */
+export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck">): string {
+  if (edit.reason) {
+    if (!edit.check || edit.reason.includes(edit.check)) return edit.reason;
+    return `${/[.!?]$/.test(edit.reason) ? edit.reason : `${edit.reason}.`} ${edit.check}`;
+  }
+  // Older summaries may already include the original review cue. A later doubt still needs to be shown.
   if (edit.summary && edit.recheck && edit.check) return `${edit.summary.replace(/[.!?]*$/, ".")} ${edit.check.replace(/[.!?]*$/, ".")}`;
   if (edit.summary) return edit.summary;
   return edit.check ? `${edit.label.replace(/[.!?]+$/, "")}. ${edit.check}` : edit.label;

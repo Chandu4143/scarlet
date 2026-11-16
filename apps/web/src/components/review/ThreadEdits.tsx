@@ -261,6 +261,7 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
       // A cut says how much came out; any other edit says what it did, or in how many places.
       const value = places > 1 ? `${places} places` : removedLabel(edit) ?? editKindWord(edit);
       const check = places > 1 ? needs > 0 : !!edit.check && !isRevising;
+      const title = (edit.reason && edit.summary) || edit.label;
       // One that came back revised with no reason from Scarlet says so on its row until it is kept: its card has no
       // sentence for that.
       const revised = edit.check === REVISED_CHECK && !reviewed(edit) && !isRevising;
@@ -271,10 +272,10 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
         onPointerEnter={() => onHover?.(edit)} onPointerLeave={() => onHover?.()}
         // Why an edit asks for a look is on its card, in Scarlet's sentence. Its row keeps to the amber number and says
         // the reason on hover, as a pass's row does.
-        title={revised ? undefined : edit.check}
-        aria-label={`Edit ${n}: ${edit.label}${places > 1 ? `, ${places} places` : ""}${isRevising ? ", revising" : isKept ? ", kept" : check ? ", check" : ""}`}>
+        title={revised || edit.reason ? undefined : edit.check}
+        aria-label={`Edit ${n}: ${title}${places > 1 ? `, ${places} places` : ""}${isRevising ? ", revising" : isKept ? ", kept" : check ? ", check" : ""}`}>
         <EditBadge n={n} kept={isKept} check={check} />
-        <span className="simple-edit-title">{edit.label}{version > 0 && places === 1 && <EditVersion n={version} />}</span>
+        <span className="simple-edit-title">{title}{version > 0 && places === 1 && <EditVersion n={version} />}</span>
         {value && <span className="simple-edit-value">{value}</span>}
         {isRevising ? <span className={busy ? "simple-edit-check is-kept working-text" : "simple-edit-check is-kept"}>Revising…</span>
           : revised && <span className="simple-edit-check">{edit.check}</span>}

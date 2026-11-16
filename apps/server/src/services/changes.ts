@@ -7,6 +7,7 @@ import { agentTarget, beginRevision, buildThreads, threadTimeline, type ApproveR
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
+  SUMMARY_MAX,
   clipEnd,
   crossfadeJoins,
   type JoinFades,
@@ -618,7 +619,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       if (protectedSlot && clashes)
         throw conflict("cut_changed", "Two earlier review slots now cover the same footage. Their existing reviews are still saved.");
       if (!choice && (clashes || planned.some(c => overlaps(outer(c), outer(r))))) continue;
-      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, ...(r.held && { held: r.held }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
+      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, summary: r.summary, ...(r.held && { held: r.held }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
         ...(r.kind && { kind: r.kind }), ...(r.legacySuggest && { legacySuggest: true }), ...((current || protectedSlot) && { preserveEdges: true }), protectedSlot, ...(recoveredCuts.has(r) && { recovered: true }),
         ...(assessment && { assessment }), ...(choice && !lapsed ? { choice } : { asked: { start: r.start, end: r.end }, ...(lapsed && { lapsed }) }) });
     }
@@ -734,7 +735,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     const changes: Change[] = [];
     if (applied.length) {
       const { change } = persistProposal(ctx, user, projectId, { fromVersion: head, intent: "requested", ops: ops(applied),
-        description: whole && own ? own : describeDialogueRemovals(applied), taskId, author, noteIds }, ids[0], applied.map(({ start, end, reason, kind, crossfade, check }) => ({ start, end, reason, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(check && { check }) })));
+        description: whole && own ? own : describeDialogueRemovals(applied), taskId, author, noteIds }, ids[0], applied.map(({ start, end, reason, summary, kind, crossfade, check }) => ({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(check && { check }) })));
       if (change.state !== "approved") throw conflict("cut_changed", "The confident cuts could not be applied to this version.");
       changes.push(change);
       version = change.appliedVersion ?? change.toVersion;
@@ -742,7 +743,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     // Staged cuts the editor hasn't called that now sit against footage they chose to keep. Their call covers them.
     const joined: TimeRange[] = [];
     if (optional.length) {
-      const reasons = optional.map(({ start, end, reason, originalRange, kind, crossfade, legacySuggest, held }) => ({ start, end, reason, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }) }));
+      const reasons = optional.map(({ start, end, reason, summary, originalRange, kind, crossfade, legacySuggest, held }) => ({ start, end, reason, summary, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }) }));
       const { change } = persistProposal(ctx, user, projectId, { fromVersion: version, intent: "suggestion", autoApprove: false,
         ops: ops(optional), description: whole && own ? own : `Review ${optional.length} optional dialogue ${optional.length === 1 ? "cut" : "cuts"}`,
         taskId, author, noteIds }, ids[1], reasons, { fold });
@@ -761,10 +762,13 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       const listed = assessed || optional.some(c => c.choice || c.recovered || c.lapsed) ? prepareCutReview(ctx, change).review?.cuts ?? [] : [];
       const within = ({ start, end }: TimeRange) => optional.filter(c => covers({ start, end }, c));
       // A replaced assessment still needs a recommendation on its new footage before the editor sees it.
-      const ask = (index: number, { start, end }: TimeRange): CutAssessment => ({
-        index, start, end, verdict: "ask", provisional: true,
-        reason: [...new Set(within({ start, end }).map(c => c.reason))].join(" ").slice(0, 800).trim() || "No note was saved for this cut.",
-      });
+      const ask = (index: number, { start, end }: TimeRange): CutAssessment => {
+        const parts = within({ start, end });
+        const summaries = [...new Set(parts.map(c => c.summary))];
+        return { index, start, end, verdict: "ask", provisional: true,
+          summary: summaries.every(Boolean) ? summaries.join(" ").slice(0, SUMMARY_MAX).trim() || undefined : undefined,
+          reason: [...new Set(parts.map(c => c.reason))].join(" ").slice(0, 800).trim() || "No note was saved for this cut." };
+      };
       for (const [index, { removed: { start, end } }] of listed.entries()) {
         const inside = within({ start, end });
         if (inside.some(c => c.recovered)) {
@@ -903,7 +907,7 @@ export function passToRevise(ctx: Ctx, named: Change, taskId: string | undefined
 export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex: number, body: StagedCutRevision, checkAttempt?: () => void) {
   // The pass is saved bare, then with its notes and the editor's calls: a window is told of it once, complete.
   const result = ctx.db.transaction(() => ctx.bus.asSaved(() => {
-    const { reason, taskId, author, noteIds } = body;
+    const { reason, summary, taskId, author, noteIds } = body;
     checkAttempt?.();
     let project = ctx.repos.projects.get(named.projectId);
     if (!project) throw notFound("project");
@@ -1018,7 +1022,7 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
       const duration = r.crossfade ?? change.joinFades?.duration;
       return duration ? { ...r, crossfade: duration } : r;
     });
-    cutReasons.push({ start, end, reason, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }) });
+    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }) });
     cutReasons.sort((a, b) => a.start - b.start);
     const { change: revised } = persistProposal(ctx, user, change.projectId, { fromVersion: change.fromVersion, intent: "suggestion", autoApprove: false,
       ops: [...ranges].reverse().map(r => ({ op: "rippleDelete" as const, start: r.start, end: r.end })),
@@ -1067,7 +1071,7 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     const sentBack = scoped || was?.revised;
     // Moving an unchecked candidate invalidates its assessment. Only a recommendation on the new footage publishes it.
     const provisional = verdict === "ask" && autonomous;
-    const updated: CutAssessment = { index, start, end, verdict, reason, ...(provisional && { provisional: true }),
+    const updated: CutAssessment = { index, start, end, verdict, reason, summary, ...(provisional && { provisional: true }),
       ...(verdict === "ask" && sentBack && { revised: true }), ...(keepsForEditor && { proposes: "keep" as const }), ...(was?.askOrder && { askOrder: was.askOrder }) };
     const cutAssessments = [...assessments.filter(a => a.index !== index), updated].sort((a, b) => a.index - b.index);
     const decided = new Set(cutChoices.map(c => c.index));
@@ -1336,6 +1340,7 @@ function persistProposal(ctx: Ctx, user: User, projectId: string, body: ProposeC
     cutReasons,
     joinFades,
     description: body.description,
+    reason: body.reason,
     author,
     noteIds: body.noteIds ?? [],
     ranges: diff.ranges,
@@ -1664,9 +1669,11 @@ function recheckApprovedCut(ctx: Ctx, project: Project, change: Change, review: 
   const { index, range, reason } = at;
   const removed = review.cuts[index]!.removed;
   const former = change.cutAssessments?.find(a => a.index === index);
+  const proposed = change.cutReasons?.find(c => c.start >= removed.start - 1e-6 && c.start < removed.end);
   const assessments = [...(change.cutAssessments ?? []).filter(a => a.index !== index), {
     index, ...removed, verdict: "ask" as const, ...(former?.revised && { revised: true }), ...(former?.proposes && { proposes: former.proposes }), ...(former?.askOrder && { askOrder: former.askOrder }),
-    reason: former?.reason ?? change.cutReasons?.find(c => c.start >= removed.start - 1e-6 && c.start < removed.end)?.reason ?? "No note was saved for this cut." }];
+    summary: former?.summary ?? proposed?.summary,
+    reason: former?.reason ?? proposed?.reason ?? "No note was saved for this cut." }];
   const checked = { ...change, cutChoices: choices.filter(c => c.index !== index), cutAssessments: assessments.sort((a, b) => a.index - b.index) };
   const prior = change.taskId ? ctx.repos.tasks.get(change.taskId) : undefined;
   const task = createTask(ctx, { projectId: project.id, kind: "revise", agent: prior?.agent ?? ctx.settings().defaultAgent,
@@ -1845,7 +1852,7 @@ export function approveChange(ctx: Ctx, user: User, change: Change, opts: { spot
     if (!review) throw badRequest("cuts_unsupported", "This proposal has no individually restorable cuts.");
     if (unchanged) {
       if (!draft) throw badRequest("cuts_unsupported", "This proposal has no individually restorable cuts.");
-      appliedReview = appliedCutReview(review, opts.restoredCuts);
+      appliedReview = appliedCutReview(review, opts.restoredCuts, !!change.timelineEdits?.length);
       target = draft.version;
       // With every cut applied the draft is the proposal, faded as `joinFades` says.
       if (target !== change.toVersion) appliedJoinFades = joinFades ?? (opts.restoredCuts.length ? noFades() : change.joinFades);
@@ -2140,11 +2147,13 @@ export function cutRevisionReference(change: Change, position: ReviseRequest["po
   const span = edit ? `, at ${edit.range.start.toFixed(2)}–${edit.range.end.toFixed(2)} s on version ${edit.version}`
     : start !== undefined && end !== undefined ? `, removing ${start.toFixed(2)}–${end.toFixed(2)} s` : "";
   const proposed = start !== undefined && end !== undefined
-    ? change.cutReasons?.find(r => r.start < end + 0.01 && r.end > start - 0.01)?.reason : undefined;
+    ? change.cutReasons?.find(r => r.start < end + 0.01 && r.end > start - 0.01) : undefined;
   const lines = [`This feedback is about one staged cut only: cut index ${index} of change ${change.id}${span}. Leave the other cuts as they are.`];
   const marked = markedPart(position, start, end);
   if (marked) lines.push(marked);
-  if (proposed) lines.push(`Why this cut was proposed: "${proposed.trim()}"`);
+  const summary = assessment?.summary ?? proposed?.summary;
+  if (summary) lines.push(`Summary shown in chat: "${summary}"`);
+  if (proposed?.reason) lines.push(`Why this cut was proposed: "${proposed.reason.trim()}"`);
   if (assessment) lines.push(`Review note on this cut (${assessment.verdict}): "${assessment.reason.trim()}"`);
   return `\n\n${lines.join("\n")}`;
 }

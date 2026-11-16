@@ -1,8 +1,7 @@
 import type { EditKind, ThreadEdit } from "@scarlet/shared";
-import { editNote } from "./editKind";
 import { plural } from "./format";
 
-type Listed = Pick<ThreadEdit, "label" | "beforeCut" | "kind" | "summary" | "check" | "elsewhere">;
+type Listed = Pick<ThreadEdit, "label" | "beforeCut" | "kind" | "summary" | "elsewhere">;
 
 /** A stretch of the sentence: plain words, or a figure that reads in bold. */
 export type SentencePart = string | { strong: string };
@@ -38,7 +37,7 @@ export function madeSentence(listed: readonly Listed[], length: (seconds: number
   if (!cuts.length && !others.length) return [];
   if (cuts.length + others.length === 1) {
     const only = cuts[0] ?? others[0]!.edit, many = others[0]?.places ?? 1;
-    const said = editNote(only).trim();
+    const said = (only.summary || only.label).trim();
     if (many === 1) return [/[.!?]$/.test(said) ? said : `${said}.`];
     return [`${only.label.replace(/[.!?]+$/, "")}, in `, { strong: plural(many, "place") }, "."];
   }

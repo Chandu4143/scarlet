@@ -197,6 +197,7 @@ describe("timeline_first_cut", () => {
         audioMediaId: "m2",
         crossfade: 0.066,
         description: "First cut: drop the um and the repeated welcome.",
+        reason: "The second welcome continues directly into the topic.",
       },
     })) as CallToolResult;
     expect(r.isError).toBeFalsy();
@@ -208,6 +209,7 @@ describe("timeline_first_cut", () => {
     expect(body.author).toMatchObject({ type: "agent", name: "claude", model: "opus" });
     expect(body.taskId).toBe("task_1");
     expect(body.intent).toBe("requested");
+    expect(body.reason).toBe("The second welcome continues directly into the topic.");
     expect(body.ops).toBeUndefined();
     expect(body.timeline!.tracks[0]!.clips.length).toBe(2);
     expect(body.timeline!.tracks[1]!.clips.length).toBe(2);
@@ -233,7 +235,8 @@ describe("timeline_first_cut", () => {
     const head = mock.state.timeline;
     try {
       const call = (layer: object, more: object = {}) => client.callTool({ name: "timeline_first_cut", arguments: { intent: "requested", mediaId: "m1",
-        keep: [{ start: 0, end: 120 }], layer, description: "Lay out the screen with the camera inset.", ...more } }) as Promise<CallToolResult>;
+        keep: [{ start: 0, end: 120 }], layer, description: "Lay out the screen with the camera inset.",
+        reason: "Keep the presenter visible while the screen shows the demonstration.", ...more } }) as Promise<CallToolResult>;
       const posts = () => mock.requests.filter(q => q.method === "POST" && q.path === "/projects/prj_test/changes");
       const sent = posts().length;
       const r = await call({ mediaId: "cam", offset: 2, sound: true });
@@ -317,7 +320,7 @@ describe("timeline_first_cut indexed keeps", () => {
     const editor = await connectEditor();
     try {
       const result = await editor.callTool({ name: "timeline_first_cut", arguments: {
-        intent: "requested", mediaId: "m1", audioMediaId: "m2", description: "Keep the three points.",
+        intent: "requested", mediaId: "m1", audioMediaId: "m2", description: "Keep the three points.", reason: "The three points are clear without the intervening filler.",
         keep: [{ fromWord: 0, toWord: 1, start: 0.1 }, { fromWord: 3, toWord: 3 }, { fromWord: 4, toWord: 5, end: 6.3 }],
       } }) as CallToolResult;
       expect(result.isError, textOf(result)).toBeFalsy();
@@ -378,7 +381,7 @@ describe("timeline_first_cut indexed keeps", () => {
   it("requires explicit boundaries at a reorder or a visual passage and preserves their supplied order", async () => {
     const editor = await connectEditor();
     const call = (keep: object[]) => editor.callTool({ name: "timeline_first_cut", arguments: {
-      intent: "requested", mediaId: "m1", description: "Show the closing words before the opening.", keep,
+      intent: "requested", mediaId: "m1", description: "Show the closing words before the opening.", reason: "The closing words introduce the stakes.", keep,
     } }) as Promise<CallToolResult>;
     const changes = () => mock.requests.filter(r => r.method === "POST" && r.path === "/projects/prj_test/changes");
     try {
@@ -399,7 +402,7 @@ describe("timeline_first_cut indexed keeps", () => {
     mock.state.waveform = spokenWaveform;
     try {
       const result = await editor.callTool({ name: "timeline_first_cut", arguments: {
-        intent: "requested", mediaId: "m1", description: "Keep this phrase.",
+        intent: "requested", mediaId: "m1", description: "Keep this phrase.", reason: "The phrase carries the thought through to the next sentence.",
         keep: [{ fromWord: 4, toWord: 5 }, { fromWord: 6, toWord: 8 }],
       } }) as CallToolResult;
       expect(result.isError, textOf(result)).toBeFalsy();
@@ -416,12 +419,32 @@ describe("timeline_first_cut indexed keeps", () => {
 });
 
 describe("timeline_propose", () => {
+  it("requires a reason for a new agent edit and keeps it separate from the chat summary", async () => {
+    const description = "Mark the highlight.";
+    const ops = [{ op: "addMarker", marker: { id: "highlight", time: 1, text: "Highlight" } }];
+    const args = { intent: "requested", description, ops };
+    const propose = (extra: object = {}) => client.callTool({ name: "timeline_propose", arguments: { ...args, ...extra } }) as Promise<CallToolResult>;
+    const missing = await propose();
+    expect(missing.isError).toBe(true);
+    expect(textOf(missing)).toContain("Give reason for the change");
+    const named = { label: "Mark the highlight", range: { start: 1, end: 1 }, summary: "Marked the highlight at 0:01." };
+    const missingNamed = await propose({ timelineEdits: [named] });
+    expect(missingNamed.isError).toBe(true);
+    expect(textOf(missingNamed)).toContain("timelineEdits[0].reason");
+    expect(mock.requests.some(r => r.method === "POST" && r.path.endsWith("/changes"))).toBe(false);
+    const reason = "This is where the guest explains the result viewers came for.";
+    const saved = await propose({ timelineEdits: [{ ...named, reason }] });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+    const request = mock.requests.find(r => r.method === "POST" && r.path.endsWith("/changes"));
+    expect(ProposeChangeRequest.parse(request!.body)).toMatchObject({ description, timelineEdits: [{ ...named, reason }] });
+  });
+
   it("reuses the timeline it read for a proposal while fresh head reads still reach the engine", async () => {
     const c = await connect();
     try {
       await c.callTool({ name: "timeline_get", arguments: {} });
       const result = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested",
-        description: "Add marker", ops: [{ op: "addMarker", marker: { id: "note", time: 1, text: "test" } }],
+        description: "Add marker", reason: "The editor wants a marker at 0:01.", ops: [{ op: "addMarker", marker: { id: "note", time: 1, text: "test" } }],
       } });
       expect(result.isError).toBeFalsy();
       const reads = () => mock.requests.filter(r => r.method === "GET" && r.path.endsWith("/timeline"));
@@ -441,7 +464,7 @@ describe("timeline_propose", () => {
       const first = await c.callTool({ name: "timeline_get", arguments: {} });
       expect(first.isError).toBeFalsy();
       const result = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested",
-        description: "First marker", ops: [{ op: "setTimeline", patch: { name: "New cut" } }],
+        description: "First marker", reason: "The editor asked to name this version New cut.", ops: [{ op: "setTimeline", patch: { name: "New cut" } }],
       } });
       expect(result.isError).toBeFalsy();
       expect(mock.requests.some((r) => r.query.get("version") === "draft")).toBe(false);
@@ -457,7 +480,8 @@ describe("timeline_propose", () => {
     // At 30 fps: 0.987 s is short of frame 30 and 1.513 s is past frame 45, so frames 30 to 45 come out: 1.0 to 1.5 s.
     const r = (await client.callTool({
       name: "timeline_propose",
-      arguments: { intent: "requested", ops: [{ op: "rippleDelete", start: 0.987, end: 1.513 }], description: "Tighten the pause after hello." },
+      arguments: { intent: "requested", ops: [{ op: "rippleDelete", start: 0.987, end: 1.513 }], description: "Tighten the pause after hello.",
+        reason: "The quiet beat delays the start of the introduction." },
     })) as CallToolResult;
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain("Duration 3.70 → 3.20");
@@ -517,7 +541,7 @@ describe("timeline_propose", () => {
     mock.state.timeline = tl;
     const c = await connect(taskId);
     try {
-      const r = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Tighten the pauses", ops, ...options } }) as CallToolResult;
+      const r = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Tighten the pauses", reason: "The editor wants a quicker pace.", ops, ...options } }) as CallToolResult;
       expect(r.isError, textOf(r)).toBeFalsy();
       const post = mock.requests.findLast(q => q.method === "POST" && q.path === "/projects/prj_test/changes")!;
       return { sent: (post.body as { ops: Array<{ start: number; end: number }> }).ops,
@@ -631,7 +655,7 @@ describe("timeline_propose", () => {
     const { bases, call, close } = await threeVersions();
     /** The version an edit with no fromVersion is proposed against. */
     const base = async () => {
-      await call("timeline_propose", { description: "Mark the spot", ops: [{ op: "addMarker", marker: { id: "spot", time: 1, text: "here" } }] });
+      await call("timeline_propose", { description: "Mark the spot", reason: "Save the place where the question starts.", ops: [{ op: "addMarker", marker: { id: "spot", time: 1, text: "here" } }] });
       return bases.at(-1);
     };
     try {
@@ -961,10 +985,11 @@ describe("timeline_at and captions_generate", () => {
 
   it("builds caption clips mapped through the cut, dropping cut words", async () => {
     const base = mock.state.timeline!.version;
-    const r = (await client.callTool({ name: "captions_generate", arguments: { intent: "requested", mediaId: "m1", maxWords: 3, description: "captions" } })) as CallToolResult;
+    const reason = "The editor wants the dialogue to be readable with the sound off.";
+    const r = (await client.callTool({ name: "captions_generate", arguments: { intent: "requested", mediaId: "m1", maxWords: 3, description: "captions", reason } })) as CallToolResult;
     expect(r.isError, textOf(r)).toBeFalsy();
     const post = mock.requests.find((q) => q.method === "POST" && q.path === "/projects/prj_test/changes")!;
-    expect(post.body).toMatchObject({ fromVersion: base });
+    expect(post.body).toMatchObject({ fromVersion: base, reason });
     const ops = (post.body as { ops: Array<{ op: string; track?: { clips: Array<{ text: string; timelineIn: number; words: unknown[] }> } }> }).ops;
     const add = ops.find((o) => o.op === "addTrack")!;
     const texts = add.track!.clips.map((c) => c.text);
@@ -990,7 +1015,7 @@ describe("timeline_at and captions_generate", () => {
     // A session keeps the words it has read, and the shared one has read both recordings. This one has read none.
     const fresh = await connect("task_1");
     try {
-      const result = await fresh.callTool({ name: "captions_generate", arguments: { intent: "requested", destination: "new" } }) as CallToolResult;
+      const result = await fresh.callTool({ name: "captions_generate", arguments: { intent: "requested", destination: "new", reason: "The editor asked for captions on a new track." } }) as CallToolResult;
       expect(result.isError, textOf(result)).toBeFalsy();
       expect(prepared.length).toBeGreaterThan(0);
     } finally {
@@ -1014,7 +1039,7 @@ describe("timeline_at and captions_generate", () => {
       const choice = JSON.parse(textOf(await generate({})));
       expect(choice.captionTracks.map((t: { id: string }) => t.id)).toEqual(["en", "fr"]);
       expect(mock.requests.some(r => r.path.endsWith("/changes"))).toBe(false);
-      expect((await generate({ destination: { replaceTrackId: "en" }, style: { fontSize: .07 } })).isError).toBeFalsy();
+      expect((await generate({ destination: { replaceTrackId: "en" }, style: { fontSize: .07 }, reason: "Larger English captions are easier to read." })).isError).toBeFalsy();
       expect(mock.requests.find(r => r.path.endsWith("/changes"))?.body).toMatchObject({ ops: [
         { op: "removeTrack", trackId: "en" },
         { op: "addTrack", index: 2, track: { id: "en", name: "English", hidden: true, captionStyle: { y: .2, fontSize: .07 } } },
@@ -2167,7 +2192,7 @@ it("reinspects an overlapping cut on the current version and reports the placeme
     res.end(JSON.stringify(result));
     return true;
   };
-  const request = { changeId: "pass", index: 0, start: 2, end: 3, reason: "Keep the second take." };
+  const request = { changeId: "pass", index: 0, start: 2, end: 3, summary: "Trim the first take.", reason: "The second delivery finishes the thought." };
   const move = (extra: object = {}) => editor.callTool({ name: "dialogue_revise_cut", arguments: { ...request, ...extra } }) as Promise<CallToolResult>;
   try {
     const blocked = await move();
@@ -2181,7 +2206,7 @@ it("reinspects an overlapping cut on the current version and reports the placeme
     expect(textOf(inspected)).toContain("welcome");
     const saved = await move({ version: "current" });
     expect(saved.isError).toBeFalsy();
-    expect(saves.at(-1)).toMatchObject({ version: "current", start: 2, end: 3 });
+    expect(saves.at(-1)).toMatchObject({ version: "current", start: 2, end: 3, summary: request.summary, reason: request.reason });
     expect(JSON.parse(textOf(saved))).toMatchObject({ changeId: "new", version: "current", start: 2.1, end: 3, previewVersion: "new-preview" });
     // A scoped keep can settle an unlocatable cut without inventing its current position.
     const kept = JSON.parse(textOf(await move({ keep: true })));
@@ -3032,7 +3057,7 @@ it("counts a silence as decided when its keep names words or its range is protec
     return JSON.parse(textOf(r));
   };
   const pause = { kind: "pause", reason: "He is typing the note." };
-  const cut = { ...pause, start: 6.1, end: 6.8, decision: "cut" };
+  const cut = { ...pause, start: 6.1, end: 6.8, decision: "cut", summary: "Shorten the pause before signatures." };
   try {
     // The tool reports the quiet gap and submits only the requested removal.
     const alone = await apply(cut);
@@ -3043,7 +3068,7 @@ it("counts a silence as decided when its keep names words or its range is protec
     // Marked for removal but protected for what the picture does: Scarlet keeps it, and it is decided.
     const guarded = await apply({ ...pause, start: 1.6, end: 4.8, decision: "cut", picture: "protect" }, cut);
     expect(guarded.keptSilences).toBeUndefined();
-    const mine = expect.objectContaining({ start: 6.1, end: 6.8, review: false });
+    const mine = expect.objectContaining({ start: 6.1, end: 6.8, review: false, summary: cut.summary, reason: cut.reason });
     expect(mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).map(r => (r.body as { cuts: unknown[] }).cuts)).toEqual([
       [mine], [mine], [mine]]);
   } finally {
@@ -3064,10 +3089,10 @@ it("keeps ordinary timeline tools available after opening a workflow or running 
   mock.state.timeline = tl;
   try {
     expect((await editor.callTool({ name: "skills_list", arguments: { skillId: "guide" } })).isError).toBeFalsy();
-    expect((await editor.callTool({ name: "timeline_propose", arguments: { intent: "suggestion", description: "Shorten this take",
+    expect((await editor.callTool({ name: "timeline_propose", arguments: { intent: "suggestion", description: "Shorten this take", reason: "The pause interrupts the sentence.",
       ops: [{ op: "rippleDelete", start: 1, end: 2 }] } })).isError).toBeFalsy();
     expect((await editor.callTool({ name: "timeline_first_cut", arguments: { intent: "alternative", mediaId: "m1",
-      keep: [{ start: .5, end: 1 }, { start: 2, end: 5 }], description: "Alternate assembly" } })).isError).toBeFalsy();
+      keep: [{ start: .5, end: 1 }, { start: 2, end: 5 }], description: "Alternate assembly", reason: "This version gets straight to the answer." } })).isError).toBeFalsy();
   } finally { Object.assign(mock.state, previous); await editor.close(); }
 });
 
@@ -3098,7 +3123,7 @@ it("accepts only bounded pause decisions for the local dialogue shortcut", async
     expect(textOf(retake)).toContain("Remove the retake decisions.");
     expect(textOf(await call({ range, cuts: [{ ...range, kind: "pause", decision: "keep", reason: "Intentional beat" }] }) as CallToolResult)).toContain("preserved");
     const ripple = (ops: object[]) => scoped.callTool({ name: "timeline_propose", arguments: {
-      range, ops, intent: "suggestion", description: "Tighten the selected exchange",
+      range, ops, intent: "suggestion", description: "Tighten the selected exchange", reason: "The selected silence slows the exchange.",
     } });
     expect((await ripple([{ op: "rippleDelete", start: .6, end: 1.2 }, { op: "rippleDelete", start: 1.7, end: 1.9 }])).isError).toBe(true);
     expect(textOf(await ripple([{ op: "rippleDelete", start: .8, end: 1.2 }]))).toContain("classified pauses");
@@ -3177,7 +3202,7 @@ it("lets a request sent from an applied edit cut outside where that edit plays, 
   const sentence = { start: 3, end: 8 };
   const cuts = (editor: Client, extra: object = {}) => editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the sentence before the cut",
     cuts: [{ ...sentence, kind: "retake", decision: "cut", reason: "The sentence before the cut." }], ...extra } }) as Promise<CallToolResult>;
-  const ripple = (editor: Client) => editor.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Remove the sentence before the cut",
+  const ripple = (editor: Client) => editor.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Remove the sentence before the cut", reason: "The editor asked to remove the preceding sentence.",
     ops: [{ op: "rippleDelete", ...sentence }] } }) as Promise<CallToolResult>;
   const refused = (results: CallToolResult[]) => results.filter(r => r.isError).map(textOf);
   try {
@@ -3664,7 +3689,7 @@ it("refuses a ripple through a sounding word in the general edit tool and points
   const c = await connect();
   try {
     const propose = (start: number, end: number) => c.callTool({ name: "timeline_propose", arguments: { intent: "requested", fromVersion: tl.version,
-      description: "Cut the filler", ops: [{ op: "rippleDelete", start, end }] } }) as Promise<CallToolResult>;
+      description: "Cut the filler", reason: "The filler interrupts the sentence.", ops: [{ op: "rippleDelete", start, end }] } }) as Promise<CallToolResult>;
     // From inside “back.” (1.5–1.8 s) to the quiet before the second “welcome”.
     const through = await propose(1.7, 3.4);
     expect(through.isError).toBe(true);
@@ -3696,7 +3721,7 @@ it("refuses a whole new timeline that starts or ends a clip inside a sounding wo
     const without = (start: number, end: number) => ({ ...tl, version: undefined, tracks: tl.tracks.map((t, i) => i ? t : { ...t,
       clips: [{ ...makeMediaClip("m1", 0, start, 0), id: "head" }, { ...makeMediaClip("m1", end, 6, start), id: "tail" }] }) });
     const propose = (start: number, end: number) => c.callTool({ name: "timeline_propose", arguments: { intent: "requested", fromVersion: tl.version,
-      description: "Cut the filler", timeline: without(start, end) } }) as Promise<CallToolResult>;
+      description: "Cut the filler", reason: "The filler interrupts the sentence.", timeline: without(start, end) } }) as Promise<CallToolResult>;
     // From inside “back.” (1.5–1.8 s) to the quiet before the second “welcome”.
     const through = await propose(1.7, 3.4);
     expect(through.isError).toBe(true);
@@ -3721,7 +3746,8 @@ it("measures every clip edge an edit makes, whichever op makes it, and refuses o
   mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, [...transcript.segments.flatMap(s => s.words), { text: "", start: 3.3, end: 3.48 }]);
   const c = await connect();
   try {
-    const propose = (ops: object[]) => c.callTool({ name: "timeline_propose", arguments: { intent: "requested", fromVersion: tl.version, description: "Trim", ops } }) as Promise<CallToolResult>;
+    const propose = (ops: object[]) => c.callTool({ name: "timeline_propose", arguments: { intent: "requested", fromVersion: tl.version,
+      description: "Trim", reason: "The short pause slows the exchange.", ops } }) as Promise<CallToolResult>;
     // A trim that ends the clip inside “back.” (1.5–1.8 s): no ripple, and the same clipped word.
     const trimmed = await propose([{ op: "updateClip", clipId: "whole", patch: { sourceOut: 1.7 } }]);
     expect(trimmed.isError).toBe(true);
@@ -3749,7 +3775,8 @@ it("moves a first cut's edge off a piece of sound and reports it, and refuses a 
   mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, [...transcript.segments.flatMap(s => s.words), { text: "", start: 3.3, end: 3.48 }]);
   const c = await connect();
   try {
-    const cut = (keep: object[]) => c.callTool({ name: "timeline_first_cut", arguments: { intent: "requested", mediaId: "m1", keep, description: "First cut" } }) as Promise<CallToolResult>;
+    const cut = (keep: object[]) => c.callTool({ name: "timeline_first_cut", arguments: { intent: "requested", mediaId: "m1", keep,
+      description: "First cut", reason: "The second welcome leads directly into the topic." } }) as Promise<CallToolResult>;
     const posts = () => mock.requests.filter(q => q.method === "POST" && q.path === "/projects/prj_test/changes");
     const before = posts().length;
     const saved = await cut([{ start: .1, end: 2 }, { start: 3.44, end: 5.5 }]);
@@ -3989,7 +4016,8 @@ it("holds captions until the words they are timed from are placed on the audio",
     return true;
   };
   const editor = await connect(undefined, undefined, undefined, 0);
-  const generate = () => editor.callTool({ name: "captions_generate", arguments: { intent: "requested", description: "Captions" } }) as Promise<CallToolResult>;
+  const generate = () => editor.callTool({ name: "captions_generate", arguments: { intent: "requested", description: "Captions",
+    reason: "The editor asked for the dialogue to be readable with the sound off." } }) as Promise<CallToolResult>;
   try {
     // A cue keeps the times it is saved with, and nothing places them again. Past the first second these are estimates.
     const held = await generate();
@@ -4097,10 +4125,11 @@ it("marks a recommendation inspected only after the join on the suggestion's ver
     return true;
   };
   try {
-    const verdict = { changeId: "pass", fromVersion: "pf", toVersion: "pt", assessments: [{ index: 0, start: 1.9, end: 3.5, verdict: "cut", reason: "A clean filler." }] };
+    const summary = "Remove the filler.", reason = "The join keeps the whole word on either side.";
+    const verdict = { changeId: "pass", fromVersion: "pf", toVersion: "pt", assessments: [{ index: 0, start: 1.9, end: 3.5, verdict: "cut", summary, reason }] };
     // A recommendation is advice; the inspected flag says whether this session read every view of the cut.
     expect((await editor.callTool({ name: "dialogue_review_save", arguments: verdict })).isError).toBeFalsy();
-    expect(saved).toMatchObject({ assessments: [{ index: 0, verdict: "cut", inspected: false }] });
+    expect(saved).toMatchObject({ assessments: [{ index: 0, verdict: "cut", summary, reason, inspected: false }] });
     const inspected = await editor.callTool({ name: "dialogue_review_inspect", arguments: { changeId: "pass", index: 0 } }) as CallToolResult;
     expect(inspected.isError).toBeFalsy();
     const joinAudit = inspected.content.flatMap(c => c.type === "text" && c.text.includes("joinAudit") ? [JSON.parse(c.text).joinAudit] : [])[0];

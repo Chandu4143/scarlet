@@ -1,4 +1,4 @@
-import { appliedReviewChange, clipRange, historyLineage, intervalCandidates, makeTimeMap, removedJoins, reviewReasons, timelineDuration, withHandles, type Change, type MediaAsset, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { appliedReviewChange, clipRange, historyLineage, intervalCandidates, makeTimeMap, removedJoins, reviewCutSummaries, reviewReasons, timelineDuration, withHandles, type Change, type CutAssessment, type MediaAsset, type Timeline, type TimeRange } from "@scarlet/timeline";
 import type { Thread } from "./threads.js";
 import { editKinds, type EditKind } from "./editKind.js";
 
@@ -21,8 +21,10 @@ export interface ThreadEdit extends EditRef {
    * have kept or called, so keeping it is recorded under this identity and not the edit's own.
    */
   reviewRef?: EditRef;
-  /** Scarlet's one sentence on what the edit did. Its card shows this alone. */
+  /** What changed, shown in the chat. */
   summary?: string;
+  /** Why Scarlet chose the edit, shown on its card. */
+  reason?: string;
   /** What the edit did, so the timeline draws a cut, a sound fix or a zoom each for what it is. */
   kind?: EditKind;
   /**
@@ -69,6 +71,7 @@ const LEFT_OUT = "Cut";
 const SAME_PLACE = 1;
 
 const TIMING_KEYS = new Set(["sourceIn", "sourceOut", "timelineIn", "timelineOut", "speed"]);
+const rangeKey = ({ start, end }: TimeRange) => `${start}/${end}`;
 
 /** A step that leaves every clip where and when it was, such as the fade that smooths a cut's join. */
 function keepsTiming(op: Record<string, unknown>) {
@@ -93,7 +96,7 @@ function dialogueEdits(change: Change, smoothed = false) {
   let lastEnd = 0;
   let place = 0;
   let call = -1;
-  const result: { label: string; range: TimeRange; removed: TimeRange; replaces?: EditRef; check?: string }[] = [];
+  const result: { label: string; range: TimeRange; removed: TimeRange; replaces?: EditRef; check?: string; summary?: string; reason?: string }[] = [];
   for (let i = change.ops.length - 1; i >= 0; i--) {
     const op = change.ops[i]!;
     if (smoothed && keepsTiming(op)) continue;
@@ -104,8 +107,9 @@ function dialogueEdits(change: Change, smoothed = false) {
     // The review numbers its calls as planCutReview lists them: a cut that starts where the last ended is the same call.
     if (call < 0 || op.start > lastEnd) call++;
     const own = reason?.start === op.start && reason.end === op.end ? reason : undefined;
-    if (!skipped?.has(call)) result.push({ label: own ? own.reason : change.description,
-      range: { start: at, end: at }, removed: { start: op.start, end: op.end }, replaces: undefined, ...(own?.check && { check: own.check }) });
+    if (!skipped?.has(call)) result.push({ label: own?.summary ?? own?.reason ?? change.description,
+      range: { start: at, end: at }, removed: { start: op.start, end: op.end }, replaces: undefined,
+      check: own?.check, summary: own?.summary, reason: own?.reason });
     removed += op.end - op.start;
     lastEnd = op.end;
   }
@@ -167,7 +171,54 @@ function namedEdits(change: Change, readCuts: () => ReturnType<typeof dialogueEd
   if (change.timelineEdits?.length && !change.restoredCuts?.length) return change.timelineEdits;
   // Preserve the stored spot identities of older, unnamed proposals. Every cut has its reason, also the ones `cuts` leaves out as skipped.
   const cuts = readCuts();
-  if (cuts && change.ops?.length === change.cutReasons?.length) return cuts.map(({ label, range, check }) => ({ label, range, ...(check && { check }) }));
+  if (cuts && change.ops?.length === change.cutReasons?.length) return cuts.map(({ label, range, check, summary, reason }) => ({ label, range, check, summary, reason }));
+}
+
+/** Approval validates the selected diff spots in timeline order. Keep their applied ranges and spot indices. */
+function approvedNotes(change: Change, applied: Change) {
+  if (applied === change || !change.timelineEdits?.length) return;
+  if (change.appliedReview) {
+    const named = intervalCandidates(change.timelineEdits.filter(e => e.range.start === e.range.end), e => e.range.start, e => e.range.end);
+    const joins = intervalCandidates(change.appliedReview.joins.flatMap(j => j.proposedAt === undefined ? [] : [j.proposedAt]), at => at, at => at);
+    return change.appliedReview.joins.map(({ proposedAt }) => {
+      if (proposedAt === undefined) return;
+      const notes = named(proposedAt - NAMED_SLACK, proposedAt + NAMED_SLACK);
+      const note = notes.length === 1 ? notes[0] : undefined;
+      if (!note || joins(note.range.start - NAMED_SLACK, note.range.start + NAMED_SLACK).length !== 1) return;
+      const { label, check, summary, reason } = note;
+      if (summary || reason) return { label, check, summary, reason };
+    });
+  }
+  if (!change.approvedSpots) return;
+  const approved = new Set(change.approvedSpots);
+  const spots = change.ranges.filter((_, index) => approved.has(index));
+  if (spots.length !== applied.ranges.length) return;
+  const named = intervalCandidates(change.timelineEdits, e => e.range.start, e => e.range.end);
+  const proposal = intervalCandidates(change.ranges, r => r.start, r => r.end);
+  // A named edit can provide context around a join. A one-to-one match keeps a note with the edit it describes.
+  return spots.map(spot => {
+    const notes = named(spot.start, spot.end);
+    const note = notes.length === 1 ? notes[0] : undefined;
+    if (!note || proposal(note.range.start, note.range.end).length !== 1) return;
+    const { range, label, check, summary, reason } = note;
+    const contained = (range.start <= spot.start && spot.end <= range.end) || (spot.start <= range.start && range.end <= spot.end);
+    if (contained && (summary || reason)) return { label, check, summary, reason };
+  });
+}
+
+/** Find each applied join's matching assessment by its original index or exact range. */
+function appliedCutNotes(change: Change) {
+  if (!change.appliedReview || !change.cutAssessments?.length) return;
+  const byIndex = new Map<number, CutAssessment | undefined>();
+  const byRange = new Map<string, CutAssessment | undefined>();
+  for (const assessment of change.cutAssessments) {
+    const note = !assessment.provisional && assessment.verdict !== "keep" && !assessment.proposes ? assessment : undefined;
+    const key = rangeKey(assessment);
+    byIndex.set(assessment.index, byIndex.has(assessment.index) ? undefined : note);
+    byRange.set(key, byRange.has(key) ? undefined : note);
+  }
+  return change.appliedReview.joins.map(join => join.reviewIndex === undefined
+    ? byRange.get(rangeKey(join.removed)) : byIndex.get(join.reviewIndex));
 }
 
 export function namedTimelineEdits(change: Change): Change["timelineEdits"] {
@@ -249,11 +300,23 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       range: { start: join.at, end: join.at }, removed: join.removed, replaces: undefined }));
     const returned = taken && found ? removedJoins(found.after, found.before, fps).map(join => join.removed) : undefined;
     const cuts = rippled ?? taken;
-    const removals = new Map(cuts?.map(cut => [cut.range.start, cut.removed]));
+    const removals = new Map(cuts?.map(cut => [cut.range.start, cut]));
     const reasons = change.appliedReview && reviewReasons(change, change.appliedReview.joins);
-    const entries = named ?? applied.ranges.map((range, index) => ({
-      range, label: reasons?.[index]?.join(" · ") || change.description, replaces: undefined,
-    }));
+    const summaries = change.appliedReview && reviewCutSummaries(change, change.appliedReview.joins);
+    const cutNotes = appliedCutNotes(change);
+    const approved = approvedNotes(change, applied);
+    const entries = named ?? applied.ranges.map((range, index) => {
+      const plannedReasons = reasons?.[index];
+      const planned = plannedReasons?.join(" · ");
+      const reason = planned && (change.cutReasons || planned !== change.description) ? planned : undefined;
+      const assessment = cutNotes?.[index]?.reason;
+      const note = approved?.[index];
+      const summary = cutNotes?.[index]?.summary ?? summaries?.[index] ?? note?.summary;
+      const combined = reason && assessment && !plannedReasons?.includes(assessment)
+        ? `${reason}${/[.!?]$/.test(reason) ? " " : ". "}${assessment}` : reason ?? assessment;
+      return { range, label: note?.label ?? summary ?? (planned || change.description), summary, reason: combined ?? note?.reason,
+        check: note?.check, replaces: undefined };
+    });
     const ranges = entries.map(e => e.range);
     // A pure pass already computed the joins on its finished clock. Skipped calls are absent from that list.
     const rippleJoins = dialogue && !change.restoredCuts?.length ? dialogue : undefined;
@@ -276,8 +339,12 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
         version: named ? change.toVersion : appliedVersion, previous: [], ...(named && change.timelineEdits?.length && { named: true }) };
       const check = "check" in item ? item.check : undefined;
       if (check) edit.check = check;
-      const summary = "summary" in item ? item.summary : undefined;
+      const sameSpot = cuts?.[spot];
+      const cut = joined ?? (sameSpot?.range.start === range.start ? sameSpot : removals.get(range.start));
+      const summary = item.summary ?? cut?.summary;
       if (summary) edit.summary = summary;
+      const reason = item.reason ?? cut?.reason ?? change.reason;
+      if (reason) edit.reason = reason;
       raise(edit, flagOn(change, spot));
       // Two things Scarlet named on the one join are one cut: its row says both, and the footage is counted once.
       const shared = built && !joined && kinds[spot] === "cut" && taken ? taken.find(cut => shown.has(cut) &&
@@ -285,13 +352,12 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       const first = shared && shown.get(shared);
       if (first && !item.replaces) {
         if (summary && summary !== first.summary) first.summary = first.summary ? `${first.summary} ${summary}` : summary;
+        if (reason && reason !== first.reason) first.reason = first.reason ? `${first.reason} ${reason}` : reason;
         if (check && !first.check) first.check = check;
         continue;
       }
       if (built && joined) shown.set(joined, edit);
-      const sameSpot = cuts?.[spot];
-      const removed = change.appliedReview?.joins[spot]?.removed ?? joined?.removed ??
-        (sameSpot?.range.start === range.start ? sameSpot.removed : removals.get(range.start));
+      const removed = change.appliedReview?.joins[spot]?.removed ?? cut?.removed;
       if (removed && range.start === range.end) edit.beforeCut = { version: beforeVersion, removed };
       const kind = edit.beforeCut ? "cut" : kinds[spot];
       if (kind) edit.kind = kind;
@@ -317,7 +383,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       for (const cut of taken) {
         if (shown.has(cut)) continue;
         const edit: SavedEdit = { changeId: change.id, spot: spot++, label: cut.label, range: cut.range, version: change.toVersion, previous: [],
-          beforeCut: { version: built.version, removed: cut.removed }, kind: "cut" };
+          beforeCut: { version: built.version, removed: cut.removed }, kind: "cut", ...(change.reason && { reason: change.reason }) };
         raise(edit, flagOn(change, edit.spot));
         edits.push(edit);
       }
@@ -378,11 +444,12 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
   // with no footage to show (2026-11-11). An edit named on a join where its own save moved nothing is the cut already there.
   const note = (first: ThreadEdit, later: ThreadEdit) => {
     // Two things one save named on the same edit are both said, as they are for a cut it made itself.
-    const again = first.reviewChangeId === later.changeId && first.summary && later.summary && first.summary !== later.summary;
-    if (later.check || later.summary) first.reviewChangeId = later.changeId;
+    const sameSave = first.reviewChangeId === later.changeId;
+    if (later.check || later.summary || later.reason) first.reviewChangeId = later.changeId;
     if (later.check && later.check !== first.check) first.reviewRef = { changeId: later.changeId, spot: later.spot };
     if (later.check) first.check = later.check;
-    if (later.summary) first.summary = again ? `${first.summary} ${later.summary}` : later.summary;
+    if (later.summary) first.summary = sameSave && first.summary && first.summary !== later.summary ? `${first.summary} ${later.summary}` : later.summary;
+    if (later.reason) first.reason = sameSave && first.reason && first.reason !== later.reason ? `${first.reason} ${later.reason}` : later.reason;
   };
   const cutThere = (edit: ThreadEdit) => result.find(other => other.beforeCut && other.changeId !== edit.changeId &&
     Math.abs(other.at! - edit.at!) <= NAMED_SLACK);

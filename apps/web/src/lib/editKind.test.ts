@@ -35,6 +35,12 @@ describe("drawing an applied edit on the timeline", () => {
 });
 
 describe("the note on an applied edit's card", () => {
+  it("shows the reason with a review cue, separately from the summary", () => {
+    const reason = "The restart carries the full score.";
+    const edited = { label: "Mute the false start", summary: "Muted 0.1 seconds.", reason };
+    expect(editNote(edited)).toBe(reason);
+    expect(editNote({ ...edited, check: "Listen for the full score" })).toBe(`${reason} Listen for the full score`);
+  });
   it("is Scarlet's summary of the edit and nothing else, flagged or not", () => {
     const summary = "Muted the call audio and the screen recording's demo sound, leaving only the camera mic";
     expect(editNote(edit({ label: "Use camera mic, mute call audio", check: "Screen recording's demo sound is muted too", summary }))).toBe(summary);

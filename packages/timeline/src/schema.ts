@@ -42,6 +42,8 @@ export const SOURCE_PREVIEW_SECONDS = 8;
  * timeline out again took the agent a minute and a half.
  */
 export const SUMMARY_MAX = 600;
+/** A plain sentence explaining why an edit was made. */
+export const EditReason = z.string().trim().min(1).max(600);
 
 /** Default output height for preview renders and source proxies. */
 export const DEFAULT_PREVIEW_HEIGHT = 540;
@@ -481,6 +483,8 @@ export const EditIntent = z.enum(["requested", "suggestion", "alternative"]);
 export const CutAssessment = z.object({
   index: z.number().int().nonnegative(), start: Seconds, end: Seconds,
   verdict: z.enum(["cut", "keep", "ask"]), reason: z.string().trim().min(1).max(800),
+  /** Short account of the proposed cut for the chat row. */
+  summary: z.string().trim().min(1).max(SUMMARY_MAX).optional(),
   /** Set by the agent host after inspecting this exact range and version. */
   inspected: z.boolean().optional(),
   /** A fallback note carried onto a staged cut that the pass still has to check. */
@@ -531,9 +535,11 @@ export const Change = z.object({
   toVersion: Id,
   firstCut: z.boolean().optional(),
   description: z.string(),
+  /** Editorial reason for the change as a whole or a change without named edits. */
+  reason: EditReason.optional(),
   author: Author,
   /** Editorial reasons on the pre-proposal timeline. Adjacent removals can share one review item. */
-  cutReasons: z.array(z.object({ start: Seconds, end: Seconds, reason: z.string(), originalRange: TimeRange.optional(),
+  cutReasons: z.array(z.object({ start: Seconds, end: Seconds, reason: z.string(), summary: CutAssessment.shape.summary, originalRange: TimeRange.optional(),
     /** Requested overlap in seconds at submission time. Older changes have one duration in joinFades. */
     crossfade: Seconds.optional(),
     /** An unassessed cut staged under the retired Suggest setting still needs the editor if recommended. */
@@ -560,9 +566,11 @@ export const Change = z.object({
   noteIds: z.array(Id).default([]),
   /** Named, individually playable edits on toVersion. Overlapping edits keep distinct identities. */
   timelineEdits: z.array(z.object({ label: z.string().trim().min(1).max(180), range: TimeRange,
+    /** Editorial reason shown on the edit's card. Optional for earlier edits. */
+    reason: EditReason.optional(),
     /** Why the editor should look or listen before keeping this edit. */
     check: z.string().trim().min(1).max(120).optional(),
-    /** One sentence on what the edit did, side effects included. The edit's card shows this and nothing else. */
+    /** Short sentence in the chat on what the edit did, including notable side effects. */
     summary: z.string().trim().min(1).max(SUMMARY_MAX).optional(), replaces: z.object({ changeId: Id, spot: z.number().int().nonnegative() }).optional() })).optional(),
   /**
    * Doubts a later request raised about this change's edits once they were in the video: the edit (`spot`, as its
@@ -612,7 +620,9 @@ export const Change = z.object({
   restoredCuts: z.array(z.number().int().min(0)).optional(),
   appliedReview: z.object({
     originalVersion: Id,
-    joins: z.array(z.object({ at: Seconds, removed: TimeRange, reviewIndex: z.number().int().nonnegative().optional() })),
+    joins: z.array(z.object({ at: Seconds, removed: TimeRange, reviewIndex: z.number().int().nonnegative().optional(),
+      /** Join position on the proposal, for matching its named note after review moves the join. */
+      proposedAt: Seconds.optional() })),
     originalDuration: Seconds,
     duration: Seconds,
   }).optional(),

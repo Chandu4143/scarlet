@@ -2498,11 +2498,24 @@ it("lists just an applied pass's flagged cut from need you, and every edit from 
 });
 
 /** The request's one edit is the flagged one, so the link that opens every edit would list what "1 needs you" does. */
-const onlyFlagged = () => {
+const onlyFlagged = (reason?: string) => {
   appliedEdits().mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
     edits: threadId !== threadWith("chg_approved_2").id ? [] : [
-      { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY }] }));
+      { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY, reason }] }));
 };
+
+it("shows what changed in chat and why on the edit card", async () => {
+  const reason = "The first ending repeats the final verdict.";
+  onlyFlagged(reason);
+  await showFolded();
+  const turn = turnFor("chg_approved_2");
+  expect(turn.querySelector(".simple-made")?.textContent).toBe(`${SUMMARY}.`);
+  await click(turn.querySelector(".simple-pass-need")!);
+  expect(turn.querySelector(".simple-edit-title")?.textContent).toBe(SUMMARY);
+  expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe(`${reason} ${CHECK}`);
+  expect(turn.textContent).not.toContain(reason);
+  expect(turn.textContent).not.toContain(CHECK);
+});
 
 it("leaves out the link that opens every edit while each of them needs the editor", async () => {
   onlyFlagged();
