@@ -8587,9 +8587,9 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
     cutAssessments: [{ index: 0, start: 0, end: 220, verdict: "cut" as const, reason: "A clean retake." }] };
   const part = { ...ready, id: "chg_part", fromVersion: "ver_2", toVersion: data.project.head!, intent: "requested" as const, state: "approved" as const, cutAssessments: undefined, cutReasons: [{ start: 4, end: 5, reason: "An um." }],
     createdAt: new Date(Date.parse(ready.createdAt!) - 60_000).toISOString() };
-  data = { ...data, changes: data.changes.flatMap(c => c.id === "chg_ready" ? [part, ready] : [c]),
-    tasks: data.tasks.map(t => t.id === "task_done" ? { ...t, state: "running" as const, finishedAt: undefined, summary: null,
-      instruction: "/dialogue-pass", context: { message: "/dialogue-pass" }, changeIds: [part.id, ...t.changeIds] } : t) };
+  data = { ...data, changes: [part, ready], notes: [],
+    tasks: data.tasks.filter(t => t.id === "task_done").map(t => ({ ...t, state: "running" as const, finishedAt: undefined, summary: null,
+      instruction: "/dialogue-pass", context: { message: "/dialogue-pass" }, changeIds: [part.id, ready.id] })) };
   const approve = vi.fn().mockResolvedValue({ outcome: "applied" });
   useProjectStore.setState({ current: data, approve });
   vi.spyOn(api, "cutReview").mockResolvedValue({ review: { cuts: [{ at: 0, removed: { start: 0, end: 1 }, beforeClip: 0 }], original: data.timeline!, proposed: data.timeline!, firstCut: false } });
@@ -8599,13 +8599,15 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
     ? data.changes.filter(c => c.taskId === "task_done" && c.state === "approved").flatMap(c => (c.cutReasons ?? []).map(({ start, end, reason }, spot) => ({
       changeId: c.id, spot, label: reason, at: start, range: { start, end }, beforeCut: { version: c.fromVersion, removed: { start, end } }, previous: [],
     }))) : [] }));
-  await show();
+  await showFolded();
   await act(async () => {});
   const pass = () => container.querySelector<HTMLElement>('[aria-label="Dialogue pass"]')!;
   const link = () => pass().querySelector<HTMLButtonElement>(".simple-pass-toggle")!;
+  const rows = () => [...pass().querySelectorAll<HTMLButtonElement>(".simple-pass-list > li > button")];
   // No sentence sums the pass up yet, so the link alone says what it opens, and counts it.
   expect(pass().querySelector(".simple-made")).toBeNull();
   expect([link().textContent, link().title]).toEqual(["See 1 edit so far", "Show the edits Scarlet has made so far, in order"]);
+  expect(numbered()).toEqual([["1", undefined]]);
   await withSimpleSheet(async () => {
     expect(styled(link(), "color", "text-decoration-color")).toEqual(["#eae5da", "#ae9d79"]);
   });
@@ -8613,7 +8615,7 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
   await act(async () => {});
   expect([pass().querySelector(".simple-pass-list")?.getAttribute("aria-label"), pass().querySelectorAll(".simple-pass-list > li").length, link().textContent])
     .toEqual(["Every edit", 1, "Hide"]);
-  await click(passRow("An um."));
+  await click(rows()[0]!);
   expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe("An um.");
 
   const secondCut = { start: 8, end: 9, reason: "A false start." };
@@ -8622,11 +8624,14 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
   await event(d => ({ ...d, project: { ...d.project, head: secondPart.toVersion },
     timeline: { ...applyOps(d.timeline!, [{ op: "rippleDelete", start: secondCut.start, end: secondCut.end }]), version: secondPart.toVersion, parent: secondPart.fromVersion },
     changes: [...d.changes, secondPart], tasks: d.tasks.map(t => t.id === "task_done" ? { ...t, changeIds: [...t.changeIds, secondPart.id] } : t) }));
-  expect(passRows().map(row => [row.querySelector(".simple-pass-words")?.textContent, row.getAttribute("aria-current")]))
+  expect(rows().map(row => [row.querySelector(".simple-pass-words")?.textContent, row.getAttribute("aria-current")]))
     .toEqual([["An um.", "true"], ["A false start.", null]]);
   expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe("An um.");
   await click(link());
   expect(link().textContent).toBe("See 2 edits so far");
+  await press("Escape");
+  await act(async () => {});
+  expect(numbered()).toEqual([["1", undefined], ["2", undefined]]);
   expect(approve).not.toHaveBeenCalled();
   // Done: the sentence says what the pass made, and the link after it no longer says "so far".
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_done" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString() } : t) }));
