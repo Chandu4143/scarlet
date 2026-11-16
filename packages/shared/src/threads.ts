@@ -243,6 +243,22 @@ function firstCutName(name: string | undefined) {
   return name === "dialogue-pass" || name === "first-cut-dialogue";
 }
 
+/**
+ * The guide a skill builds on, named by `extends:` in its header. An editor's own style ("cut my joins tighter, act on
+ * my notes to the editor") then runs with the guide it adds to, and the guide's later improvements reach it, instead
+ * of a copy of the guide drifting apart from it.
+ */
+export function skillExtends(skill: Pick<Skill, "content">): string | undefined {
+  const header = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skill.content)?.[1];
+  const value = header && /^extends:[ \t]*(.*)$/m.exec(header)?.[1]?.trim().replace(/^["']|["']$/g, "").replace(/^\//, "");
+  return value || undefined;
+}
+
+/** Whether a skill adds to the dialogue pass, so its command asks for one. */
+export function extendsDialoguePass(skill: Skill) {
+  return skill.enabled && !isDialogueGuide(skill) && firstCutName(skillExtends(skill));
+}
+
 export function isDialogueGuide(skill: Skill) {
   return firstCutName(skill.name) && (skill.bundledName === skill.name ||
     (!skill.bundledName && (skill.source === "bundled" || skill.source === "seed")));
@@ -253,6 +269,7 @@ type DialogueOperation = NonNullable<Task["context"]["dialogueOperation"]>;
 /** A custom entry owns its command name even when disabled. The shipped guide is optional advice for the product shortcut. */
 export function dialogueShortcut(name: string, library: readonly Skill[]): DialogueOperation | undefined {
   const entry = library.find(skill => skill.name === name);
+  if (entry && extendsDialoguePass(entry)) return "first-cut";
   if (!firstCutName(name) && name !== "tighten-pauses-here") {
     if (entry?.enabled && firstCutName(entry.bundledName)) return "first-cut";
     return;

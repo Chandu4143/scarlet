@@ -217,6 +217,23 @@ describe("the skills Scarlet comes with", () => {
     expect(assistantSkills(app.ctx.repos.skills.select(), [publicGuide()!.id], true)).toEqual([publicGuide()]);
   });
 
+  it("runs an editor's style that builds on the dialogue pass as a pass, with the guide read first", async () => {
+    await upgrade();
+    const style = createSkill(app.ctx, editor, { name: "my-style", scope: "team",
+      content: "---\nname: my-style\ndescription: My joins and notes.\nextends: dialogue-pass\n---\n\nLeave a tenth of a second at a join.\n" });
+    const run = createTask(app.ctx, { projectId: "prj_1", kind: "edit", agent: "codex", instruction: "/my-style",
+      context: { skillIds: [style.id] }, createdBy: { type: "human", name: "Editor" } });
+    expect(run.context.dialogueOperation).toBe("first-cut");
+    expect(assistantSkills(app.ctx.repos.skills.select(), [style.id], true).map(s => s.name)).toEqual(["dialogue-pass", "my-style"]);
+    // Without the guide it builds on, the style still runs the pass on its own.
+    updateSkill(app.ctx, editor, publicGuide()!, { enabled: false });
+    expect(assistantSkills(app.ctx.repos.skills.select(), [style.id], true).map(s => s.name)).toEqual(["my-style"]);
+    // A skill that builds on nothing is an ordinary request.
+    const plain = createSkill(app.ctx, editor, { name: "plain", scope: "team", content: "---\nname: plain\ndescription: Plain.\n---\n\nFrame tight.\n" });
+    expect(createTask(app.ctx, { projectId: "prj_1", kind: "edit", agent: "codex", instruction: "/plain",
+      context: { skillIds: [plain.id] }, createdBy: { type: "human", name: "Editor" } }).context.dialogueOperation).toBe("none");
+  });
+
   it("upgrades the untouched legacy dialogue guide in place, including its pins, history and disabled state", async () => {
     seed(shipped);
     const old = updateSkill(app.ctx, editor, saved(), { enabled: false, description: "Use on interviews." });

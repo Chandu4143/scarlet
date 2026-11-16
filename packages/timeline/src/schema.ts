@@ -437,6 +437,8 @@ export const Transcript = z.object({
    * milliseconds off. Word order and indices never change. Absent once every time is final.
    */
   aligning: z.object({ through: Seconds }).optional(),
+  /** The version of the aligner that placed these word times. Absent on a transcript aligned before versions were kept. */
+  alignment: z.number().int().positive().optional(),
   id: Id,
   mediaId: Id,
   language: z.string().optional(),

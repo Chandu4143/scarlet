@@ -209,6 +209,27 @@ describe("native retake boundaries", () => {
     expect(cut.room.start).toEqual({ start: expect.closeTo(1.44), end: expect.closeTo(1.52) });
   });
 
+  it("starts a cut in the silence after the kept word when the first removed word has no sound of its own", () => {
+    // “period.” then a “Thank” nobody said, which the aligner leaves with no time right after it, then a long silence
+    // and “you” two seconds on. The kept word's tail dips 40 ms before it ends.
+    const said = [{ start: 1, end: 1.5, text: "period." }, { start: 1.5, end: 1.5, text: "Thank" }, { start: 3.5, end: 3.8, text: "you." }, { start: 4.4, end: 4.8, text: "And" }];
+    const sounds = [{ start: 1, end: 1.5 }, { start: 3.5, end: 3.8 }, { start: 4.4, end: 4.8 }];
+    const rms = Array.from({ length: 250 }, (_, i) => i === 73 ? .0008 : sounds.some(v => v.start <= i / 50 && i / 50 < v.end) ? .1 : .0002);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds });
+    const cut = wordCutRange(said, 1, 2, () => edges);
+    expect(cut.dips).toEqual([]);
+    expect(cut.start).toBeCloseTo(1.5 + AIR_AFTER_SPEECH);
+  });
+
+  it("takes no breath over a very quiet room for a valley an edge can sit in", () => {
+    // Room tone at -80 dBFS, and a breath at -55 dBFS while the voice detector is still on: under the fixed valley level.
+    const said = [{ start: 1, end: 1.5, text: "quota." }, { start: 2.5, end: 3, text: "I" }];
+    const rms = Array.from({ length: 200 }, (_, i) => (i >= 50 && i < 75) || (i >= 125 && i < 150) ? .1 : i >= 78 && i < 84 ? .0018 : .0001);
+    const edges = joinEvidence(said, { from: 0, to: 4, peaks: rms, rms, speechActivity: [{ start: 1, end: 1.7 }, { start: 2.5, end: 3 }] })!;
+    expect(edges.valleys.some(v => v.start < 1.6 && 1.6 < v.end)).toBe(false);
+    expect(edges.valleys.some(v => v.start <= 1.52 && 1.54 <= v.end)).toBe(true);
+  });
+
   it("ends a cut where a kept word sounds, when the transcript times it in the pause before", () => {
     // “…got you. <1.2 s> Alright, so”, transcribed “got you all <1.2 s> right so”: the “all” of “alright” timed in the
     // quiet straight after “you”. Cutting “got you” used to end before that “all” and keep the whole pause.
@@ -393,5 +414,18 @@ describe("a clip edge in sound", () => {
   it("names a word split through its middle with no quiet in reach", () => {
     expect(edge(2.6, "out")).toMatchObject({ word: "obviously" });
     expect(edge(2.6, "out")).not.toHaveProperty("fragment");
+  });
+
+  it("gives the nearest clean second that plays a split word whole, and the one that leaves it out", () => {
+    // A clip ending inside “obviously” is clean once it ends after the word, or before it begins.
+    const out = edge(2.6, "out")!;
+    expect(out.wholeAt).toBeGreaterThanOrEqual(2.9);
+    expect(edge(out.wholeAt!, "out")).toBeUndefined();
+    expect(out.withoutAt).toBeLessThanOrEqual(2.28);
+    expect(edge(out.withoutAt!, "out")).toBeUndefined();
+    // A clip starting inside it plays it whole from before it begins.
+    const start = edge(2.6, "in")!;
+    expect(start.wholeAt).toBeLessThanOrEqual(2.28);
+    expect(edge(start.wholeAt!, "in")).toBeUndefined();
   });
 });

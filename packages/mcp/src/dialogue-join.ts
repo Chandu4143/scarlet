@@ -3,7 +3,8 @@ import { JOIN_WORD_SECONDS, normalizeTranscriptToken } from "@scarlet/shared";
 import { audibleClipsByTrack, dbfs, isTag, round3 } from "./analysis.js";
 import { REPEAT_WITHIN } from "./dialogue-leftovers.js";
 import { partialRepeatAtJoin, type FragmentSide } from "./dialogue-fragment-repeat.js";
-import { MAX_CROSSFADE, QUIET_PEAK, QUIET_RMS, timelineJoins, type JoinSide } from "./timeline-perception.js";
+import { QUIET_PEAK, QUIET_RMS, quietRms } from "./gap-sound.js";
+import { MAX_CROSSFADE, timelineJoins, type JoinSide } from "./timeline-perception.js";
 
 type Word = Pick<TranscriptWord, "text" | "start" | "end">;
 interface Waveform { from: number; to: number; peaks: number[]; rms?: number[]; speechActivity?: TimeRange[] }
@@ -34,15 +35,17 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
   const step = (wf.to - wf.from) / wf.rms.length;
   if (step > 0.031) return; // A coarse waveform cannot locate an edge between syllables.
   const quiet: TimeRange[] = [], valleys: TimeRange[] = [];
+  const quietBelow = quietRms(wf.rms);
   let voice = 0;
   for (let i = 0; i < wf.rms.length; i++) {
     const start = wf.from + i * step, end = wf.from + (i + 1) * step;
     while (voice < wf.speechActivity.length && wf.speechActivity[voice]!.end <= start) voice++;
-    if (wf.rms[i]! <= QUIET_RMS && wf.peaks[i]! <= QUIET_PEAK && (wf.speechActivity[voice]?.start ?? Infinity) >= end)
+    if (wf.rms[i]! <= quietBelow && wf.peaks[i]! <= QUIET_PEAK && (wf.speechActivity[voice]?.start ?? Infinity) >= end)
       appendInterval(quiet, start, end);
     // A speech detector can stay active through a real inter-word gap. Offer a deep
     // level trough there for audition, but keep that disagreement explicit.
-    if (wf.rms[i]! <= .002 && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
+    // Deep against this recording's floor too: a breath 10 dB over a very quiet room is under any fixed level.
+    if (wf.rms[i]! <= Math.min(.002, quietBelow) && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
   }
   const db = wf.rms.map(dbfs);
   return { voice: wf.speechActivity, valleys, words: words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text)),
@@ -596,6 +599,9 @@ const FRAGMENT_SOUND_DBFS = -42;
 interface EdgeInSound {
   /** The transcript word the edge falls inside, while that word is sounding. */
   word?: string;
+  /** The nearest source second where this edge is clean and plays the split word whole, and where it leaves the word out. */
+  wholeAt?: number;
+  withoutAt?: number;
   /**
    * A piece of a sound the edge cuts through: how long the piece left playing is, its level in dBFS, and the source
    * second and level of the quiet it ends at, where the edge would leave none of it.
@@ -645,6 +651,27 @@ function edgeFragment(page: NonNullable<JoinPage["edges"]>, t: number, side: "in
  * when no page measured the recording there.
  */
 export function clipEdgeSound(pages: JoinPage[], mediaId: string, stream: number, t: number, side: "in" | "out"): EdgeInSound | undefined {
+  const found = soundUnderEdge(pages, mediaId, stream, t, side);
+  if (!found) return;
+  const { page, split, fragment } = found;
+  // Where the edge would be clean either side of the word, by this same check. Given only the levels, a pass guessed:
+  // eight edges took two or three saves each to land (2026-11-15).
+  const clean = (s: number) => !!page.levels && pageReaches(page, s) && !soundUnderEdge(pages, mediaId, stream, s, side);
+  const nearest = (from: number, toward: 1 | -1) => {
+    for (let k = 0; k <= Math.round(WHOLE_WORD_REACH / WHOLE_WORD_STEP); k++) {
+      const s = round3(from + toward * k * WHOLE_WORD_STEP);
+      if (clean(s)) return s;
+    }
+  };
+  // A clip that ends (out) plays the word before its edge: later takes it in whole. One that starts (in) plays it after.
+  const whole = split && nearest(side === "out" ? split.end : split.start, side === "out" ? 1 : -1);
+  const without = split && nearest(side === "out" ? split.start : split.end, side === "out" ? -1 : 1);
+  return { ...(split && { word: plain(split) }), ...(whole !== undefined && { wholeAt: whole }), ...(without !== undefined && { withoutAt: without }),
+    ...(fragment && { fragment }), ...(page.levels && { levels: levelStrip(page.levels, t) }) };
+}
+
+/** What an edge at `t` cuts through, without where it would be clean. */
+function soundUnderEdge(pages: JoinPage[], mediaId: string, stream: number, t: number, side: "in" | "out") {
   const page = pageAt(pages, mediaId, stream, t);
   if (!page || soundAt(page, t) !== "sound") return;
   // Room tone under the edge, too brief to be a run of silence: the instant between two words said in one breath.
@@ -653,8 +680,11 @@ export function clipEdgeSound(pages: JoinPage[], mediaId: string, stream: number
   const split = page.words.find(w => inWord(w, t));
   const fragment = edgeFragment(page, t, side);
   if (!split && !fragment) return;
-  return { ...(split && { word: plain(split) }), ...(fragment && { fragment }), ...(page.levels && { levels: levelStrip(page.levels, t) }) };
+  return { page, split, fragment };
 }
+
+/** How far from a split word's edge a clean edge is looked for, and in what steps. */
+const WHOLE_WORD_REACH = .6, WHOLE_WORD_STEP = .01;
 
 function levelStrip(levels: AudioLevels, t: number) {
   const value = (s: number) => {
@@ -905,13 +935,21 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
       page ? "" : " (no level reading)"}. The ${side} uses the word timing.`);
     return lo <= hi ? (lo + hi) / 2 : side === "start" ? removed.start : removed.end;
   };
-  let start = edge(before, first, "start"), end = edge(after, last, "end");
+  // A removed word the recording has no sound for takes no time, right after the word before it (the aligner puts a
+  // word Whisper invented over a silence there). The removal's sound starts at its first word that has some: measured
+  // from the soundless one, "period." and a "Thank" nobody said had no pause between them, and the edge went to a dip
+  // in the kept word's tail with half a second of silence just after it (2026-11-15).
+  const sounds = (w: Word) => w.end > w.start;
+  const removed = words.slice(from, to + 1);
+  const firstHeard = removed.find(sounds) ?? (after ? { ...first, start: after.start, end: after.start } : first);
+  const lastHeard = removed.findLast(sounds) ?? (before ? { ...last, start: before.end, end: before.end } : last);
+  let start = edge(before, firstHeard, "start"), end = edge(after, lastHeard, "end");
   // A short word with a gap on one side only: both edges found that one gap, and the range came out empty
   // ("Words #1424–#1424 do not form one forward range", on three passes). The gap belongs to the edge on its side of
   // the words; the other edge has no silence of its own and uses the word timing, which says so.
   if (used.start && used.end && used.start.start === used.end.start && used.start.end === used.end.end) {
-    if ((used.start.start + used.start.end) / 2 < (first.start + last.end) / 2) end = edge(after, last, "end", true);
-    else start = edge(before, first, "start", true);
+    if ((used.start.start + used.start.end) / 2 < (firstHeard.start + lastHeard.end) / 2) end = edge(after, lastHeard, "end", true);
+    else start = edge(before, firstHeard, "start", true);
   }
   const text = words.slice(from, to + 1).map(w => w.text.trim()).join(" ");
   // One edge between words that run together leaves the other in silence, where the ear resets. With both there, a

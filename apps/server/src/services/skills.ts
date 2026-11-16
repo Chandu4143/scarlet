@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { Skill, taskNeedsTranscripts, type UpsertSkillRequest, type User } from "@scarlet/shared";
+import { Skill, skillExtends, taskNeedsTranscripts, type UpsertSkillRequest, type User } from "@scarlet/shared";
 import type { Author } from "@scarlet/timeline";
 import { newId } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
@@ -571,6 +571,16 @@ export function seedSkillList(ctx: Ctx, list: Array<{ folder: string; content: s
 
 // Pinned skills guide the prompt. The agent can look up any enabled skill.
 export function assistantSkills(skills: Skill[], selected: string[] | undefined, forPrompt: boolean) {
+  // A chosen skill that builds on another brings it along, first: the editor's own style is read on top of the guide.
+  if (forPrompt && selected?.length) {
+    const bases = selected.flatMap(id => {
+      const base = skillExtends(skills.find(s => s.id === id) ?? { content: "" });
+      const found = base && skills.find(s => s.name === base && s.enabled);
+      return found && !selected.includes(found.id) ? [found] : [];
+    });
+    const chosen = skills.filter(s => selected.includes(s.id));
+    return [...new Map([...bases, ...chosen].map(s => [s.id, s])).values()].filter(skill => skill.enabled);
+  }
   const available = forPrompt && selected?.length ? skills.filter(s => selected.includes(s.id)) :
     forPrompt ? skills.filter(s => !s.source?.startsWith("quick-action:")) : skills;
   return available.filter(skill => skill.enabled).map(skill => {

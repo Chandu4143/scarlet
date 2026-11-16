@@ -4,7 +4,7 @@
  * provides context (timestamps, clip ids, notes, the change being revised)
  * and includes the applicable skills verbatim.
  */
-import { taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, type AgentCapabilities, type Skill, type Task } from "@scarlet/shared";
+import { taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type Skill, type Task } from "@scarlet/shared";
 import type { Change, Note, Project, Timeline, TimelineDiff } from "@scarlet/timeline";
 import { clipById, describeDiff, formatTimecode } from "@scarlet/timeline";
 import { summarizeProject } from "./analysis.js";
@@ -341,7 +341,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 
   // Skills
   if (ctx.skills.length) {
-    const blocks = ctx.skills.map((s) => `## ${s.name}\n\n${s.description}\n\n${stripFrontmatter(s.content).trim()}`);
+    const blocks = ctx.skills.map((s) => {
+      const base = skillExtends(s);
+      const layered = base && ctx.skills.some(o => o.name === base) ? `\n\nThis builds on ${base}, above. Where the two differ, follow this one.` : "";
+      return `## ${s.name}\n\n${s.description}${layered}\n\n${stripFrontmatter(s.content).trim()}`;
+    });
     parts.push(`# Your skills\n\nThe editor’s request and selected skills give the brief. Consult other enabled guides through skills_list as needed. Preserve the editor’s stated preferences and protected moments.\n\n${blocks.join("\n\n---\n\n")}`);
   }
 

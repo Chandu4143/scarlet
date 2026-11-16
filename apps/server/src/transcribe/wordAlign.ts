@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { QUIET_PEAK, QUIET_RMS } from "@scarlet/mcp/gap-sound";
+import { speechActivityOf } from "@scarlet/render";
 import type { TimeRange, TranscriptSegment } from "@scarlet/timeline";
 import { humanDuration } from "../logText.js";
 import { extractWav } from "../render/ffmpeg.js";
@@ -8,7 +10,7 @@ import { AnalysisCache } from "../services/analysisCache.js";
 import { audioLane, type AudioLane, type AudioWork } from "../services/audioWork.js";
 import {
   alignGroup, applyTimings, alignmentGroups, CTC_LETTERS, SPANISH_CTC_LETTERS, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
-  planChunks, round, SAMPLE_RATE, stitchChunks, type AlignWord, type Emissions, type WordTiming,
+  planChunks, round, SAMPLE_RATE, stitchChunks, unplacedGaps, type AlignWord, type Emissions, type SoundIn, type WordTiming,
 } from "./ctcAlign.js";
 import { audioWorker, type AudioRequest } from "./audioWorker.js";
 import { EmissionFile } from "./emissions.js";
@@ -47,9 +49,11 @@ const WEBGPU_CPU_NODES = [1, 2, 3, 4, 5, 6].map(layer => `/wav2vec2/feature_extr
 const GPU_LOGIT_TOLERANCE = 0.05, GPU_FLIP_TOLERANCE = 0.001;
 
 /** Bump with the model or the algorithm so cached word-timed results are rebuilt. */
-export const alignmentVersion = 4;
+export const alignmentVersion = 5;
 /** Audio searched on each side of a run's Whisper times. */
 const MARGIN = 0.5;
+/** Words of the next run read after a run's own, enough to cover the margin's half second of speech. */
+const CONTEXT_WORDS = 4;
 /** Seconds of audio one worker aligns before yielding its turn. */
 const BATCH_SECONDS = 300;
 /**
@@ -65,7 +69,9 @@ const SHARED_BATCH_SECONDS = 120;
  * recording and span `duration`, and the worker's audio is then the whole recording, read only for windows the
  * store lacks.
  */
-export interface AlignRequest { language?: "es"; measure?: TimeRange[]; groups: Array<{ start: number; end: number; words: AlignWord[] }>; after?: number;
+export interface AlignRequest { language?: "es"; measure?: TimeRange[];
+  /** `next`: the first words of the run after this one, read only as context (alignGroup). */
+  groups: Array<{ start: number; end: number; words: AlignWord[]; next?: AlignWord[] }>; after?: number;
   store?: { file: string; offset: number; duration?: number } }
 /** Where a recording's emissions are kept, for audio that starts `offset` seconds into it and lasts `duration`
  * (by default, the whole recording). `wav` decodes the whole recording (16 kHz mono, as extractWav writes it) when
@@ -175,6 +181,13 @@ export class WordAligner {
       opts.onProgress?.(reported);
     };
     if (nextWord > 0) report(resume?.fraction ?? reached(0));
+    // Words the aligner could not place go on the sound between their placed neighbors, measured once per gap.
+    const heard = new Map<string, TimeRange[]>();
+    const settle = async (whole: boolean) => {
+      const gaps = unplacedGaps(segments, timings, MIN_SCORE, fixedPrefix, whole);
+      const sound = gaps.length ? await soundIn(wav, gaps, heard, opts.signal) : undefined;
+      return applyTimings(segments, timings, MIN_SCORE, fixedPrefix, sound, whole);
+    };
     for (let first = 0; first < groups.length;) {
       await opts.hold?.();
       opts.signal.throwIfAborted();
@@ -187,7 +200,10 @@ export class WordAligner {
       const batch = groups.slice(first, last);
       const turn = async (signal: AbortSignal) => {
         const model = await (spanish ? this.spanishModel : this.model).get(signal);
-        const runs = batch.map(({ start, end, words }) => ({ start, end, words }));
+        const runs = batch.map(({ start, end, words }, i) => {
+          const next = groups[first + i + 1]?.words.slice(0, CONTEXT_WORDS);
+          return { start, end, words, ...(next?.length && { next }) };
+        });
         // The recording is decoded only when the store lacks a window these words need.
         const audio = !emissions ? wav : await storeCovers(emissions, runs, classes) ? "" : await emissions.wav();
         // Beside the store the request ends in .part, which the leftover sweep clears from a project's folder.
@@ -211,11 +227,11 @@ export class WordAligner {
       report(first >= groups.length ? 1 : reached(first));
       if (first < groups.length && opts.onTurn) {
         const checkpoint = { through: after ?? 0, nextWord: groups[first]!.index[0]!, fraction: reported };
-        opts.onTurn(applyTimings(segments, timings, MIN_SCORE, fixedPrefix), checkpoint.through, checkpoint);
+        opts.onTurn(await settle(false), checkpoint.through, checkpoint);
       }
     }
     opts.onPlaced?.(timings.filter(t => t && t.score >= MIN_SCORE && t.end >= t.start).length, words.length - nextWord);
-    return applyTimings(segments, timings, MIN_SCORE, fixedPrefix);
+    return settle(true);
   }
 }
 
@@ -327,6 +343,77 @@ export async function openWav(path: string) {
   }
 }
 
+/** Frames that decide where a recording sounds, as in its waveform. */
+const SOUND_FRAME = 0.01;
+/** Quiet this short between sounds is a stop consonant's closure or a catch of breath inside speech. */
+const CLOSURE_SECONDS = 0.08;
+/** Sound this short is a click, not a word. */
+const BLIP_SECONDS = 0.05;
+/** Voice detection warms up on the audio just before a window, and reads at most a minute at once. */
+const VOICE_WARMUP = 0.3, VOICE_WINDOW = 60;
+
+/**
+ * Where `wav` sounds at speaking level inside each gap: quiet is QUIET_RMS, QUIET_PEAK and no voice detected. Cut edges
+ * also keep off sound nearer the room's own floor (quietRms); a word doesn't go there, since nobody speaks that softly,
+ * and the faint noise of a room would take the words Whisper invented over a silence. Gaps measured before are read from `heard`. A gap that can't be measured, for audio that
+ * can't be read, has no sound reading, and its words keep the aligner's older fallback.
+ */
+async function soundIn(wav: string, gaps: readonly TimeRange[], heard: Map<string, TimeRange[]>, signal: AbortSignal): Promise<SoundIn> {
+  const key = (gap: TimeRange) => `${gap.start}:${gap.end}`;
+  const missing = gaps.filter(gap => !heard.has(key(gap)));
+  const audio = missing.length ? await openWav(wav).catch(() => undefined) : undefined;
+  if (audio) {
+    try {
+      for (const gap of missing) {
+        signal.throwIfAborted();
+        heard.set(key(gap), await soundRuns(audio, gap));
+      }
+    } catch {
+      // The words keep the older fallback rather than losing the alignment.
+      signal.throwIfAborted();
+    } finally { await audio.close(); }
+  }
+  return gap => heard.get(key(gap));
+}
+
+async function soundRuns(audio: Awaited<ReturnType<typeof openWav>>, gap: TimeRange): Promise<TimeRange[]> {
+  const step = Math.round(SOUND_FRAME * SAMPLE_RATE);
+  const first = Math.floor(gap.start / SOUND_FRAME), last = Math.min(Math.ceil(gap.end / SOUND_FRAME), Math.floor(audio.samples / step));
+  if (last <= first) return [];
+  const origin = Math.max(0, first * SOUND_FRAME - VOICE_WARMUP);
+  const samples = await audio.read(Math.round(origin * SAMPLE_RATE), last * step);
+  const pcm = Int16Array.from(samples, v => Math.max(-32768, Math.min(32767, Math.round(v * 32768))));
+  const voiced = new Uint8Array(last - first);
+  for (let from = first * SOUND_FRAME; from < last * SOUND_FRAME; from += VOICE_WINDOW) {
+    const to = Math.min(last * SOUND_FRAME, from + VOICE_WINDOW), start = Math.max(origin, from - VOICE_WARMUP);
+    const at = Math.round((start - origin) * SAMPLE_RATE);
+    for (const span of await speechActivityOf(pcm.subarray(at, Math.round((to - origin) * SAMPLE_RATE)), start, from, to)) {
+      for (let f = Math.max(first, Math.floor(span.start / SOUND_FRAME)); f < Math.min(last, Math.ceil(span.end / SOUND_FRAME)); f++) voiced[f - first] = 1;
+    }
+  }
+  const offset = Math.round(origin * SAMPLE_RATE);
+  const rms = new Float64Array(last - first), peaks = new Float64Array(last - first);
+  for (let f = first; f < last; f++) {
+    let sum = 0, peak = 0;
+    for (let i = f * step - offset; i < (f + 1) * step - offset; i++) {
+      const v = samples[i] ?? 0;
+      sum += v * v;
+      peak = Math.max(peak, Math.abs(v));
+    }
+    rms[f - first] = Math.sqrt(sum / step);
+    peaks[f - first] = peak;
+  }
+  const runs: TimeRange[] = [];
+  for (let f = first; f < last; f++) {
+    if (!voiced[f - first] && rms[f - first]! <= QUIET_RMS && peaks[f - first]! <= QUIET_PEAK) continue;
+    const start = Math.max(gap.start, f * SOUND_FRAME), end = Math.min(gap.end, (f + 1) * SOUND_FRAME);
+    const previous = runs.at(-1);
+    if (previous && start - previous.end < CLOSURE_SECONDS) previous.end = end;
+    else runs.push({ start, end });
+  }
+  return runs.filter(r => r.end - r.start >= BLIP_SECONDS);
+}
+
 /** The audio each group's search reads, a margin either side of its Whisper times, joined where runs nearly touch. */
 function searchRegions(groups: AlignRequest["groups"], duration: number) {
   const order = groups.map((_, i) => i).sort((a, b) => groups[a]!.start - groups[b]!.start);
@@ -390,7 +477,7 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
 function place(em: Emissions, groups: AlignRequest["groups"], indices: number[], previousEnd: number, out: AlignResponse, alphabet: string) {
   for (const g of indices) {
     const group = groups[g]!;
-    const timings = alignGroup(em, group.words, Math.max(group.start - MARGIN, previousEnd), group.end + MARGIN, alphabet);
+    const timings = alignGroup(em, group.words, Math.max(group.start - MARGIN, previousEnd), group.end + MARGIN, alphabet, group.next);
     timings.forEach((t, i) => {
       if (!t) return;
       out[g]![i] = { start: round(t.start), end: round(t.end), score: round(t.score) };
