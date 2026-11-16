@@ -1424,12 +1424,13 @@ it("marks the latest request's edits from the start, amber where one asks for a 
 it("opens a located review check where it needs a look, then replays the edit from its start once kept", async () => {
   const changeId = "chg_approved_2";
   const check = "At 0:10, should the demo switch to the other recording?";
+  const says = "Should the demo switch to the other recording?";
   const reason = "The opening and demos play with the camera mic.";
   data = { ...data, changes: data.changes.filter(c => c.id === changeId), tasks: [], notes: [] };
   useProjectStore.setState({ current: data });
   vi.mocked(api.threadEdits).mockResolvedValue({ version: data.project.head!, edits: [
     { changeId, spot: 0, label: "Assembled the opening and demos", range: { start: 0, end: 16 }, previous: [],
-      check, reason, reviewRange: { start: 10, end: 10 } },
+      check, reason, reviewRange: { start: 10, end: 10 }, reviewSays: says },
   ] });
   zoomAtOnce();
   await showFolded();
@@ -1440,11 +1441,21 @@ it("opens a located review check where it needs a look, then replays the edit fr
 
   const previews = vi.spyOn(player, "previewRange");
   await click(turn.querySelector(".simple-pass-need")!);
-  expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe(`${check} ${reason}`);
+  // The card has a Check pill after the note, like the edit's kind but amber, and the timeline marks where, the same way;
+  // the times are on hover.
+  // The note leaves out the time Scarlet wrote, which a later save may have moved.
+  const checkButton = () => editPanel()!.querySelector<HTMLButtonElement>("button.edit-card-length.is-check");
+  expect([checkButton()?.textContent, checkButton()?.title]).toEqual(["Check", "Play the part to check, 0:10"]);
+  expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe(`${says} ${reason}`);
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Assembled the opening and demos” at 0:10");
-  expect(container.querySelector(".simple-timeline-cut.is-kept")).not.toBeNull();
+  expect(container.querySelector(".simple-timeline-cut.is-check")?.textContent).toBe("Check");
   expect(dot()?.style.left).toBe("50%");
   expect(previews).toHaveBeenLastCalledWith({ start: 8.5, end: 11.5 }, expect.any(Number), undefined, false);
+  // Pressed, it plays that part again from its top.
+  const seek = vi.spyOn(player, "seek"), play = vi.spyOn(player, "play");
+  await click(checkButton()!);
+  expect(seek).toHaveBeenLastCalledWith(8.5, true);
+  expect(play).toHaveBeenCalled();
 
   await click(buttonIn(editPanel()!, "Keep")!);
   expect(api.recordEditReview).toHaveBeenCalledWith(PRJ, { changeId, spot: 0, decision: "keep" });
