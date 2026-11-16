@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it as vitestIt, vi, onTestFinished } from "vitest";
 import { partedIt } from "../../../test/parts";
-import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, sha256, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
+import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
 import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
@@ -4066,11 +4066,13 @@ it("applies verified trims once and offers uncertain cuts at their remapped time
   expect(ctx.repos.changes.get(saved.id)!.firstDecisionPreview?.index).toBe(0);
   expect(await (await assess(6, "ask")).json()).toEqual({ total: 1, assessed: 1, needsDecision: 1 });
   const preview = ctx.repos.changes.get(saved.id)!.firstDecisionPreview!;
-  const expected = cutPlaybackWindow(3, 8, 9, project.settings.fps)!;
+  const asked = cutPlaybackWindow(3, 8, 9, project.settings.fps)!;
+  // The file covers the whole playback sections around the window asked for.
+  const expected = spanningSections(planPlaybackSegments(project, ctx.repos.versions.get(project.id, saved.toVersion)!.timeline), asked)!;
   expect(ctx.repos.renders.get(preview.renderId)).toMatchObject({ version: saved.toVersion, kind: "segment", range: expected });
   await vi.waitFor(() => expect(ctx.repos.changes.get(saved.id)!.firstDecisionPreview!.briefToPlayableMs).toBeGreaterThanOrEqual(0));
   const encodes = encode.mock.calls.length;
-  const play = await api("POST", projectsPath() + `/versions/${saved.toVersion}/cut-playback-file`, expected);
+  const play = await api("POST", projectsPath() + `/versions/${saved.toVersion}/cut-playback-file`, asked);
   expect(await play.json()).toEqual({ renderId: preview.renderId, ...expected });
   expect(encode).toHaveBeenCalledTimes(encodes);
   expect((await assess(6, "ask")).status).toBe(200);

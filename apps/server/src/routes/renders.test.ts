@@ -102,13 +102,20 @@ it("checks prepare positions before warming and skips paused projects and comple
   expect(encode).not.toHaveBeenCalled();
 });
 
-it("opens a standalone review file at frame boundaries, reuses it on replay, and bounds background work", async () => {
-  const { ctx } = workspace;
-  const encode = vi.spyOn(ctx.render, "renderRange");
-  const request = (start: number, end: number) => workspace.app.request(`/api/projects/${project.id}/versions/${version}/cut-playback-file`, {
-    method: "POST", headers: { Authorization: `Bearer ${accessToken(ctx)}`, "Content-Type": "application/json" },
+function cutPlayback(start: number, end: number) {
+  return workspace.app.request(`/api/projects/${project.id}/versions/${version}/cut-playback-file`, {
+    method: "POST", headers: { Authorization: `Bearer ${accessToken(workspace.ctx)}`, "Content-Type": "application/json" },
     body: JSON.stringify({ start, end }),
   });
+}
+
+it("opens a standalone review file on whole playback sections, reuses it on replay, and bounds background work", async () => {
+  const { ctx } = workspace;
+  const encode = vi.spyOn(ctx.render, "renderRange");
+  const assemble = vi.spyOn(ctx.render, "renderFullCached").mockImplementation(async (_p, _t, _c, file, opts) => {
+    writeFileSync(file, opts.exportRange ? "window" : "full");
+  });
+  const request = cutPlayback;
   expect((await request(0, 20)).status).toBe(400);
   expect((await request(30, 31)).status).toBe(400);
   expect((await request(2, 2)).status).toBe(400);
@@ -117,16 +124,30 @@ it("opens a standalone review file at frame boundaries, reuses it on replay, and
   const preview = await first.json();
   // Versions saved before duration metadata was introduced can open the same prepared clip.
   ctx.db.prepare("UPDATE timeline_versions SET duration = NULL WHERE project_id = ? AND version = ?").run(project.id, version);
-  expect(preview).toMatchObject({ start: 6, end: 8 });
-  expect(ctx.repos.renders.get(preview.renderId)).toMatchObject({ version, kind: "segment", range: { start: 6, end: 8 }, state: "done" });
+  // The window takes the whole 4 s section it lies in, and is assembled from the section cache.
+  expect(preview).toMatchObject({ start: 4, end: 8 });
+  expect(ctx.repos.renders.get(preview.renderId)).toMatchObject({ version, kind: "segment", range: { start: 4, end: 8 }, state: "done" });
+  expect(assemble.mock.calls.map(([, , , , opts]) => opts.exportRange)).toEqual([{ start: 4, end: 8 }]);
   expect(await (await request(6, 8)).json()).toEqual(preview);
-  vi.spyOn(ctx.render, "renderFullCached").mockImplementation(async (_p, _t, _c, file) => { writeFileSync(file, "full"); });
+  expect(await (await request(4.5, 7)).json()).toEqual(preview);
   const full = ctx.renders.request({ projectId: project.id, version, kind: "full", quality: "preview", range: null });
   await settle();
   expect(await (await request(9, 10)).json()).toEqual({ renderId: full.id, start: 0, end: 30, full: true });
   ctx.repos.projects.update(project.id, { mediaPaused: true });
   expect((await request(9, 10)).status).toBe(409);
-  expect(encode).toHaveBeenCalledTimes(1);
+  expect(assemble).toHaveBeenCalledTimes(2);
+  expect(encode).not.toHaveBeenCalled();
+});
+
+it("renders a review window whole when its sections can't be assembled", async () => {
+  const { ctx } = workspace;
+  const assemble = vi.spyOn(ctx.render, "renderFullCached").mockRejectedValue(new Error("ffmpeg exited with code 1"));
+  const encode = vi.spyOn(ctx.render, "renderRange");
+  const response = await cutPlayback(5, 9);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ start: 4, end: 12 });
+  expect(assemble).toHaveBeenCalledTimes(1);
+  expect(encode.mock.calls.map(([, , range]) => range)).toEqual([{ start: 4, end: 12 }]);
 });
 
 it("stops a disconnected preparation in its first fragment without starting the following one", async () => {
