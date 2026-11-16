@@ -298,6 +298,23 @@ it("retains a terminal failure after the informational playback budget is exhaus
   expect(levels.at(-1)).toBe("warn");
 });
 
+it("caps a failing poll's warnings without letting routine lines spend their budget", () => {
+  for (let i = 0; i < 400; i++) appLog("api", "unreachable", { i }, { level: "warn" });
+  const warnings = levels.filter(level => level === "warn").length;
+  expect(warnings).toBeGreaterThan(0);
+  expect(warnings).toBeLessThanOrEqual(41);
+});
+
+it("logs playback sections like reads: not when they load, and not when a seek drops one", async () => {
+  const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+  await loggedFetch("http://127.0.0.1:5000/api/projects/prj_1/renders?wait=1", { method: "POST" });
+  fetcher.mockRejectedValue(new DOMException("The operation was aborted.", "AbortError"));
+  await loggedFetch("http://127.0.0.1:5000/api/projects/prj_1/renders?wait=1", { method: "POST" }).catch(() => undefined);
+  fetcher.mockRestore();
+  window.dispatchEvent(new Event("pagehide"));
+  expect(lines.filter(line => line.startsWith("[api]"))).toEqual([]);
+});
+
 it("traces a broken success response body after its headers arrived", async () => {
   const response = new Response("");
   const broken = new TypeError("Connection lost while reading the body");

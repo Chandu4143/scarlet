@@ -25,7 +25,9 @@ export function logStateChanges(ctx: Ctx, projects: readonly { id: string; head:
     remember(seen, key, state);
     return { from };
   };
-  for (const project of projects) {
+  // `projects` come newest first. Seed the newest last, and leave room for what happens: the oldest entries are the
+  // first to go.
+  for (const project of projects.slice(0, 1000).reverse()) {
     remember(seen, `${project.id}/head`, project.head ?? "none");
     remember(seen, `${project.id}/paused`, String(!!project.media_paused));
   }

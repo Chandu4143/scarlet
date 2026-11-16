@@ -66,6 +66,9 @@ export async function readLoggedBody<T>(response: Response, read: () => Promise<
   return body;
 }
 
+/** Writes the engine makes in the course of playback, logged like reads: only when slow or failed. */
+const ROUTINE_WRITE = /\/renders(\?|$)/;
+
 /** Changes, failures and slow reads, with an ID the engine can log alongside the same request. */
 export const loggedFetch: typeof fetch = async (input, init) => {
   const original = input instanceof Request ? input : undefined;
@@ -77,13 +80,15 @@ export const loggedFetch: typeof fetch = async (input, init) => {
   const headers = new Headers(init?.headers ?? original?.headers);
   headers.set(REQUEST_ID_HEADER, request);
   const fields = { method, path, request };
+  const routine = method === "GET" || method === "HEAD" || ROUTINE_WRITE.test(path);
   let response: Response;
   try {
     response = await fetch(input, { ...init, headers });
   } catch (error) {
     const name = errorName(error);
     const stopped = signal?.aborted || name === "AbortError";
-    appLog("api", stopped ? "stopped" : "unreachable", { ...fields, ms: elapsed(started), name,
+    // A seek drops the playback section it no longer needs: nothing went wrong.
+    if (!(stopped && routine)) appLog("api", stopped ? "stopped" : "unreachable", { ...fields, ms: elapsed(started), name,
       error: stopped ? undefined : withoutAddresses(String(error)) }, { level: stopped ? "info" : "warn" });
     // Still a TypeError, as a failed fetch is, in words the editor can read wherever it shows.
     throw stopped || !unanswered(error) ? error : new TypeError(ENGINE_UNREACHABLE, { cause: error });
@@ -92,7 +97,7 @@ export const loggedFetch: typeof fetch = async (input, init) => {
   const status = response.status, ms = elapsed(started);
   if (!response.ok) {
     appLog("api", "failed", { ...fields, status, ms }, { level: "warn" });
-  } else if (method !== "GET" && method !== "HEAD") {
+  } else if (!routine) {
     appLog("api", "did", { ...fields, status, ms, phase: "headers" });
   } else if (ms >= SLOW_CALL_MS) {
     appLog("api", "slow", { ...fields, status, ms, phase: "headers" });

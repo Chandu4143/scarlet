@@ -17,7 +17,10 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 // A token bucket per tag: a busy second still gets logged, a runaway loop doesn't fill the file, and one noisy
 // tag can't crowd out the others.
 const BURST = 160, PER_SECOND = 40;
-const buckets = new Map<string, { tokens: number; at: number; last: number; dropped: number }>();
+// Warnings and errors draw on their own, smaller bucket, so routine lines never spend the budget for the failure that
+// ends them and a failing poll still can't fill the file.
+const ALERT_BURST = 40, ALERTS_PER_SECOND = 2;
+const buckets = new Map<string, { tokens: number; alerts: number; at: number; last: number; dropped: number }>();
 
 const round = (n: number) => Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : String(n);
 function show(value: unknown): string {
@@ -45,13 +48,17 @@ export function appLog(tag: string, event: string, fields?: LogFields, { key, le
   if (!write) return;
   const now = performance.now();
   let bucket = buckets.get(tag);
-  if (!bucket) buckets.set(tag, bucket = { tokens: BURST, at: now, last: now, dropped: 0 });
-  bucket.tokens = Math.min(BURST, bucket.tokens + (now - bucket.at) / 1000 * PER_SECOND);
+  if (!bucket) buckets.set(tag, bucket = { tokens: BURST, alerts: ALERT_BURST, at: now, last: now, dropped: 0 });
+  const elapsed = (now - bucket.at) / 1000;
+  bucket.tokens = Math.min(BURST, bucket.tokens + elapsed * PER_SECOND);
+  bucket.alerts = Math.min(ALERT_BURST, bucket.alerts + elapsed * ALERTS_PER_SECOND);
   bucket.at = now;
   const last = pending.at(-1);
   const repeat = level === "info" && key !== undefined && last?.key === `${tag}/${key}`;
-  // Progress and scrubbing must never spend the budget for the failure that ends them.
-  if (level === "info" && !repeat) {
+  if (level !== "info") {
+    if (bucket.alerts < 1) { bucket.dropped++; return; }
+    bucket.alerts--;
+  } else if (!repeat) {
     if (bucket.tokens < 1) { bucket.dropped++; return; }
     bucket.tokens--;
   }

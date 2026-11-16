@@ -314,7 +314,6 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     },
   );
   let diagnosticSessionClosed = false;
-  server.server.onclose = () => { diagnosticSessionClosed = true; };
   const fetchImpl = ctx.fetch ?? globalThis.fetch.bind(globalThis);
   let tempDir: Promise<string> | undefined;
   const artifactDir = () => ctx.workDir ?? (tempDir ??= mkdtemp(join(tmpdir(), "scarlet-mcp-")));
@@ -1115,7 +1114,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     });
 
   const batches = new PictureBatches(preparePictures);
-  server.server.onclose = () => { batches.close(); reviews.close(); };
+  // The only close handler: a second assignment would replace this one.
+  server.server.onclose = () => { diagnosticSessionClosed = true; batches.close(); reviews.close(); };
   tool("frame_contact_sheet_batch",
     "Inspect 1–8 independent picture windows together, each up to 120 s. One call returns every window's sheet, labeled by the index of its original window. If any took longer, nextCursor is set: collect the rest with batchId and that cursor until null. Activity sheets check every frame for pause decisions.",
     { windows: z.array(SheetRequest).min(1).max(8).optional(), batchId: z.string().min(1).optional(), cursor: z.number().int().nonnegative().default(0) },

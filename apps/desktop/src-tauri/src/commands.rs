@@ -413,8 +413,10 @@ async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &P
 pub async fn finish_video_export(app: AppHandle, state: State<'_, AppState>, destinations: State<'_, ExportDestinations>, ticket: u64, url: String) -> Result<String, String> {
     let started = std::time::Instant::now();
     let mut transfer = ExportTransfer { request: uuid::Uuid::new_v4(), stage: "destination", status: 0, bytes: 0, render: None };
+    let mut chosen: Option<PathBuf> = None;
     let saved: Result<String, String> = async {
         let path = destinations.change(|paths| (paths.get(&ticket).map(|d| d.path.clone()), false))?.ok_or("Export destination expired")?;
+        chosen = Some(path.clone());
         let parent = path.parent().ok_or("Unsupported save destination")?;
         let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Could not write to the chosen folder ({})", e.kind()))?;
         let partial = temp.path().to_path_buf();
@@ -435,6 +437,14 @@ pub async fn finish_video_export(app: AppHandle, state: State<'_, AppState>, des
     let (level, outcome) = if saved.is_ok() { (log::Level::Info, "done") } else { (log::Level::Warn, "failed") };
     log::log!(level, "[export] save-finished request={} outcome={outcome} stage={} status={} bytes={} elapsedMs={} render={}",
         transfer.request, transfer.stage, transfer.status, transfer.bytes, started.elapsed().as_millis(), transfer.render.as_deref().unwrap_or("none"));
+    // Why it failed stays in the local log, never where it went: the editor typed the file's name.
+    if let Err(error) = &saved {
+        let reason = match &chosen { Some(path) => {
+                let named = error.replace(&*path.to_string_lossy(), "…");
+                match path.parent() { Some(folder) if !folder.as_os_str().is_empty() => named.replace(&*folder.to_string_lossy(), "…"), _ => named }
+            } None => error.clone() };
+        log::warn!("[export] save-failed request={} reason={:?}", transfer.request, reason);
+    }
     saved
 }
 

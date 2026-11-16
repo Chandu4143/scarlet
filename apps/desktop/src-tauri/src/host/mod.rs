@@ -1018,7 +1018,12 @@ fn log_completion(task_id: &str, request: &CompleteTaskRequest, ack: Option<&api
     let level = if outcome == "undelivered" || state == Some("failed") { log::Level::Warn } else { log::Level::Info };
     let attempt = request.if_started_at.as_deref().unwrap_or("unknown");
     let changes = ack.map_or(0, |ack| ack.change_ids.len());
-    log::log!(level, "[host] completion task={task_id} attempt={attempt} requested={} state={} outcome={outcome} elapsedMs={elapsed_ms} changes={changes}",
+    // A failed run's reason stays in the local log: the engine may never have received it.
+    let reason = if request.state == "failed" {
+        let text = request.error.as_deref().unwrap_or("no reason given");
+        format!(" reason={:?}", text.chars().take(300).collect::<String>())
+    } else { String::new() };
+    log::log!(level, "[host] completion task={task_id} attempt={attempt} requested={} state={} outcome={outcome} elapsedMs={elapsed_ms} changes={changes}{reason}",
         request.state, state.unwrap_or("unknown"));
 }
 

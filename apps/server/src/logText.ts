@@ -20,14 +20,19 @@ export function since(iso: string | null | undefined, now = Date.now()): string 
  * For a failure that can repeat on every call, such as one the window polls into: one line a minute for each key,
  * with a count of the ones in between.
  */
-export function throttledLog(log: (line: string) => void, everyMs = 60_000) {
+export function throttledLog(log: (line: string) => void, everyMs = 60_000, capacity = 200) {
   const last = new Map<string, { at: number; more: number }>();
   return (key: string, line: string, now = Date.now()) => {
     const seen = last.get(key);
     if (seen && now - seen.at < everyMs) { seen.more++; return; }
     last.delete(key);
     last.set(key, { at: now, more: 0 });
-    if (last.size > 200) last.delete(last.keys().next().value!);
+    // Keys are in the order they were last logged: expired ones go first, and a live key only when the map is still
+    // over capacity, so many keys at once don't defeat the throttle.
+    for (const [old, entry] of last) {
+      if (last.size <= capacity && now - entry.at < everyMs) break;
+      last.delete(old);
+    }
     log(seen?.more ? `${line} (and ${seen.more} more like it)` : line);
   };
 }

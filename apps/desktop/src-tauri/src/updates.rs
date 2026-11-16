@@ -59,17 +59,27 @@ fn valid_revision(value: &str) -> bool {
 }
 
 /// The updater has no socket while idle. Report real polling faults, and rate-limit repeated ones.
-fn update_fault(stage: &'static str, reason: &'static str, code: i32) {
+type FaultKey = (&'static str, &'static str, i32);
+
+fn update_faults() -> std::sync::MutexGuard<'static, std::collections::HashMap<FaultKey, Instant>> {
     use std::sync::{LazyLock, Mutex};
-    static LAST: LazyLock<Mutex<std::collections::HashMap<(&'static str, &'static str, i32), Instant>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
-    let Ok(mut last) = LAST.lock() else { return };
+    static LAST: LazyLock<Mutex<std::collections::HashMap<FaultKey, Instant>>> = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+    LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A fault is logged when it starts and then at most hourly while it lasts: a killed updater's leftovers would
+/// otherwise repeat on every poll. A stage that works again forgets its faults, so the next one is logged at once.
+fn update_fault(stage: &'static str, reason: &'static str, code: i32) {
+    let mut last = update_faults();
     let key = (stage, reason, code);
     let at = Instant::now();
-    if last.get(&key).is_some_and(|last| at.duration_since(*last) < Duration::from_secs(60)) { return; }
-    last.retain(|_, last| at.duration_since(*last) < Duration::from_secs(60));
+    if last.get(&key).is_some_and(|last| at.duration_since(*last) < Duration::from_secs(3600)) { return; }
     last.insert(key, at);
     log::warn!("[update] local-updater-failed stage={stage} reason={reason} code={code}");
+}
+
+fn update_recovered(stage: &'static str) {
+    update_faults().retain(|(faulted, _, _), _| *faulted != stage);
 }
 
 #[cfg(target_os = "macos")]
@@ -94,7 +104,7 @@ async fn exchange(app: &AppHandle, operation: &'static str, message: String) -> 
                 "restart" => matches!(response.as_str(), "accepted" | "stale"),
                 _ => false,
             };
-            if !expected { update_fault(operation, "invalid_reply", 0); }
+            if expected { update_recovered(operation); } else { update_fault(operation, "invalid_reply", 0); }
             return expected.then_some(response);
         }
     }
@@ -178,12 +188,12 @@ fn building(app: &AppHandle) -> Option<UpdateBuild> {
             return Ok(None);
         }
         let build = build_status(&std::fs::read(&path)?);
-        if build.is_none() { update_fault("status", "invalid_status", 0); }
+        if build.is_none() { update_fault("status", "invalid_status", 0); } else { update_recovered("status"); }
         Ok(build)
     })();
     match status {
         Ok(build) => build,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => { update_recovered("status"); None }
         Err(error) => {
             update_fault("status", "read", error.raw_os_error().unwrap_or(0));
             None

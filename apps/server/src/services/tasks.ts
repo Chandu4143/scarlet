@@ -727,7 +727,7 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
     const wait = Date.parse(checkedAt) - Date.parse(row.created_at);
     if (!(wait >= 30_000)) return;
     let write = queueLogs.get(ctx);
-    if (!write) queueLogs.set(ctx, write = throttledLog(ctx.log));
+    if (!write) queueLogs.set(ctx, write = throttledLog(ctx.log, 60_000, 5000));  // One key per blocked queued request.
     write(`${row.id}/${reason}/${blocker ?? ""}`, `[task] claim_blocked task=${logId(row.id)} project=${logId(row.project_id)} reason=${reason} wait_ms=${wait}` +
       (blocker ? ` blocker=${logId(blocker)}` : ""));
   };
