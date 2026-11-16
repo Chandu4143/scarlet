@@ -1136,7 +1136,7 @@ export class MockClient implements ScarletApi {
     const followUp = body.context?.threadId;
     this.log(projectId, "request.created", `${this.currentUser().name} asked ${AGENT_NAMES[body.agent]}: “${body.context?.message ?? body.instruction}”${followUp ? " (follow-up)" : ""}`);
     // As the engine does: what the person said is the request itself, unless the app sent their words apart from what
-    // it asks of the agent. Undo edit reads "Undo" in the chat and the queue.
+    // it asks of the agent. Save as template reads "Save as template" in the chat and the queue.
     const said = body.context?.message ?? body.instruction;
     const task = this.makeTask(projectId, { kind: body.kind ?? "edit", agent: body.agent, model: body.model, effort: body.effort, serviceTier: body.serviceTier, instruction: body.instruction,
       context: { ...(body.context ?? {}), ...(followUp ? { message: said, asked: said === body.instruction ? undefined : body.instruction } : {}) } });

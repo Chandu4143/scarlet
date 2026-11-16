@@ -385,7 +385,7 @@
 .edit-card .review-actions .btn-ghost[data-key="R"] { border-color: transparent; background: none; color: var(--color-muted); }
 .edit-card .review-actions .btn-ghost[data-key="R"]:enabled:hover { color: var(--color-fg); }
 .edit-card-bar .review-actions { margin-left: auto; }
-/* An applied edit's Undo edit is a small icon ahead of Revise, with its decisions at the row's end. */
+/* An applied edit's decisions are at the row's end, after any small icon such as Save as template. */
 .edit-card-acts { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
 .edit-card-acts .review-actions { margin-left: 0; }
 /* The cut's words open under the card's row and scroll inside it, so a long passage never pushes the timeline away. */
