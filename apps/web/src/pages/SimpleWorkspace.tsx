@@ -2412,7 +2412,8 @@ export function SimpleWorkspace() {
   // only the ones that ask for a look are marked, with the numbers they have among its calls, and its other edits go
   // in with the last call. They share a pill only with others like them.
   // An edit made in several places is one edit: each of its places carries the number its row has in the chat.
-  const passWaits = !!pass && passThread?.id === focusThread?.id;
+  const passWaits = !!passThread && passThread.id === focusThread?.id && (waitingCalls.length > 0 ||
+    passEdits.some(e => e.check && !passReviewed(e) && !passRevising(e)));
   const dotNumbers = new Map((playerView && focusThread && !passFocused ? editGroups(playerView.edits) : []).flatMap(g => g.members.map(m => [m.edit, g.members[0]!.i + 1] as const)));
   const numberedDots: TimelineDot[] = playerView && focusThread ? playerView.edits.flatMap((e, i): TimelineDot[] => {
     const state = reviewed(e) ? "kept" as const : e.check && !revisingEdit(e) ? "check" as const : undefined;
