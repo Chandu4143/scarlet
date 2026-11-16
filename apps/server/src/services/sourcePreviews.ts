@@ -87,9 +87,11 @@ class SourcePreviews {
     if (active) return { status: { state: "caching" } };
     if (!signal || signal.aborted) return { status: existing ?? { state: "uncached" } };
     // Only one engine publishes or cleans up a recording's checkpoint directory.
-    const claimed = ctx.db.prepare(`INSERT INTO source_cache_requests VALUES (?, ?)
+    const claimed = ctx.db.prepare(`INSERT INTO source_cache_requests (media_id, worker_pid)
+      SELECT m.id, ? FROM media m JOIN projects p ON p.id = m.project_id
+      WHERE m.id = ? AND p.deleted_at IS NULL AND p.media_paused = 0
       ON CONFLICT(media_id) DO UPDATE SET worker_pid = excluded.worker_pid WHERE worker_pid IS ?`)
-      .run(media.id, process.pid, request?.worker_pid ?? null);
+      .run(process.pid, media.id, request?.worker_pid ?? null);
     if (!claimed.changes) return { status: { state: "caching" } };
     const job: PlaybackCacheStatus = { state: "caching", progress: 0 };
     this.fullJobs.set(file, job);
@@ -99,6 +101,7 @@ class SourcePreviews {
       const timeLeft = cacheTimeLeft();
       try {
         await mkdir(ctx.paths.proxies(media.projectId), { recursive: true });
+        signal.throwIfAborted();
         await ctx.render.makeProxy(identity.file, temp, {
           height, hwaccel: ctx.settings().render.hwaccel, signal, checkpointDir,
           onProgress: p => { job.progress = p; job.remainingSeconds = timeLeft(p); },
@@ -116,12 +119,12 @@ class SourcePreviews {
         if (signal.aborted) this.fullJobs.delete(file);
         else ctx.log(`[media] ${media.id} couldn’t cache its source preview: ${error}`);
       } finally {
+        await rm(temp, { force: true }).catch(() => {});
         if (signal.aborted) ctx.db.prepare("UPDATE source_cache_requests SET worker_pid = NULL WHERE media_id = ? AND worker_pid = ?").run(media.id, process.pid);
         else ctx.db.prepare("DELETE FROM source_cache_requests WHERE media_id = ? AND worker_pid = ?").run(media.id, process.pid);
         this.fullRuns.delete(file);
-        await rm(temp, { force: true }).catch(() => {});
       }
-    })());
+    })(), media.projectId);
     this.fullRuns.set(file, run);
     return { status: job, run };
   }
@@ -187,7 +190,7 @@ class SourcePreviews {
         await Promise.all(files.filter(entry => entry.path !== file).slice(0, names.length - 32)
           .map(entry => rm(entry.path, { force: true }).catch(() => {})));
       }
-    })().finally(() => this.encoding.delete(file)));
+    })().finally(() => this.encoding.delete(file)), media.projectId);
     this.encoding.set(file, job);
     await job;
     return file;
@@ -239,6 +242,7 @@ function queueSourceProxies(ctx: Ctx, mediaIds: string[]): void {
         q.queued.delete(id);
       }
     });
+    // This promise may wait on another project. The encoder tracks its own project once it starts.
     void ctx.track(q.tail);
   }
 }

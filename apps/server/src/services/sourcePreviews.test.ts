@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi, onTestFinished } from "vitest";
@@ -120,6 +120,25 @@ it.runIf(process.platform === "darwin")("caches a video a killed engine was cach
     expect(await engine.states()).toEqual({ first: "ready", second: "uncached" });
     expect(ctx.db.prepare("SELECT media_id FROM source_cache_requests").all()).toEqual([]);
   } finally { program.kill(); }
+}));
+
+it("empties Trash during an active playback cache in another project", () => withVideos({}, {}, async engine => {
+  const { ctx } = engine.app();
+  const trashed = ctx.repos.projects.insert(createProject("Unused project"));
+  ctx.paths.ensureProject(trashed.id);
+  ctx.repos.projects.putMedia(trashed.id, {
+    id: "unused", name: "Unused", path: "unused.mov", kind: "video", duration: 90, previewMode: "on-demand",
+  }, "ready");
+  writeFileSync(join(ctx.paths.media(trashed.id), "unused.mov"), "unused recording");
+  prepareSourceProxies(ctx, ["first", "unused"], true);
+  await vi.waitFor(() => expect(engine.encode).toHaveBeenCalledTimes(1));
+  expect(ctx.db.prepare("SELECT worker_pid FROM source_cache_requests WHERE media_id = ?").get("unused")).toMatchObject({ worker_pid: null });
+
+  await engine.api("DELETE", `/projects/${trashed.id}`);
+  const projects = ctx.repos.projects.listDeleted().map(({ id, deletedAt }) => ({ id, deletedAt }));
+  expect((await engine.api("POST", "/storage/cleanup", { kind: "trash", projects })).status).toBe(200);
+  expect(existsSync(ctx.paths.project(trashed.id))).toBe(false);
+  expect((await engine.states()).first).toBe("caching");
 }));
 
 it("writes down a cache nobody asked for only where the GPU can make it, and never a file it can't cache", async () => {

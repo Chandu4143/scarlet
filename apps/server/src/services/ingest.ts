@@ -61,7 +61,7 @@ export async function recoverIngest(ctx: Ctx, projectId?: string) {
     if (asset.kind === "video" && asset.duration && asset.preparation?.stage !== "waveform") {
       asset.previewMode = "on-demand";
     }
-    await backgroundIngest(ctx, projectId, asset);
+    await ctx.track(backgroundIngest(ctx, projectId, asset), projectId);
   }
 }
 
@@ -87,7 +87,7 @@ export async function recoverImportTranscriptions(ctx: Ctx, since = Date.now() -
     if (!provider || policy.signal.aborted) continue;
     ctx.log(`[ingest] ${id} was ready with no transcription begun; starting it`);
     const { projectId, status: _s, error: _e, ...asset } = media;
-    ctx.track(startWithProvider(ctx, projectId, asset, provider, provider.name, undefined, "interrupt", "missing").done.catch(() => undefined));
+    ctx.track(startWithProvider(ctx, projectId, asset, provider, provider.name, undefined, "interrupt", "missing").done.catch(() => undefined), projectId);
   }
 }
 
@@ -326,7 +326,7 @@ export async function ingestMedia(
   void ctx.track(backgroundIngest(ctx, project.id, asset).catch(error => {
     // It keeps this engine's claim, so it is picked up again when Scarlet next starts.
     if (!ctx.shutdown.aborted) ctx.log(`[ingest] ${asset.id} stopped part-way and stays unfinished until Scarlet restarts: ${(error as Error).message}`);
-  }));
+  }), project.id);
   return stored;
 }
 
@@ -516,7 +516,7 @@ export function transcribeForDialogue(ctx: Ctx, projectId: string, media: MediaA
   const provider = getTranscriptionProvider(ctx);
   if (!provider) return null;
   const { task, done } = startWithProvider(ctx, projectId, media, provider, provider.name, undefined, "interrupt", "missing");
-  ctx.track(done.catch(() => null));
+  ctx.track(done.catch(() => null), projectId);
   return task.state === "failed" ? null : task;
 }
 
@@ -771,7 +771,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     if (wav) {
       const remove = () => rm(wav, { force: true });
       // Make the transcript available immediately, and retain the scratch file for the worker reading it.
-      if (labeling) ctx.track(labeling.finally(remove)).catch(error => ctx.log(`[speakers] audio cleanup: ${error}`));
+      if (labeling) ctx.track(labeling.finally(remove), projectId).catch(error => ctx.log(`[speakers] audio cleanup: ${error}`));
       else await remove();
     }
   }
@@ -811,7 +811,7 @@ export function settleAlignment(ctx: Ctx, media: MediaWithStatus & { projectId: 
   const { projectId: _p, status: _s, error: _e, ...asset } = media;
   const { task, done } = startWithProvider(ctx, projectId, asset, provider, provider.name, undefined, "interrupt",
     { interrupted: last?.interrupted ? last : undefined, stranded: transcriptId });
-  ctx.track(done.catch(() => null));
+  ctx.track(done.catch(() => null), projectId);
   ctx.log(`[transcribe] ${media.id} is continuing its word alignment as ${task.id}`);
 }
 
@@ -828,7 +828,7 @@ export function getWaveform(ctx: Ctx, media: MediaWithStatus & { projectId: stri
   const job = ctx.track(loadOrBuildWaveform(ctx, media).finally(() => {
     ctx.waveforms.delete(media.id);
     ctx.waveformsAsked.delete(media.id);
-  }));
+  }), media.projectId);
   ctx.waveforms.set(media.id, job);
   return job;
 }

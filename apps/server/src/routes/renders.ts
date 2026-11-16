@@ -78,9 +78,9 @@ export function renderRoutes(ctx: Ctx) {
       // Frames share the engine's picture lane with the agent's contact sheets. The editor's own requests go first.
       const job = frames.get(key, demand => {
         const signal = AbortSignal.any([demand, ctx.projectSignal(projectId)]);
-        return ctx.track(pictureLane(ctx).run(() => decode(signal), { priority, signal }));
+        return ctx.track(pictureLane(ctx).run(() => decode(signal), { priority, signal }), projectId);
       }, { signal: request.signal, priority });
-      const jpeg = await ctx.track(job);
+      const jpeg = await ctx.track(job, projectId);
       return new Response(new Uint8Array(jpeg), { headers: { ...headers, "Content-Type": "image/jpeg" } });
     } catch (error) {
       if (ctx.shutdown.aborted || request.signal.aborted) return new Response(null, { status: ctx.shutdown.aborted ? 503 : 499 });
@@ -208,7 +208,7 @@ export function renderRoutes(ctx: Ctx) {
         try { await waitForPlayback(ctx, render, signal); }
         finally { ctx.renders.release(render.id, owner); }
       }
-    })());
+    })(), project.id);
     if (ctx.shutdown.aborted || c.req.raw.signal.aborted) return new Response(null, { status: ctx.shutdown.aborted ? 503 : 499 });
     return c.body(null, 204);
   });
@@ -232,7 +232,7 @@ export function renderRoutes(ctx: Ctx) {
     const render = requestCutPlaybackFile(ctx, project, version, range, owner);
     const signal = AbortSignal.any([c.req.raw.signal, ctx.mediaSignal(project.id)]);
     try {
-      const file = await ctx.track(waitForPlayback(ctx, render, signal));
+      const file = await ctx.track(waitForPlayback(ctx, render, signal), project.id);
       if (!file) return new Response(null, { status: ctx.shutdown.aborted ? 503 : 499 });
       return c.json({ renderId: render.id, ...(render.range ?? { start: 0, end: duration, full: true }) });
     } finally { ctx.renders.release(render.id, owner); }
@@ -313,7 +313,9 @@ export function renderRoutes(ctx: Ctx) {
     if (hasAudio) {
       const info = await stat(file);
       try {
-        loudness = await measuredLoudness(ctx, file, [info.size, info.ctimeMs, info.mtimeMs], { stop: ctx.shutdown, signal: c.req.raw.signal });
+        loudness = await measuredLoudness(ctx, file, [info.size, info.ctimeMs, info.mtimeMs], {
+          projectId: render.projectId, stop: ctx.shutdown, signal: c.req.raw.signal,
+        });
       } catch (error) {
         if (c.req.raw.signal.aborted || ctx.shutdown.aborted) throw error;
         loudnessUnavailable = error instanceof Error ? error.message : String(error);

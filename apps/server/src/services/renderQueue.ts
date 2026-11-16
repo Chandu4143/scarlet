@@ -94,7 +94,7 @@ function sameQueuedSource(previousKey: string, currentKey: string | undefined, a
  * Equivalent requests share completed files. Each full export retains its own immutable output.
  */
 export class RenderQueue {
-  private readonly queue: Array<{ id: string; key: string; playback?: boolean }> = [];
+  private readonly queue: Array<{ id: string; projectId: string; key: string; playback?: boolean }> = [];
   private readonly activeKeys = new Set<string>();
   private readonly running = new Map<string, AbortController>();
   private readonly owners = new Map<string, Map<string, "viewer" | "preparation">>();
@@ -185,7 +185,7 @@ export class RenderQueue {
         const queued = this.ctx.repos.renders.put({ ...render, state: "queued", progress: 0, queuePid: process.pid, ...(owner && { demandPid: process.pid }) });
         this.ctx.db.afterCommit(() => {
           if (owner) this.owners.set(queued.id, new Map([[owner, "viewer"]]));
-          this.queue.push({ id: queued.id, key: queued.previewContentKey ?? queued.key });
+          this.queue.push({ id: queued.id, projectId: queued.projectId, key: queued.previewContentKey ?? queued.key });
         });
       }
     }, "immediate")();
@@ -468,7 +468,7 @@ export class RenderQueue {
     this.ctx.db.afterCommit(() => {
       if (owner) this.owners.set(render.id, new Map([[owner, input.speculative ? "preparation" : "viewer"]]));
       if (owner && input.kind === "full" && input.quality === "preview") this.backgroundCaches.add(render.id);
-      this.queue.push({ id: render.id, key: render.previewContentKey ?? render.key, playback: !!owner && input.kind === "playback" && !input.speculative });
+      this.queue.push({ id: render.id, projectId: render.projectId, key: render.previewContentKey ?? render.key, playback: !!owner && input.kind === "playback" && !input.speculative });
       this.pump();
     });
     return render;
@@ -563,7 +563,7 @@ export class RenderQueue {
         }
         break;
       }
-      const { id, key } = this.queue.splice(index, 1)[0]!;
+      const { id, projectId, key } = this.queue.splice(index, 1)[0]!;
       this.activeKeys.add(key);
       const ac = new AbortController();
       this.running.set(id, ac);
@@ -577,13 +577,14 @@ export class RenderQueue {
               const queued = this.update(id, r => r.state === "running" ? { state: "queued", progress: 0 } : undefined);
               if (queued) {
                 this.ctx.bus.publish({ type: "render.updated", projectId: queued.projectId, render: queued });
-                this.queue.push({ id, key, playback: queued.kind === "playback" && this.owners.has(id) });
+                this.queue.push({ id, projectId, key, playback: queued.kind === "playback" && this.owners.has(id) });
               }
             }
             this.running.delete(id);
             this.activeKeys.delete(key);
             this.pump();
           }),
+        projectId,
       );
     }
   }

@@ -121,7 +121,7 @@ export function dialogueDetector(ctx: Ctx) {
       // Never reuse a transcribed reading. A missing emissions window may be filled between checks.
       const file = sourceFile(projectId, media, to);
       const ready = ctx.track(cachedSpeech(projectId, media, file, from, to, keptSide.audioStream, policy.settings.language)
-        .then(result => result ?? { acoustic: [], segments: [], keptSideUnavailable: true as const }));
+        .then(result => result ?? { acoustic: [], segments: [], keptSideUnavailable: true as const }), projectId);
       return { analyzed: ready, ready };
     }
     const { file, fingerprint, runtime } = await source(projectId, media, to, policy.settings);
@@ -250,12 +250,12 @@ export function dialogueDetector(ctx: Ctx) {
         recording.release();
         await rm(wav, { force: true });
       }
-    }, { signal }));
+    }, { signal }), projectId);
     // A cut reads only its surviving words. Its short window is never a completed dialogue-scan page.
     if (keptSide) return { analyzed, ready: analyzed };
     // The expensive window detectors share one worker. Whole-recording speaker
     // matching runs independently so the next window can start before labels arrive.
-    const speakers = ctx.track(ctx.speakers.turns(ctx, projectId, media, undefined, !!edit));
+    const speakers = ctx.track(ctx.speakers.turns(ctx, projectId, media, undefined, !!edit), projectId);
     const ready = ctx.track(analyzed.then(async result => {
       try {
         const turns = await speakers;
@@ -275,7 +275,7 @@ export function dialogueDetector(ctx: Ctx) {
           .run(...params, JSON.stringify(result));
       }
       return result;
-    }).finally(() => pending.delete(key)));
+    }).finally(() => pending.delete(key)), projectId);
     const page = { analyzed, ready };
     pending.set(key, page);
     return page;
@@ -369,7 +369,7 @@ export function dialogueDetector(ctx: Ctx) {
         appendTaskEvent(ctx, task, { type: "log", text: "The background dialogue scan paused. Completed sections are saved.",
           data: { kind: "editor_progress" } });
       }
-    }).finally(() => { activeScans.delete(key); unfocus(); }));
+    }).finally(() => { activeScans.delete(key); unfocus(); }), projectId);
     return saved;
   }
   return { detect, checkpoints, start };

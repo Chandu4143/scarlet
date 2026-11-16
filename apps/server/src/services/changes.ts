@@ -115,7 +115,7 @@ export async function withSpotCapability(ctx: Ctx, change: Change, projectFps?: 
     const entry = isSea() ? "review-spots" : fileURLToPath(new URL("./spotWorker.mjs", import.meta.url));
     const result = await run(process.execPath, [entry, ctx.paths.db, change.id, String(fps)], { signal });
     return JSON.parse(result.toString()) as Array<number | null> | null;
-  }));
+  }), change.projectId);
   signal.throwIfAborted();
   return ctx.db.transaction(() => {
     const current = ctx.repos.changes.get(change.id);
@@ -131,7 +131,7 @@ export async function withSpotCapability(ctx: Ctx, change: Change, projectFps?: 
 export function scheduleSpotCheck(ctx: Ctx, change: Change, fps: number): void {
   if (change.state !== "ready" || !change.ops?.length || change.ranges.length < 2 || change.spotAssignment?.fps === fps) return;
   ctx.db.afterCommit(() => {
-    ctx.track(withSpotCapability(ctx, change, fps)).catch(error => {
+    ctx.track(withSpotCapability(ctx, change, fps), change.projectId).catch(error => {
       if (!ctx.shutdown.aborted) ctx.log(`[review] Could not check spots for ${change.id}: ${error}`);
     });
   });
@@ -1468,7 +1468,7 @@ export function prepareFirstDecision(ctx: Ctx, change: Change, review: CutReview
   const render = requestCutPlaybackFile(ctx, project, after.version, range, owner);
   if (render.state !== "done") ctx.db.afterCommit(() => {
     const signal = ctx.mediaSignal(project.id);
-    void ctx.track(waitForPlayback(ctx, render, signal).finally(() => ctx.renders.release(render.id, owner)))
+    void ctx.track(waitForPlayback(ctx, render, signal).finally(() => ctx.renders.release(render.id, owner)), project.id)
       .catch(error => { if (!signal.aborted) ctx.log(`[review] Could not prepare a file for ${change.id}: ${error}`); });
   });
   return { index, renderId: render.id, queuedAt: now() };

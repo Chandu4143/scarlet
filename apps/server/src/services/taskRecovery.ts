@@ -214,7 +214,7 @@ function resumeTranscriptions(ctx: Ctx): void {
         AND json_extract(json, '$.speakerAnalysis') IS NULL AND json_extract(json, '$.aligning') IS NULL LIMIT 1`)
         .get(media.id, task.projectId, task.createdAt ?? "")) continue;
       const { task: restarted, done } = startTranscription(ctx, task.projectId, media, chosen, "interrupt", { interrupted: task });
-      ctx.track(done.catch(() => null));
+      ctx.track(done.catch(() => null), task.projectId);
       ctx.log(`[task] ${task.id} was interrupted; continuing transcription of ${media.id} as ${restarted.id}`);
     } catch (err) {
       ctx.log(`[task] ${task.id} couldn’t restart its transcription: ${(err as Error).message}`);
