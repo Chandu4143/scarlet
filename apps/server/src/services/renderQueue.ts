@@ -265,9 +265,10 @@ export class RenderQueue {
     }
     const entry: RenderVersion = { timeline, duration: timelineDuration(timeline), sourceIds, hasLut, hasTransitions, fullKeys: new Map(), windows: new Map() };
     // A proposal can enqueue a new version within its own database transaction.
+    // Reviewing a cut plays the working cut, the call's version and the one before it in turn: keep all of them planned.
     this.ctx.db.afterCommit(() => {
       this.versions.set(key, entry);
-      if (this.versions.size > 2) this.versions.delete(this.versions.keys().next().value!);
+      if (this.versions.size > 4) this.versions.delete(this.versions.keys().next().value!);
     });
     return entry;
   }

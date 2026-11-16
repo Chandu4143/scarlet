@@ -1039,23 +1039,42 @@ it("removes a partial shared WAV when decoding fails before Whisper starts", asy
 });
 const marker = [{ op: "addMarker", marker: { id: "marker", time: 0, text: "Start" } }];
 
-it("reads independent normalized snapshots, including after rolling back a cached version", () => {
+it("reads independent normalized snapshots, keeping only committed versions and checking only that they are still there", () => {
   const { ctx } = workspace;
   const { version } = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 3 }]), { parent: null });
-  const load = () => ctx.repos.versions.get(project.id, version)!.timeline;
-  const sql = ctx.db.prepare("UPDATE timeline_versions SET json = ? WHERE project_id = ? AND version = ?");
-  const legacy = load();
-  const raw = JSON.parse(JSON.stringify(legacy));
+  const load = (id = version) => ctx.repos.versions.get(project.id, id)?.timeline;
+  const row = ctx.db.prepare("SELECT json FROM timeline_versions WHERE version = ?").get(version) as { json: string };
+  // An earlier build saved the clip without its volume.
+  const raw = JSON.parse(row.json);
   delete raw.tracks[0].clips[0].volume;
-  sql.run(JSON.stringify(raw), project.id, version);
-  load().tracks[0]!.clips.length = 0;
-  expect(load().tracks[0]!.clips[0]).toMatchObject({ volume: 1 });
+  ctx.db.prepare("UPDATE timeline_versions SET json = ? WHERE version = ?").run(JSON.stringify(raw), version);
+  load()!.tracks[0]!.clips.length = 0;
+  const reads = vi.spyOn(ctx.db, "prepare");
+  expect(load()!.tracks[0]!.clips[0]).toMatchObject({ volume: 1 });
+  // Its timeline isn't read again. The edit that made it isn't named yet, and is looked for.
+  expect(reads.mock.calls.map(([sql]) => sql).filter(sql => sql.includes("timeline_versions"))).toEqual([
+    "SELECT change_id FROM timeline_versions WHERE project_id = ? AND version = ?"]);
+  reads.mockRestore();
+
+  // Read inside a transaction that rolls back, a version isn't kept: the same name can be saved again with other details.
+  const insert = (name: string) => ctx.db.prepare("INSERT INTO timeline_versions (version, project_id, parent, json, created_at) VALUES (?, ?, NULL, ?, ?)")
+    .run("ver_again", project.id, JSON.stringify({ ...raw, version: "ver_again", name }), new Date().toISOString());
   expect(() => ctx.db.transaction(() => {
-    sql.run(JSON.stringify({ ...raw, name: "Temporary" }), project.id, version);
-    expect(load().name).toBe("Temporary");
+    insert("Temporary");
+    expect(load("ver_again")!.name).toBe("Temporary");
     throw Error("rollback");
   })()).toThrow("rollback");
-  expect(load().name).toBe(legacy.name);
+  insert("Kept");
+  expect(load("ver_again")!.name).toBe("Kept");
+  expect(load("ver_again")!.name).toBe("Kept");
+
+  // The edit that made a version is named once, after it was read.
+  expect(ctx.repos.versions.get(project.id, version)!.changeId).toBeNull();
+  ctx.repos.versions.setChangeId(project.id, version, "chg_named");
+  expect(ctx.repos.versions.get(project.id, version)!.changeId).toBe("chg_named");
+  // A purged version is gone, though it was kept.
+  ctx.db.prepare("DELETE FROM timeline_versions WHERE version = ?").run(version);
+  expect(ctx.repos.versions.get(project.id, version)).toBeNull();
 });
 
 it("validates successive playback windows from one plan and replans after a frame-rate change", async () => {
@@ -1698,8 +1717,14 @@ it("reads the footage a change left out as it built the video, when it is applie
   ctx.repos.changes.put({ ...change, leftOut: undefined });
   recordLeftOutFootage(ctx);
   expect(ctx.repos.changes.get(change.id)!.leftOut).toEqual(change.leftOut);
-  const stamp = ctx.repos.changes.get(change.id)!.updatedAt;
+  // One that only rippled footage out has nothing to read, and that is saved too.
+  ctx.repos.changes.put({ ...change, id: "chg_ripple", ops: [{ op: "rippleDelete", start: 1, end: 2 }], leftOut: undefined });
   recordLeftOutFootage(ctx);
+  expect(ctx.repos.changes.get("chg_ripple")!.leftOut).toEqual({ joins: [] });
+  const stamp = ctx.repos.changes.get(change.id)!.updatedAt;
+  const read = vi.spyOn(ctx.repos.changes, "parse");
+  recordLeftOutFootage(ctx);
+  expect(read).not.toHaveBeenCalled();
   expect(ctx.repos.changes.get(change.id)!.updatedAt).toBe(stamp);
 });
 
