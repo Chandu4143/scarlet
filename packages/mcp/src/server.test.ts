@@ -3764,7 +3764,7 @@ it("measures every clip edge an edit makes, whichever op makes it, and refuses o
     const added = await propose([{ op: "updateClip", clipId: "whole", patch: { sourceOut: 2 } },
       { op: "addClip", trackId: "v1", clip: { id: "late", kind: "media", mediaId: "m1", sourceIn: 3.44, sourceOut: 5.5, timelineIn: 2 } }]);
     expect(added.isError).toBe(true);
-    expect(textOf(added)).toContain("clip late starts at source 3.44 s inside a sound the transcript has no word for: 40 ms of it would play at -14 dBFS, and the recording is quiet at 3.49 s (-60 dBFS)");
+    expect(textOf(added)).toContain("clip late starts at source 3.44 s inside a sound the transcript has no word for: 40 ms of it would play at -14 dBFS, and the recording is quiet at 3.48 s (-60 dBFS)");
     expect(textOf(added)).not.toContain("clip whole");
     // The same two clips with that edge on the quiet it was pointed to go ahead.
     expect((await propose([{ op: "updateClip", clipId: "whole", patch: { sourceOut: 2 } },
@@ -3788,10 +3788,10 @@ it("moves a first cut's edge off a piece of sound and reports it, and refuses a 
     const before = posts().length;
     const saved = await cut([{ start: .1, end: 2 }, { start: 3.44, end: 5.5 }]);
     expect(saved.isError).toBeFalsy();
-    expect(textOf(saved)).toContain('"movedEdges":[{"keep":1,"edge":"start","from":3.44,"to":3.49,"evidence":"40 ms of a sound the transcript has no word for played at -14 dBFS; quiet there is -60 dBFS"}]');
-    expect(textOf(saved)).toContain("First edit: 2 clip(s), 3.91 s total");
+    expect(textOf(saved)).toContain('"movedEdges":[{"keep":1,"edge":"start","from":3.44,"to":3.485,"evidence":"40 ms of a sound the transcript has no word for played at -14 dBFS; quiet there is -60 dBFS"}]');
+    expect(textOf(saved)).toContain("First edit: 2 clip(s), 3.92 s total");
     const body = ProposeChangeRequest.parse(posts().at(-1)!.body);
-    expect(body.timeline!.tracks[0]!.clips[1]).toMatchObject({ sourceIn: 3.49, sourceOut: 5.5, timelineIn: expect.closeTo(1.9, 6) });
+    expect(body.timeline!.tracks[0]!.clips[1]).toMatchObject({ sourceIn: 3.485, sourceOut: 5.5, timelineIn: expect.closeTo(1.9, 6) });
     // Which side of a word the edge was meant for is the model's call: nothing is saved, and the range is named.
     const through = await cut([{ start: .1, end: 1.7 }, { start: 3.55, end: 5.5 }]);
     expect(through.isError).toBe(true);
