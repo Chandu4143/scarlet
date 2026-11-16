@@ -4,7 +4,7 @@ import {
   DEFAULT_EDGE_OPTIONS, DEFAULT_PACING_OPTIONS, KEPT_SIDE_EDGE_OPTIONS, classifyEdges, compareToDecisions, compareToReference, cutEdges, joinEdges, labelWords,
   levelIn, levelStats, matchEdges, pacing, planMetrics, prf, removedSource, sentences, summarizeEdges, traceMetrics, type EventLike, type MediaEvidence,
 } from "../src/metrics.ts";
-import { keptSource, playedWords, timelineRangeToSource, wordsWithout } from "../src/timeline.ts";
+import { dividedJoins, keptSource, playedWords, timelineRangeToSource, wordsWithout } from "../src/timeline.ts";
 import { BREATH_DB, FLOOR_DB, SPEECH_DB, cut, lines, media, recording } from "./fixtures.ts";
 
 const MIC = "med_mic";
@@ -159,6 +159,18 @@ describe("against a reference", () => {
       { text: "Three", start: 0.7, end: 1 }, { text: "four", start: 3, end: 3.4 },
     ]);
     expect(s.map(x => x.text)).toEqual(["One two.", "Three", "four"]);
+  });
+});
+
+describe("divided joins", () => {
+  it("lists the joins of a version that took words out of a sentence, and not a pause or whole sentences taken out", () => {
+    const said = "This is the watch. Do not use tools. Do, do not use tools. Now the reason is speed. Sorry, phone. It holds up.".split(" ");
+    const ev = recording(MIC, 12, said.map((text, i) => [text, 1 + i * .4, 1.3 + i * .4] as [string, number, number]));
+    const evidence = new Map([[MIC, ev]]);
+    // A pause trimmed after “watch.”, the restart cut with its first word left in, and an aside taken out whole.
+    const tl = cut("A", MIC, [[0, 2.5], [2.6, 4.55], [6.15, 8.15], [8.95, 12]]);
+    expect(dividedJoins(tl, [media(MIC)], evidence)).toMatchObject([
+      { mediaId: MIC, before: "Do not use tools. Do,", after: "Now the reason is speed.", removed: 4, removedStart: "do not use tools.", split: ["out"] }]);
   });
 });
 

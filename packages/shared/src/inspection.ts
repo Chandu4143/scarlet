@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import type { TimeRange, TranscriptSegment } from "@scarlet/timeline";
+import type { FragmentEvidence } from "./joinFragments.js";
 
 type HeardWord = TimeRange & { text: string };
 export interface RepeatOccurrence {
@@ -41,6 +42,12 @@ export interface JoinHearing { at: number; mediaId: string; side: "out" | "in"; 
   /** A fragment: the kept word beside it, which plays whole, and where it starts (in) or ends (out) in the recording. */
   keptWord?: string; keptWordAt?: number;
   source: number }
+/**
+ * A join that took words out of a sentence, with what the edit plays either side of it (`FragmentEvidence`). `at` is the
+ * join in timeline seconds, `out` and `in` where the removed stretch starts and ends in the recording, and `lastWord`
+ * and `firstWord` the transcript's indices of the last word played before it and the first after it.
+ */
+export interface JoinFragment extends FragmentEvidence { id: string; at: number; mediaId: string; out: number; in: number }
 /** How many played joins have a side in a recording whose language can't be read letter by letter, and the timeline seconds they span. */
 export interface UnheardJoins { mediaId: string; reason: string; joins: number; from: number; to: number }
 export interface RepeatAuditResult {
@@ -52,6 +59,11 @@ export interface RepeatAuditResult {
   repeats: RepeatEvidence[];
   /** Wordless stretches still playing that the pass has neither cut nor kept. They count in `remaining`. */
   silences?: SilenceLeft[];
+  /**
+   * Joins that divide a sentence and that the pass has neither repaired nor kept, 25 at a time: a stray word, a
+   * sentence cut off, or a join that reads whole. They count in `remaining`.
+   */
+  fragments?: JoinFragment[];
   staged: number;
   nextOffset?: number;
   unavailable?: { mediaId: string; reason: string }[];

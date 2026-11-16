@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { fileInDirectory } from "@scarlet/render";
 import { carriesAudio, clipEnd, mergeRanges, sourceToTimeline, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
-import { adjacentRepeatCandidates, cutAnchorOn, findRestarts, normalizeTranscriptToken, SILENCE_LEFT_SECONDS, type JoinHearing, type SilenceLeft, type Task } from "@scarlet/shared";
+import { adjacentRepeatCandidates, closesSentence, cutAnchorOn, findRestarts, flattenWords, joinFragment, normalizeTranscriptToken, SILENCE_LEFT_SECONDS,
+  type JoinFragment, type JoinHearing, type SaidWord, type SilenceLeft, type Task } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { acousticWordReader } from "../transcribe/acousticWords.js";
 import { EmissionFile } from "../transcribe/emissions.js";
@@ -192,6 +193,55 @@ function silencesLeft(spoken: Heard[]): SilenceLeft[] {
   return found;
 }
 
+/**
+ * The joins that took words out of a sentence, each with what the edit plays either side of it (joinFragment). Read from
+ * the transcript and the pieces alone, so it needs no audio: a recording whose sound can't be read is still listed.
+ */
+function dividedSentences(ctx: Ctx, project: Project, parts: Placement[]): JoinFragment[] {
+  const transcripts = new Map<string, SaidWord[] | null>();
+  const wordsOf = (mediaId: string) => {
+    if (!transcripts.has(mediaId)) {
+      const media = project.media.find(m => m.id === mediaId);
+      const transcript = media?.transcriptId ? ctx.repos.transcripts.get(media.transcriptId) : undefined;
+      // Indexed as the pass names words (flattenWords), then put in the order they sound: a word the aligner placed
+      // late sits out of the transcript's order, and it plays where it sounds.
+      const lastOfSegment = new Set<number>();
+      let count = 0;
+      for (const segment of transcript?.segments ?? []) {
+        count += segment.words.length || (segment.text.trim() ? segment.text.trim().split(/\s+/).length : 0);
+        if (count) lastOfSegment.add(count - 1);
+      }
+      transcripts.set(mediaId, transcript ? flattenWords(transcript)
+        .map((w, index) => ({ text: w.text, start: w.start, end: w.end, index, endsSentence: closesSentence(w.text) || lastOfSegment.has(index) }))
+        .filter(w => w.text.trim() && !names(w.text))
+        .sort((a, b) => (a.start + a.end) - (b.start + b.end) || a.index - b.index) : null);
+    }
+    return transcripts.get(mediaId)!;
+  };
+  const found: JoinFragment[] = [];
+  const byTrack = new Map<string, Placement[]>();
+  for (const p of parts) byTrack.set(p.track, [...(byTrack.get(p.track) ?? []), p]);
+  for (const list of byTrack.values()) {
+    const at = (p: Placement, source: number) => sourceToTimeline(p.clip, source);
+    list.sort((a, b) => at(a, a.source.start) - at(b, b.source.start));
+    for (let i = 1; i < list.length; i++) {
+      const a = list[i - 1]!, b = list[i]!;
+      const aEnd = at(a, a.source.end), bStart = at(b, b.source.start);
+      // The same join the sound is read at (joinSides): touching or crossfaded pieces of one recording, the later
+      // one further on in it. A part the scope cut short ends where the scope does, not at a join.
+      if (a.clip.mediaId !== b.clip.mediaId || Math.abs(bStart - aEnd) > .2 || b.source.start - a.source.end < 1e-3) continue;
+      if (Math.abs(a.source.end - a.clip.sourceOut) >= 1e-3 || Math.abs(b.source.start - b.clip.sourceIn) >= 1e-3) continue;
+      const words = wordsOf(a.clip.mediaId);
+      const evidence = words && joinFragment(words, a.source.end, b.source.start, a.source.start, b.source.end);
+      if (!evidence) continue;
+      const mediaId = a.clip.mediaId, out = round(a.source.end), inn = round(b.source.start);
+      found.push({ id: createHash("sha256").update(JSON.stringify(["fragment", a.track, mediaId, out, inn])).digest("hex").slice(0, 20),
+        at: round(aEnd > bStart ? (aEnd + bStart) / 2 : bStart), mediaId, out, in: inn, ...evidence });
+    }
+  }
+  return found.sort((a, b) => a.at - b.at);
+}
+
 function clipById(tl: Timeline, id: string) {
   for (const t of tl.tracks) for (const c of t.clips) if (c.id === id && c.kind === "media") return c;
 }
@@ -330,5 +380,5 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
       entry.at.add(at);
     }
   }
-  return { version: tl.version, repeats, silences, unavailable, joins, unheardJoins: [...unheard.values()] };
+  return { version: tl.version, repeats, silences, fragments: dividedSentences(ctx, project, parts), unavailable, joins, unheardJoins: [...unheard.values()] };
 }
