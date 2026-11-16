@@ -1175,18 +1175,13 @@ export function foldStrandedPasses(ctx: Ctx): void {
 }
 
 /**
- * What a timeline plays on the tracks `base` has, without how it looks. A staged cut keeps its footage when a later
- * save reframes it or lays a picture over it: passes that reframed the presenter were refused 18 times in eight runs
- * for "taking away" cuts whose footage they left in place (2026-11-15).
+ * What a timeline plays on the tracks `base` has. A staged cut keeps its footage when a later save lays a picture over
+ * it: passes that reframed the presenter were refused 18 times in eight runs for "taking away" cuts whose footage they
+ * left in place (2026-11-15). The mapper itself doesn't count how a clip is framed.
  */
 function footageOf(timeline: Timeline, base: Timeline): Timeline {
   const kept = new Set(base.tracks.map(t => `${t.kind}:${t.id}`));
-  return { ...timeline, tracks: timeline.tracks.filter(t => kept.has(`${t.kind}:${t.id}`)).map(t => ({ ...t,
-    clips: t.clips.map(c => {
-      if (c.kind !== "media") return c;
-      const { transform: _transform, opacity: _opacity, effects: _effects, crop: _crop, ...footage } = c as typeof c & { crop?: unknown };
-      return footage as typeof c;
-    }) })) };
+  return { ...timeline, tracks: timeline.tracks.filter(t => kept.has(`${t.kind}:${t.id}`)) };
 }
 
 /** Later saves by the producing run can move a published call on the timeline but must preserve its footage and edges. */

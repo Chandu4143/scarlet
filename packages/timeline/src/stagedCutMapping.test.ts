@@ -58,6 +58,13 @@ it("detects a changed sound, hidden overlay, or disabled clip on otherwise ident
   expect(mapStagedCut(from, hidden, range, 30)).toMatchObject({ kind: "conflict", range });
 });
 
+it("finds the same footage after it was reframed, as a punch-in leaves it", () => {
+  const from = original();
+  const camera = from.tracks[0]!.clips[0]!;
+  const punched = applyOps(from, [{ op: "updateClip", clipId: camera.id, patch: { transform: { x: 0, y: 0, scale: 1.2 }, opacity: 0.9 } }]);
+  expect(mapStagedCut(from, punched, range, 30)).toEqual({ kind: "exact", range });
+});
+
 it("refuses a full-track cut when the picture disappeared and the same sound survived elsewhere", () => {
   const from = original();
   const head = applyOps(from, [remove(5, 10), { op: "addClip", trackId: "a1", clip: makeMediaClip("mic", 5, 10, 16) }]);
