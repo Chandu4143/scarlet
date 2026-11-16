@@ -1165,7 +1165,7 @@ it("changes a queued request's words in the box, across its whole width, saving 
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
   // What was said takes their place.
   await act(async () => { micProps.onStart?.(); micProps.onResult({ blob: new Blob(["voice"]), seconds: 1, mimeType: "audio/mp4" }); });
-  expect(rewording.onSave).toHaveBeenLastCalledWith("Keep the breath too");
+  expect(rewording.onSave).toHaveBeenLastCalledWith("Keep the breath too", undefined);
   expect(useUiStore.getState().agentContext).toBeNull();
   // Esc leaves them as they were.
   await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
@@ -1403,6 +1403,33 @@ it("drops dictation for a closed rewording when the same request is reopened", a
   await act(async () => finish({ text: "Shorten the intro." }));
   expect(first.onSave).not.toHaveBeenCalled();
   expect(next.onSave).not.toHaveBeenCalled();
+  expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
+});
+
+it("resolves skill commands in a dictated reword and leaves it alone if closed during lookup", async () => {
+  let micProps!: ComponentProps<typeof mic.MicButton>;
+  vi.spyOn(mic, "MicButton").mockImplementation(props => { micProps = props; return <></>; });
+  vi.spyOn(api, "speechToText").mockResolvedValue({ text: "/dialogue-pass Keep the intro." });
+  const skill = db.skills.find(isDialogueGuide)!;
+  let finish!: (result: { skills: typeof db.skills }) => void;
+  const load = vi.spyOn(api, "skills").mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  useSkillsStore.setState({ skills: [], status: "idle" });
+  const first = { id: "task_queued", text: "Trim the intro.", onChange: vi.fn(), onSave: vi.fn(), onCancel: vi.fn() };
+  const next = { ...first, onSave: vi.fn() };
+  const dictate = () => act(async () => {
+    micProps.onStart?.();
+    micProps.onResult({ blob: new Blob(["voice"]), seconds: 1, mimeType: "audio/mp4" });
+  });
+  await show({ rewording: first });
+  await dictate();
+  expect(load).toHaveBeenCalledTimes(1);
+  await show();
+  await show({ rewording: next });
+  await act(async () => finish({ skills: [skill] }));
+  expect(first.onSave).not.toHaveBeenCalled();
+  expect(next.onSave).not.toHaveBeenCalled();
+  await dictate();
+  expect(next.onSave).toHaveBeenCalledExactlyOnceWith("/dialogue-pass Keep the intro.", [skill.id]);
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
 });
 

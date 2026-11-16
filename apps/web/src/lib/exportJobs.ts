@@ -112,6 +112,7 @@ async function run(projectId: string, file: ExportFile, context: string, version
     useExports.setState(s => {
       if (s.jobs[projectId] !== job) return s;
       if (outcome) return { jobs: { ...s.jobs, [projectId]: outcome } };
+      if (prior?.phase === "done") return { jobs: { ...s.jobs, [projectId]: prior } };
       const jobs = { ...s.jobs };
       delete jobs[projectId];
       return { jobs };

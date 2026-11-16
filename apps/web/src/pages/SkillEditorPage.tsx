@@ -69,6 +69,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   const [original, setOriginal] = useState<SplitSkill>();
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
+  const creating = isNew && busy;
   const [err, setErr] = useState<string | null>(null);
   // What is wrong with the name, said beside the name.
   const [nameErr, setNameErr] = useState<string | null>(null);
@@ -272,7 +273,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   const editor = useRef<HTMLTextAreaElement>(null);
   const find = useSkillFind({
     text: shownVersion?.searchableBody ?? body,
-    readOnly: !!shownVersion || working,
+    readOnly: !!shownVersion || working || creating,
     onChange(value) { setBody(value); setDirty(true); },
     scope: instructionsPane,
     editor,
@@ -400,7 +401,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
     const parsed = splitFrontmatter(v.content);
     setOriginal(parsed);
     setBody(parsed.body);
-    if (parsed.frontmatter.description) setDescription(parsed.frontmatter.description);
+    setDescription(parsed.frontmatter.description ?? "");
     setViewVersion("current");
     setDirty(true);
   };
@@ -426,7 +427,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
           {onReturnToEdit ? "← Back to edit" : "← Skill library"}
         </button>
         {/* The name is edited where it reads. It is saved as a slug ("My Skill" as my-skill). */}
-        <input id="sk-name" ref={nameField} className="skill-name" aria-label="Name" aria-invalid={nameErr ? true : undefined} value={name} disabled={working} placeholder="new-skill" spellCheck={false}
+        <input id="sk-name" ref={nameField} className="skill-name" aria-label="Name" aria-invalid={nameErr ? true : undefined} value={name} disabled={working || creating} placeholder="new-skill" spellCheck={false}
           style={{ width: `calc(${Math.max(name.length, 9) + 1}ch + 18px)` }} onChange={(e) => { setNameErr(null); mark(setName)(e.target.value); }} />
         {nameErr && <span role="alert" className="text-bad text-[12px]">{nameErr}</span>}
         {unsaved && <span className="chip bg-warn/15 text-warn">Unsaved</span>}
@@ -505,12 +506,12 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
             <label className="eyebrow" htmlFor="sk-desc">When to use it</label>
             <div className="skill-enabled">
               <span>Enabled</span>
-              <Toggle checked={enabled} onChange={mark(setEnabled)} label="Enabled" disabled={working} />
+              <Toggle checked={enabled} onChange={mark(setEnabled)} label="Enabled" disabled={working || creating} />
             </div>
             {shownVersion ? <div className="field skill-version-text" aria-label="When to use it, in this version"><ChangedText lines={shownVersion.description} /></div>
               : <div className="skill-when">
                 <span className="field" aria-hidden="true">{description}{"\u200b"}</span>
-                <textarea id="sk-desc" className="field" rows={1} value={description} disabled={working} onChange={(e) => mark(setDescription)(e.target.value)} />
+                <textarea id="sk-desc" className="field" rows={1} value={description} disabled={working || creating} onChange={(e) => mark(setDescription)(e.target.value)} />
               </div>}
             <InlineError>{err}</InlineError>
           </div>
@@ -544,7 +545,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
             find={find}
             describedBy={isNew ? "skill-style-help" : undefined}
             placeholder={isNew ? "For interviews, leave a beat after a difficult question." : undefined}
-            readOnly={working}
+            readOnly={working || creating}
             onChange={mark(setBody)}
           />}
           {find.feedback}

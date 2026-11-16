@@ -131,7 +131,7 @@ type ListedEdit = Omit<ThreadEdit, "at">;
  * A thread's edits as the timeline numbers them: the engine's list for the working cut, which leaves out
  * undone work, and the thread's own saved list until that arrives. With no thread, none.
  */
-export function useThreadEdits(projectId: string, thread: Thread | undefined): ListedEdit[] {
+export function useThreadEdits(projectId: string, thread: Thread | undefined) {
   const head = useProjectStore(s => s.current?.project.head ?? null);
   const media = useProjectStore(s => s.current?.media);
   const saved = useMemo(() => thread ? threadEditList(thread, media) : [], [thread, media]);
@@ -159,7 +159,7 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined): L
   const previous = loaded && loaded.threadId === thread?.id && shown.current?.key === loaded.key ? shown.current.edits : undefined;
   const edits = (current ? loaded.edits : previous) ?? saved;
   useEffect(() => { if (current && loaded.edits) shown.current = { key, edits }; }, [current, loaded, key, edits]);
-  return applied ? edits : [];
+  return { listed: applied ? edits : [], located: applied && current ? loaded.edits : undefined, head };
 }
 
 /** Whether the editor has reviewed an edit: kept here, or decided cut by cut when the pass was applied. */

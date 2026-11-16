@@ -146,7 +146,9 @@
 .simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - 12px); height: 32px; }
 /* Over a marker that opens its edit, the pointer says a press opens it instead of scrubbing. */
 .simple-timeline-hover.is-aimed { cursor: pointer; }
+.simple-timeline-mark.is-pill { z-index: 2; }
 .simple-timeline-mark.is-hot, .simple-timeline-mark.is-on { z-index: 4; }
+.simple-timeline-mark.is-on { z-index: 5; }
 /* Hovering a marker shows only the frame and its time, as anywhere on the timeline. A marker that holds a cut or an
    edit waiting on the editor adds one amber line under the time naming it: "Cut 23 needs you". */
 .simple-timeline-need { display: block; padding: 6px 10px 7px; border-top: 1px solid var(--color-line); text-align: left;

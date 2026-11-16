@@ -1073,7 +1073,7 @@ it("gives the timeline to the latest request when its edit lands, though the edi
   await event(d => ({ ...d, tasks: [...d.tasks, { ...base, id: "task_later", state: "running" as const, createdAt: now, startedAt: now, finishedAt: undefined,
     summary: null, changeIds: [], question: null, instruction: "Fade the outro", context: { message: "Fade the outro" } }] }));
   await act(async () => {});
-  expect(numbered()).toEqual([]);
+  expect(numbered()).toEqual([["3", "check"]]);
   // While it works they look at the earlier request's flagged edit and close it without keeping it.
   await click(turnFor("chg_approved_2").querySelector(".simple-pass-need")!);
   await act(async () => {});
@@ -1090,7 +1090,7 @@ it("gives the timeline to the latest request when its edit lands, though the edi
     tasks: d.tasks.map(t => t.id === "task_later" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString(), changeIds: ["chg_later"] } : t) }));
   await act(async () => {});
   expect(turnFor("chg_later").querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
 });
 
 it("brings the open edit back when its request's markers load again, and only then lets a newer request have the timeline", async () => {
@@ -1119,7 +1119,7 @@ it("brings the open edit back when its request's markers load again, and only th
   expect(editPanel()).not.toBeNull();
   // Closed, the newer request takes the timeline.
   await press("Escape");
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
 });
 
 it("lets go of an open edit that is no longer in its request's list, and goes back to the latest request", async () => {
@@ -1183,7 +1183,7 @@ it("stays with an earlier request that has an edit to check through a reload of 
   await show();
   await act(async () => {});
   // The later request arrived with nothing open, so it has the timeline. Looking at the earlier one's edit moves the timeline there.
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   await press("Escape");
@@ -1219,7 +1219,7 @@ it("stays with an earlier request's flagged edit after a look at it, when the la
   // A later request arrives with nothing open, and has the timeline.
   await event(d => ({ ...d, changes: [...d.changes, later.change] }));
   await act(async () => {});
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
   // The editor then looks at an edit of the earlier request, which still has "wrap" to check.
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
@@ -1555,6 +1555,21 @@ const earlierRequestOnly = (flagged = true) => {
 };
 const editRows = (changeId: string) => [...turnFor(changeId).querySelectorAll<HTMLElement>(".simple-edits .simple-edit")];
 
+it("shows unresolved flags from older requests on the default full timeline and opens the right edit", async () => {
+  earlierRequestOnly();
+  const { change, earlier } = laterRequest();
+  data = { ...data, changes: [...data.changes, change] };
+  useProjectStore.setState({ current: data });
+  await showFolded();
+  const flags = () => [...container.querySelectorAll<HTMLElement>('.simple-timeline-mark[data-state="check"]')];
+  expect(flags().map(dot => dot.style.left)).toEqual(["71.875%", "81.25%"]);
+  await pressStrip(718.75);
+  expect(openTitle()).toBe("wrap");
+  await act(async () => keepEdits(PRJ, earlier, [{ changeId: "chg_approved_2", spot: 2 }]));
+  await press("Escape");
+  expect(flags().map(dot => dot.style.left)).toEqual(["81.25%"]);
+});
+
 it("flags a request's applied edit while Scarlet still works on it, and follows it to the final version", async () => {
   const { change, lists, hold, release } = laterRequest("task_fade");
   const earlier = data.changes.find(c => c.id === "chg_approved_2")!;
@@ -1569,7 +1584,7 @@ it("flags a request's applied edit while Scarlet still works on it, and follows 
   expect(turnFor(earlier.id).querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
   // "N need you" sits in the band whenever a flagged edit waits on the editor, Scarlet still at work or not.
   expect(flag()).toBe("1 needs you");
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
   await click(fade().querySelector(".simple-pass-need")!);
   expect(fade().querySelector(".simple-edit-title")?.textContent).toBe("outro fade");
   expect(fade().querySelector(".edit-badge.is-check")).not.toBeNull();
@@ -1676,7 +1691,7 @@ it("marks a new request's edits when it arrives, wherever the editor had been be
   await act(async () => { data = { ...data, changes: [...data.changes, later] }; useProjectStore.setState({ current: data }); });
   await act(async () => {});
   expect(turnFor("chg_later").querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
 });
 
 it("goes back to the latest request once the request the editor went to has nothing left to check", async () => {
@@ -1687,7 +1702,7 @@ it("goes back to the latest request once the request the editor went to has noth
   useProjectStore.setState({ current: data });
   await show();
   await act(async () => {});
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
   // Looking at an edit of the earlier request brings that request onto the timeline. It still has "wrap" to check,
   // so its flag stays marked after the edit closes.
   const earlier = turnFor("chg_approved_2");
@@ -2491,7 +2506,7 @@ it("numbers an applied pass's cuts on the timeline while it has the timeline, as
   expect(turnFor("chg_title").querySelector(".simple-made-line")).not.toBeNull();
   const pass = turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass")!;
   const marks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
-  expect(marks()).toEqual([]);
+  expect(marks().map(m => [m.textContent, m.dataset.state])).toEqual([["3", "check"]]);
   // Its open list brings the pass's cuts onto the timeline, numbered, the flagged one amber.
   await click(pass.querySelector(".simple-pass-toggle")!);
   await act(async () => {});
@@ -2743,7 +2758,7 @@ it("gives the timeline back to a pass's open list when another request's edit cl
   expect(ticks()).toEqual(["dot", "dot", "check"]);
   await click(passToggle());
   await act(async () => {});
-  expect(numbered()).toEqual([["1", "check"]]);
+  expect(numbered()).toEqual([["1", "check"], ["3", "check"], ["1", "check"]]);
   expect(container.querySelector(".simple-timeline-mark.is-numbered")?.getAttribute("style")).toContain("31.25%");
 });
 
@@ -6580,6 +6595,64 @@ it("shades and steps over what a later batch of the pass took out, since the vid
   expect(player.mediaTime(13)).toBeCloseTo(9.6, 6);
 });
 
+it("waits for the latest version with captions when opening an older cut, and retries when that version fails to load", async () => {
+  const cut = { op: "rippleDelete" as const, start: 10, end: 12.4 };
+  const before = { ...data.timeline!, version: "v_before" };
+  const after = { ...applyOps(before, [cut]), version: data.project.head! };
+  const working = { ...after, version: "v_captions", tracks: [...after.tracks, {
+    ...makeTrack("caption", "Later captions"),
+    clips: [{ kind: "caption" as const, id: "new-caption", enabled: true, timelineIn: 9, timelineOut: 11, text: "We arrived at noon." }],
+  }] };
+  // The engine has announced the new head, but the general workspace refresh is still pending.
+  data = { ...data, timeline: after, project: { ...data.project, head: working.version }, changes: data.changes.map(c => c.id === "chg_approved_2"
+    ? { ...c, ops: [cut], fromVersion: before.version, toVersion: after.version, appliedVersion: after.version,
+      timelineEdits: undefined, approvedSpots: undefined, appliedReview: undefined, cutReasons: [{ ...cut, reason: "Keep the image test" }] } : c) };
+  useProjectStore.setState({ current: data });
+  const edits = [
+    { changeId: "chg_approved_2", spot: 0, label: "Keep the image test", range: { start: 10, end: 10 }, at: 10,
+      beforeCut: { version: before.version, removed: { start: 10, end: 12.4 } }, previous: [] },
+  ];
+  vi.spyOn(api, "threadEdits").mockResolvedValue({ version: working.version, edits });
+  let failing = true;
+  let loadNext: ((timeline: typeof working) => void) | undefined;
+  vi.spyOn(api, "timeline").mockImplementation(async (_, version) => {
+    if (version === "v_captions_again") return new Promise(resolve => { loadNext = timeline => resolve({ timeline }); });
+    if (version === working.version && failing) throw new Error("The engine is restarting.");
+    return { timeline: version === working.version ? working : version === before.version ? before : after };
+  });
+  const audition = vi.spyOn(player, "audition");
+  const cache = { ...data.renders[0]!, id: "with-later-captions", version: working.version, kind: "full" as const, state: "done" as const };
+  const originalCache = { ...cache, id: "without-later-captions", version: after.version };
+  vi.mocked(api.renders).mockImplementation(async (_, query) => ({
+    renders: query?.version === working.version ? [cache] : query?.version === after.version ? [originalCache] : [],
+    fullRenderKeys: { context: fullRenderContext(data.project), preview: cache.key, delivery: "delivery" },
+  }));
+  await show();
+  await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
+  const monitor = container.querySelector<HTMLElement>(".watch-monitor")!;
+  const alerts = () => [...monitor.querySelectorAll('[role="alert"]')].filter(el => !el.closest('[aria-hidden="true"]')).map(el => el.textContent);
+  expect(alerts()).toContain("Couldn’t load the version for After.");
+  expect(audition).not.toHaveBeenCalled();
+  expect(monitor.querySelector('video[src*="without-later-captions"]')).toBeNull();
+  failing = false;
+  await click(buttonIn(monitor, "Retry")!);
+  expect(alerts()).not.toContain("Couldn’t load the version for After.");
+  expect(player.element()?.getAttribute("src")).toBe(api.renderFileUrl(cache.id));
+  expect(player.mediaTime(13)).toBeCloseTo(10.6, 6);
+
+  // Another head arrives while the editor has the old cut paused. Keep the source-clock position when its new After opens.
+  const next = { ...working, version: "v_captions_again" };
+  await act(() => { player.pause(); player.seek(13, true); });
+  vi.mocked(api.threadEdits).mockResolvedValue({ version: next.version, edits });
+  await event(d => ({ ...d, project: { ...d.project, head: next.version } }));
+  const plays = vi.spyOn(player, "play");
+  expect(editPanel()).not.toBeNull();
+  await act(async () => loadNext!(next));
+  expect(audition).toHaveBeenLastCalledWith(expect.anything(), expect.any(Number), true);
+  expect([playhead(), player.element()?.paused]).toEqual([13, true]);
+  expect(plays).not.toHaveBeenCalled();
+});
+
 it("keeps an edit that left its request's list closed when it is listed again, in a request that still has an edit to check", async () => {
   earlierRequestOnly();
   const later = laterRequest();
@@ -6640,12 +6713,12 @@ it("gives the timeline to a request that arrived under a pass's open list once t
   await press("Escape");
   await act(async () => {});
   expect(ticks()).toEqual(["dot", "dot", "check"]);
-  // The list closes. The new request has the timeline, as it would without the look.
+  // The list closes. Only the flagged edit from the older pass stays beside the latest request's marker.
   await click(passToggle());
   await act(async () => {});
   expect(turnFor("chg_later").querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
-  expect(numbered()).toEqual([["1", "check"]]);
-  expect(container.querySelector(".simple-timeline-mark.is-numbered")?.getAttribute("style")).toContain("81.25%");
+  expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
+  expect([...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")].at(-1)?.style.left).toBe("81.25%");
 });
 
 it("stays with an earlier request's flagged edit after a look at it, though a later request arrived while another request's edit was open", async () => {
@@ -9983,6 +10056,9 @@ it("says so in a cut's words when the version before it can't be loaded, offers 
   await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
   for (let i = 0; i < 4; i++) await act(async () => {});
   expect(version.mock.calls.filter(([, v]) => v === "v_before").length).toBeGreaterThan(0);
+  const monitor = container.querySelector<HTMLElement>(".watch-monitor")!;
+  expect(monitor.querySelector('[role="alert"]')?.textContent).toBe("Couldn’t load the earlier version.");
+  expect(buttonIn(monitor, "Retry")).toBeDefined();
   // A cut's card has no Before/After switch: its one icon waits for a version to play it on, as while that loads,
   // and \ plays no Before of anyone else's meanwhile.
   const card = editPanel()!;
@@ -10006,6 +10082,7 @@ it("says so in a cut's words when the version before it can't be loaded, offers 
   await click(buttonIn(passage(), "Retry transcript")!);
   for (let i = 0; i < 4; i++) await act(async () => {});
   expect(buttonIn(passage(), "Retry transcript")).toBeUndefined();
+  expect(buttonIn(monitor, "Retry")).toBeUndefined();
   expect(editPanel()!.querySelector<HTMLButtonElement>(".edit-card-before")!.disabled).toBe(false);
   expect(audition).toHaveBeenLastCalledWith({ start: 8, end: 15.4, skips: [{ start: 10, end: 12.4, removed: true }] }, expect.any(Number));
 });

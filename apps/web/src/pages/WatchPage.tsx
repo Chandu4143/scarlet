@@ -141,6 +141,7 @@ interface PreviewProps {
   draft?: Timeline;
   draftFailed?: boolean;
   openingJoin?: boolean;
+  cutLoadError?: { message: string; reason: string; retry(): void };
   onRetryDraft(): void;
   source?: MediaAsset;
   hasCut: boolean;
@@ -239,7 +240,7 @@ function CutSide({ project, timeline, url, window, parkedAt, active, fps, label,
     proposed={label === "Proposed draft"} onStart={noop} parkedAt={parkedAt} />;
 }
 
-export function CutPreview({ threadView, workingCache, draftVersion, draft, draftFailed, openingJoin, onRetryDraft, source, autoPlaySource, hasCut, change, spot, approval = false, playChange, active,
+export function CutPreview({ threadView, workingCache, draftVersion, draft, draftFailed, openingJoin, cutLoadError, onRetryDraft, source, autoPlaySource, hasCut, change, spot, approval = false, playChange, active,
   onMedia, simple, joined }: PreviewProps) {
   const current = useProjectStore(useShallow(s => {
     if (!s.current) return null;
@@ -691,13 +692,17 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
           <TemplateOnPicture />
+          {cutLoadError && <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-black/75 p-2 text-sm">
+            <span role="alert" title={cutLoadError.reason}>{cutLoadError.message}</span>
+            <button type="button" className="btn-quiet" onClick={cutLoadError.retry}>Retry</button>
+          </div>}
           {playingBefore && originalChange && selectedPassage ? <EditBeforePreview key={threadView?.request}
             change={originalChange} original={original} passage={selectedPassage} active={active} loading={loading}
             clock={<PlayerTime end={duration} coarse />} playbackRef={beforeClip} />
             : framing && displayedTimeline ? <FramingPreview
             key={JSON.stringify([selection, threadView?.threadId, threadView?.selected?.changeId, threadView?.request])}
             project={current.project} timeline={displayedTimeline} original={original} duration={duration} before={before} loading={loading} coarse onAfter={after} />
-            : (source || cut || change || draftVersion) && <MonitorPlayback playing={playing} playable={playable} loading={loading || (!!openingJoin && !draftFailed)}
+            : (source || cut || change || draftVersion) && <MonitorPlayback playing={playing} playable={playable} loading={!cutLoadError && (loading || (!!openingJoin && !draftFailed))}
             onToggle={() => player.toggle()}>
             <PlayerTime end={duration} coarse />
           </MonitorPlayback>}

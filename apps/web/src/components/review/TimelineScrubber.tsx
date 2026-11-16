@@ -340,6 +340,11 @@ interface MarkLayout {
   width: number;
 }
 
+function isPill({ dots }: MarkLayout) {
+  const first = dots[0]!;
+  return dots.some(dot => (dot.n ?? dot.time) !== (first.n ?? first.time));
+}
+
 /** Each edit draws as its numbered circle. Circles that would touch at this zoom share one pill with their run of
  *  numbers, so there are never more markers than fit and none hides another. A run reaches at most RUN_REACH: the next
  *  edit starts a run of its own, moved along just clear of the one before if it would touch it. The open edit keeps its
@@ -418,16 +423,22 @@ export function layoutMarks(marks: TimelineDot[], from: number, span: number, wi
   })).sort((a, b) => a.at - b.at);
 }
 
-/** The marker nearest the pointer, if it's within reach. A circle or pill drawn under the pointer comes first. */
+/** A hit prefers the visible marker: the open edit, then a pill drawn over another group's circle. */
 export function nearestMark(layout: MarkLayout[], percent: number, width: number) {
-  let nearest: MarkLayout | undefined, circle: MarkLayout | undefined;
-  let distance = Infinity, circleDistance = Infinity;
+  let nearest: MarkLayout | undefined, visible: MarkLayout | undefined;
+  let distance = Infinity, visibleDistance = Infinity, visiblePriority = -1;
   for (const mark of layout) {
     const delta = Math.abs(mark.at - percent);
     if (delta < distance) { nearest = mark; distance = delta; }
-    if (delta * width / 100 <= mark.width / 2 && delta < circleDistance) { circle = mark; circleDistance = delta; }
+    if (delta * width / 100 > mark.width / 2) continue;
+    const priority = mark.dots.some(dot => dot.current) ? 2 : isPill(mark) ? 1 : 0;
+    if (priority > visiblePriority || (priority === visiblePriority && delta <= visibleDistance)) {
+      visible = mark;
+      visibleDistance = delta;
+      visiblePriority = priority;
+    }
   }
-  return circle ?? (nearest && distance * width / 100 <= Math.max(MARK_SNAP, nearest.width / 2) ? nearest : undefined);
+  return visible ?? (nearest && distance * width / 100 <= Math.max(MARK_SNAP, nearest.width / 2) ? nearest : undefined);
 }
 
 function dotState(dots: TimelineDot[]) {
@@ -610,17 +621,18 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const markLayout = useMemo(() => marks ? layoutMarks(marks, from, span, width, groupSpan) : [], [marks, from, span, width, groupSpan]);
   const [hotMark, setHotMark] = useState<string>();
   // The playhead re-renders the strip every frame. A pass can mark hundreds of cuts, so build them only when they change.
-  const markNodes = useMemo(() => <>{markLayout.map(({ key, times, dots, at, label, width: size }) => {
+  const markNodes = useMemo(() => <>{markLayout.map(mark => {
+    const { key, times, dots, at, label, width: size } = mark;
     const on = dots.some(dot => dot.current);
     const hot = key === hotMark || (litMark !== undefined && times.includes(litMark));
     const landed = dots.some(dot => dot.landed === "cut") ? "cut" : dots.some(dot => dot.landed) ? "edit" : undefined;
-    const mark = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
-      className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
+    const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
+      className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
       style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 } }}>
       {label && <span className="simple-timeline-number">{label}</span>}
     </i>;
     // A cut just applied: a sliver of its red closes up where the footage came out, then its marker arrives.
-    return landed === "cut" ? [<i key={`${key}-closing`} aria-hidden="true" className="simple-timeline-closing" style={{ left: `${at}%` }} />, mark] : mark;
+    return landed === "cut" ? [<i key={`${key}-closing`} aria-hidden="true" className="simple-timeline-closing" style={{ left: `${at}%` }} />, node] : node;
   })}</>, [markLayout, hotMark, litMark]);
   // Hovering a marker shows the frame and its time, as anywhere on the timeline. One holding what waits on the editor
   // says which, and the frame is that one's.
@@ -652,9 +664,8 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   // A pill opens into its edits: a press zooms to its run, where each has its own number, and opens nothing. Zoomed in
   // as far as the timeline goes, it opens its first. A marker of one edit opens it.
   const openMark = (mark: MarkLayout) => {
-    const one = new Set(mark.dots.map(dot => dot.n ?? dot.time)).size === 1;
     const first = mark.dots.find(dot => dot.open)?.open;
-    if (one || span <= minSpan * 1.05) return first;
+    if (!isPill(mark) || span <= minSpan * 1.05) return first;
     const t0 = Math.min(...mark.times), t1 = Math.max(...mark.times);
     const pad = Math.max(.5, (t1 - t0) * .15);
     return () => fitRange(Math.max(start, t0 - pad), Math.min(end, t1 + pad));
