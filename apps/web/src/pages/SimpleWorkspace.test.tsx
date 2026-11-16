@@ -1421,6 +1421,38 @@ it("marks the latest request's edits from the start, amber where one asks for a 
   expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
+it("opens a located review check where it needs a look, then replays the edit from its start once kept", async () => {
+  const changeId = "chg_approved_2";
+  const check = "At 0:10, should the demo switch to the other recording?";
+  const reason = "The opening and demos play with the camera mic.";
+  data = { ...data, changes: data.changes.filter(c => c.id === changeId), tasks: [], notes: [] };
+  useProjectStore.setState({ current: data });
+  vi.mocked(api.threadEdits).mockResolvedValue({ version: data.project.head!, edits: [
+    { changeId, spot: 0, label: "Assembled the opening and demos", range: { start: 0, end: 16 }, previous: [],
+      check, reason, reviewRange: { start: 10, end: 10 } },
+  ] });
+  zoomAtOnce();
+  await showFolded();
+  const turn = turnFor(changeId);
+  const dot = () => container.querySelector<HTMLElement>(".simple-timeline-mark.is-numbered");
+  expect(dot()?.dataset.state).toBe("check");
+  expect(dot()?.style.left).toBe("62.5%");
+
+  const previews = vi.spyOn(player, "previewRange");
+  await click(turn.querySelector(".simple-pass-need")!);
+  expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe(`${check} ${reason}`);
+  expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Assembled the opening and demos” at 0:10");
+  expect(container.querySelector(".simple-timeline-cut.is-kept")).not.toBeNull();
+  expect(dot()?.style.left).toBe("50%");
+  expect(previews).toHaveBeenLastCalledWith({ start: 8.5, end: 11.5 }, expect.any(Number), undefined, false);
+
+  await click(buttonIn(editPanel()!, "Keep")!);
+  expect(api.recordEditReview).toHaveBeenCalledWith(PRJ, { changeId, spot: 0, decision: "keep" });
+  expect(turn.querySelector(".simple-pass-need")).toBeNull();
+  await click(buttonIn(turn, "See edit")!);
+  expect(previews).toHaveBeenLastCalledWith({ start: 0, end: 16 }, expect.any(Number), undefined, false);
+}, 15_000);
+
 it("lands an edit applied while the editor watches with a moment, and leaves the ones applied before it opened quiet", async () => {
   appliedEdits();
   data = { ...data, changes: data.changes.filter(c => c.id === "chg_approved_1" || c.id === "chg_approved_2"), tasks: [], notes: [] };

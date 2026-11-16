@@ -14,6 +14,8 @@ export interface ThreadEdit extends EditRef {
   previous: EditRef[];
   /** What the editor should look or listen for before keeping this edit. */
   check?: string;
+  /** Where to preview a localized review check in the version currently playing. */
+  reviewRange?: TimeRange;
   /** A later change that supplied the review note for this same edit on the working cut. */
   reviewChangeId?: string;
   /**
@@ -64,6 +66,8 @@ export function matchesEdit(edit: ThreadEdit, ref: EditRef) {
 
 interface SavedEdit extends ThreadEdit {
   version: string;
+  /** The later review check's location in the version where Scarlet found it. */
+  reviewLocation?: { version: string; range: TimeRange };
   /** Scarlet named this edit itself, in the list it saved with its change, as against a cut read from what was removed. */
   named?: boolean;
   /** Named at a point where its own save neither took footage out nor put any back. */
@@ -268,6 +272,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
     if (!flag) return;
     edit.check = flag.check;
     edit.recheck = flag.at;
+    edit.reviewLocation = flag.location;
   };
   // An edit another request made comes first, as it was in the video before this request's own: a revision this
   // request then makes of it takes its place. So does one its own request or any other made since (`replaces`): the
@@ -419,7 +424,8 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
 }
 
 /** A saved edit as it is listed, without what only placing it on the working cut needs. */
-const listed = ({ version: _version, named: _named, still: _still, resaved: _resaved, putBack: _putBack, markerSays: _markerSays, ...edit }: SavedEdit): Omit<ThreadEdit, "at"> => edit;
+const listed = ({ version: _version, named: _named, still: _still, resaved: _resaved, putBack: _putBack,
+  markerSays: _markerSays, reviewLocation: _reviewLocation, ...edit }: SavedEdit): Omit<ThreadEdit, "at"> => edit;
 
 /** The edits one applied change made, in its own clock, as History lists them under its version. */
 export function changeEdits(change: Change): Omit<ThreadEdit, "at">[] {
@@ -437,8 +443,22 @@ export function threadEditList(thread: Thread, media?: ProjectFiles): Omit<Threa
     .sort((a, b) => a.range.start - b.range.start);
 }
 
+type ReviewVersionLink = Parameters<typeof historyLineage>[0][number] & { createdAt?: string };
+
+/** Older flags can name a single explicit timeline time in their check without storing its version. */
+function reviewTimeIn(check: string) {
+  const matches = [...check.matchAll(/\b(?:\d+:)?\d+:[0-5]\d(?:\.\d+)?(?![\d:]|\.\d)/g)];
+  if (matches.length !== 1) return;
+  const match = matches[0]!;
+  const before = check.slice(0, match.index);
+  const after = check.slice(match.index + match[0].length);
+  if (!/\b(?:at|near|around)\s+$/i.test(before) || /\b(?:source|raw)\b/i.test(before) ||
+      /^\s+(?:in|on|of)\s+(?:the\s+)?(?:source|raw)\b/i.test(after)) return;
+  return match[0].split(":").reduce((seconds, part) => seconds * 60 + Number(part), 0);
+}
+
 /** Return playable ranges on the working cut, never mixing clocks from different versions or branches. */
-export function threadTimeline(thread: Thread, head: Timeline, links: Parameters<typeof historyLineage>[0],
+export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVersionLink[],
   readVersion: (version: string) => Timeline | undefined, fps: number, media?: ProjectFiles): ThreadEdit[] {
   const { lineage, undone } = historyLineage(links, head.version);
   const duration = timelineDuration(head);
@@ -450,6 +470,42 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
   };
   const edits = savedEdits(thread, v => !undone.has(v) && (v === head.version || lineage.has(v)), read, fps, media);
   const maps = new Map<string, ReturnType<typeof makeTimeMap> | null>([[head.version, t => t]]);
+  const mapFrom = (version: string) => {
+    if (!maps.has(version)) {
+      const source = read(version);
+      maps.set(version, source ? makeTimeMap(source, head, fps) : null);
+    }
+    return maps.get(version);
+  };
+  const linksByVersion = new Map(links.map(link => [link.version, link]));
+  const legacyLocation = (check: string, flaggedAt: string) => {
+    const time = reviewTimeIn(check);
+    if (time === undefined) return;
+    const raised = Date.parse(flaggedAt);
+    for (const version of lineage) {
+      const createdAt = linksByVersion.get(version)?.createdAt;
+      if (!createdAt || Date.parse(createdAt) > raised) continue;
+      const source = read(version);
+      if (source && time <= timelineDuration(source)) return { version, range: { start: time, end: time } };
+      return;
+    }
+  };
+  const placeReview = (edit: ThreadEdit, location?: SavedEdit["reviewLocation"]) => {
+    if (!edit.check || edit.at !== undefined || edit.beforeCut || edit.kind === "cut" || edit.marker) return;
+    const saved = location ?? (edit.recheck && legacyLocation(edit.check, edit.recheck));
+    if (!saved) return;
+    const map = mapFrom(saved.version);
+    if (!map) return;
+    const point = saved.range.start === saved.range.end;
+    const start = map(saved.range.start, "right") ?? map(saved.range.start, "left");
+    const end = point ? start : map(saved.range.end, "left") ?? map(saved.range.end, "right");
+    if (start === null && end === null) return;
+    const from = start ?? end!;
+    const to = end ?? from;
+    // A legacy time may refer to something outside this edit. A structured location was validated when saved.
+    if (to < from || from < 0 || to > duration || (!location && (from < edit.range.start || to > edit.range.end))) return;
+    return { start: from, end: to };
+  };
   const result: ThreadEdit[] = [];
   // A request that saves the video again often lists every edit it has made so far, not only what that save changed:
   // a dialogue pass saved three times listed the same 100 edits three times, and "N need you" counted each flagged one
@@ -472,8 +528,15 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
     // Two things one save named on the same edit are both said, as they are for a cut it made itself.
     const sameSave = first.reviewChangeId === later.changeId;
     if (later.check || later.summary || later.reason) first.reviewChangeId = later.changeId;
-    if (later.check && later.check !== first.check) first.reviewRef = { changeId: later.changeId, spot: later.spot };
-    if (later.check) first.check = later.check;
+    if (later.check) {
+      const changed = later.check !== first.check;
+      if (changed) first.reviewRef = { changeId: later.changeId, spot: later.spot };
+      if (changed || later.recheck) {
+        first.recheck = later.recheck;
+        if (first.at === undefined && !first.beforeCut && first.kind !== "cut" && !first.marker) first.reviewRange = later.reviewRange;
+      }
+      first.check = later.check;
+    }
     if (later.todo) first.todo = later.todo;
     if (later.summary) first.summary = sameSave && first.summary && first.summary !== later.summary ? `${first.summary} ${later.summary}` : later.summary;
     if (later.reason) first.reason = sameSave && first.reason && first.reason !== later.reason ? `${first.reason} ${later.reason}` : later.reason;
@@ -543,12 +606,8 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
     const start = back?.(span.start, "right"), end = back?.(span.end, "left");
     return typeof start === "number" && typeof end === "number" && start <= removed.start + 0.5 / fps && end >= removed.end - 0.5 / fps;
   });
-  for (const { version, named, still, resaved, putBack, markerSays: _markerSays, ...edit } of edits) {
-    if (!maps.has(version)) {
-      const source = read(version);
-      maps.set(version, source ? makeTimeMap(source, head, fps) : null);
-    }
-    const map = maps.get(version);
+  for (const { version, named, still, resaved, putBack, markerSays: _markerSays, reviewLocation, ...edit } of edits) {
+    const map = mapFrom(version);
     if (!map) continue;
     const backStart = putBack && (map(putBack.start, "right") ?? map(putBack.start, "left"));
     const backEnd = putBack && (map(putBack.end, "left") ?? map(putBack.end, "right"));
@@ -582,6 +641,8 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
     const range = { start: Math.max(0, start), end: Math.min(duration, Math.max(start, end)) };
     // A removal has a join but no surviving frames of its own. Audition the join with context.
     const placed: ThreadEdit = range.end === range.start ? { ...edit, at: range.start, range: withHandles(range, 1.5, duration) } : { ...edit, range };
+    const reviewRange = placeReview(placed, reviewLocation);
+    if (reviewRange) placed.reviewRange = reviewRange;
     const first = (resaved && placed.at !== undefined ? revised(placed, [placed.at], { start: placed.at, end: placed.at }) ?? revised(placed, [placed.at]) : undefined) ??
       (still && placed.at !== undefined ? cutThere(placed) : undefined) ?? sameAs(placed, named);
     if (first) {

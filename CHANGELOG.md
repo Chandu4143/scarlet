@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- When Scarlet flags a spot inside a long edit, opening it takes you to the passage it wants you to review.
 - A spot Scarlet marked for footage it doesn't have opens as a to-do: its card leads with what to add, has Done instead of Keep and nothing to compare or undo, and the timeline no longer shows it as a cut.
 - What a request made counts the spots Scarlet marked for you on their own.
 - A to-do Scarlet marked keeps saying what to add after you ask for a revision, and still waits for you to mark it done. An edit that changed the video and also left a marker keeps its Undo edit and Before/After.

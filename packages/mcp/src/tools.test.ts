@@ -61,6 +61,27 @@ afterEach(() => {
   Object.assign(mock.state, { waveform: pristine.waveform, extra: undefined, timeline: null, notes: [], events: [], transcripts: { m1: transcript } });
 });
 
+it("sends the exact review range and timeline version when flagging a named edit", async () => {
+  mock.state.timeline = { ...emptyTimeline("prj_test"), version: "reviewed-cut" };
+  const path = "/projects/prj_test/edit-flags";
+  mock.state.extra = (req, res) => req.method === "POST" && req.path === path && reply(res, { flagged: { changeId: "opening", spot: 0 } });
+  const c = await connect({ taskId: "task-review" });
+  try {
+    await ok(c, "timeline_at", { time: 0 });
+    const edit = { check: "Check the picture at the comparison", changeId: "opening", spot: 0 };
+    const range = { start: 518.4, end: 520 };
+    await ok(c, "edit_flag", { ...edit, range });
+    await ok(c, "edit_flag", { ...edit, range, version: "other-cut" });
+    const missingRange = await call(c, "edit_flag", { ...edit, version: "other-cut" });
+    expect(missingRange.isError).toBe(true);
+    expect(textOf(missingRange)).toContain("Give range with version.");
+    expect(sent(path).map(req => req.body)).toEqual([
+      { ...edit, range, version: "reviewed-cut", taskId: "task-review" },
+      { ...edit, range, version: "other-cut", taskId: "task-review" },
+    ]);
+  } finally { await c.close(); }
+});
+
 describe("audio_sync", () => {
   function envelope(seed: number, length: number) {
     return Array.from({ length }, () => {
