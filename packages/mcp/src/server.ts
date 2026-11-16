@@ -1,6 +1,6 @@
 import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
-import { UNFRAMED_NEXT, unframedBeside } from "./clip-framing.js";
+import { UNFRAMED_NEXT, backgroundShowing, unframedBeside } from "./clip-framing.js";
 import { matchAudio, syncRate } from "./audio-sync.js";
 /**
  * The Scarlet MCP server: the tools an AI editor uses to read a project and
@@ -834,11 +834,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   type ToolOutcome = "ok" | "failed" | "refused" | "preparing" | "degraded";
-  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number) {
+  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number, result?: ToolResult) {
     if (!ctx.taskId || !startedAt || diagnosticSessionClosed) return;
     const path = `/projects/${apiPathId(ctx.projectId)}/tasks/${apiPathId(ctx.taskId)}/tool-diagnostic`;
     const signal = AbortSignal.timeout(2000);
-    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses }, { signal })
+    // How much went back to the model, as sizes: what fills a run's context is the results it reads.
+    const resultChars = result?.content.reduce((sum, item) => sum + (item.type === "text" ? item.text.length : 0), 0);
+    const resultMedia = result?.content.filter(item => item.type !== "text").length;
+    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses, ...(result && { resultChars }), ...(resultMedia && { resultMedia }) }, { signal })
       .catch((err: unknown) => {
         // Let outstanding reports finish when the tool session closes, but quiet failures during teardown.
         if (!diagnosticSessionClosed && !(err instanceof ScarletApiError && err.status === 404))
@@ -916,6 +919,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // The summary leaves the saved timeline out, so the edit is laid on its base here, as it was checked before saving.
     const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
+    // Read from the project the edit was checked against. A project that can't be read costs the measurement, not the save.
+    const empty = made && !notApplied ? await getProject().then(({ project }) => backgroundShowing(before, made, project.media, project.settings))
+      .catch(without("failed to measure how much of the frame the edit's pictures cover", undefined)) : undefined;
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -934,6 +940,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(onWholeFrames.length && { onWholeFrames }),
       ...(notApplied && { notApplied: { ...notApplied, next: NOT_APPLIED_NEXT } }),
       ...(unframed.length && { unframedBeside: unframed, next: UNFRAMED_NEXT }),
+      ...(empty && { backgroundShowing: empty }),
     };
     return json(result);
   }
@@ -1008,7 +1015,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         // Preserve the project's existing refusal receipt separately from the operational log.
         const refusal = toolRefusal(result);
         if (refusal && !result.isError) outcome = "refused";
-        logToolResult(name, outcome, Math.round(performance.now() - began), misses);
+        logToolResult(name, outcome, Math.round(performance.now() - began), misses, result);
         if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
         return result;
       } finally {
@@ -1341,6 +1348,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- waveform -------------------------------------------------------------
 
+  const WAVEFORM_MAX_POINTS = 4000;
+
   tool(
     "waveform_get",
     "Audio levels for a range of a media asset in source seconds; missing waveforms are prepared automatically. Returns peak level per bucket in dBFS (evenly spaced over from..to), a sparkline, and silences: runs below thresholdDb lasting at least minSilence seconds. With suggestCuts (a window up to 60 s) it also returns the removable interiors of pauses between timed words and the air left either side.",
@@ -1348,13 +1357,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       mediaId: z.string(),
       from: z.number().min(0).describe("Range start, source seconds"),
       to: z.number().min(0).describe("Range end, source seconds"),
-      points: z.number().int().min(10).max(4000).default(400).describe("Number of buckets; 400 over 60 s = 0.15 s resolution"),
+      points: z.number().int().min(10).default(400).describe(`Number of buckets, up to ${WAVEFORM_MAX_POINTS}: a larger request returns ${WAVEFORM_MAX_POINTS} and says so. 400 over 60 s = 0.15 s resolution; the recording is measured every 0.02 s, so more than 50 a second adds nothing`),
       thresholdDb: z.number().max(0).default(-26).describe("Peak level in dBFS below which a bucket counts as silent"),
       suggestCuts: z.boolean().default(false),
       minSilence: z.number().min(0).default(0.25).describe("Minimum silence duration to report, seconds"),
     },
-    async ({ mediaId, from, to: asked, points, thresholdDb, minSilence, suggestCuts }) => {
+    async ({ mediaId, from, to: asked, points: askedPoints, thresholdDb, minSilence, suggestCuts }) => {
       if (asked <= from) throw new Error("`to` must be greater than `from`.");
+      // A request past the limit is answered at the limit, and told so. Refused, thirty parallel reads at 6000 points
+      // all failed and were all sent again (2026-11-16).
+      const points = Math.min(askedPoints, WAVEFORM_MAX_POINTS);
       // The range stops where the recording does. Past its end the engine has nothing and answers with empty buckets,
       // which read as silence that isn't in the recording.
       const duration = (await client.media(ctx.projectId)).media.find(m => m.id === mediaId)?.duration;
@@ -1379,6 +1391,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const silences = detectSilences(peaks, wf.from, wf.to, { threshold, minDuration: minSilence });
       const shown = downsample(peaks, points);
       return json({ mediaId, from: wf.from, to: wf.to, bucketSeconds: round3((wf.to - wf.from) / Math.max(1, shown.length)),
+        ...(askedPoints > points && { pointsCapped: { asked: askedPoints, returned: points } }),
         peaksDb: shown.map(dbfs), sparkline: sparkline(peaks, 100), silences, speechActivity: wf.speechActivity, dialogue });
     },
   );
@@ -1977,12 +1990,20 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // seven times a pass (2026-11-16).
       let setAside: { cuts: number[]; disputedEdges: unknown[]; next: string } | undefined;
       if (plan.outcome === "needsRevision") {
-        const disputed = new Set(plan.disputedEdges.flatMap(d => d.cuts));
-        const rest = disputed.size && cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
-          ? await planDialogueCuts({ ...request, setAside: disputed }, { ...planSources, crossfadeFrames }).catch(() => undefined) : undefined;
+        // A cut Scarlet could not place is named before any edge is measured, so the rest can raise a dispute of its
+        // own once it is set aside. Each round sets aside what the last one named.
+        const disputed = new Set<number>(), edges = [...plan.disputedEdges];
+        let rest: Awaited<ReturnType<typeof planDialogueCuts>> | undefined = plan;
+        for (let round = 0; round < 3 && rest?.outcome === "needsRevision"; round++) {
+          const named: number[] = rest.disputedEdges.flatMap(d => d.cuts).filter(i => !disputed.has(i));
+          if (round) edges.push(...rest.disputedEdges);
+          for (const i of named) disputed.add(i);
+          rest = named.length && cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
+            ? await planDialogueCuts({ ...request, setAside: disputed }, { ...planSources, crossfadeFrames }).catch(() => undefined) : undefined;
+        }
         if (rest?.outcome === "ready") {
-          setAside = { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: plan.disputedEdges.map(({ cuts: _cuts, ...edge }) => edge),
-            next: `These cuts were not saved; the rest of the batch was. ${refusalNext(plan.disputedEdges)} Resubmit only these on continueFrom.` };
+          setAside = { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: edges.map(({ cuts: _cuts, ...edge }) => edge),
+            next: `These cuts were not saved; the rest of the batch was. ${refusalNext(edges)} Resubmit only these on continueFrom.` };
           plan = rest;
         }
       }
@@ -2519,7 +2540,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. \`backgroundShowing\`, when the edit changed it, is where the saved pictures leave part of the frame showing only the background, as a share of the frame: a picture cropped narrower or shorter than the frame does unless it is scaled to fill it. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {
@@ -2627,7 +2648,7 @@ ${OPS_DOC}`,
 
   tool(
     "edit_flag",
-    "Flag an edit already in the video, this request's or an earlier one's, for a doubt the editor must settle by looking or listening. The request lists that edit as needing them and shows check on its card until they keep, revise or undo it. Give range for the exact passage they should inspect, even when you identify the edit explicitly with changeId and spot. With range alone on the current version, the edit covering most of the range is flagged and alsoThere names the others. For an edit you are saving now, give check in timeline_propose's timelineEdits instead. A problem no edit made has nothing to flag: say so in your reply.",
+    "Flag an edit already in the video, this request's or an earlier one's, for a doubt the editor must settle by looking or listening. The request lists that edit as needing them and shows check on its card until they keep, revise or undo it. Give range for the exact passage they should inspect, a join or a few seconds either side of it and never the whole section it is in, even when you identify the edit explicitly with changeId and spot. Two doubts in different places are two flags. With range alone on the current version, the edit covering most of the range is flagged and alsoThere names the others. For an edit you are saving now, give check in timeline_propose's timelineEdits instead. A problem no edit made has nothing to flag: say so in your reply.",
     {
       check: z.string().trim().min(1).max(120).describe("A few words naming the doubt the editor must settle, as the edit's card shows it"),
       range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().nonnegative() }).optional()

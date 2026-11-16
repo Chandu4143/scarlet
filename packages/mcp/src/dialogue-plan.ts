@@ -180,7 +180,12 @@ async function placeWordCut(tl: Timeline, words: TranscriptWord[], ref: { mediaI
   };
   // The last words of an edit end where the timeline does. Rounding to the millisecond must not carry the range past it.
   const start = place(cut.start, "start", words[fromWord]!, cut.room.start), end = Math.min(place(cut.end, "end", words[toWord]!, cut.room.end), timelineDuration(tl));
-  if (end <= start) throw new Error(`Words #${fromWord}–#${toWord} do not form one forward range on version ${tl.version}.`);
+  // A word of a frame or two in running speech, or one the recording has no sound for, puts both edges on one frame. That is
+  // a measurement of this cut alone: the rest of its batch saves without it (CutNotPlaced). One pass sent seven repeat
+  // removals, one of them a 60 ms “it”, had all seven refused for it and rewrote the whole timeline instead (2026-11-16).
+  if (end <= start) throw new CutNotPlaced(`Words #${fromWord}–#${toWord} (“${cut.text}”) leave no range to remove on version ${tl.version}: ` +
+    `the transcript times them at ${Math.max(0, words[toWord]!.end - words[fromWord]!.start).toFixed(2)} s and both edges land on the same frame. ` +
+    `Keep them if they play as one word, or remove them with a word beside them.`);
   // Where the words themselves play: the edges sit in the silence either side of them.
   const spoken = { start: Math.max(start, place(words[fromWord]!.start, "start", words[fromWord]!)), end: Math.min(end, place(words[toWord]!.end, "end", words[toWord]!)) };
   return { start, end, words: cut.text, problems: cut.problems, dips: [...cut.dips, ...cut.retimed], spoken, source: { start: round3(cut.start), end: Number.isFinite(cut.end) ? round3(cut.end) : null } };
@@ -223,6 +228,8 @@ function playedOnce(clips: readonly MediaClip[], word: TranscriptWord, what: str
 }
 
 export class NoPauseToTrim extends Error {}
+/** One cut of a batch that Scarlet could not turn into a range to remove. The batch's other cuts are unaffected. */
+export class CutNotPlaced extends Error {}
 
 /**
  * Resolve a pause named by the word it follows to a timeline range on `tl`: the pause between that word and the next
@@ -272,12 +279,13 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
   if (c.leave !== undefined && seconds) throw new Error(`${label}: leave goes with a word or pause reference. A range in seconds already says what plays.`);
   if (c.occurrence) {
     // The recording's id beside removeRepeat names nothing new. A range or a word reference would be a second, different removal.
-    if (c.fromWord !== undefined || c.toWord !== undefined || pause || seconds || c.leave !== undefined)
-      throw new Error(`${label}: removeRepeat already identifies the range to remove. Leave out start/end, fromWord/toWord, afterWord and leave on that cut.`);
+    // `leave` is neither: it says how long the join plays, as it does on a word reference.
+    if (c.fromWord !== undefined || c.toWord !== undefined || pause || seconds)
+      throw new Error(`${label}: removeRepeat already identifies the range to remove. Leave out start/end, fromWord/toWord and afterWord on that cut.`);
     const { mediaId, clipId, words: heard, before, after } = c.occurrence;
     const around = [...(before ? [before] : []), ...heard, ...(after ? [after] : [])];
     const fromWord = before ? 1 : 0;
-    return { ...await placeWordCut(tl, around, { clipId, mediaId, fromWord, toWord: fromWord + heard.length - 1 }, sources), wordRef: true as const };
+    return { ...await placeWordCut(tl, around, { clipId, mediaId, fromWord, toWord: fromWord + heard.length - 1, leave: c.leave }, sources), wordRef: true as const };
   }
   if (words === seconds) throw new Error(`${label}: give start/end in timeline seconds or mediaId with fromWord/toWord, not both or neither.`);
   if (pause) {
@@ -335,7 +343,7 @@ export type GateLine = Record<string, unknown> & { cut: number };
 
 type DialoguePlan =
   | { outcome: "preserved"; kept?: TimeRange[] }
-  | { outcome: "needsRevision"; disputedEdges: Array<TimeRange & { reason: string; quietKeptWord?: QuietKeptWord;
+  | { outcome: "needsRevision"; disputedEdges: Array<Partial<TimeRange> & { reason: string; quietKeptWord?: QuietKeptWord;
       /** The submitted cuts, by index, whose edges make this dispute: set them aside and the rest can be planned. */
       cuts: number[] }> }
   | { outcome: "ready"; removals: ResolvedCut[]; decisions: PlannedDecision[]; gate: Map<number, GateLine>;
@@ -372,10 +380,17 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     throw new Error(`The editor requested only pauses in the local passage (/tighten-pauses-here). Remove the ${otherKinds.join(" and ") || only} decisions.`);
   if (only && requested.some(c => c.kind !== only)) throw new Error(`only is "${only}", so every decision must be kind "${only}".`);
   // Word references become timeline seconds first; everything after is the same plan.
-  const resolvedCuts: ResolvedCut[] = await Promise.all(requested.map(async (c, i) => {
+  const unplaced: Array<{ reason: string; cuts: number[] }> = [];
+  const resolvedCuts = (await Promise.all(requested.map(async (c, i): Promise<ResolvedCut | undefined> => {
+    // A cut set aside is not in this plan, so it is not placed again either.
+    if (req.setAside?.has(i)) return undefined;
     const { occurrence: _occurrence, mediaId: _m, fromWord: _f, toWord: _t, afterWord, leave: _l, ...rest } = c;
     if (afterWord !== undefined && c.kind !== "pause") throw new Error(`cuts[${i}]: afterWord names a pause. Give a ${c.kind} as its removed words or in seconds.`);
-    const resolved = await resolveCutRange(tl, c, `cuts[${i}]`, sources);
+    const resolved = await resolveCutRange(tl, c, `cuts[${i}]`, sources).catch(err => {
+      if (!(err instanceof CutNotPlaced)) throw err;
+      unplaced.push({ reason: `cuts[${i}]: ${err.message}`, cuts: [i] });
+    });
+    if (!resolved) return undefined;
     // A word range whose edges found no measured quiet goes to the editor. When the same words play from another
     // saying of them with quiet at both edges, the agent can pick that one and the cut can apply as decided: on one
     // pass, two of eight such held cuts had one.
@@ -387,8 +402,10 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       ...(clean.length && { cleanAlternatives: clean.map(a => ({ fromWord: a.fromWord, toWord: a.toWord })) }),
       ...("wordRef" in resolved && { words: resolved.words, wordEdgeProblems: resolved.problems,
         ...("spoken" in resolved && { spoken: resolved.spoken, wordEdgeDips: resolved.dips }), ...("notes" in resolved && { notes: resolved.notes }) }) };
-  }));
-  const cuts = req.setAside?.size ? resolvedCuts.filter(c => !req.setAside!.has(c.input)) : resolvedCuts;
+  }))).filter(c => c !== undefined);
+  // Named before anything else is checked, so the caller can set these aside and plan the rest.
+  if (unplaced.length) return { outcome: "needsRevision", disputedEdges: unplaced.sort((a, b) => a.cuts[0]! - b.cuts[0]!) };
+  const cuts = resolvedCuts;
   const scope = cutScope(tl, req.anchor, range, localPauses);
   for (const c of cuts) {
     if (!c.spoken || c.spoken.start < scope.start || c.spoken.end > scope.end) continue;
