@@ -486,6 +486,7 @@ export function openDb(path: string): Db {
   ensureGraphics(db);
   ensureProjectSource(db);
   ensureProjectRowRevision(db);
+  ensureColumn(db, "projects", "editing_paused", "ALTER TABLE projects ADD COLUMN editing_paused INTEGER NOT NULL DEFAULT 0;");
   return db;
 }
 

@@ -16,6 +16,8 @@ export type ScarletApi = Pick<
   | "createProject"
   | "workspace"
   | "updateProject"
+  | "stopEditing"
+  | "resumeEditing"
   | "makeShorts"
   | "threadEdits"
   | "recordEditReview"

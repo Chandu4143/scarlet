@@ -1218,6 +1218,85 @@ it("reads the library again when a project was made while a read was out, so the
   expect(useProjectStore.getState().list.map(p => p.id)).toEqual(["prj_new", PRJ]);
 });
 
+it("discards a Projects read from before Stop finished, even after leaving the editor", async () => {
+  const { db, project } = open();
+  const task = { ...db.tasks.find(t => t.kind === "edit")!, state: "cancelled" as const };
+  const summary = db.summaries[PRJ]!;
+  const transcribing = { kind: "transcribing" as const, count: 1 };
+  const editing = { ...summary, activity: [{ kind: "editing" as const, count: 1 }, transcribing] };
+  const afterStop = { ...summary, activity: [transcribing] };
+  let finishStop!: (response: Awaited<ReturnType<typeof api.stopEditing>>) => void;
+  let finishRead!: (response: { projects: typeof editing[] }) => void;
+  vi.spyOn(api, "stopEditing").mockImplementation(() => new Promise(resolve => { finishStop = resolve; }));
+  const read = vi.spyOn(api, "projects").mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }))
+    .mockResolvedValue({ projects: [afterStop] });
+
+  const stop = initial.stopEditing(PRJ);
+  useProjectStore.setState({ current: null });
+  const loading = initial.loadList();
+  finishStop({ project: { ...project, editingPaused: true }, tasks: [task] });
+  await stop;
+  const published = vi.fn();
+  const unsubscribe = useProjectStore.subscribe(state => published(state.list));
+  try {
+    finishRead({ projects: [editing] });
+    await loading;
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(published).toHaveBeenCalledExactlyOnceWith([afterStop]);
+    expect(useProjectStore.getState().list).toEqual([afterStop]);
+  } finally {
+    unsubscribe();
+  }
+});
+
+it("releases the queue after Stop settles and keeps newer project details", async () => {
+  const { db, project } = open();
+  const running = { ...db.tasks.find(t => t.kind === "edit")!, projectId: PRJ, state: "running" as const };
+  const cancelled = { ...running, state: "cancelled" as const };
+  const queued = { ...running, id: "tsk_waiting", state: "queued" as const };
+  useProjectStore.setState({ current: { ...store(), tasks: [running, queued] } });
+  let finishStop!: (response: Awaited<ReturnType<typeof api.stopEditing>>) => void;
+  const paused = { ...project, editingPaused: true, rowRevision: 1 };
+  vi.spyOn(api, "stopEditing").mockImplementation(() => new Promise(resolve => { finishStop = resolve; }));
+  const sendResume = vi.spyOn(api, "resumeEditing").mockResolvedValue({ project: { ...project, name: "Renamed meanwhile", rowRevision: 3, editingPaused: false }, tasks: [] });
+  const stop = initial.stopEditing(PRJ);
+  // The engine can publish the pause before it answers the Stop request, already showing Continue.
+  initial.applyEvent({ type: "project.updated", projectId: PRJ, project: { ...paused, name: "Renamed meanwhile", rowRevision: 2 } });
+  const resume = initial.resumeEditing(PRJ);
+  expect(sendResume).not.toHaveBeenCalled();
+  finishStop({ project: paused, tasks: [cancelled] });
+  await Promise.all([stop, resume]);
+  expect(sendResume).toHaveBeenCalledExactlyOnceWith(PRJ);
+  expect(store().project).toMatchObject({ editingPaused: false, name: "Renamed meanwhile" });
+  expect(store().tasks).toEqual([cancelled, queued]);
+});
+
+it("keeps the pause when a timeline read that began before Stop finishes late", async () => {
+  const { project, current } = open();
+  let finishRead!: (response: Awaited<ReturnType<typeof api.workspace>>) => void;
+  vi.spyOn(api, "workspace").mockImplementation(() => new Promise(resolve => { finishRead = resolve; }));
+  vi.spyOn(api, "stopEditing").mockResolvedValue({ project: { ...project, editingPaused: true }, tasks: [] });
+  const read = initial.refreshHead(PRJ);
+  await initial.stopEditing(PRJ);
+  finishRead({ project: { ...project, editingPaused: false }, timeline: current.timeline });
+  await read;
+  expect(store().project.editingPaused).toBe(true);
+});
+
+it("keeps the continuation's newer socket state when the Stop response arrives", async () => {
+  const { db, project } = open();
+  const running = { ...db.tasks.find(t => t.kind === "edit")!, projectId: PRJ, state: "running" as const };
+  const held = { ...running, id: "tsk_held", state: "queued" as const, resumeRootId: running.id, resumesAfterProjectStop: true };
+  useProjectStore.setState({ current: { ...store(), tasks: [running] } });
+  let finishStop!: (response: Awaited<ReturnType<typeof api.stopEditing>>) => void;
+  vi.spyOn(api, "stopEditing").mockImplementation(() => new Promise(resolve => { finishStop = resolve; }));
+  const stop = initial.stopEditing(PRJ);
+  initial.applyEvent({ type: "task.updated", projectId: PRJ, task: { ...held, state: "cancelled" } });
+  finishStop({ project: { ...project, editingPaused: true }, tasks: [{ ...running, state: "cancelled", retryTaskId: held.id }, held] });
+  await stop;
+  expect(store().tasks).toEqual([{ ...running, state: "cancelled", retryTaskId: held.id }, { ...held, state: "cancelled" }]);
+});
+
 it("says a project is in the trash when it can't be opened because it was deleted", async () => {
   useProjectStore.setState({ current: null, status: "idle" });
   const { ScarletApiError } = await import("@scarlet/shared");

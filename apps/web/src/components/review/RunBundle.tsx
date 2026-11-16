@@ -158,14 +158,16 @@ interface RunBundleProps {
   listedAbove?: boolean;
   /** The block's heading says how the run ended ("Stopped"), so its rows don't say it again. */
   banded?: boolean;
-  /** Stop is in the heading above these rows, at its right, so no row here carries it. */
-  stopAbove?: boolean;
+  /** The project's editing is paused, so a run in line waits for Continue. */
+  paused?: boolean;
   /** Show what a finished run made, from its own row; or put it away again while it's `showing`. */
   onOpen?(): void;
   showing?: boolean;
   /** Pick a stopped or failed run up again. */
   recovery?: { label: string; run(): void };
   onStop?(): void;
+  /** Edit actions for Scarlet's own request, which has no heading. */
+  actions?: ReactNode;
   /** Resume a run that ended without its transcripts, now that they're ready. */
   onResume?(): void;
   /** Resume it once its transcripts are ready, or stop waiting to. */
@@ -239,7 +241,7 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
   ]} />;
 }
 
-function WorkingRun({ task, events: all, changes, callNumber, say, result, stopAbove, onStop }: RunBundleProps) {
+function WorkingRun({ task, events: all, changes, callNumber, say, result, onStop, actions }: RunBundleProps) {
   // A pass sent back to check the finished cut for repeats runs again as the same request, in a new session. Its line
   // and its first sentence are that session's: what it said an hour ago on the first run isn't what it is doing now.
   const events = useMemo(() => sinceRerun(task, all), [task, all]);
@@ -273,14 +275,14 @@ function WorkingRun({ task, events: all, changes, callNumber, say, result, stopA
       <StepMark state="working" />
       {/* The words shimmer while Scarlet works. A narrow chat shortens them to two lines; hovering says them whole. */}
       <span role="status" title={words} className="req-now-text working-text">{words}</span>
-      {!stopAbove && onStop && <span className="req-right"><button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button></span>}
+      {(actions || onStop) && <div className="req-right">{actions || <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>}</div>}
     </div>
     {say}
     {result?.(undefined)}
   </div>;
 }
 
-function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunBundleProps) {
+function WaitingRun({ task, events, changes, say, result, banded, paused, onStop, actions }: RunBundleProps) {
   const usage = useRunUsage(task.id, !banded);
   const asking = task.state === "waiting_for_user";
   const waiting = task.state === "queued";
@@ -291,22 +293,24 @@ function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunB
     return shownItems(runItems(task, events, changes).filter(item => !(item.kind === "note" && item.text === aim?.note)));
   }, [asking, banded, task, events, changes]);
   const lines = useMemo(() => open ? tidy(runLines(task, events, shown, Date.now())) : [], [open, task, events, shown]);
-  // A request in line again says Queued, the word its cut's card and the tray use.
-  const label = waiting ? "Queued" : "Needs your answer";
-  // A question's steps open from its line. A question under a heading has no such line: the heading's dot, the question and Answer say it.
-  const line = !(banded && asking);
+  // A request in line again says Queued, the word its cut's card and the tray use, or Paused while it waits for Continue.
+  const label = waiting ? paused ? "Paused" : "Queued" : "Needs your answer";
+  // A question's steps open from its line. A question under a heading has no such line: the heading's dot, the question
+  // and Answer say it. Nor has a paused request: its heading says Paused.
+  const line = !(banded && (asking || (waiting && paused)));
   const opens = asking && shown.length > 0;
   return <div className="req" data-state={asking ? "asking" : "working"} aria-label="Scarlet’s work" aria-busy={!asking}>
     {line && <div className="req-row req-status">
       <button type="button" className="req-toggle" aria-expanded={opens ? open : undefined} disabled={!opens}
         title={opens ? open ? "Hide the details" : "Show the details" : undefined} onClick={() => setOpen(!open)}>
         {asking && <span className="req-dot" aria-hidden />}
-        <span role="status" title={label} className={asking ? "req-ask" : undefined}>{label}</span>
+        <span role="status" title={waiting && paused ? "Editing is paused. Continue, above the message box, picks this up where it left off." : label}
+          className={asking ? "req-ask" : undefined}>{label}</span>
       </button>
-      <span className="req-right">
+      <div className="req-right">
         {asking && <Tokens usage={usage} />}
-        {onStop && <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>}
-      </span>
+        {actions || (onStop && <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>)}
+      </div>
     </div>}
     {line && lines.length > 0 && <RunList lines={lines} />}
     {say}

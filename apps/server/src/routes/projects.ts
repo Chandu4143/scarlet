@@ -3,7 +3,7 @@ import { cancelTask } from "../services/tasks.js";
 import { holdTranscriptions, resumeImportsInBackground } from "../services/ingest.js";
 import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
-import { resumeProjectTranscriptions } from "../services/taskRecovery.js";
+import { holdProjectEditing, resumeProjectEditing, resumeProjectTranscriptions } from "../services/taskRecovery.js";
 import { Hono } from "hono";
 import { buildThreads, EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
 import { makeShorts, planShorts } from "../services/shorts.js";
@@ -13,6 +13,7 @@ import type { Ctx } from "../context.js";
 import { resolveTimeline } from "../services/timeline.js";
 import { jsonBody, requireProject, requireProjectHeader } from "./util.js";
 import { actorFor, logActivity, quote } from "../services/activity.js";
+import { requestAttempt } from "../services/taskAttempt.js";
 
 export function projectRoutes(ctx: Ctx) {
   const r = new Hono<AppEnv>();
@@ -49,8 +50,12 @@ export function projectRoutes(ctx: Ctx) {
   // The first short's run saves the moments it chose, and the other shorts start with theirs.
   r.post("/tasks/:id/shorts-plan", async (c) => {
     const body = await jsonBody(c, ShortsPlanRequest);
-    return c.json(planShorts(ctx, c.var.user, c.req.param("id"), body));
+    return c.json(planShorts(ctx, c.var.user, c.req.param("id"), body, requestAttempt(c.req.raw)));
   });
+
+  r.post("/projects/:id/stop-editing", c => c.json(holdProjectEditing(ctx, c.req.param("id"))));
+
+  r.post("/projects/:id/resume-editing", c => c.json(resumeProjectEditing(ctx, c.req.param("id"))));
 
   r.get("/projects/:id", (c) => {
     const id = c.req.param("id");

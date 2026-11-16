@@ -44,6 +44,17 @@ it("keeps a resumed run's place in line ahead of requests asked while it worked"
   expect(queueWait(revision, all, [review])).toEqual({ kind: "ahead", count: 1 });
 });
 
+it("puts edits interrupted by the project's Stop ahead of ordinary queued work", () => {
+  const waiting = task("waiting", "queued", 0);
+  const first = task("first", "cancelled", 1);
+  const second = task("second", "cancelled", 2);
+  const resumeFirst = { ...task("resume-first", "queued", 4), resumeRootId: first.id, resumesAfterProjectStop: true };
+  const resumeSecond = { ...task("resume-second", "queued", 3), resumeRootId: second.id, resumesAfterProjectStop: true };
+  const all = [waiting, first, second, resumeSecond, resumeFirst];
+  expect(queueOrder(all, []).map(t => t.id)).toEqual([resumeFirst.id, resumeSecond.id, waiting.id]);
+  expect(queueWait(waiting, all, [])).toEqual({ kind: "ahead", count: 2 });
+});
+
 it("keeps a resumed run ahead of a request asked in the same millisecond as the run it continues", () => {
   const interrupted = { ...task("pass", "failed", 0), interrupted: true, retryTaskId: "again" } as Task;
   const follow = task("follow", "queued", 0, { threadId: "pass" });

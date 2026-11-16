@@ -10,6 +10,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - Scarlet stays connected when you pause media processing while it’s caching a video.
 - The message box shows an edit’s time on its own and widens its tag to show the × on hover. Open +1 to see and clear an additional marked range.
 - An edit you kept stays kept when Scarlet, still working, lists it again in other words, instead of asking you about it a second time.
+- Pause above the message box pauses all editing in the project and Continue picks the paused work up first, where it left off. A paused request says Paused in the chat, questions can still be answered, and Stop this edit in a request’s menu ends just that one.
 - About puts the installed version and update check at the top, shows the latest release notes, and folds earlier changes and usage report details into sections you can open.
 - Pause and resume background caching and transcription from the Projects menu, the Media panel, or by hovering over Media.
 - Make shorts works on recordings in a library you moved or restored from a backup, instead of asking you to reimport them.
