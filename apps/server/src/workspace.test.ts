@@ -3468,6 +3468,44 @@ it.each(["a1", "alternate"])("requires an audio check of the version that plays,
   expect(await finish()).toMatchObject({ state: "done", repeatAudit: { remaining: 0, noFindings: false } });
 });
 
+it("holds a pass until each restart and long silence its edit still plays is cut or kept", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  const claim = async () => (await (await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id })).json()).task as Task;
+  const finish = async () => (await (await api("POST", `/tasks/${pass.id}/complete`, { state: "done" })).json()).task as Task;
+  const check = (version: string, keep?: { id: string; reason: string }[]) => api("POST", projectsPath() + `/tasks/${pass.id}/repeat-audit`, { version, keep });
+  await claim();
+  await micSpeech();
+  // “there's this white, I don't know. there's this white stuff”, 19 s the transcript calls *click*, then “next up”.
+  const words = [["there's", 1, 1.3], ["this", 1.3, 1.5], ["white,", 1.5, 1.9], ["I", 2, 2.1], ["don't", 2.1, 2.3], ["know.", 2.3, 2.6],
+    ["There's", 3, 3.3], ["this", 3.3, 3.5], ["white", 3.5, 3.8], ["stuff.", 3.8, 4.2], ["*click*", 4.3, 12.8], ["Next", 13, 13.3], ["up.", 13.3, 13.6]]
+    .map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+  const transcript = ctx.repos.transcripts.put({ id: "mic-words", projectId: project.id, mediaId: "mic", language: "en", provider: "whispercpp",
+    segments: [{ id: "seg", start: 1, end: 13.6, text: words.map(w => w.text).join(" "), words }], createdAt: new Date().toISOString() });
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20, transcriptId: transcript.id }, "ready");
+  const version = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Lay in the take", ops: [
+    { op: "addClip", trackId: "a1", clip: { id: "take", kind: "media", mediaId: "mic", sourceIn: 0, sourceOut: 15, timelineIn: 0 } },
+  ] }).change.toVersion;
+  const found = await (await check(version)).json();
+  expect(found).toMatchObject({ remaining: 2,
+    repeats: [{ phrase: "there's this white,", between: "I don't know.", restart: true, first: { start: 1, end: 2.6 }, second: { start: 3, end: 3.8 }, atJoin: false }],
+    silences: [{ start: 4.2, end: 13, seconds: 8.8, after: "stuff.", before: "Next", atJoin: false }] });
+  // The first attempt is removable whole: the phrase and what followed it.
+  expect(found.repeats[0].occurrences.first.words.map((w: { text: string }) => w.text)).toHaveLength(6);
+  // The pass can't finish over them.
+  expect((await finish()).state).toBe("queued");
+  await claim();
+  // Kept with a reason, the silence is settled. Cut, the restart is gone.
+  expect(await (await check(version, [{ id: found.silences[0].id, reason: "The demo loads on screen." }])).json()).toMatchObject({ remaining: 1 });
+  const repaired = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Remove the abandoned attempt",
+    ops: [{ op: "rippleDelete", start: .9, end: 2.9 }] }).change.toVersion;
+  const after = await (await check(repaired)).json();
+  expect(after).toMatchObject({ remaining: 0, repeats: [] });
+  expect(after.silences).toBeUndefined();
+  expect(await finish()).toMatchObject({ state: "done", repeatAudit: { remaining: 0 } });
+});
+
 it("finds a six-word opening repeated inside the kept audio and clears it when the pickup is removed", async () => {
   const { ctx } = workspace;
   const { task, base } = dialoguePassInParts();
@@ -3479,10 +3517,11 @@ it("finds a six-word opening repeated inside the kept audio and clears it when t
     expect(response.status).toBe(200);
     return response.json();
   };
-  expect(await check(base)).toMatchObject({ heard: 1, remaining: 1, repeats: [{
+  // The two seconds without a word between the takes are outstanding too, until the cut takes them out.
+  expect(await check(base)).toMatchObject({ heard: 1, remaining: 2, repeats: [{
     phrase: "the next train to grand lake", first: { start: .2 }, second: { start: 2.8 }, atJoin: false,
     occurrences: { first: { clipId: "raw" }, second: { clipId: "raw", after: { text: "leaves" } } },
-  }] });
+  }], silences: [{ end: 2.8, after: "lake", before: "the", atJoin: false }] });
   const corrected = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: base, description: "Start on the complete take",
     cuts: [{ start: 0, end: 2.6, review: false, kind: "retake", reason: "Keep the opening that continues into the departure time." }] });
   expect(corrected.status).toBe(201);

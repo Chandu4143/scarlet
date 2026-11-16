@@ -58,6 +58,8 @@ export function evaluationMarkdown(ev: Evaluation): string {
     lines.push(row("Gaps inside kept footage", x => String(x.gaps.inside)));
     lines.push(row("Gaps at joins (of joins)", x => `${x.gaps.atJoins} of ${x.joins}`));
     lines.push(row("Gaps of 1 s or more", x => String(x.gaps.long)));
+    lines.push(row("Silences of 2 s or more", x => String(x.silences)));
+    lines.push(row("Phrases that play again within a moment", x => String(x.restarts)));
     lines.push(row("Dead air", x => s(x.gaps.excessSeconds)));
     lines.push(row("Median gap at a join", x => x.medianJoinGapSeconds === null ? "–" : `${x.medianJoinGapSeconds.toFixed(2)} s`));
     lines.push(row("Doubled words / phrases", x => `${x.repeats.singleWords} / ${x.repeats.phrases}`));
@@ -162,7 +164,7 @@ export function runMarkdown(title: string, rows: TrialRow[]): string {
   const groups = new Map<string, TrialRow[]>();
   for (const row of rows) groups.set(`${row.caseId}\u0000${row.config}`, [...(groups.get(`${row.caseId}\u0000${row.config}`) ?? []), row]);
   const keys = ["appliedSeconds", "reviewSeconds", "appliedSpeechEdges", "reviewSpeechEdges", "clippedWordsOnSound", "needsYourCall", "heldByScarlet", "gapsLeft", "looseJoins",
-    "deadAirSeconds", "recommendedDeadAirSeconds", "recommendedLooseJoins", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
+    "deadAirSeconds", "recommendedDeadAirSeconds", "recommendedLooseJoins", "restartsLeft", "silencesLeft", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
     "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "activeMinutes", "tokens"];
   if (rows.some(r => r.headline?.verifiedPublishedWords !== undefined))
     keys.push("verifiedPublishedWords", "missingVerifiedWords", "verifiedWordRecall");

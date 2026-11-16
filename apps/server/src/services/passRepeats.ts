@@ -77,7 +77,8 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
         if (review) mapRanges(review.original.version, change.restoredCuts.flatMap(i => review.cuts[i]?.removed ?? []), protectedRanges);
       }
     }
-    if (request.keep.some(k => !check.repeats.some(r => r.id === k.id))) throw badRequest("unknown_repeat", "A kept id must match a repeat heard on this version.");
+    if (request.keep.some(k => !check.repeats.some(r => r.id === k.id) && !check.silences.some(s => s.id === k.id)))
+      throw badRequest("unknown_repeat", "A kept id must match a repeat or a silence found on this version.");
     if (request.keep.length) {
       const fresh = request.keep.filter(k => !kept.has(k.id));
       if (fresh.length) appendTaskEvent(ctx, owner, { type: "log", text: "", data: { kind: "repeat_kept", version: tl.version,
@@ -97,6 +98,10 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
       return [{ ...r, occurrences: { first: first ? undefined : r.occurrences.first, second: second ? undefined : r.occurrences.second },
         ...(first || second ? { protected: first ? "first" : "second" } : {}) }];
     });
+    // A wordless stretch the pass kept on purpose, or one a cut staged for review takes out, is settled.
+    const within = (s: TimeRange, ranges: TimeRange[]) => ranges.some(p => p.start <= s.start + frame && p.end >= s.end - frame);
+    const silences = check.silences.filter(s => !kept.has(s.id) && !within(s, protectedRanges) &&
+      !stagedRanges.some(p => p.start < s.end - frame && p.end > s.start + frame));
     // A count and a range per recording, however long the pass: timeline_join_audit reads the range a page at a time.
     // One inside a range staged for review isn't played yet, as below.
     const unheardJoins = check.unheardJoins.flatMap(({ at, ...u }) => {
@@ -105,13 +110,15 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
     });
     const unavailable = check.unavailable.map(u => `Couldn’t check ${u.mediaId}: ${u.reason}`);
     const last = owner.repeatAudit;
-    const returns = last?.version === tl.version && (last.remaining === undefined || repeats.length >= last.remaining) ? last.returns : 0;
+    const remaining = repeats.length + silences.length;
+    const returns = last?.version === tl.version && (last.remaining === undefined || remaining >= last.remaining) ? last.returns : 0;
     // A join inside a range staged for review isn't played yet; the review reads it.
     const joins = check.joins.filter(j => !stagedRanges.some(r => r.start - frame <= j.at && j.at <= r.end + frame));
-    const noFindings = !check.repeats.length && !joins.length && !unheardJoins.length && !unavailable.length;
-    saveTask(ctx, { ...owner, state: "running", repeatAudit: { version: tl.version, remaining: repeats.length, unavailable, returns, noFindings } });
-    return { version: tl.version, ...(named !== tl.version && { readInsteadOf: named }), heard: check.repeats.length, staged: staged.length, remaining: repeats.length,
+    const noFindings = !check.repeats.length && !check.silences.length && !joins.length && !unheardJoins.length && !unavailable.length;
+    saveTask(ctx, { ...owner, state: "running", repeatAudit: { version: tl.version, remaining, unavailable, returns, noFindings } });
+    return { version: tl.version, ...(named !== tl.version && { readInsteadOf: named }), heard: check.repeats.length, staged: staged.length, remaining,
       repeats: repeats.slice(request.offset, request.offset + 25), ...(request.offset + 25 < repeats.length && { nextOffset: request.offset + 25 }),
+      ...(silences.length && { silences: silences.slice(0, 25) }),
       ...(check.unavailable.length && { unavailable: check.unavailable }),
       ...(check.joins.length && { joins }), ...(unheardJoins.length && { unheardJoins }) };
   }, "immediate")();

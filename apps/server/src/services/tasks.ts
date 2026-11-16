@@ -320,7 +320,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
       if (plays && (receipt?.remaining !== 0 || receipt.unavailable?.length)) {
         if (receipt?.unavailable?.length || (receipt?.returns ?? 0) >= 2) {
           body = { ...body, state: "failed", interrupted: true, error: receipt?.unavailable?.join(" ") ||
-            "The final audio check still has repeated dialogue to resolve. Resume to finish checking the saved edit." };
+            "The final audio check still has repeats or silences to resolve. Resume to finish checking the saved edit." };
         } else {
           // The pass's closing words are kept for the editor while the check runs: the check's own are about the check.
           const reply = task.reply ?? (body.summary?.trim() || undefined);
@@ -490,8 +490,9 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   const plan = plans ? { plan: true } : {};
   if (isDialoguePass(task) && task.repeatAudit?.returns) {
     // The goal and what counts as done, not the steps: the tools say how they check and repair.
-    const finish = "The dialogue pass has saved its editing work. What is left is the repeat check on the current playback: " +
-      "no word the cuts clipped, and no accidental repeat, should play. Keep intentional speech with its reason. " +
+    const finish = "The dialogue pass has saved its editing work. What is left is the closing check on the current playback: " +
+      "no word the cuts clipped, no accidental repeat or abandoned attempt beside the take that replaced it, and no long " +
+      "silence with nothing in it should play. Keep intentional speech, and a silence the viewer needs, with its reason. " +
       "The pass is done once dialogue_check_repeats on the current version has nothing outstanding. " +
       "Honor the editor’s scope, preferences, protected footage and decisions.";
     return { systemPrompt, instruction: finish + "\nEditor’s request: " + firstMessage(task.instruction.trim()) +

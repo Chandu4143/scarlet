@@ -271,6 +271,8 @@ export function scoreRun(input: ScoreInput): Score {
       // Accepting the agent's picks on the staged cuts. Without a review that is the applied cut.
       recommendedDeadAirSeconds: (recommendedPacing ?? appliedPacing).gaps.excessSeconds,
       recommendedLooseJoins: (recommendedPacing ?? appliedPacing).gaps.atJoins,
+      restartsLeft: (recommendedPacing ?? appliedPacing).restarts,
+      silencesLeft: (recommendedPacing ?? appliedPacing).silences,
       repeatsLeft: appliedPacing.repeats.total,
       repeatsAtJoins: appliedPacing.repeats.atJoins,
       sharedAppliedJoins: pacingScore.sharedJoins?.applied.shared ?? null,
