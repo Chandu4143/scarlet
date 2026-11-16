@@ -2,8 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createProject, type Project } from "@scarlet/timeline";
-import { ATTEMPT_HEADER, TASK_HEADER, taskPlan, type Task, type TaskEvent, type TaskPrompt, type WsEvent } from "@scarlet/shared";
+import { createProject, type Change, type Project } from "@scarlet/timeline";
+import { ATTEMPT_HEADER, TASK_HEADER, queueOrder, queueWait, taskPlan, type Task, type TaskEvent, type TaskPrompt, type WsEvent } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { PLAN_STEPS } from "@scarlet/mcp/prompt";
@@ -30,6 +30,21 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<{ s
   if (body !== undefined) headers.set("Content-Type", "application/json");
   const res = await app.app.request("/api" + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, body: await res.json() as T };
+}
+
+async function readQueue() {
+  const path = `/projects/${project.id}`;
+  const [tasks, changes] = await Promise.all([api<{ tasks: Task[] }>("GET", `${path}/tasks`), api<{ changes: Change[] }>("GET", `${path}/changes`)]);
+  expect(tasks.status).toBe(200);
+  expect(changes.status).toBe(200);
+  return {
+    order: queueOrder(tasks.body.tasks, changes.body.changes).map(task => task.id),
+    wait(id: string) {
+      const task = tasks.body.tasks.find(t => t.id === id);
+      if (!task) throw new Error(`Task ${id} missing from the project snapshot`);
+      return queueWait(task, tasks.body.tasks, changes.body.changes);
+    },
+  };
 }
 
 async function claimed(agent = "claude", instruction = "Tighten the intro", context?: Record<string, unknown>): Promise<Task> {
@@ -593,6 +608,10 @@ it("starts requests about different cuts or edits together, and every other requ
 
   // Two agents start at once on two edits. The second request about the first edit waits for the first.
   expect(await claim()).toBe(first.id);
+  const whileFirst = await readQueue();
+  expect(whileFirst.wait(same.id)).toMatchObject({ kind: "run", task: { id: first.id } });
+  expect(whileFirst.wait(other.id)).toBeUndefined();
+  expect(whileFirst.order[0]).toBe(other.id);
   expect(await claim()).toBe(other.id);
   expect(await claim()).toBeNull();
   // A question about one edit holds only what is about that edit.
@@ -603,14 +622,47 @@ it("starts requests about different cuts or edits together, and every other requ
   // A request about the whole video runs alone: it waits for both, and the revision asked after it waits for it.
   expect(await claim()).toBeNull();
   await finish(same.id);
+  expect((await readQueue()).wait(whole.id)).toMatchObject({ kind: "question", task: { id: other.id } });
   expect(await claim()).toBeNull();
   await api("POST", `/tasks/${other.id}/answer`, { text: "Yes" });
+  const answered = await readQueue();
+  expect(answered.wait(other.id)).toBeUndefined();
+  expect(answered.wait(whole.id)).toEqual({ kind: "ahead", count: 1 });
   expect(await claim()).toBe(other.id);
   await finish(other.id);
   expect(await claim()).toBe(whole.id);
   expect(await claim()).toBeNull();
   await finish(whole.id);
   expect(await claim()).toBe(late.id);
+});
+
+it("keeps a legacy queued request's original place after it asks a question", async () => {
+  const send = async (instruction: string) =>
+    (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { kind: "edit", agent: "codex", instruction })).body.task;
+  const first = await send("Trim the intro");
+  const second = await send("Add a title");
+  const createdAt = new Date(Date.parse(second.createdAt!) - 60_000).toISOString();
+  app.ctx.db.prepare("UPDATE tasks SET json = json_remove(json, '$.createdAt'), created_at = ? WHERE id = ?").run(createdAt, first.id);
+  const { body: { host } } = await api<{ host: { id: string } }>("POST", "/hosts/register", { name: "test", platform: "test", agents: [{ id: "codex", installed: true }] });
+  const claim = async () => {
+    for (;;) {
+      const { body: { task } } = await api<{ task: Task | null }>("POST", `/hosts/${host.id}/claim`, {});
+      if (task?.kind !== "learning_check") return task;
+    }
+  };
+
+  expect((await readQueue()).order).toEqual([first.id, second.id]);
+  const original = await claim();
+  expect(original).toMatchObject({ id: first.id, createdAt });
+  const question = await api<{ waiting: boolean }>("POST", `/tasks/${first.id}/question`, { startedAt: original!.startedAt, text: "Keep the first line?" });
+  expect(question.body.waiting).toBe(true);
+  expect((await readQueue()).wait(second.id)).toMatchObject({ kind: "question", task: { id: first.id } });
+  expect(await claim()).toBeNull();
+
+  const answer = await api<{ task: Task }>("POST", `/tasks/${first.id}/answer`, { text: "Yes" });
+  expect(answer.body.task).toMatchObject({ id: first.id, state: "queued", createdAt });
+  expect((await readQueue()).order).toEqual([first.id, second.id]);
+  expect(await claim()).toMatchObject({ id: first.id, createdAt });
 });
 
 it("knows an applied edit by where it was made, from whichever thread or version a request names it", async () => {
@@ -637,6 +689,10 @@ it("knows an applied edit by where it was made, from whichever thread or version
   // The first edit of another change in the same thread is another edit, and runs beside it.
   const other = await send("Shorten the wrap", { threadId: "tsk_zoom", changeId: "chg_B", editIndex: 0 });
   expect(await claim()).toBe(own.id);
+  const waiting = await readQueue();
+  expect(waiting.wait(flagged.id)).toMatchObject({ kind: "run", task: { id: own.id } });
+  expect(waiting.wait(revised.id)).toMatchObject({ kind: "run", task: { id: own.id } });
+  expect(waiting.wait(other.id)).toBeUndefined();
   expect(await claim()).toBe(other.id);
   expect(await claim()).toBeNull();
   await api("POST", `/tasks/${own.id}/complete`, { state: "done" });

@@ -54,6 +54,18 @@ it("keeps a resumed run ahead of a request asked in the same millisecond as the 
   expect(queueWait(follow, all, [])).toEqual({ kind: "ahead", count: 1 });
 });
 
+it("follows insertion order when a project snapshot lists same-millisecond requests in reverse", () => {
+  const root = { ...task("root", "failed", 0), queueSequence: 40 };
+  const first = { ...task("first", "queued", 0), queueSequence: 41 };
+  const second = { ...task("second", "queued", 0), queueSequence: 42 };
+  const resumed = { ...task("resumed", "queued", 2), resumeRootId: root.id, queueSequence: 43 };
+  const snapshot = [resumed, second, first, root];
+
+  expect(queueOrder(snapshot, []).map(t => t.id)).toEqual([resumed.id, first.id, second.id]);
+  expect(queueWait(resumed, snapshot, [])).toBeUndefined();
+  expect(queueWait(second, snapshot, [])).toEqual({ kind: "ahead", count: 2 });
+});
+
 it("stops holding the queue for a pass version that a finished revision replaced", () => {
   const pass = task("pass", "done", 0);
   const replaced = { ...review, state: "revising" } as Change;
