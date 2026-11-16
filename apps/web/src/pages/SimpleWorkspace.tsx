@@ -2709,7 +2709,9 @@ export function SimpleWorkspace() {
   const removedLength = beforeCut ? beforeCut.removed.end - beforeCut.removed.start : 0;
   // Before was reached by a click on the timeline, in this cut's passage or another's.
   const cutSwitched = shownSide?.side === "before" && shownSide.at !== undefined;
-  const shownKind = reviewingEdit && editKindWord(reviewingEdit);
+  // A marker left for the editor changed nothing in the video: its card says what it is, and has nothing to compare or undo.
+  const shownMarker = !!reviewingEdit?.marker;
+  const shownKind = reviewingEdit && (shownMarker ? "To do" : editKindWord(reviewingEdit));
   // The transcript stays folded away. Its icon on the card opens it for this edit only.
   const scriptKey = reviewingEdit && beforeCut ? editKey(reviewingEdit) : undefined;
   const scriptOpen = !!scriptKey && scriptFor === scriptKey;
@@ -2747,20 +2749,21 @@ export function SimpleWorkspace() {
         {scriptKey && <TranscriptLink open={scriptOpen} toggle={() => setScriptFor(scriptOpen ? undefined : scriptKey)} />}
         {beforeCut ? <BeforeToggle key={cutSwitched ? `click-${shownSide!.take}` : "sides"} on={appliedSide === "before"} flash={cutSwitched}
           shortcutActive={workspaceActive} disabled={!cutKey} toggle={() => chooseCutSide(appliedSide === "after" ? "before" : "after")} />
-          : <span ref={setCompareHost} className="review-compare" />}
+          : !shownMarker && <span ref={setCompareHost} className="review-compare" />}
       </span>
       <span className="edit-card-acts">
         {/* A graphic can be saved to use again, as a template the editor picks with $ in the message box. */}
         {undoTarget && reviewingEdit.kind === "graphic" && <SaveAsTemplate key={`template ${openEditKey}`} projectId={current.id} thread={focusThread} target={undoTarget}
           onSent={() => { follow.current = true; }} />}
         {/* Each edit has its own Undo edit: one on its way for the edit before doesn't hold this one's back. */}
-        {undoTarget && <UndoEdit key={openEditKey} projectId={current.id} thread={focusThread} target={undoTarget} onSent={() => {
+        {undoTarget && !shownMarker && <UndoEdit key={openEditKey} projectId={current.id} thread={focusThread} target={undoTarget} onSent={() => {
           // The edit closes, and the box follows the chat from there; a message being written keeps its own aim.
           // An edit the editor stepped to meanwhile stays open: the undo wasn't about it.
           follow.current = true;
           if (openEditNow.current === openEditKey) threadTimeline.clear();
         }} />}
-        <ReviewActions revise={() => actions.revise(focusThread, shownChange)} approve={keepShown} approveLabel="Keep" approveKey="K" />
+        <ReviewActions revise={() => actions.revise(focusThread, shownChange)} approve={keepShown}
+          approveLabel={shownMarker ? "Done" : "Keep"} approveKey={shownMarker ? "D" : "K"} />
       </span>
     </div>
     {/* A cut reads from the version before it. Until that arrives the mark stands alone and says the words are on their

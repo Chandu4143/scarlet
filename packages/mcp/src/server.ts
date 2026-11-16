@@ -183,7 +183,7 @@ const OPS_DOC = `Op types (all times are seconds; timeline times are positions i
 - addTrack: {"op":"addTrack","track":{"id":"v2","kind":"video","name":"B-roll","clips":[]}} — kinds: video | audio | caption.
 - removeTrack: {"op":"removeTrack","trackId":"v2"}
 - updateTrack: {"op":"updateTrack","trackId":"a1","patch":{"muted":true}}
-- addMarker: {"op":"addMarker","marker":{"id":"mk1","time":12.0,"kind":"todo","text":"needs b-roll"}}
+- addMarker: {"op":"addMarker","marker":{"id":"mk1","time":12.0,"kind":"todo","text":"needs b-roll"}} — a note on the timeline that changes nothing the editor sees or hears, so the summary of an edit that only leaves one says what the editor needs to do there.
 - removeMarker: {"op":"removeMarker","markerId":"mk1"}
 - updateMarker: {"op":"updateMarker","markerId":"mk1","patch":{"resolved":true}}
 - setTimeline: {"op":"setTimeline","patch":{"name":"Short v2","background":"#000000","captionStyle":{"fontSize":0.06}}}

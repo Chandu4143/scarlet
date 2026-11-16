@@ -1,7 +1,7 @@
 import type { EditKind, ThreadEdit } from "@scarlet/shared";
 import { plural } from "./format";
 
-type Listed = Pick<ThreadEdit, "label" | "beforeCut" | "kind" | "summary" | "elsewhere">;
+type Listed = Pick<ThreadEdit, "label" | "beforeCut" | "kind" | "summary" | "elsewhere" | "marker">;
 
 /** A stretch of the sentence: plain words, or a figure that reads in bold. */
 export type SentencePart = string | { strong: string };
@@ -25,7 +25,10 @@ const NAMED = 3;
  */
 export function madeSentence(listed: readonly Listed[], length: (seconds: number) => string, eachPlace = false): SentencePart[] {
   // An edit another request made is listed for a doubt this one raised about it. This request didn't make it.
-  const edits = listed.filter(e => !e.elsewhere);
+  const all = listed.filter(e => !e.elsewhere);
+  // A marker changed nothing in the video: it is a spot left for the editor, counted on its own.
+  const marked = all.filter(e => e.marker && !e.beforeCut);
+  const edits = all.filter(e => !marked.includes(e));
   const cuts = edits.filter(e => e.beforeCut);
   const places = new Map<string, { edit: Listed; places: number }>();
   edits.forEach((edit, i) => {
@@ -34,9 +37,9 @@ export function madeSentence(listed: readonly Listed[], length: (seconds: number
     if (same) same.places++; else places.set(key, { edit, places: 1 });
   });
   const others = [...places.values()];
-  if (!cuts.length && !others.length) return [];
-  if (cuts.length + others.length === 1) {
-    const only = cuts[0] ?? others[0]!.edit, many = others[0]?.places ?? 1;
+  if (!cuts.length && !others.length && !marked.length) return [];
+  if (cuts.length + others.length + marked.length === 1) {
+    const only = cuts[0] ?? others[0]?.edit ?? marked[0]!, many = others[0]?.places ?? 1;
     const said = (only.summary || only.label).trim();
     if (many === 1) return [/[.!?]$/.test(said) ? said : `${said}.`];
     return [`${only.label.replace(/[.!?]+$/, "")}, in `, { strong: plural(many, "place") }, "."];
@@ -50,7 +53,7 @@ export function madeSentence(listed: readonly Listed[], length: (seconds: number
   if (others.length) {
     // Graphics are counted however few: their names are the words on them, which say little in a sentence.
     if (!cuts.length && others.length <= NAMED && !others.every(o => o.edit.kind === "graphic")) {
-      parts.push("Made ", { strong: String(others.length) }, ` edits: ${others.map(o => o.edit.label.replace(/[.!?]+$/, "")).join(", ")}`);
+      parts.push("Made ", { strong: String(others.length) }, ` ${others.length === 1 ? "edit" : "edits"}: ${others.map(o => o.edit.label.replace(/[.!?]+$/, "")).join(", ")}`);
     } else {
       // Counted by what they did, in the order each kind first appears.
       const counts = new Map<string, { n: number; noun: [string, string] }>();
@@ -68,6 +71,7 @@ export function madeSentence(listed: readonly Listed[], length: (seconds: number
       });
     }
   }
+  if (marked.length) parts.push(parts.length ? ", and marked " : "Marked ", { strong: plural(marked.length, "spot") }, " for you");
   parts.push(".");
   return parts;
 }

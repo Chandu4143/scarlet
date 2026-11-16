@@ -1922,6 +1922,35 @@ it("draws the template lit in the message box's $ list over the player's picture
   expect(monitor.querySelector(".template-on-picture")).toBeNull();
 });
 
+it("opens a marker Scarlet left for the editor as a to-do: what to add first, nothing to compare or undo, and Done", async () => {
+  appliedEdits();
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "Boat comparison footage", at: 9.2, range: { start: 7.7, end: 10.7 }, previous: [], kind: "other" as const,
+        marker: true as const, check: "Add the other boat renders", summary: "Marked “throw it on the screen now” where the boat comparison belongs." },
+    ] }));
+  const createTask = vi.fn();
+  useProjectStore.setState({ createTask });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  const panel = editPanel()!;
+  expect(panel.querySelector(".edit-card-title")?.textContent)
+    .toBe("Add the other boat renders. Marked “throw it on the screen now” where the boat comparison belongs.");
+  expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("To do");
+  // Nothing in the video changed there, so there's no Before to play and no Undo edit.
+  expect(panel.querySelector(".review-compare, .edit-card-before, .edit-card-undo")).toBeNull();
+  expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("title")]))
+    .toEqual([["Revise", "Revise (R)"], ["Done", "Done (D)"]]);
+  await press("u");
+  expect(createTask).not.toHaveBeenCalled();
+  // Done records it as Keep does, so it no longer waits on the editor.
+  await press("d");
+  await act(async () => {});
+  expect(localStorage.getItem(`scarlet.kept-edits.v1/${PRJ}/${threadWith("chg_approved_2").id}`)).toContain("chg_approved_2/1");
+});
+
 it("undoes the open edit with U, once however long the key is held", async () => {
   appliedEdits();
   let sent!: () => void;

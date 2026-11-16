@@ -208,3 +208,22 @@ export function editKinds(change: Change, ranges: TimeRange[], clocks: Clocks = 
     return here.length ? decide(here.map(f => f.facet), framing, clocks) : unplaced;
   });
 }
+
+/** How far, in seconds, a marker can sit from an edit's range and still be that edit's. */
+const MARKER_SLACK = 0.5;
+
+/**
+ * Whether each of a change's edits only left a marker for the editor, such as a spot for footage the project doesn't
+ * have: a marker lands on it and nothing a kind names does. Nothing the editor sees or hears changed there, so what the
+ * edit asks of them is all it has to say. `kinds` are the edits' kinds from `editKinds`.
+ */
+export function markerEdits(change: Change, ranges: TimeRange[], kinds: readonly (EditKind | undefined)[]): boolean[] {
+  const ops = (change.ops ?? []) as Op[];
+  const times = ops.flatMap((op, index) => {
+    const marker = op.op === "addMarker" ? op.marker as { time?: unknown } | undefined : undefined;
+    return typeof marker?.time === "number" ? [settled(marker.time, ops.slice(index + 1))] : [];
+  });
+  if (!times.length) return ranges.map(() => false);
+  return ranges.map((range, spot) => (kinds[spot] ?? "other") === "other" &&
+    times.some(t => t >= range.start - MARKER_SLACK && t <= range.end + MARKER_SLACK));
+}

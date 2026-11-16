@@ -1,6 +1,6 @@
 import { appliedReviewChange, clipRange, historyLineage, intervalCandidates, makeTimeMap, removedJoins, reviewCutSummaries, reviewReasons, timelineDuration, withHandles, type Change, type CutAssessment, type MediaAsset, type Timeline, type TimeRange } from "@scarlet/timeline";
 import type { Thread } from "./threads.js";
-import { editKinds, type EditKind } from "./editKind.js";
+import { editKinds, markerEdits, type EditKind } from "./editKind.js";
 
 export interface EditRef { changeId: string; spot: number }
 export interface ThreadEdit extends EditRef {
@@ -34,6 +34,11 @@ export interface ThreadEdit extends EditRef {
   recheck?: string;
   /** Another request made this edit. It is listed here because this request found a doubt about it. */
   elsewhere?: true;
+  /**
+   * The edit only left a marker for the editor, such as a spot for footage the project doesn't have. Nothing in the
+   * video changed, so what it asks of them is its note.
+   */
+  marker?: true;
 }
 
 /** Why a revision of a flagged edit asks for a look when Scarlet gave it no reason of its own. */
@@ -327,6 +332,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
     const kinds = built && taken ? fromSteps.map((kind, spot) => taken.some(cut => cut.range.start >= ranges[spot]!.start - NAMED_SLACK &&
       cut.range.start <= ranges[spot]!.end + NAMED_SLACK) ? "cut" : kind) : fromSteps;
     const joins = named && cuts ? rangedJoins(ranges, kinds, cuts) : undefined;
+    const marked = named ? markerEdits(change, ranges, kinds) : [];
     // A cut named at a point is the join nearest it: an agent names times to the hundredth, and the join its removals
     // made can fall between ("271.28" for 271.2833), which read the cut as some other edit.
     const atJoin = taken?.length ? namedJoins(ranges, taken) : named && rippled?.length ? namedJoins(ranges, rippled) : undefined;
@@ -361,6 +367,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       if (removed && range.start === range.end) edit.beforeCut = { version: beforeVersion, removed };
       const kind = edit.beforeCut ? "cut" : kinds[spot];
       if (kind) edit.kind = kind;
+      if (marked[spot] && !edit.beforeCut) edit.marker = true;
       if (found && edit.named && kind === "other" && range.start === range.end) edit.still = true;
       // Only a save that took footage out at the point can have moved a cut's join there. A punch-in or a title named on a
       // join changed no footage, and is an edit of its own.
