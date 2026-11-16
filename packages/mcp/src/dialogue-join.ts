@@ -35,7 +35,7 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
   const step = (wf.to - wf.from) / wf.rms.length;
   if (step > 0.031) return; // A coarse waveform cannot locate an edge between syllables.
   const quiet: TimeRange[] = [], valleys: TimeRange[] = [];
-  const quietBelow = quietRms(wf.rms);
+  const quietBelow = quietRms(wf.rms, step);
   let voice = 0;
   for (let i = 0; i < wf.rms.length; i++) {
     const start = wf.from + i * step, end = wf.from + (i + 1) * step;
