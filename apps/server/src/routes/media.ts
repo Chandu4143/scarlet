@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { MultipartParseError, parseMultipartRequest } from "@remix-run/multipart-parser/future";
-import { fileInDirectoryAsync, hasIndexedAvc, speechActivity } from "@scarlet/render";
+import { fileInDirectoryAsync, hasIndexedAvc } from "@scarlet/render";
 import { Hono } from "hono";
 import { z } from "zod/v3";
 import { DialogueVoiceRoles, isPlayableMedia, MediaKind, Provenance } from "@scarlet/timeline";
@@ -25,6 +25,7 @@ import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
 import { previewPictures } from "../services/previewPictures.js";
 import { getWaveform, ingestMedia, readWaveformCache, removeUnreadableMedia, settleAlignment, startTranscription, transcriptionHeld, writeHashedFile } from "../services/ingest.js";
 import { realignTranscript } from "../services/realign.js";
+import { recordingSpeechActivity } from "../services/recordingAudio.js";
 import { jsonBody, numberParam, optionalNumberParam, requireMedia, requireProjectHeader } from "./util.js";
 
 const ImportRequest = z
@@ -42,7 +43,8 @@ export function mediaRoutes(ctx: Ctx) {
   const r = new Hono<AppEnv>();
   // The picture lane alone decides how many frames decode at once, and keeps a slot for the editor's.
   const frames = new AnalysisCache<Buffer>(frame => frame.length, undefined, Infinity);
-  const speech = new AnalysisCache<Awaited<ReturnType<typeof speechActivity>>>(spans => 48 * spans.length, 1024 * 1024);
+  // A window reads the recording's one decode and runs the detector, so a few at once don't contend for ffmpeg.
+  const speech = new AnalysisCache<Awaited<ReturnType<typeof recordingSpeechActivity>>>(spans => 48 * spans.length, 1024 * 1024, 4);
   const imports = new Map<string, ReturnType<typeof ingestMedia>>();
   const frameFallback = throttledLog(ctx.log);
 
@@ -282,7 +284,7 @@ export function mediaRoutes(ctx: Ctx) {
       const info = await stat(file);
       const key = JSON.stringify(["vad", file, media.hash, info.size, info.ctimeMs, info.mtimeMs, from, to]);
       // Up to a minute, read because someone asked: a running edit checks its joins with it while caching is paused too.
-      const spans = await speech.get(key, () => ctx.track(speechActivity(file, from, to, ctx.projectSignal(media.projectId)), media.projectId));
+      const spans = await speech.get(key, () => ctx.track(recordingSpeechActivity(ctx, file, from, to, ctx.projectSignal(media.projectId)), media.projectId));
       return c.json({ mediaId: media.id, from, to, ...wf, speechActivity: spans });
     }
     return c.json({ mediaId: media.id, from, to, peaks: wf.peaks, rms: wf.rms });
