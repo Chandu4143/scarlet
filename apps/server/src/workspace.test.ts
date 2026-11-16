@@ -192,7 +192,7 @@ it.each(["unchanged", "revoked", "legacy"])("recovers a paused import with %s tr
   } finally { cloud.mockRestore(); }
 });
 
-it.each(["revoked", "paused", "archived"] as const)("recovers a ready import after restart with %s transcription", async condition => {
+it.each(["revoked", "paused", "archived", "trashed"] as const)("recovers a ready import after restart with %s transcription", async condition => {
   const { ctx } = workspace;
   ctx.repos.settings.update({ transcription: { provider: "openai" } });
   const { revision } = ctx.repos.settings.transcriptionPolicy();
@@ -204,7 +204,8 @@ it.each(["revoked", "paused", "archived"] as const)("recovers a ready import aft
     ctx.repos.settings.update({ transcription: { provider: "none" } });
     ctx.repos.settings.update({ transcription: { provider: "openai" } });
   } else {
-    ctx.repos.projects.update(project.id, condition === "paused" ? { mediaPaused: true } : { archived: true });
+    if (condition === "trashed") ctx.repos.projects.softDelete(project.id);
+    else ctx.repos.projects.update(project.id, condition === "paused" ? { mediaPaused: true } : { archived: true });
     ctx.db.prepare("UPDATE media SET created_at = ? WHERE id = 'ready-clip'").run(new Date(Date.now() - 7 * 86_400_000).toISOString());
   }
   const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe").mockResolvedValue({ segments: [] });
@@ -215,7 +216,9 @@ it.each(["revoked", "paused", "archived"] as const)("recovers a ready import aft
     expect(cloud).not.toHaveBeenCalled();
     if (condition !== "revoked") {
       const resume = condition === "paused" ? { mediaPaused: false } : { archived: false };
-      expect((await api("PATCH", projectsPath(), resume)).status).toBe(200);
+      // Out of the Trash, the import is taken up as it is when unpaused or unarchived.
+      const back = condition === "trashed" ? await api("POST", `${projectsPath()}/restore`) : await api("PATCH", projectsPath(), resume);
+      expect(back.status).toBe(200);
       while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
       expect(cloud).toHaveBeenCalledTimes(1);
       expect(workspace.ctx.repos.projects.getMedia("ready-clip")?.transcriptId).toBeDefined();

@@ -94,11 +94,20 @@ export function recoverIngestInBackground(ctx: Ctx, projectId?: string): void {
   }));
 }
 
-/** Check for imports left between preparation and transcription when a library or project comes back. */
-export function recoverImportTranscriptionsInBackground(ctx: Ctx, projectId?: string): void {
-  void ctx.track(recoverImportTranscriptions(ctx, projectId).catch(error => {
-    if (!ctx.shutdown.aborted) ctx.log(`[ingest] starting transcriptions left unbegun stopped part-way: ${(error as Error).message}`);
-  }));
+/**
+ * Take up a library's or a project's imports when it comes back: at launch, out of the Trash, unpaused or unarchived.
+ * Unfinished preparations go on, then imports left ready without their transcription begin it. The preparations
+ * come first, since one finishing begins its own transcription.
+ */
+export function resumeImportsInBackground(ctx: Ctx, projectId?: string): void {
+  void ctx.track((async () => {
+    await recoverIngest(ctx, projectId).catch(error => {
+      if (!ctx.shutdown.aborted) ctx.log(`[ingest] preparing unfinished imports stopped part-way: ${(error as Error).message}`);
+    });
+    await recoverImportTranscriptions(ctx, projectId).catch(error => {
+      if (!ctx.shutdown.aborted) ctx.log(`[ingest] starting transcriptions left unbegun stopped part-way: ${(error as Error).message}`);
+    });
+  })());
 }
 
 export type IngestSource =

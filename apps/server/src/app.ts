@@ -28,7 +28,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { continueReadyRuns, recoverTasks, wireContinueWhenReady } from "./services/taskRecovery.js";
 import { sweepLeftovers } from "./services/leftovers.js";
 import { recoverSourcePreviews } from "./services/sourcePreviews.js";
-import { holdTranscriptions, recoverImportTranscriptionsInBackground, recoverIngestInBackground } from "./services/ingest.js";
+import { holdTranscriptions, recoverIngestInBackground, resumeImportsInBackground } from "./services/ingest.js";
 import { timelineRoutes } from "./routes/timeline.js";
 import { perceptionRoutes } from "./routes/perception.js";
 import { foldStrandedPasses, recordLeftOutFootage, retireLeftoverPasses, wireChangeRenderCompletion } from "./services/changes.js";
@@ -167,8 +167,7 @@ export function createApp(options: ServerOptions): ScarletApp {
   }, 30_000);
   taskRecovery.unref();
   const stopPurge = scheduleTrashPurge(ctx);
-  recoverIngestInBackground(ctx);
-  recoverImportTranscriptionsInBackground(ctx);
+  resumeImportsInBackground(ctx);
   recoverSourcePreviews(ctx);
   const close = ctx.close.bind(ctx);
   ctx.close = async () => {

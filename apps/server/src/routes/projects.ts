@@ -1,6 +1,6 @@
 import { badRequest, conflict, notFound } from "../errors.js";
 import { cancelTask } from "../services/tasks.js";
-import { holdTranscriptions, recoverImportTranscriptionsInBackground, recoverIngestInBackground } from "../services/ingest.js";
+import { holdTranscriptions, resumeImportsInBackground } from "../services/ingest.js";
 import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
 import { recoverTasks } from "../services/taskRecovery.js";
@@ -128,14 +128,14 @@ export function projectRoutes(ctx: Ctx) {
           ctx.renders.stopProject(updated.id, true);
           holdTranscriptions(ctx, updated.id);
         } else {
-          recoverIngestInBackground(ctx, updated.id);
           recoverSourcePreviews(ctx, updated.id);
           // The pause cut this project's transcriptions off. They start again now, not at the next 30 s sweep.
           recoverTasks(ctx);
         }
       });
-      if (!updated.archived && !updated.mediaPaused && (previous.archived || previous.mediaPaused)) {
-        ctx.db.afterCommit(() => recoverImportTranscriptionsInBackground(ctx, updated.id));
+      // Unpaused or unarchived: its imports go on. Ones still held by a pause stay held.
+      if ((previous.mediaPaused && !updated.mediaPaused) || (previous.archived && !updated.archived)) {
+        ctx.db.afterCommit(() => resumeImportsInBackground(ctx, updated.id));
       }
       const what = [
         body.name && body.name !== previous.name ? `renamed it to ${quote(body.name)}` : null,
