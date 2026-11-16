@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it as vitestIt, vi } from "vitest";
 import { partedIt } from "../../../../test/parts";
-import { fullRenderContext, REVISED_CHECK, ScarletApiError, Task, type Learning, type Skill, type SourceCacheStatus } from "@scarlet/shared";
+import { fullRenderContext, REVISED_CHECK, ScarletApiError, Task, threadEditList, type Learning, type Skill, type SourceCacheStatus } from "@scarlet/shared";
 import { applyOps, makeMediaClip, makeTimeMap, makeTrack, planCutReview, timelineDuration, timelineFromKeepRanges, type MediaClip, type TimeMap } from "@scarlet/timeline";
 import { api } from "../lib/client";
 import { desktop } from "../lib/desktop";
@@ -1584,6 +1584,46 @@ it("shares the initial edit-list request between the chat and timeline and refre
   expect(read).toHaveBeenCalledExactlyOnceWith(PRJ, threadWith("chg_approved_2").id);
   await headMoves("updated-head");
   expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("shows review flags saved on already applied edits without a new timeline version", async () => {
+  const owned = data.changes.find(c => c.id === "chg_approved_2")!;
+  const earlier = { ...data.changes.find(c => c.id === "chg_approved_1")!,
+    timelineEdits: [{ label: "Carry the quotation into the reaction", range: { start: 6, end: 9 } }] };
+  const task = { ...data.tasks.find(t => t.id === "task_done")!, id: "task_check_wrap", kind: "edit" as const,
+    instruction: "Tighten the wrap", context: { threadId: "task_check_wrap" }, state: "running" as const,
+    changeIds: [owned.id], finishedAt: undefined };
+  data = { ...data, changes: [earlier, { ...owned, taskId: task.id }], tasks: [task], notes: [] };
+  useProjectStore.setState({ current: data });
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => {
+    const current = useProjectStore.getState().current!;
+    const thread = buildThreads(current).find(t => t.id === threadId)!;
+    return { version: current.project.head!, edits: threadEditList(thread) };
+  });
+  await showFolded();
+  const need = () => container.querySelector<HTMLButtonElement>(`[data-run="${task.id}"] .simple-pass-need`);
+  expect(need()).toBeNull();
+  expect(numbered().some(([, state]) => state === "check")).toBe(false);
+
+  const at = new Date().toISOString();
+  await act(async () => useProjectStore.getState().applyEvent({ type: "change.updated", projectId: PRJ, change: {
+    ...owned, taskId: task.id, updatedAt: at, flags: [{ spot: 2, check: CHECK, taskId: task.id, at }],
+  } }));
+  expect(need()?.textContent).toBe("1 needs you");
+  expect(numbered()).toContainEqual(["3", "check"]);
+
+  await act(async () => useProjectStore.getState().applyEvent({ type: "change.updated", projectId: PRJ, change: {
+    ...earlier, updatedAt: at, flags: [{ spot: 0, check: "Black gap and overlapping lines", taskId: task.id, at }],
+  } }));
+  expect(need()?.textContent).toBe("2 need you");
+  expect(turnFor(earlier.id).querySelector(".simple-pass-need")).toBeNull();
+  await click(need()!);
+  expect(openTitle()).toBe("Carry the quotation into the reaction");
+  expect(editPanel()?.textContent).toContain("Black gap and overlapping lines");
+  await act(async () => useProjectStore.getState().applyEvent({ type: "task.updated", projectId: PRJ,
+    task: { ...task, state: "done", finishedAt: at } }));
+  expect(need()?.textContent).toBe("2 need you");
+  expect(openTitle()).toBe("Carry the quotation into the reaction");
 });
 
 it("marks a new request's edits when it arrives, wherever the editor had been before", async () => {
