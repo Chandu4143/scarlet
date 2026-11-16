@@ -166,6 +166,22 @@ export function saveTask(ctx: Ctx, task: Task): Task {
   return finishedRevision && !ctx.db.inTransaction ? ctx.db.transaction(persist, "immediate")() : persist();
 }
 
+/** Close the current claim's clock before it waits, requeues, or finishes. */
+export function recordWorkThrough(task: Task, at: string): Task {
+  if (!task.startedAt || (task.state !== "claimed" && task.state !== "running")) return task;
+  const elapsed = Math.max(0, Date.parse(at) - Date.parse(task.startedAt));
+  return { ...task, workedMs: (task.workedMs ?? 0) + elapsed };
+}
+
+/** On upgrade, retain the known part of a claim that already paused for a question. */
+function pausedWork(ctx: Ctx, task: Task): number | undefined {
+  const { startedAt, workedMs } = task;
+  if (workedMs !== undefined || !startedAt) return workedMs;
+  const question = ctx.repos.taskEvents.list(task.id, "questionsAndAnswers")
+    .find(event => event.type === "question" && event.at >= startedAt);
+  return question && Math.max(0, Date.parse(question.at) - Date.parse(startedAt));
+}
+
 /** A run saving a rule the editor approved in Learnings, where there is no message box to answer it from. */
 const asksForARule = (task: Task) => isSkillEdit(task) && Boolean(task.context.learningId);
 
@@ -197,15 +213,16 @@ export function appendTaskEvent(ctx: Ctx, task: Task, ev: TaskEvent): { task: Ta
     if (last?.type === "plan" && JSON.stringify(last.data) === JSON.stringify(plan.data)) return { task, event: last };
     ev = { ...ev, text: planText(plan.data.steps), data: plan.data };
   }
-  const event = ctx.repos.taskEvents.append({ ...ev, id: ev.id ?? newId("evt"), taskId: task.id, at: ev.at ?? now() });
+  const receivedAt = now();
+  const event = ctx.repos.taskEvents.append({ ...ev, id: ev.id ?? newId("evt"), taskId: task.id, at: ev.at ?? receivedAt });
   if (ev.type === "question" && asksForARule(task)) {
     ctx.bus.publish({ type: "task.event", projectId: task.projectId, taskId: task.id, event });
     return { task: returnRuleWithQuestion(ctx, task, ev.text), event };
   }
   let next: Task = task;
-  if (task.state === "claimed") next = { ...next, state: "running", startedAt: next.startedAt ?? now() };
+  if (task.state === "claimed") next = { ...next, state: "running", startedAt: next.startedAt ?? receivedAt };
   if (ev.type === "question") {
-    next = { ...next, state: "waiting_for_user", question: ev.text };
+    next = { ...recordWorkThrough(next, receivedAt), state: "waiting_for_user", question: ev.text };
     notify(ctx, `Agent question: ${ev.text.slice(0, 80)}`, {
       body: ev.text,
       projectId: task.projectId,
@@ -213,7 +230,7 @@ export function appendTaskEvent(ctx: Ctx, task: Task, ev: TaskEvent): { task: Ta
     });
   } else if (ev.type === "answer") {
     const operation = editsDialogue(task.kind) && requestedDialogue(ctx, ev.text);
-    next = { ...next, state: "queued", hostId: null, question: null,
+    next = { ...next, workedMs: pausedWork(ctx, task), state: "queued", hostId: null, question: null,
       ...(operation && operation !== taskDialogueOperation(task) && { context: { ...task.context, dialogueOperation: operation, dialogueRange: undefined }, repeatAudit: undefined }),
       ...(task.cutConflict && { cutConflict: { ...task.cutConflict, answered: true, retried: undefined } }) };
   } else if (ev.type === "change" && typeof ev.data?.changeId === "string") {
@@ -241,7 +258,11 @@ export function isDialoguePass(task: Task) {
 /** The same pass owns its verification, even when the editor's final call lands after the original run finished. */
 export function queueRepeatCheck(ctx: Ctx, task: Task, version: string, changeIds = task.changeIds) {
   const receipt = task.repeatAudit?.version === version ? task.repeatAudit : undefined;
-  const queued = saveTask(ctx, { ...task, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
+  const closed = recordWorkThrough(task, now());
+  // A previously finished pass may predate the persisted clock. Its latest claim is still measurable.
+  const workedMs = closed.workedMs ?? pausedWork(ctx, task) ?? (task.startedAt && task.finishedAt
+    ? Math.max(0, Date.parse(task.finishedAt) - Date.parse(task.startedAt)) : undefined);
+  const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
     repeatAudit: { ...receipt, version, noFindings: undefined, returns: (receipt?.returns ?? 0) + 1 } });
   ctx.bus.taskQueued({ taskId: task.id, projectId: task.projectId });
   return queued;
@@ -256,7 +277,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   if (body.state === "done" && task.cutConflict) {
     if (task.state === "waiting_for_user") return task;
     if (!task.cutConflict.retried) {
-      const queued = saveTask(ctx, { ...task, state: "queued", hostId: null, session: undefined,
+      const queued = saveTask(ctx, { ...recordWorkThrough(task, now()), state: "queued", hostId: null, session: undefined,
         cutConflict: { ...task.cutConflict, retried: true } });
       ctx.bus.taskQueued({ taskId: queued.id, projectId: queued.projectId });
       return queued;
@@ -328,8 +349,11 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   const reply = dialogue ? task.reply ?? (body.summary?.trim() || undefined) : task.reply;
   // The run finished without transcripts it waited for. What it saved stands, and the editor can resume it once they're ready.
   const needsTranscripts = body.state === "done" && task.kind !== "transcribe" ? unmetTranscriptWaits(ctx, task.id) : [];
+  const finishedAt = now();
+  const closed = recordWorkThrough(task, finishedAt);
   const saved = saveTask(ctx, {
-    ...task,
+    ...closed,
+    workedMs: closed.workedMs ?? pausedWork(ctx, task),
     state: body.state,
     summary,
     ...(reply ? { reply } : {}),
@@ -337,7 +361,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     error: body.error,
     changeIds,
     question: null,
-    finishedAt: now(),
+    finishedAt,
     // The host stopped a stalled run. Its saved work stands, and the editor can resume it.
     ...(body.state === "failed" && body.interrupted ? { interrupted: true } : {}),
   });
@@ -375,7 +399,9 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
 
 export function cancelTask(ctx: Ctx, task: Task): Task {
   if (FINISHED_TASK.has(task.state)) return task;
-  const saved = saveTask(ctx, { ...task, state: "cancelled", finishedAt: now() });
+  const finishedAt = now();
+  const closed = recordWorkThrough(task, finishedAt);
+  const saved = saveTask(ctx, { ...closed, workedMs: closed.workedMs ?? pausedWork(ctx, task), state: "cancelled", finishedAt });
   recordTaskFinished(ctx, saved);
   const ran = since(task.startedAt, Date.parse(saved.finishedAt!));
   ctx.log(`[task] ${task.id} cancelled while ${task.state}${ran ? ` after ${ran}` : ""}`);
@@ -707,7 +733,7 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
     ctx.db.prepare("UPDATE tasks SET worker_pid = ?, worker_seen_at = ? WHERE id = ?").run(desktopPid, seenAt, task.id);
     const waited = since(task.createdAt, Date.parse(seenAt));
     ctx.log(`[task] ${task.id} claimed by ${host.name} (${host.id})${waited ? ` after ${waited} in the queue` : ""}`);
-    return saveTask(ctx, { ...task, state: "claimed", hostId: host.id, startedAt });
+    return saveTask(ctx, { ...task, state: "claimed", hostId: host.id, startedAt, workedMs: pausedWork(ctx, task) ?? 0 });
   }
   return null;
 }

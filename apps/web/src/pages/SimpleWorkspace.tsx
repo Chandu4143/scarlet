@@ -30,7 +30,7 @@ import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
 import { ignorePageShortcut, useHotkeys } from "../lib/hotkeys";
-import { RequestTokens, RunBundle, runEnded, Said } from "../components/review/RunBundle";
+import { RequestMetrics, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
 import { MakeShortsSheet } from "../components/review/MakeShorts";
@@ -1011,7 +1011,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const tag = request?.revisionLabel ? tagOf(tagFor(request) ?? request.revisionLabel) : undefined;
     const about = aboutOne(run) ? actions.cutName?.(aimOf(run).context) ?? tag : undefined;
     // Where the request stands, at the right of its heading: a dot while Scarlet asks, a word once it stopped early or
-    // left a suggestion. A finished request has nothing there. What needs the editor ("N need you") takes this place
+    // left a suggestion. What needs the editor ("N need you") takes this place
     // when there is any. While Scarlet has the request, Stop follows as the heading's last word.
     const ended = runEnded(task);
     const stands = runIsActive(task) ? task.state === "waiting_for_user" ? <span className="unit-dot" aria-hidden /> : null
@@ -1024,8 +1024,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time. Each has its own Stop.`}>Working on {atOnce} at once</span> : null);
     // One way to stop each request: Stop in its heading once Scarlet has it, the tray's × while it still waits there.
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
-    // The tokens the request has used sit in its heading, before Stop, climb while Scarlet works and stay once it's done.
-    const headingEnd = <><RequestTokens taskId={task.id} />{stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>}</>;
+    // Active time and reported tokens stay with the request and show before Stop while it runs.
+    const headingEnd = <><RequestMetrics attempts={run.attempts} events={events} />{stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>}</>;
     const bundle = <RunBundle task={task} events={events[task.id] ?? []} changes={thread.changes} finalChange={final} banded={!!request} callNumber={actions.callNumber}
         say={said.length ? <div className="req-said">{said}</div> : undefined} told={told} result={rows} recovery={recovery}
         // Under its call's row, that row is the cut it saved, with Scarlet's note: the note isn't said again under it.

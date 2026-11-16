@@ -11,7 +11,7 @@ import { useUiStore } from "../../stores/ui";
 import type { MediaAsset } from "@scarlet/timeline";
 import { TranscriptLine } from "../media/TranscriptionAction";
 import { UsageSettings } from "../shell/UsageSettings";
-import { RequestTokens, RunBundle, runEnded, Said } from "./RunBundle";
+import { RequestMetrics, RunBundle, runEnded, Said } from "./RunBundle";
 
 const task: Task = {
   id: "tsk_1", projectId: "prj_1", kind: "edit", agent: "claude", model: "opus", instruction: "Tighten the intro",
@@ -113,10 +113,10 @@ it("adds the request's tokens to its finished run line, and updates live", () =>
   expect(tokens?.getAttribute("aria-label")).toContain("cache read");
   // Hovering or focusing the count opens every part of it under the count; it closes again when the pointer leaves.
   act(() => (tokens as HTMLElement).focus());
-  expect([...view.host.querySelectorAll(".tokens-tip > span")].map(row => row.textContent)).toEqual([
+  expect([...document.querySelectorAll(".tokens-tip > span")].map(row => row.textContent)).toEqual([
     `Input${(1200).toLocaleString()}`, `Output${(3000).toLocaleString()}`, `Cache read${(44_000).toLocaleString()}`, `Total${(48_200).toLocaleString()}`]);
   act(() => (tokens as HTMLElement).blur());
-  expect(view.host.querySelector(".tokens-tip")).toBeNull();
+  expect(document.querySelector(".tokens-tip")).toBeNull();
   expect(view.host.textContent).not.toMatch(/\$|cost/i);
 
   // Another project's report never lands here.
@@ -441,17 +441,56 @@ it("leaves a finished request's tokens to its heading, and has them on its row w
   useUiStore.getState().setShowRunTokens(false);
 });
 
-it("counts a request's tokens as they're reported, with every part on hover, only when turned on", () => {
+it("ticks active time, updates reported tokens, and carries both metrics across claims and attempts", () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  const startedAt = Date.parse(task.startedAt!);
+  vi.setSystemTime(startedAt + 4000);
+  const working = { ...task, state: "running" as const, finishedAt: undefined, workedMs: 0 };
   useUiStore.getState().setShowRunTokens(false);
-  openProject({ [task.id]: totals({ totalTokens: 212_000 }) });
-  const view = render(<RequestTokens taskId={task.id} />);
-  expect(view.host.textContent).toBe("");
+  openProject();
+  const view = render(<RequestMetrics attempts={[working]} events={{}} />);
+  const time = () => view.host.querySelector(".run-work-time")?.textContent;
+  const tokens = () => view.host.querySelector<HTMLButtonElement>("button.unit-tokens");
+  expect(time()).toBe("4s");
+  act(() => vi.advanceTimersByTime(2000));
+  expect(time()).toBe("6s");
+  expect(tokens()).toBeNull();
   act(() => useUiStore.getState().setShowRunTokens(true));
-  expect(view.host.querySelector(".unit-tokens")?.textContent).toBe("212K tokens");
-  const more = totals({ totalTokens: 1_310_000 });
-  act(() => useProjectStore.setState(s => ({ current: { ...s.current!, taskUsage: { [task.id]: more } } })));
-  const tokens = view.host.querySelector<HTMLElement>(".unit-tokens")!;
-  expect([tokens.textContent, tokens.dataset.breakdown]).toEqual(["1.3M tokens", tokenBreakdown(more)]);
+  expect(tokens()).toBeNull();
+  const report = (taskId: string, usage: UsageTotals) => act(() => useProjectStore.getState().applyEvent({
+    type: "task.usage", projectId: task.projectId, taskId, usage,
+  }));
+  report(task.id, totals());
+  expect(tokens()?.textContent).toBe("6s · 48.2K tokens");
+  const more = totals({ totalTokens: 1_310_000, cacheReadTokens: 1_305_800 });
+  report(task.id, more);
+  expect([tokens()?.textContent, tokens()?.dataset.breakdown]).toEqual(["6s · 1.3M tokens", tokenBreakdown(more)]);
+  act(() => tokens()!.click());
+  expect(document.querySelector(".tokens-tip > span")?.textContent).toBe("Active time6s");
+  act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(document.querySelector(".tokens-tip")).toBeNull();
+
+  for (const state of ["waiting_for_user", "queued"] as const) {
+    view.rerender(<RequestMetrics attempts={[{ ...working, state, workedMs: 6000 }]} events={{}} />);
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(time()).toBe("6s");
+  }
+  const claimed = { ...working, startedAt: new Date().toISOString(), workedMs: 6000 };
+  view.rerender(<RequestMetrics attempts={[claimed]} events={{}} />);
+  act(() => vi.advanceTimersByTime(3000));
+  expect(time()).toBe("9s");
+  const previous = { ...claimed, state: "cancelled" as const, workedMs: 9000, finishedAt: new Date().toISOString() };
+  const resumed = { ...working, id: "tsk_2", startedAt: new Date().toISOString() };
+  report(resumed.id, totals({ totalTokens: 112_000, cacheReadTokens: 107_800 }));
+  view.rerender(<RequestMetrics attempts={[previous, resumed]} events={{}} />);
+  act(() => vi.advanceTimersByTime(3000));
+  expect(tokens()?.textContent).toBe("12s · 1.4M tokens");
+  view.rerender(<RequestMetrics attempts={[previous, { ...resumed, state: "done", workedMs: 3000, finishedAt: new Date().toISOString() }]} events={{}} />);
+  act(() => vi.advanceTimersByTime(10_000));
+  expect(tokens()?.textContent).toBe("12s · 1.4M tokens");
+  act(() => useUiStore.getState().setShowRunTokens(false));
+  expect(tokens()).toBeNull();
+  expect(time()).toBe("12s");
   view.unmount();
 });
 

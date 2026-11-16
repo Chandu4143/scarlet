@@ -4,7 +4,7 @@ import { mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { processIsAlive, type Ctx } from "../context.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
-import { appendTaskEvent, createTask, FINISHED_TASK, hasTranscript, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
+import { appendTaskEvent, createTask, FINISHED_TASK, hasTranscript, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { prepareCutReview } from "./changes.js";
 import { skillEditEnded, startLearningCheck } from "./learnings.js";
@@ -28,8 +28,8 @@ const LOST_WORKER_ATTEMPTS = 3;
  * `quit`: Scarlet closed or was found closed. Otherwise the worker went missing while Scarlet stayed open, which
  * can repeat, so those are counted.
  */
-function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean): Task {
-  let saved = settleTask(ctx, task, unstarted);
+function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean, lastSeen?: string | null): Task {
+  let saved = settleTask(ctx, task, unstarted, lastSeen);
   ctx.log(`[task] ${task.id} recovered after its worker stopped: ${task.state} → ${saved.state}${saved.error ? ` (${saved.error})` : ""}`);
   const attempts = runAttempts(task.projectId, runRoot(task));
   // Only the attempts that lost their worker count. A pass that came through three quits, or that the editor resumed
@@ -64,9 +64,10 @@ function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean):
   return saved;
 }
 
-function settleTask(ctx: Ctx, task: Task, unstarted: boolean): Task {
+function settleTask(ctx: Ctx, task: Task, unstarted: boolean, lastSeen?: string | null): Task {
+  const finishedAt = now();
   const finish = (saved: Partial<Task>) => {
-    const finished = saveTask(ctx, { ...task, hostId: null, finishedAt: now(), ...saved });
+    const finished = saveTask(ctx, { ...task, hostId: null, finishedAt, ...saved });
     recordTaskFinished(ctx, finished);
     return finished;
   };
@@ -90,16 +91,21 @@ function settleTask(ctx: Ctx, task: Task, unstarted: boolean): Task {
   }
 
   const changeIds = savedChanges(ctx, [task]).map(c => c.id);
-  if (task.resultSkillId) return finish({ state: "done", changeIds, summary: "The skill was saved before the interruption." });
   const lastEvent = ctx.db.prepare(`SELECT json_extract(json, '$.type') AS type, json_extract(json, '$.text') AS text, at
     FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1`)
     .get(task.id) as { type: string; text: string; at: string } | undefined;
-  if (lastEvent?.type === "question") return saveTask(ctx, { ...task, changeIds, state: "waiting_for_user", question: lastEvent.text, hostId: null });
+  // An interrupt reported by a live worker stops now. A lost worker is measured through its latest activity.
+  const observed = [task.startedAt, lastSeen, lastEvent?.at].filter((at): at is string => !!at && at <= finishedAt).sort().at(-1);
+  const { workedMs } = recordWorkThrough(task, lastSeen === undefined ? finishedAt : observed ?? finishedAt);
+  if (task.resultSkillId) return finish({ state: "done", changeIds, workedMs, summary: "The skill was saved before the interruption." });
+  if (lastEvent?.type === "question") return saveTask(ctx, { ...recordWorkThrough(task, lastEvent.at),
+    changeIds, state: "waiting_for_user", question: lastEvent.text, hostId: null });
   // Preserve the answer and task workspace of requests stranded by the old host protocol.
-  if ((unstarted && !changeIds.length) || (task.state === "running" && lastEvent?.type === "answer" && lastEvent.at >= (task.startedAt ?? ""))) {
-    return saveTask(ctx, { ...task, changeIds, state: "queued", hostId: null, question: null });
+  const pendingAnswer = task.state === "running" && lastEvent?.type === "answer" && lastEvent.at >= (task.startedAt ?? "");
+  if ((unstarted && !changeIds.length) || pendingAnswer) {
+    return saveTask(ctx, { ...task, workedMs: pendingAnswer ? task.workedMs : workedMs, changeIds, state: "queued", hostId: null, question: null });
   }
-  return finish({ state: "failed", interrupted: true, changeIds, error: changeIds.length
+  return finish({ state: "failed", interrupted: true, changeIds, workedMs, error: changeIds.length
     ? "The agent was interrupted after saving changes." : "The editing request was interrupted before a result was saved." });
 }
 
@@ -147,7 +153,7 @@ export function recoverTasks(ctx: Ctx, starting = false): void {
         ctx.db.savepoint(() => {
           const task = ctx.repos.tasks.get(id)!;
           // Found dead at startup: Scarlet was closed or crashed mid-run.
-          reconcileTask(ctx, task, pid !== null && !alive && task.state === "claimed", starting);
+          reconcileTask(ctx, task, pid !== null && !alive && task.state === "claimed", starting, seen);
           ctx.bus.taskQueued({ taskId: id, projectId: task.projectId });
         });
       } catch (err) {

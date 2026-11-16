@@ -833,6 +833,8 @@ export const Task = z.object({
   reply: z.string().optional(),
   error: z.string().optional(),
   createdAt: z.string().datetime().optional(),
+  /** Milliseconds spent working on closed claims. An active claim starts at startedAt. */
+  workedMs: z.number().int().nonnegative().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
 });
