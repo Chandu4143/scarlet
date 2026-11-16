@@ -17,6 +17,7 @@ export { bestEncoder, encoderArgs, resolveVideoEncoder, type HwAccel, type Rende
 
 export interface RenderOptions extends FontOptions {
   pictureSource?: GraphOptions["pictureSource"];
+  transitions?: GraphOptions["transitions"];
   pictureOnly?: boolean;
   /** Absolute directory that relative media paths resolve against. */
   mediaRoot: string;
@@ -135,6 +136,7 @@ export async function renderRange(
   }
   const graph = await buildFilterGraph(project, timeline, snapped, {
     directPicture: !!device,
+    transitions: opts.transitions,
     indexedInputs: opts.indexedInputs ?? true,
     signal: opts.signal,
     pictureOnly: opts.pictureOnly,

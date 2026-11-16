@@ -485,6 +485,7 @@ export function openDb(path: string): Db {
   ensureReadIndexes(db);
   ensureGraphics(db);
   ensureProjectSource(db);
+  ensureProjectRowRevision(db);
   return db;
 }
 
@@ -544,6 +545,14 @@ function ensureProjectFormat(db: Db): void {
       UPDATE projects SET format_set = 1 WHERE EXISTS (SELECT 1 FROM activity
         WHERE project_id = projects.id AND type = 'project.updated' AND json_type(json, '$.data.settings') = 'object');`);
   }, "immediate")();
+}
+
+// Order snapshots independently of Last edited. The trigger also sees writes by older engines sharing the library.
+function ensureProjectRowRevision(db: Db): void {
+  ensureColumn(db, "projects", "row_revision", `ALTER TABLE projects ADD COLUMN row_revision INTEGER NOT NULL DEFAULT 0;
+    CREATE TRIGGER project_row_changed AFTER UPDATE OF name, settings, head, archived, media_paused, branch,
+      style_guide, source, source_notice, completed_threads, updated_at, deleted_at ON projects
+    BEGIN UPDATE projects SET row_revision = OLD.row_revision + 1 WHERE id = NEW.id; END;`);
 }
 
 /**

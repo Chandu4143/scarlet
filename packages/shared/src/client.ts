@@ -262,7 +262,7 @@ export class ScarletClient {
     return this.post<void>(`/projects/${projectId}/edit-reviews`, body);
   }
   setThreadDone(projectId: string, threadId: string, done: boolean, revision: string) {
-    return this.post<{ completedThreads: Record<string, string> }>(`/projects/${projectId}/threads/${encodeURIComponent(threadId)}/disposition`, { done, revision });
+    return this.post<{ completedThreads: Record<string, string>; project?: Project }>(`/projects/${projectId}/threads/${encodeURIComponent(threadId)}/disposition`, { done, revision });
   }
   updateProject(id: string, body: Record<string, unknown>) {
     return this.patch<{ project: Project }>(`/projects/${id}`, body);

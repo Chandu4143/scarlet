@@ -58,6 +58,8 @@ export interface ProjectData {
   headError?: string;
   /** The permanent activity log, newest first (loaded on demand). */
   activity?: ActivityEntry[];
+  /** Oldest entry from the engine's last page. Live events are outside that page's pagination. */
+  activityCursor?: ActivityEntry;
   activityComplete?: boolean;
 }
 
@@ -150,6 +152,11 @@ function mergeSinceLoad<T extends { id: string }>(snapshot: T[], base: T[], live
   return [...result, ...newer.values()];
 }
 
+/** Project revisions order complete engine snapshots across the HTTP and realtime transports. */
+function olderProject(incoming: Project, held: Project): boolean {
+  return incoming.rowRevision !== undefined && held.rowRevision !== undefined && incoming.rowRevision < held.rowRevision;
+}
+
 /** The waits before the store tries again to read the open project. After the last it stops trying. */
 const READ_AGAIN_AFTER_MS = [1000, 2000, 4000, 8000];
 
@@ -163,8 +170,60 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
   /** The runs whose steps the open project's pages have asked for, each with the fullest read asked. */
   let askedEvents: { project: string; scopes: Record<string, "all" | "conversation"> } | undefined;
   let headLookup = 0;
+  /**
+   * The open project as the engine last described it (`saved`), and the editor's changes to it the engine hasn't
+   * described yet: a rename still being saved, and filings an older engine confirmed without sending the project.
+   * Every snapshot the store takes goes through `takeProject`, and the project shown is `saved` with those on top.
+   * `read`: when the read that brought `saved` began. `changed`: when `saved` last changed. `shown`: what was shown.
+   */
+  let held: {
+    projectId: string; saved: Project; shown: Project; read: number; changed: number;
+    rename?: { name: string }; filings: Map<string, { value?: string; at: number }>;
+  } | undefined;
+  /** Orders reads and local changes against each other. */
+  let clock = 0;
+  const heldFor = (d: Pick<ProjectData, "id" | "project">) => {
+    // A project set from outside the store's actions starts again from what it shows.
+    if (held?.projectId !== d.id || held.shown !== d.project) {
+      held = { projectId: d.id, saved: d.project, shown: d.project, read: 0, changed: 0, filings: new Map() };
+    }
+    return held;
+  };
+  const showHeld = (h: NonNullable<typeof held>) => {
+    let project = h.saved;
+    // A filing the snapshot's read began after isn't in it.
+    const filings = [...h.filings].filter(([, filing]) => filing.at > h.read);
+    if (filings.length) {
+      const completedThreads = { ...project.completedThreads };
+      for (const [id, { value }] of filings) {
+        if (value === undefined) delete completedThreads[id];
+        else completedThreads[id] = value;
+      }
+      project = { ...project, completedThreads };
+    }
+    if (h.rename) project = { ...project, name: h.rename.name };
+    return h.shown = project;
+  };
+  /**
+   * Take a snapshot of the open project from the engine and return what to show, or nothing to keep what is shown.
+   * An older one is left: by its revision, or, from an older engine that gives none, when it was read before the
+   * snapshot held changed and is on the same head. `readAt`: when its read began, for a read that may have crossed
+   * other changes. An event or an answer is current as it arrives.
+   */
+  const takeProject = (d: Pick<ProjectData, "id" | "project">, incoming: Project, readAt = ++clock): Project | undefined => {
+    const h = heldFor(d);
+    if (olderProject(incoming, h.saved)) return undefined;
+    const unordered = incoming.rowRevision === undefined || h.saved.rowRevision === undefined;
+    if (unordered && h.changed > readAt && incoming.head === h.saved.head) return undefined;
+    h.saved = incoming;
+    h.read = readAt;
+    h.changed = ++clock;
+    for (const [id, filing] of h.filings) if (filing.at <= readAt) h.filings.delete(id);
+    return showHeld(h);
+  };
   const renderLookups = new Set<string>();
   let versionLookup: Promise<void> | undefined;
+  let activityRead: { projectId: string; entries: Map<string, ActivityEntry> } | undefined;
   /** The store's one wait to read the open project again, and the project it is for. */
   let readAgain: { id: string; timer: ReturnType<typeof setTimeout> } | undefined;
   const dropReadAgain = () => {
@@ -182,6 +241,7 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
     if (readAgain && current?.id !== readAgain.id) dropReadAgain();
     if (headAgain && current?.id !== headAgain.id) dropHeadAgain();
     if (askedEvents && current?.id !== askedEvents.project) askedEvents = undefined;
+    if (activityRead && current?.id !== activityRead.projectId) activityRead = undefined;
   });
   const patch = (projectId: string, fn: (d: ProjectData) => Partial<ProjectData>) => {
     const cur = get().current;
@@ -311,15 +371,20 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
         const subscribed = tries ? undefined : subscribeProject(id);
         if (subscribed) await subscribed;
         if (request !== projectLoad) return;
+        const readAt = ++clock;
         const detail = await api.workspace(id);
         if (request !== projectLoad) return;
         versionLookup = undefined;
         const prev = same ? get().current : null;
         const needsHistory = !prev || !!prev.reviewStatus;
+        // A fresh read replaces the snapshot held. A rename or a filing still on its way stays on top of it.
+        const kept = prev && held?.projectId === id ? held : undefined;
+        held = { projectId: id, saved: detail.project, shown: detail.project, read: readAt, changed: ++clock,
+          rename: kept?.rename, filings: new Map([...kept?.filings ?? []].filter(([, filing]) => filing.at > readAt)) };
         set({
           status: "ready", error: null,
           current: {
-            id, project: detail.project, timeline: sameVersion(prev?.timeline, detail.timeline), media: detail.project.media,
+            id, project: showHeld(held), timeline: sameVersion(prev?.timeline, detail.timeline), media: detail.project.media,
             changes: prev?.changes ?? [], notes: prev?.notes ?? [], learnings: prev?.learnings, tasks: prev?.tasks ?? [], renders: [],
             // A reconnect keeps the token counts shown until the fresh read arrives: a total only climbs.
             taskUsage: prev?.taskUsage,
@@ -347,10 +412,10 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
         // What waits in Learnings is secondary too. The engine's list is what waits now: after a reconnect, a rule it
         // no longer lists was saved while the socket was down, and one it sent back says why. Kept from before, either
         // would say Saving… for good. Only one that changed while this was read keeps its newer state.
-        const held = get().current?.learnings ?? [];
+        const heldLearnings = get().current?.learnings ?? [];
         void api.learnings(id).then(({ learnings }) => {
           if (request !== projectLoad) return;
-          patch(id, d => ({ learnings: mergeSinceLoad(learnings, held, d.learnings ?? []) }));
+          patch(id, d => ({ learnings: mergeSinceLoad(learnings, heldLearnings, d.learnings ?? []) }));
         }, () => undefined);
 
         // Make the monitor usable before reading older requests and decisions.
@@ -404,17 +469,25 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       }
     },
     async refreshHead(projectId = get().current?.id) {
-      if (!projectId || get().current?.id !== projectId) return;
+      const before = get().current;
+      if (!projectId || before?.id !== projectId) return;
+      heldFor(before);
+      const readAt = ++clock;
       const request = ++headLookup;
       const epoch = projectLoad;
       const detail = await api.workspace(projectId);
       if (request !== headLookup || epoch !== projectLoad || get().current?.id !== projectId) return;
       versionLookup = undefined;
       dropHeadAgain();
-      patch(projectId, d => ({
-        timeline: sameVersion(d.timeline, detail.timeline), versions: undefined, historyRevision: (d.historyRevision ?? 0) + 1, project: detail.project,
-        headError: undefined,
-      }));
+      patch(projectId, d => {
+        const h = heldFor(d);
+        const project = takeProject(d, detail.project, readAt);
+        return { ...(project && { project }),
+          ...(detail.project.head === h.saved.head && {
+            timeline: sameVersion(d.timeline, detail.timeline), versions: undefined,
+            historyRevision: (d.historyRevision ?? 0) + 1, headError: undefined,
+          }) };
+      });
     },
     async loadVersions() {
       const cur = get().current;
@@ -440,8 +513,10 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       if (!("projectId" in ev) || !cur || ev.projectId !== cur.id) return;
       switch (ev.type) {
         case "project.updated": {
-          const headChanged = ev.project.head !== cur.project.head;
-          patch(cur.id, () => ({ project: ev.project }));
+          const project = takeProject(cur, ev.project);
+          if (!project) break;
+          const headChanged = project.head !== cur.project.head;
+          patch(cur.id, () => ({ project }));
           if (headChanged) void get().refreshHead(cur.id).catch(headUnread(cur.id, ev.project.head));
           break;
         }
@@ -484,6 +559,7 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
           patch(cur.id, (d) => ({ taskUsage: { ...d.taskUsage, [ev.taskId]: ev.usage } }));
           break;
         case "activity.added":
+          if (activityRead?.projectId === cur.id) activityRead.entries.set(ev.entry.id, ev.entry);
           if (cur.activity && !cur.activity.some((a) => a.id === ev.entry.id)) patch(cur.id, (d) => ({ activity: [ev.entry, ...(d.activity ?? [])] }));
           break;
         case "task.event": {
@@ -502,41 +578,67 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
     },
 
     async setThreadDone(threadId, done, revision) {
-      const id = get().current?.id;
-      if (!id) return;
-      const { completedThreads } = await api.setThreadDone(id, threadId, done, revision);
+      const before = get().current;
+      if (!before) return;
+      const { id } = before;
+      const { completedThreads, project } = await api.setThreadDone(id, threadId, done, revision);
+      let headChanged = false;
       patch(id, d => {
-        const updated = { ...d.project.completedThreads };
-        if (completedThreads[threadId]) updated[threadId] = completedThreads[threadId]!;
-        else delete updated[threadId];
-        return { project: { ...d.project, completedThreads: updated } };
+        const h = heldFor(d);
+        if (project) {
+          const head = h.saved.head;
+          // Media has its own live state and can change without advancing the project row revision.
+          const shown = takeProject(d, d.media === before.media ? project : { ...project, media: d.media });
+          headChanged = !!shown && project.head !== head;
+          return shown ? { project: shown } : {};
+        }
+        // An older engine confirms only the filing. It stays on top of any snapshot read before it.
+        h.filings.set(threadId, { value: completedThreads[threadId] || undefined, at: ++clock });
+        return { project: showHeld(h) };
       });
+      if (headChanged && project) void get().refreshHead(id).catch(headUnread(id, project.head));
     },
     async updateProject(body, projectId = get().current?.id) {
       if (!projectId) return;
       const cur = get().current;
       const before = cur?.id === projectId ? cur.project : undefined;
       const name = body.name;
-      const renaming = before && name && name !== before.name;
-      if (renaming) patch(projectId, () => ({ project: { ...before, name } }));
+      const rename = before && name && name !== before.name ? { name } : undefined;
+      if (rename) patch(projectId, d => {
+        const h = heldFor(d);
+        h.rename = rename;
+        return { project: showHeld(h) };
+      });
       try {
         const { project } = await api.updateProject(projectId, body);
         listRevision++;
-        const heldHead = get().current?.id === projectId ? get().current!.project.head : undefined;
-        patch(projectId, () => ({ project }));
+        let savedProject = project, stale = false, heldHead: string | null | undefined;
+        patch(projectId, d => {
+          const h = heldFor(d);
+          heldHead = h.saved.head;
+          if (h.rename === rename) h.rename = undefined;
+          const shown = takeProject(d, project);
+          stale = !shown;
+          savedProject = h.saved;
+          return { project: shown ?? showHeld(h) };
+        });
         // The answer can be older than a head the socket brought meanwhile: when the two disagree, the engine says which is current.
-        if (heldHead !== undefined && heldHead !== project.head) void get().refreshHead(projectId).catch(() => undefined);
+        if (!stale && heldHead !== undefined && heldHead !== project.head) void get().refreshHead(projectId).catch(() => undefined);
         // The library lists the latest edit first. A project whose video changed moves there now, not when the list is
         // next read. One that was renamed, archived or paused wasn't edited: its time and its place stay.
         const list = get().list, was = list.find(p => p.id === projectId);
         if (was) {
-          const saved = { ...was, name: project.name, archived: project.archived, updatedAt: project.updatedAt, settings: project.settings };
+          const saved = { ...was, name: savedProject.name, archived: savedProject.archived, updatedAt: savedProject.updatedAt, settings: savedProject.settings };
           set({ list: saved.updatedAt === was.updatedAt ? list.map(p => p === was ? saved : p) : [saved, ...list.filter(p => p !== was)] });
         }
       } catch (err) {
         // A timeline or settings update can arrive during the request. Roll back only our pending name.
-        if (renaming) patch(projectId, d => d.project.name === name && d.project.updatedAt === before.updatedAt
-          ? { project: { ...d.project, name: before.name } } : {});
+        if (rename) patch(projectId, d => {
+          const h = heldFor(d);
+          if (h.rename !== rename) return {};
+          h.rename = undefined;
+          return { project: showHeld(h) };
+        });
         throw err;
       }
     },
@@ -554,8 +656,12 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       if (get().current?.id !== cur.id) return res;
       replaceChange(res.change);
       if (res.task) patch(cur.id, (d) => ({ tasks: upsertAnswered(d.tasks, res.task!) }));
-      patch(cur.id, () => ({ project: res.project }));
-      await get().refreshHead(cur.id).catch(headUnread(cur.id, res.project.head));
+      patch(cur.id, d => {
+        const project = takeProject(d, res.project);
+        return project ? { project } : {};
+      });
+      const head = get().current?.project.head;
+      await get().refreshHead(cur.id).catch(headUnread(cur.id, head));
       return res;
     },
     async historyEdit(version, action) {
@@ -563,7 +669,10 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       if (!cur?.project.head) return;
       const { project, change } = await api.historyEdit(cur.id, version, action, cur.project.head, cur.project.branch ?? "main");
       replaceChange(change);
-      patch(cur.id, () => ({ project, versions: undefined }));
+      patch(cur.id, d => {
+        const shown = takeProject(d, project);
+        return shown ? { project: shown, versions: undefined } : {};
+      });
       await get().refreshHead(cur.id);
     },
     async revise(changeId, body) {
@@ -739,9 +848,25 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
     async loadActivity(more) {
       const cur = get().current;
       if (!cur) return;
-      const cursor = more ? cur.activity?.at(-1) : undefined;
-      const { activity } = await api.activity(cur.id, { before: cursor?.createdAt, beforeId: cursor?.id, limit: 200 });
-      patch(cur.id, (d) => ({ activity: more ? [...(d.activity ?? []), ...activity] : activity, activityComplete: activity.length < 200 }));
+      const cursor = more ? cur.activityCursor : undefined;
+      const pending = cursor ? undefined : { projectId: cur.id, entries: activityRead?.entries ?? new Map<string, ActivityEntry>() };
+      if (pending) activityRead = pending;
+      try {
+        const { activity } = await api.activity(cur.id, { before: cursor?.createdAt, beforeId: cursor?.id, limit: 200 });
+        if (pending && activityRead !== pending) return;
+        // Events that arrive before the first page can also be in the snapshot. Merge by ID and use the engine's order.
+        patch(cur.id, d => {
+          if (cursor && d.activityCursor !== cursor) return {};
+          const held = pending ? [...pending.entries.values()] : d.activity ?? [];
+          const entries = held.length
+            ? [...new Map([...held, ...activity].map(entry => [entry.id, entry])).values()]
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+            : activity;
+          return { activity: entries, activityCursor: activity.at(-1) ?? cursor, activityComplete: activity.length < 200 };
+        });
+      } finally {
+        if (pending && activityRead === pending) activityRead = undefined;
+      }
     },
   };
 });

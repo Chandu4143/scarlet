@@ -2,8 +2,8 @@ import { join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { extractFrame, extractFilmstrip, fileInDirectory, fileInDirectoryAsync, probeMedia, renderTimelineFrame } from "@scarlet/render";
-import { clipEnd, FILMSTRIP_SEEK_BATCH, MAX_CUT_PLAYBACK_SECONDS, planPlaybackSegments, planSegments, snapToFrame, timelineDuration, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { TRANSITION_RENDER_REVISION, extractFrame, extractFilmstrip, fileInDirectory, fileInDirectoryAsync, probeMedia, renderTimelineFrame } from "@scarlet/render";
+import { clipEnd, FILMSTRIP_SEEK_BATCH, MAX_CUT_PLAYBACK_SECONDS, planPlaybackSegments, planSegments, planTransitions, snapToFrame, timelineDuration, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import { Hono } from "hono";
 import { z } from "zod/v3";
 import { fullRenderContext, RenderKind, RenderRequest, type Render } from "@scarlet/shared";
@@ -64,6 +64,14 @@ function frameSources(timeline: Timeline) {
   };
 }
 
+/**
+ * A still's cache key. A cut with transitions can keep its source files across a fix to how they are drawn, so its
+ * key names that revision too, as a section's does. A cut without them keeps the key it had, and its cached stills.
+ */
+export function frameKey(parts: unknown[], transitions: boolean) {
+  return createHash("sha256").update(JSON.stringify(transitions ? [...parts, TRANSITION_RENDER_REVISION] : parts)).digest("hex");
+}
+
 export function renderRoutes(ctx: Ctx) {
   const r = new Hono<AppEnv>();
 
@@ -89,7 +97,7 @@ export function renderRoutes(ctx: Ctx) {
   }
   // The strip requests several samples from the same immutable cut. Parse it once.
   let sampledTimeline: Timeline | undefined;
-  let sourcesAt: ReturnType<typeof frameSources> | undefined;
+  let sourcesAt: { projectInputs: string; read: ReturnType<typeof frameSources>; transitions: boolean } | undefined;
   let sampledDuration = 0;
   let sampledProject: { revision: string; project: Project; inputs: string; paths: Map<string, string> } | undefined;
   function frameProject(id: string) {
@@ -125,10 +133,14 @@ export function renderRoutes(ctx: Ctx) {
     if (sampledTimeline?.projectId !== project.id || sampledTimeline.version !== version) {
       sampledTimeline = ctx.repos.versions.get(project.id, version)?.timeline;
       sampledDuration = sampledTimeline ? timelineDuration(sampledTimeline) : 0;
-      sourcesAt = sampledTimeline && frameSources(sampledTimeline);
+      sourcesAt = undefined;
     }
     const timeline = sampledTimeline;
     if (!timeline) throw notFound("timeline version");
+    if (sourcesAt?.projectInputs !== inputs) {
+      const { timeline: picture, motions } = planTransitions(timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
+      sourcesAt = { projectInputs: inputs, read: frameSources(picture), transitions: motions.size > 0 };
+    }
     const frame = numberParam(c.req.query("frame"), "frame");
     const { fps, width, height } = project.settings;
     if (!Number.isSafeInteger(frame) || frame < 0 || frame >= Math.ceil(sampledDuration * fps - 1e-6))
@@ -136,7 +148,7 @@ export function renderRoutes(ctx: Ctx) {
     const range = { start: frame / fps, end: (frame + 1) / fps };
     const monitor = c.req.query("view") === "monitor";
     const size = monitor ? 960 : c.req.query("w") === "640" ? 640 : 160;
-    const key = createHash("sha256").update(JSON.stringify([project.id, version, frame, size, inputs, sourcesAt!(range, paths, ctx.paths.media(project.id))])).digest("hex");
+    const key = frameKey([project.id, version, frame, size, inputs, sourcesAt.read(range, paths, ctx.paths.media(project.id))], sourcesAt.transitions);
     const sameFormat = c.req.query("format") === `${width}x${height}@${fps}`;
     return requestFrame(c.req.raw, project.id, key, monitor || c.req.query("priority") === "interactive", sameFormat ? "private, no-cache" : "no-store", async signal => {
       const time = frame / fps;
