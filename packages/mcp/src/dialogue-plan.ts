@@ -333,7 +333,9 @@ export type GateLine = Record<string, unknown> & { cut: number };
 
 type DialoguePlan =
   | { outcome: "preserved"; kept?: TimeRange[] }
-  | { outcome: "needsRevision"; disputedEdges: Array<TimeRange & { reason: string; quietKeptWord?: QuietKeptWord }> }
+  | { outcome: "needsRevision"; disputedEdges: Array<TimeRange & { reason: string; quietKeptWord?: QuietKeptWord;
+      /** The submitted cuts, by index, whose edges make this dispute: set them aside and the rest can be planned. */
+      cuts: number[] }> }
   | { outcome: "ready"; removals: ResolvedCut[]; decisions: PlannedDecision[]; gate: Map<number, GateLine>;
       /** Ranges the plan keeps on purpose, in timeline seconds: keep decisions, however they were given, and protected pictures. */
       kept: TimeRange[];
@@ -350,8 +352,13 @@ interface DialoguePlanRequest {
   localPauses: boolean;
   /** The task's selection, which bounds the plan. */
   anchor?: Task["context"];
+  /** Submitted cuts, by index, left out of this plan because their edges were disputed. The rest keep their indices. */
+  setAside?: ReadonlySet<number>;
 }
 
+/** The removals whose ranges meet a disputed stretch: those either side of a piece it keeps, or those inside a join. */
+const owners = (removals: ResolvedCut[], at: TimeRange) =>
+  removals.filter(c => c.start <= at.end + 0.05 && c.end >= at.start - 0.05).map(c => c.input);
 const phrase = (s: string) => s.trim().split(/\s+/u).map(normalizeTranscriptToken).join(" ");
 const r2 = (t: number) => Math.round(t * 100) / 100;
 
@@ -363,7 +370,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     throw new Error(`The editor requested only pauses in the local passage (/tighten-pauses-here). Remove the ${otherKinds.join(" and ") || only} decisions.`);
   if (only && requested.some(c => c.kind !== only)) throw new Error(`only is "${only}", so every decision must be kind "${only}".`);
   // Word references become timeline seconds first; everything after is the same plan.
-  const cuts: ResolvedCut[] = await Promise.all(requested.map(async (c, i) => {
+  const resolvedCuts: ResolvedCut[] = await Promise.all(requested.map(async (c, i) => {
     const { occurrence: _occurrence, mediaId: _m, fromWord: _f, toWord: _t, afterWord, leave: _l, ...rest } = c;
     if (afterWord !== undefined && c.kind !== "pause") throw new Error(`cuts[${i}]: afterWord names a pause. Give a ${c.kind} as its removed words or in seconds.`);
     const resolved = await resolveCutRange(tl, c, `cuts[${i}]`, sources);
@@ -379,6 +386,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       ...("wordRef" in resolved && { words: resolved.words, wordEdgeProblems: resolved.problems,
         ...("spoken" in resolved && { spoken: resolved.spoken, wordEdgeDips: resolved.dips }), ...("notes" in resolved && { notes: resolved.notes }) }) };
   }));
+  const cuts = req.setAside?.size ? resolvedCuts.filter(c => !req.setAside!.has(c.input)) : resolvedCuts;
   const scope = cutScope(tl, req.anchor, range, localPauses);
   for (const c of cuts) {
     if (!c.spoken || c.spoken.start < scope.start || c.spoken.end > scope.end) continue;
@@ -434,7 +442,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
         if (result === "different") reason = "The surviving dialogue starts with different words than the supplied quote.";
         if (result === "unverified") reason = "The scan cannot confirm the supplied quote here.";
       }
-      return reason ? [{ start: c.start, end: c.end, reason }] : [];
+      return reason ? [{ start: c.start, end: c.end, reason, cuts: [c.input] }] : [];
     });
     if (disputedEdges.length) return { outcome: "needsRevision", disputedEdges };
   }
@@ -547,7 +555,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   const align = (r: TimeRange) => frameAlignedRemoval(r, fps, scope, kept);
   const appliedFrames = applied.map(align);
   const quiet = await quietKeptWords(tl, project, appliedFrames, [...kept, ...decisions.filter(d => d.review)], scope, sources);
-  if (quiet.length) return { outcome: "needsRevision", disputedEdges: quiet };
+  if (quiet.length) return { outcome: "needsRevision", disputedEdges: quiet.map(q => ({ ...q, cuts: owners(removals, q) })) };
   const speechCuts = removals.flatMap((c, i) => c.kind !== "pause" && c.decision === "cut" ? [{ c, d: decisions[i]! }] : []);
   if (speechCuts.length && checkRetakes) {
     const optional = mergeRanges(decisions.filter(d => d.review), 1e-9);
@@ -600,7 +608,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
             issues.push({ cut: target.c.input, partialWordRepeat, words: word,
               reason: `The ${side === "start" ? "outgoing" : "incoming"} audio plays “${heard}” from a cut-off “${word}” beside another “${word}”.` });
         }
-        return issues.map(({ cut, words, reason, ...evidence }) => ({ ...range, cut, ...evidence,
+        return issues.map(({ cut, words, reason, ...evidence }) => ({ ...range, cut, ...evidence, cuts: contributing.map(({ c }) => c.input),
           reason: reason + " " + (req.repeatHint ?? `Include one occurrence in the removal using word indices or new edges. If both belong, include “${words}” in keepRepeat on cut ${cut}.`) }));
       });
     }));
