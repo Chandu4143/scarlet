@@ -4,7 +4,7 @@
  * a random loopback port), the engine/agent-host status, and
  * a few native helpers. The renderer checks this bridge before loading the editor.
  */
-import type { AgentAvailability, HandoffFile } from "@scarlet/shared";
+import type { AgentAvailability, AgentEffort, AgentId, HandoffFile } from "@scarlet/shared";
 import { invoke as nativeInvoke } from "@tauri-apps/api/core";
 import { appLog, withoutAddresses } from "./appLog";
 
@@ -44,10 +44,19 @@ export type DesktopPlatform = "macos" | "windows" | "linux";
 
 export type UpdateSource = "local" | "release";
 
+export interface AgentPick {
+  agent: AgentId;
+  model?: string;
+  /** Unset = the CLI's own default. */
+  effort?: AgentEffort;
+  serviceTier?: string;
+}
+
 export interface DesktopInfo {
   updates?: UpdateSource | null;
   customOpenaiModels?: string[];
   customClaudeModels?: string[];
+  editorModel?: AgentPick | null;
   version: string;
   platform: string;
   arch: string;
@@ -146,6 +155,7 @@ export const desktop = {
   installCrisperModel: (directory: string) => invoke<void>("install_crisper_model", { directory }),
   pickFiles: () => invoke<string[]>("pick_files"),
   info: () => invoke<DesktopInfo>("desktop_info"),
+  saveEditorModel: (selection: AgentPick) => invoke<void>("save_editor_model", { selection }),
   /** A verified build that installs on restart, and the build the updater has under way. */
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkForRelease: () => invoke<string | null>("check_for_release"),
