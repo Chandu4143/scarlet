@@ -148,7 +148,10 @@ it("returns a playback limit for an oversized historical version before requesti
   const { ctx } = workspace;
   const timeline = ctx.repos.versions.get(project.id, version)!.timeline;
   timeline.tracks[0]!.clips[0]!.timelineIn = 86400;
-  ctx.db.prepare("UPDATE timeline_versions SET json = ? WHERE project_id = ? AND version = ?").run(JSON.stringify(timeline), project.id, version);
+  // Saved before the limit, as its own version: a saved version never changes.
+  version = timeline.version = "ver_oversized";
+  ctx.db.prepare("INSERT INTO timeline_versions (version, project_id, parent, json, created_at) VALUES (?, ?, NULL, ?, ?)")
+    .run(version, project.id, JSON.stringify(timeline), new Date().toISOString());
   const render = vi.spyOn(ctx.renders, "request");
   const result = await workspace.app.request(`/api/projects/${project.id}/renders`, {
     method: "POST",

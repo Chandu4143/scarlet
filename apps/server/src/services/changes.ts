@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { logId } from "../logText.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
-import { agentTarget, beginRevision, buildThreads, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
+import { agentTarget, beginRevision, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
@@ -1127,12 +1127,17 @@ function leftOutOf(ctx: Ctx, project: Project, change: Change): Change["leftOut"
  * keep showed none of what it left out as cuts (2026-11-12). Runs once as Scarlet starts.
  */
 export function recordLeftOutFootage(ctx: Ctx): void {
-  const built = ctx.repos.changes.select(`state = 'approved' AND json_extract(json, '$.leftOut') IS NULL
-    AND json_array_length(coalesce(json_extract(json, '$.ops'), '[]')) > 0
-    AND json_array_length(coalesce(json_extract(json, '$.cutReasons'), '[]')) = 0`);
+  // The index holds only the changes still to read. Left to choose, SQLite would read every applied change by its state.
+  const built = (ctx.db.prepare(`SELECT json FROM changes INDEXED BY changes_left_out_unread WHERE state = 'approved'
+    AND json_extract(json, '$.leftOut') IS NULL AND json_array_length(coalesce(json_extract(json, '$.ops'), '[]')) > 0
+    AND json_array_length(coalesce(json_extract(json, '$.cutReasons'), '[]')) = 0 ORDER BY created_at`).all() as { json: string }[])
+    .map(row => ctx.repos.changes.parse(row.json));
   for (const change of built) {
     const project = ctx.repos.projects.get(change.projectId);
-    const leftOut = project && leftOutOf(ctx, project, change);
+    // A first cut, or a change that only rippled footage out, has nothing to read. That is saved as well, so the
+    // change isn't picked again at the next start.
+    const nothing = change.firstCut || change.ops!.every(op => op.op === "rippleDelete");
+    const leftOut = nothing ? { joins: [] } : project && leftOutOf(ctx, project, change);
     if (!leftOut) continue;
     ctx.repos.changes.put({ ...change, leftOut });
     if (leftOut.joins.length) ctx.log(`[edit] ${change.id} left out ${leftOut.joins.length} stretches of footage as it built the video: now shown as cuts`);
@@ -1142,8 +1147,9 @@ export function recordLeftOutFootage(ctx: Ctx): void {
 /** Put away the versions of applied passes that an earlier build left waiting. Runs once as Scarlet starts. */
 export function retireLeftoverPasses(ctx: Ctx): void {
   ctx.db.transaction(() => {
-    const applied = ctx.repos.changes.select(`state = 'approved' AND json_extract(json, '$.intent') = 'suggestion'
-      AND json_array_length(coalesce(json_extract(json, '$.cutReasons'), '[]')) > 0 AND EXISTS (SELECT 1 FROM changes o WHERE o.project_id = changes.project_id
+    // Only a project with a proposal still waiting can have one: its applied edits alone are read.
+    const applied = ctx.repos.changes.select(`state = 'approved' AND project_id IN (SELECT project_id FROM changes WHERE state IN ('ready','revising'))
+      AND json_extract(json, '$.intent') = 'suggestion' AND json_array_length(coalesce(json_extract(json, '$.cutReasons'), '[]')) > 0 AND EXISTS (SELECT 1 FROM changes o WHERE o.project_id = changes.project_id
         AND o.state IN ('ready','revising') AND json_extract(o.json, '$.intent') = 'suggestion' AND json_extract(o.json, '$.fromVersion') = json_extract(changes.json, '$.fromVersion'))`);
     for (const pass of applied) for (const left of retireOtherVersions(ctx, pass)) ctx.log(`[edit] ${left.id} put away: ${pass.id}, another version of the same pass, was applied`);
   }, "immediate")();
@@ -2288,11 +2294,7 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
     }
     location = { version, range: { start: Math.min(body.range.start, duration), end: Math.min(body.range.end, duration) } };
   }
-  const threads = buildThreads({
-    changes: ctx.repos.changes.select("project_id = ?", [projectId]),
-    tasks: ctx.repos.tasks.select("project_id = ? AND kind != 'transcribe'", [projectId]),
-    notes: ctx.repos.notes.select("project_id = ? AND json_extract(json, '$.changeId') IS NOT NULL", [projectId]),
-  });
+  const threads = ctx.repos.projects.threads(projectId);
   const links = ctx.repos.versions.links(projectId);
   // Every applied edit on the working cut, as its own request lists it, so a revision is flagged and not what it replaced.
   const edits = threads.filter(t => t.changes.some(c => c.state === "approved")).flatMap(thread =>
