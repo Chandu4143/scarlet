@@ -284,6 +284,12 @@ export class ScarletClient {
   updateProject(id: string, body: Record<string, unknown>) {
     return this.patch<{ project: Project }>(`/projects/${id}`, body);
   }
+  stopEditing(id: string) {
+    return this.post<{ project: Project; tasks: Task[] }>(`/projects/${apiPathId(id)}/stop-editing`);
+  }
+  resumeEditing(id: string) {
+    return this.post<{ project: Project; tasks: Task[] }>(`/projects/${apiPathId(id)}/resume-editing`);
+  }
   /** Make shorts: a project for each short, made from this one's finished edit. The first short's run starts at once. */
   makeShorts(id: string, body: MakeShortsRequest) {
     return this.post<{ projects: Project[]; task: Task }>(`/projects/${id}/shorts`, body);
@@ -616,8 +622,8 @@ export class ScarletClient {
   waitForTranscription(taskId: string) {
     return this.withResource("tasks", taskId, path => this.get<{ task: Task; waited?: boolean }>(path + "?wait=transcript"));
   }
-  cancelTask(taskId: string) {
-    return this.post<{ task: Task }>(`/tasks/${taskId}/cancel`);
+  cancelTask(taskId: string, queuedOnly = false) {
+    return this.post<{ task: Task }>(`/tasks/${apiPathId(taskId)}/cancel${queuedOnly ? "?queuedOnly=1" : ""}`);
   }
   /** Retry or resume a run, on the model the editor has picked now when one is given. */
   retryTask(taskId: string, body: RunChoice = {}) {

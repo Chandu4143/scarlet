@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, queueBlocker, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, isAsideTask, isLearningCheck, isProjectEditTask, PROJECT_EDIT_TASK_KINDS, isSkillEdit, planText, queueBlocker, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -15,12 +15,15 @@ import { restoreUnreplacedProposal } from "./revisionState.js";
 import { assistantSkills } from "./skills.js";
 import { applyChoicesWhenDone, changeDiff, cutRevisionReference, passToRevise, retireStaleSaves } from "./changes.js";
 import { resolveTimeline } from "./timeline.js";
-import { runAttemptIds } from "./runAttempts.js";
+import { runAttemptIds, runAttempts } from "./runAttempts.js";
 import { learningCheckContext, skillEditEnded, startLearningCheck } from "./learnings.js";
 
 /** States a task never leaves. */
 export const FINISHED_TASK: ReadonlySet<string> = new Set(["done", "failed", "cancelled"]);
 const queueLogs = new WeakMap<Ctx, ReturnType<typeof throttledLog>>();
+
+/** Requests that can edit a project's video. */
+export const PROJECT_EDIT_KINDS = `(${PROJECT_EDIT_TASK_KINDS.map(kind => `'${kind}'`).join(",")})`;
 
 /** The recording has a saved transcript. */
 export function hasTranscript(ctx: Ctx, mediaId: string): boolean {
@@ -66,7 +69,7 @@ function recentDuration(ctx: Ctx, kind: TaskKind, agent: AgentId, model: string 
   return (seconds[middle]! + seconds[Math.floor((seconds.length - 1) / 2)]!) / 2;
 }
 
-export const editsDialogue = (kind: TaskKind) => kind === "edit" || kind === "revise" || kind === "note";
+export const editsDialogue = (kind: TaskKind) => isProjectEditTask({ kind });
 
 /** Whether a request of this kind about one cut of `change` revises a staged cut: a revision does, and so does any request about a pass that waits or was replaced. */
 export function stagesCut(kind: TaskKind, change: Change): boolean {
@@ -111,6 +114,8 @@ export function createTask(
     createdBy: Author;
     state?: Task["state"];
     resumeRootId?: string;
+    resumesAfterProjectStop?: boolean;
+    question?: Task["question"];
     stagedCutRevision?: boolean;
     cutConflict?: Task["cutConflict"];
   },
@@ -130,6 +135,7 @@ export function createTask(
     serviceTier: input.serviceTier,
     instruction: input.instruction,
     resumeRootId: input.resumeRootId,
+    resumesAfterProjectStop: input.resumesAfterProjectStop,
     stagedCutRevision: input.stagedCutRevision ?? (selected && selected.projectId === input.projectId
       ? stagesCut(input.kind, selected) : undefined),
     cutConflict: input.cutConflict,
@@ -141,7 +147,7 @@ export function createTask(
     createdBy: input.createdBy,
     hostId: null,
     changeIds: [],
-    question: null,
+    question: input.question ?? null,
     summary: null,
     createdAt: now(),
   });
@@ -472,6 +478,12 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   const events = ctx.repos.taskEvents.list(task.id, "questionsAndAnswers");
   const last = events.at(-1);
   const answered = last?.type === "answer";
+  // A question interrupted by project Stop is answered on the new attempt, with the question on the older attempt.
+  const run = task.resumesAfterProjectStop && task.resumeRootId && runAttempts(task.projectId, task.resumeRootId);
+  const questionHistory = run && events[0]?.type === "answer"
+    ? ctx.repos.tasks.select(run.where, run.params, "created_at, rowid").filter(t => t.id !== task.id)
+      .flatMap(t => ctx.repos.taskEvents.list(t.id, "questionsAndAnswers"))
+    : [];
   // A run interrupted before it finished carries on in the CLI session it was working in, when its host still has it.
   const interrupted = !last && !!task.resumeRootId;
   const resumeSession = !opts.fresh && (answered || interrupted) && task.session?.agent === task.agent && RESUMABLE.has(task.agent) ? task.session.id : undefined;
@@ -487,7 +499,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     change,
     replacedPass: now && named?.id,
     // A resumed session already holds the earlier questions and answers.
-    qa: resumeSession ? undefined : pairQuestionsAndAnswers(events),
+    qa: resumeSession ? undefined : pairQuestionsAndAnswers([...questionHistory, ...events]),
     skills: assistantSkills(ctx.repos.skills.select("1=1", [], "name ASC"), c.skillIds, true),
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,
@@ -690,18 +702,19 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   // Include only tasks this host can claim in the candidate scan. The shared queue still sees
   // requests for other hosts and requests being reworded, since they can hold up later work.
   const checkedAt = now();
-  const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at,
+  const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at, p.editing_paused,
     coalesce(json_extract(q.json, '$.rewordingUntil') > ?, 0) AS rewording FROM tasks q JOIN projects p ON p.id = q.project_id
     LEFT JOIN tasks root ON root.id = json_extract(q.json, '$.resumeRootId')
     WHERE p.deleted_at IS NULL AND q.state = 'queued' AND ${filter}
+    AND (p.editing_paused = 0 OR q.kind NOT IN ${PROJECT_EDIT_KINDS})
     ORDER BY coalesce(root.created_at, q.created_at), coalesce(root.rowid, q.rowid), q.rowid`)
     .iterate(checkedAt, taskId ?? JSON.stringify(agents.map(a => a.id))) as Iterable<{
-      id: string; project_id: string; kind: TaskKind; json: string; created_at: string; rewording: number;
+      id: string; project_id: string; kind: TaskKind; json: string; created_at: string; editing_paused: number; rewording: number;
     }>;
   // Only the columns the queue reads: an open pass's cut reasons are counted in SQL, never parsed, and an edit's
   // lineage is read only for a request about an applied edit.
   const lineage = ctx.db.prepare("SELECT json_extract(json, '$.timelineEdits') AS edits FROM changes WHERE id = ?");
-  function readQueue(projectId: string) {
+  function readQueue(projectId: string, editingPaused: boolean) {
     const changes = (ctx.db.prepare(`SELECT id, project_id AS projectId, state, json_extract(json, '$.intent') AS intent,
         json_extract(json, '$.taskId') AS taskId, json_extract(json, '$.threadId') AS threadId,
         json_array_length(json_extract(json, '$.cutReasons')) AS cuts
@@ -710,7 +723,8 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
       .all(projectId) as (Omit<QueueChange, "cutReasons" | "taskId" | "threadId"> & { taskId: string | null; threadId: string | null; cuts: number })[])
       .map(({ cuts, taskId, threadId, ...change }): QueueChange =>
         ({ ...change, taskId: taskId ?? undefined, threadId: threadId ?? undefined, cutReasons: { length: cuts } }));
-    const tasks = ctx.repos.tasks.queue(projectId, changes.flatMap(change => change.taskId ? [change.taskId] : []));
+    const snapshot = ctx.repos.tasks.queue(projectId, changes.flatMap(change => change.taskId ? [change.taskId] : []));
+    const tasks = editingPaused ? snapshot.filter(task => !editsDialogue(task.kind) || FINISHED_TASK.has(task.state)) : snapshot;
     const edits = new Map<string, Pick<Change, "id" | "timelineEdits"> | undefined>();
     const lookup = (id: string) => {
       if (!edits.has(id)) {
@@ -719,7 +733,7 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
       }
       return edits.get(id);
     };
-    return { blocker: queueBlocker(tasks, changes, lookup),
+    return { blocker: queueBlocker(tasks, editingPaused ? [] : changes, lookup),
       byId: new Map(tasks.map(task => [task.id, task])) };
   }
   const queues = new Map<string, ReturnType<typeof readQueue>>();
@@ -743,7 +757,7 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
       continue;
     }
     if (!isAsideTask({ kind: row.kind })) {
-      const queue = queues.get(row.project_id) ?? readQueue(row.project_id);
+      const queue = queues.get(row.project_id) ?? readQueue(row.project_id, row.editing_paused === 1);
       queues.set(row.project_id, queue);
       const candidate = queue.byId.get(row.id)!;
       const blocker = queue.blocker(candidate);

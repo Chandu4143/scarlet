@@ -5,7 +5,7 @@ import { processIsAlive, type Ctx } from "../context.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
 import { logId } from "../logText.js";
-import { appendTaskEvent, createTask, FINISHED_TASK, hasTranscript, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
+import { appendTaskEvent, cancelTask, createTask, FINISHED_TASK, hasTranscript, PROJECT_EDIT_KINDS, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { prepareCutReview } from "./changes.js";
 import { skillEditEnded, startLearningCheck } from "./learnings.js";
@@ -66,6 +66,52 @@ function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean, 
   ctx.db.afterCommit(() => ctx.log(`[task] recovery task=${logId(task.id)} project=${logId(task.projectId)} ` +
     `state=${saved.state} outcome=${outcome} reason=${quit ? "engine_stopped" : "worker_lost"} attempts=${lost}`));
   return saved;
+}
+
+/** Retire the workers' attempts and leave their requests at the front of the project's held queue. */
+export function holdProjectEditing(ctx: Ctx, projectId: string) {
+  return ctx.db.transaction(() => ctx.bus.asSaved(() => {
+    const previous = ctx.repos.projects.header(projectId);
+    if (!previous) throw notFound("project");
+    ctx.repos.projects.setEditingPaused(projectId, true);
+    const project = ctx.repos.projects.get(projectId)!;
+    if (!previous.editingPaused) ctx.bus.publish({ type: "project.updated", projectId, project });
+
+    const active = ctx.repos.tasks.select(`project_id = ? AND kind IN ${PROJECT_EDIT_KINDS} AND (
+      state IN ('claimed','running','waiting_for_user') OR (state = 'queued' AND json_extract(json, '$.startedAt') IS NOT NULL))`,
+      [projectId], "created_at, rowid");
+    const tasks = active.flatMap(task => {
+      const next = resumeTask(ctx, task, {}, true);
+      return [ctx.repos.tasks.get(task.id)!, next];
+    });
+    return { project, tasks };
+  }), "immediate")();
+}
+
+/** Release the queue under the same lock as claims, restoring unanswered questions before any worker can start. */
+export function resumeProjectEditing(ctx: Ctx, projectId: string) {
+  return ctx.db.transaction(() => {
+    const previous = ctx.repos.projects.header(projectId);
+    if (!previous) throw notFound("project");
+    ctx.repos.projects.setEditingPaused(projectId, false);
+    const project = ctx.repos.projects.get(projectId)!;
+    if (!previous.editingPaused) return { project, tasks: [] };
+    ctx.bus.publish({ type: "project.updated", projectId, project });
+    const waiting = ctx.repos.tasks.select(`project_id = ? AND state = 'queued' AND kind IN ${PROJECT_EDIT_KINDS}`, [projectId]);
+    const held = waiting.filter(task => task.resumesAfterProjectStop && !task.startedAt);
+    const tasks = held.map(task => {
+      const [previousAttempt] = ctx.repos.tasks.select("project_id = ? AND json_extract(json, '$.retryTaskId') = ?", [projectId, task.id]);
+      return saveTask(ctx, {
+        ...task,
+        // The editor may have made decisions while editing was stopped.
+        instruction: recoveryInstruction(ctx, previousAttempt ?? task, task.resumeRootId),
+        state: task.question ? "waiting_for_user" : "queued",
+      });
+    });
+    const ready = waiting.find(task => !task.question);
+    if (ready) ctx.bus.taskQueued({ taskId: ready.id, projectId });
+    return { project, tasks };
+  }, "immediate")();
 }
 
 function settleTask(ctx: Ctx, task: Task, unstarted: boolean, lastSeen?: string | null): Task {
@@ -318,20 +364,24 @@ export function retryTask(ctx: Ctx, id: string, choice: RunChoice = {}): Task {
 }
 
 /** Called with the write lock held. */
-function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}): Task {
+function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}, afterProjectStop = false): Task {
   const id = task.id;
   if (task.retryTaskId) return ctx.repos.tasks.get(task.retryTaskId)!;
-  const action = taskRecoveryAction(task, savedChanges(ctx, [task]).length > 0);
+  const action = afterProjectStop ? "resume" : taskRecoveryAction(task, savedChanges(ctx, [task]).length > 0);
   if (!action) throw conflict("not_retryable", "This request cannot be retried.");
   const resumeRootId = action === "resume" ? task.resumeRootId ?? id : undefined;
   // A new id fences off late events, proposals and completions from the previous worker.
   const run = choice.agent ? { agent: choice.agent, model: choice.model, effort: choice.effort, fast: choice.fast, serviceTier: choice.serviceTier } : {};
   let retry = createTask(ctx, {
     ...task, ...run, state: "queued", instruction: recoveryInstruction(ctx, task, resumeRootId), resumeRootId,
+    resumesAfterProjectStop: afterProjectStop || undefined, question: afterProjectStop ? task.question : null,
     context: { ...task.context, threadId: task.context.threadId ?? id, message: task.context.message ?? task.instruction },
   });
   // A request the editor started ahead of their calls was at work: it isn't put behind those calls again.
-  if (task.startsBeforeCalls) retry = saveTask(ctx, { ...retry, startsBeforeCalls: true });
+  if (task.startsBeforeCalls || (afterProjectStop && (task.repeatAudit || task.reply))) {
+    retry = saveTask(ctx, { ...retry, startsBeforeCalls: task.startsBeforeCalls,
+      ...(afterProjectStop && { repeatAudit: task.repeatAudit, reply: task.reply }) });
+  }
   const proposal = task.kind === "revise" && task.context.changeId && ctx.repos.changes.get(task.context.changeId);
   // The revision begins again on the proposal it names while that one stands. A pass a later revision has replaced stays
   // put away: marked as revising it would read as the pass this request revises, and its cut would be moved there
@@ -340,12 +390,16 @@ function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}): Task {
     const change = ctx.repos.changes.put({ ...beginRevision(proposal, retry), updatedAt: now() });
     ctx.bus.publish({ type: "change.updated", projectId: change.projectId, change });
   }
-  saveTask(ctx, { ...task, retryTaskId: retry.id });
+  const prior = { ...task, retryTaskId: retry.id };
+  if (afterProjectStop) cancelTask(ctx, prior);
+  else saveTask(ctx, prior);
   ctx.log(`[task] ${id} ${action === "resume" ? "resumed" : "retried"} as ${retry.id}`);
   // A run its host cut short kept its CLI session, so the next attempt on the same model carries on in it instead of
   // starting cold. On another model it starts a session of its own.
   const sameModel = retry.agent === task.agent && retry.model === task.model;
-  if (action === "resume" && task.interrupted && task.session && RESUMABLE.has(task.agent) && sameModel) {
+  // Server Stop ends active sessions. A session waiting on the editor has already yielded and can still take its answer.
+  const canKeepSession = afterProjectStop ? task.state === "waiting_for_user" : task.interrupted;
+  if (action === "resume" && canKeepSession && task.session && RESUMABLE.has(task.agent) && sameModel) {
     const resumed = saveTask(ctx, { ...retry, session: task.session });
     // The session still holds the plan it was working to, and reports it again only when a step changes. Until then
     // the plan stands as it was left, so the editor sees it where it stopped (2026-11-09: a plan of four steps was

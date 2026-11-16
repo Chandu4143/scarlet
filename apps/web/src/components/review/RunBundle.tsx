@@ -166,6 +166,8 @@ interface RunBundleProps {
   /** Pick a stopped or failed run up again. */
   recovery?: { label: string; run(): void };
   onStop?(): void;
+  /** Edit actions for Scarlet's own request, which has no heading. */
+  actions?: ReactNode;
   /** Resume a run that ended without its transcripts, now that they're ready. */
   onResume?(): void;
   /** Resume it once its transcripts are ready, or stop waiting to. */
@@ -239,7 +241,7 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
   ]} />;
 }
 
-function WorkingRun({ task, events: all, changes, callNumber, say, result, stopAbove, onStop }: RunBundleProps) {
+function WorkingRun({ task, events: all, changes, callNumber, say, result, stopAbove, onStop, actions }: RunBundleProps) {
   // A pass sent back to check the finished cut for repeats runs again as the same request, in a new session. Its line
   // and its first sentence are that session's: what it said an hour ago on the first run isn't what it is doing now.
   const events = useMemo(() => sinceRerun(task, all), [task, all]);
@@ -273,14 +275,14 @@ function WorkingRun({ task, events: all, changes, callNumber, say, result, stopA
       <StepMark state="working" />
       {/* The words shimmer while Scarlet works. A narrow chat shortens them to two lines; hovering says them whole. */}
       <span role="status" title={words} className="req-now-text working-text">{words}</span>
-      {!stopAbove && onStop && <span className="req-right"><button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button></span>}
+      {!stopAbove && (actions || onStop) && <div className="req-right">{actions || <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>}</div>}
     </div>
     {say}
     {result?.(undefined)}
   </div>;
 }
 
-function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunBundleProps) {
+function WaitingRun({ task, events, changes, say, result, banded, onStop, actions }: RunBundleProps) {
   const usage = useRunUsage(task.id, !banded);
   const asking = task.state === "waiting_for_user";
   const waiting = task.state === "queued";
@@ -303,10 +305,10 @@ function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunB
         {asking && <span className="req-dot" aria-hidden />}
         <span role="status" title={label} className={asking ? "req-ask" : undefined}>{label}</span>
       </button>
-      <span className="req-right">
+      <div className="req-right">
         {asking && <Tokens usage={usage} />}
-        {onStop && <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>}
-      </span>
+        {actions || (onStop && <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>)}
+      </div>
     </div>}
     {line && lines.length > 0 && <RunList lines={lines} />}
     {say}

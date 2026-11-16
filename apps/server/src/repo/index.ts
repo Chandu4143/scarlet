@@ -123,11 +123,13 @@ class TasksRepo extends JsonStore<Task> {
         AND id NOT IN (SELECT id FROM pending)
     )
     SELECT rowid AS queueSequence, id, project_id AS projectId, kind, state, created_at AS createdAt,
-      json_extract(json, '$.resumeRootId') AS resumeRootId,
+      json_extract(json, '$.resumeRootId') AS resumeRootId, json_extract(json, '$.resumesAfterProjectStop') AS resumesAfterProjectStop,
       json_extract(json, '$.startsBeforeCalls') AS startsBeforeCalls, json_extract(json, '$.context') AS context
     FROM queue`).all(projectId, JSON.stringify(reviewMakers)) as
-      (Omit<QueueTask, "context" | "resumeRootId" | "startsBeforeCalls"> & { context: string | null; resumeRootId: string | null; startsBeforeCalls: number | null })[];
-    return rows.map(row => ({ ...row, resumeRootId: row.resumeRootId ?? undefined, startsBeforeCalls: row.startsBeforeCalls === 1, context: row.context ? JSON.parse(row.context) : {} }));
+      (Omit<QueueTask, "context" | "resumeRootId" | "resumesAfterProjectStop" | "startsBeforeCalls"> &
+        { context: string | null; resumeRootId: string | null; resumesAfterProjectStop: number | null; startsBeforeCalls: number | null })[];
+    return rows.map(row => ({ ...row, resumeRootId: row.resumeRootId ?? undefined,
+      resumesAfterProjectStop: row.resumesAfterProjectStop === 1, startsBeforeCalls: row.startsBeforeCalls === 1, context: row.context ? JSON.parse(row.context) : {} }));
   }
 }
 

@@ -176,6 +176,22 @@ export function threadConversation(thread: Thread, notes: Note[], events: Record
   const out: ThreadEntry[] = [];
   const dialogueTasks = new Set(thread.changes.filter(c => dialogueReceipt(c)).map(c => c.taskId));
   const attempt = new Map(thread.changes.map((c, i) => [c.id, i + 1]));
+  // Continue reopens an existing question on the resumed attempt. Keep its original row and answer the new attempt.
+  const previous = new Map(thread.tasks.flatMap(t => t.retryTaskId ? [[t.retryTaskId, t] as const] : []));
+  const resumedQuestions = new Map<TaskEvent, Task>();
+  const restored = new Set<string>();
+  for (const task of thread.tasks) {
+    if (!task.resumesAfterProjectStop || task.state !== "waiting_for_user" || !task.question ||
+      events[task.id]?.some(ev => ev.type === "question" && ev.text === task.question)) continue;
+    let before = previous.get(task.id);
+    for (let hops = 0; before && before.question === task.question && hops < 50; hops++, before = previous.get(before.id)) {
+      const question = events[before.id]?.findLast(ev => ev.type === "question" && ev.text === task.question);
+      if (!question) continue;
+      resumedQuestions.set(question, task);
+      restored.add(task.id);
+      break;
+    }
+  }
   for (const t of thread.tasks) {
     const start = out.length;
     const author = t.createdBy;
@@ -212,10 +228,13 @@ export function threadConversation(thread: Thread, notes: Note[], events: Record
           out.push(entry);
         }
       }
-      if (ev.type === "question") out.push({ kind: "question", at: ev.at ?? t.createdAt ?? "", text: ev.text, task: t, answered: ev !== pending });
+      if (ev.type === "question") {
+        const resumed = resumedQuestions.get(ev);
+        out.push({ kind: "question", at: ev.at ?? t.createdAt ?? "", text: ev.text, task: resumed ?? t, answered: !resumed && ev !== pending });
+      }
       if (ev.type === "answer") out.push({ kind: "answer", at: ev.at ?? t.createdAt ?? "", text: ev.text });
     }
-    if (t.state === "waiting_for_user" && t.question && !pending) {
+    if (t.state === "waiting_for_user" && t.question && !pending && !restored.has(t.id)) {
       out.push({ kind: "question", at: t.startedAt ?? t.createdAt ?? "", text: t.question, task: t, answered: false });
     }
     const hasEdit = thread.changes.some(c => c.taskId === t.id || t.changeIds.includes(c.id));

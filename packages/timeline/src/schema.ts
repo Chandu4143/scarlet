@@ -382,6 +382,8 @@ export const Project = z.object({
   /** Last conversation revision filed by the editor, independently of the timeline head. */
   completedThreads: z.record(z.string()).optional(),
   mediaPaused: z.boolean().optional(),
+  /** The editor stopped project edits and must release the queue before any more start. */
+  editingPaused: z.boolean().optional(),
   id: Id,
   archived: z.boolean().optional(),
   branch: z.string().optional(),
