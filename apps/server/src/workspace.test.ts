@@ -6403,6 +6403,8 @@ it.each(["playback", "segment"] as const)("validates the source window before re
   };
   vi.spyOn(ctx.render, "renderRange").mockImplementation(async (_p, _t, _r, output) => encode(output));
   vi.spyOn(ctx.render, "renderPlaybackSegment").mockImplementation(async (_p, _t, _r, _c, output) => encode(output));
+  // A segment on whole playback sections is assembled from the section cache.
+  vi.spyOn(ctx.render, "renderFullCached").mockImplementation(async (_p, _t, _c, output) => encode(output));
   const request = (version: string) => ctx.renders.request({ projectId: project.id, version, kind, quality: "preview", range: { start: 0, end: 5 } });
   const first = request(v1);
   await Promise.all([...ctx.pending]);
