@@ -215,14 +215,13 @@ export function renderRoutes(ctx: Ctx) {
     const signal = AbortSignal.any([c.req.raw.signal, ctx.mediaSignal(project.id)]);
     const owner = randomUUID();
     await ctx.track((async () => {
-      for (const range of ranges) {
-        if (signal.aborted) break;
-        const current = ctx.repos.projects.header(project.id);
-        if (!current || current.mediaPaused || current.settings.fps !== project.settings.fps || ctx.renders.fullPreview(current, version)) break;
-        const render = ctx.renders.request({ projectId: project.id, version, range, kind: "playback", quality: "preview", speculative: true }, owner);
-        try { await waitForPlayback(ctx, render, signal); }
-        finally { ctx.renders.release(render.id, owner); }
-      }
+      if (signal.aborted) return;
+      const current = ctx.repos.projects.header(project.id);
+      if (!current || current.mediaPaused || current.settings.fps !== project.settings.fps || ctx.renders.fullPreview(current, version)) return;
+      // Queue every range at once: the render queue runs them side by side instead of one after another.
+      const renders = [...ranges].map(range => ctx.renders.request({ projectId: project.id, version, range, kind: "playback", quality: "preview", speculative: true }, owner));
+      try { await Promise.all(renders.map(render => waitForPlayback(ctx, render, signal))); }
+      finally { for (const render of renders) ctx.renders.release(render.id, owner); }
     })(), project.id);
     if (ctx.shutdown.aborted || c.req.raw.signal.aborted) return new Response(null, { status: ctx.shutdown.aborted ? 503 : 499 });
     return c.body(null, 204);

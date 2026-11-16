@@ -27,7 +27,7 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, RESTART_WITHIN_SECONDS, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, TimeRange } from "@scarlet/timeline";
@@ -1505,13 +1505,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       }
     }
     const timer = new AbortController();
-    const pageDeadline = Date.now() + 52_000;
+    const wait = (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) * 1000;
+    const pageDeadline = Date.now() + wait + 7_000;
     let detections: DialogueDetections | undefined, detectorIssue: string | undefined;
     try {
-      // Allow ordinary local inference to finish within one MCP call. Keep a
-      // margin below the common 60-second client deadline for unusually slow jobs.
+      // Allow local inference, a first page's speaker analysis included, to finish within one MCP call, with a
+      // margin below the harness's tool deadline (toolWaitSeconds), so a waiting page costs no extra turns.
       const job = detectWindow(mediaId, from, to);
-      const ready = await Promise.race([job, delay(45_000, "pending" as const, { signal: timer.signal, ref: false })]);
+      const ready = await Promise.race([job, delay(wait, "pending" as const, { signal: timer.signal, ref: false })]);
       if (ready === "pending") {
         waitingOn("dialogue", mediaId, job);
         const transcript = await transcriptState(mediaId);

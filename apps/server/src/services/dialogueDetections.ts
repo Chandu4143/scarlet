@@ -100,16 +100,21 @@ export function dialogueDetector(ctx: Ctx) {
     const runtime = settings.provider === "whispercpp" ? resolveLocalRuntime(ctx, settings) : undefined;
     const model = runtime ? await localModelIdentity(runtime) : ["openai", settings.openaiModel];
     const identity = [await fileStamp(file), ...model];
-    const fingerprint = createHash("sha256").update(JSON.stringify([1, speakerTurnCacheVersion, speakerAnalysisVersion,
-      identity, media.hash, media.voiceRoles, settings.language, verbatim, alignmentVersion])).digest("hex");
-    return { file, fingerprint, runtime };
+    // The file's path, size and times identify it. Its content hash is finished in the background after import, so a
+    // page saved before then would stop matching once it lands and be analyzed again. Pages saved under the hash
+    // (`legacy`) still read.
+    const print = (hash: string | undefined) => createHash("sha256").update(JSON.stringify([1, speakerTurnCacheVersion, speakerAnalysisVersion,
+      identity, hash, media.voiceRoles, settings.language, verbatim, alignmentVersion])).digest("hex");
+    const fingerprint = print(undefined);
+    const legacy = media.hash ? print(media.hash) : fingerprint;
+    return { file, fingerprint, legacy, runtime };
   }
 
   async function checkpoints(projectId: string, media: MediaAsset, from: number, to: number, settings = ctx.settings().transcription) {
-    const { fingerprint } = await source(projectId, media, to, settings);
-    return ctx.db.prepare(`SELECT start, end FROM dialogue_scan_pages
-      WHERE media_id = ? AND fingerprint = ? AND start >= ? AND end <= ? ORDER BY start, end`)
-      .all(media.id, fingerprint, from, to) as TimeRange[];
+    const { fingerprint, legacy } = await source(projectId, media, to, settings);
+    return ctx.db.prepare(`SELECT DISTINCT start, end FROM dialogue_scan_pages
+      WHERE media_id = ? AND fingerprint IN (?, ?) AND start >= ? AND end <= ? ORDER BY start, end`)
+      .all(media.id, fingerprint, legacy, from, to) as TimeRange[];
   }
 
   async function openPage(projectId: string, media: MediaAsset, from: number, to: number, edit?: ScanEdit,
@@ -124,10 +129,11 @@ export function dialogueDetector(ctx: Ctx) {
         .then(result => result ?? { acoustic: [], segments: [], keptSideUnavailable: true as const }), projectId);
       return { analyzed: ready, ready };
     }
-    const { file, fingerprint, runtime } = await source(projectId, media, to, policy.settings);
+    const { file, fingerprint, legacy, runtime } = await source(projectId, media, to, policy.settings);
     const params = [media.id, fingerprint, from, to];
-    const saved = keptSide ? undefined : ctx.db.prepare("SELECT result FROM dialogue_scan_pages WHERE media_id = ? AND fingerprint = ? AND start = ? AND end = ?")
-      .get(...params) as { result: string } | undefined;
+    const saved = keptSide ? undefined : ctx.db.prepare(`SELECT result FROM dialogue_scan_pages
+      WHERE media_id = ? AND fingerprint IN (?, ?) AND start = ? AND end = ? ORDER BY fingerprint = ? DESC LIMIT 1`)
+      .get(media.id, fingerprint, legacy, from, to, fingerprint) as { result: string } | undefined;
     if (saved) {
       const ready = Promise.resolve(JSON.parse(saved.result) as DialogueDetections);
       return { analyzed: ready, ready };

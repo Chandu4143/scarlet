@@ -334,6 +334,8 @@ fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>) -> Vec<String> {
         "-c".into(), r#"mcp_servers.scarlet.default_tools_approval_mode="approve""#.into(),
         "-c".into(), "mcp_servers.scarlet.required=true".into(),
         "-c".into(), "mcp_servers.scarlet.startup_timeout_sec=60".into(),
+        // Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured.
+        "-c".into(), "mcp_servers.scarlet.tool_timeout_sec=300".into(),
         "-c".into(),
         format!("mcp_servers.scarlet.command={}", toml_string(&to_toml(&mcp.command))),
         "-c".into(),
