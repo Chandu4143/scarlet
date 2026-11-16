@@ -450,8 +450,11 @@ interface Nest { key: string; node: ReactNode }
 const noNests: readonly Nest[] = [];
 
 /** A finished request with one result opens its edit on the timeline. A collection opens a list to choose from. */
-function EditResultLink({ thread, actions, single, count, soFar, list: [open, setOpen], reveal }: {
+function EditResultLink({ thread, actions, single, count, soFar, paired, list: [open, setOpen], reveal }: {
   thread: Thread; actions: ChatActions; single?: EditRef; count: number; soFar?: boolean; list: PassList; reveal(): void;
+  /** Some edits need the editor, and they are listed without a click. It names the list it switches to: it goes while
+   *  every edit is listed, and "Just the N that need you" takes its place. */
+  paired?: boolean;
 }) {
   const expanded = open === "all";
   const current = !!single && !!actions.showing && matchesEdit(actions.showing, single);
@@ -465,6 +468,7 @@ function EditResultLink({ thread, actions, single, count, soFar, list: [open, se
       title={current ? "Close this edit (Esc)" : "Show on the timeline"} onClick={letGo(toggleEdit)}>{current ? "Close edit" : "See edit"}</button>;
   }
   const label = soFar ? `See ${count} ${count === 1 ? "edit" : "edits"} so far` : count === 2 ? "See both" : "See all";
+  if (paired && expanded) return null;
   return <button type="button" className="simple-pass-toggle" data-so-far={soFar || undefined} aria-expanded={expanded}
     title={expanded ? "Hide the edits" : soFar ? "Show the edits Scarlet has made so far, in order" : "Show the edits in order"}
     onClick={() => { if (!expanded) reveal(); setOpen(expanded ? undefined : "all"); }}>{expanded ? "Hide" : label}</button>;
@@ -498,11 +502,11 @@ function Made({ parts, link }: { parts: readonly SentencePart[]; link?: ReactNod
 
 /**
  * What a dialogue pass made, as the rows of its block. While its calls wait they are listed without a click, each by
- * its number with Scarlet's note and, once decided or sent back, a word for where it stands. "N need you" reads in the
- * block's heading and opens the first one still waiting. Once Scarlet is done, what the pass applied is one sentence,
+ * its number with Scarlet's note and, once decided or sent back, a word for where it stands. "N need you" follows
+ * "See all" on the sentence's line and opens the first one still waiting. Once Scarlet is done, what the pass applied is one sentence,
  * the same for 7 cuts or 300, above any calls still waiting, and a link that opens every edit, calls included, in
- * timeline order. With edits that ask for a look,
- * "N need you" lists just those, in the same rows, and puts that list away when pressed again. A row is one line and opens its
+ * timeline order. Edits that ask for a look are listed without a click, in the same rows, and "N need you" brings
+ * that list back after "See all". A row is one line and opens its
  * edit or call in the card on the timeline, where Approve and Skip move on to the next call. A request about one cut
  * or edit that is still in the chat (`nests`) sits directly under that cut's or edit's row. `aside` is what the run
  * used, when that shows.
@@ -564,7 +568,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       const key = editKey(e);
       const seen = reviewed(e);
       // A folded pass only needs rows that can appear in its call or flagged list.
-      if (!listed && (!e.check || seen) && !(open === "need" && listedNeed.current.has(key))) return [];
+      if (!listed && (!e.check || seen) && !(open !== "all" && listedNeed.current.has(key))) return [];
       // A revision on its way: the row says so until the new version lands, whether or not the editor had kept the
       // edit. A cut the pass applied through its calls counts as kept, so a guard on that left its row as it was.
       const sent = revising(e);
@@ -604,17 +608,15 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   // With no calls to list, "N need you" lists just the edits that ask for a look: the same rows as the full list, only
   // those. `listedNeed` are the rows listed since it was opened: one the editor keeps stays where it was, ticked,
   // until the list closes, so the list doesn't jump under them.
-  const filter = listed ? "all" : calls.length ? "calls" : open === "need" && need + sentBack > 0 ? "need" : undefined;
+  const filter = listed ? "all" : calls.length ? "calls" : open !== "all" && need + sentBack > 0 ? "need" : undefined;
   if (filter !== "need") listedNeed.current.clear();
   const shown = filter === "calls" ? calls : filter === "need" ? rows.filter(r => r.needs || r.sentBack || listedNeed.current.has(r.key)) : rows;
   if (filter === "need") for (const row of shown) listedNeed.current.add(row.key);
-  // "N need you" opens the first one waiting on the timeline, so one click reaches the cut. With one of them open
-  // already it leaves that one open. Over a pass's calls it brings them back when every edit was listed in their
-  // place. Otherwise it lists just the edits that need the editor, and pressed again it puts that list away.
+  // The calls, or the edits that need the editor, are listed without a click, under "N need you": pressed, it opens the
+  // first one waiting on the timeline, so one click reaches the cut, or leaves one of them that's open already. When
+  // "See all" has listed every edit in their place, "Just the N that need you" brings that short list back, and opens it.
   const showNeeded = () => {
-    if (calls.length) setOpen(undefined);
-    else if (open === "need") return setOpen(undefined);
-    else { reveal(); setOpen("need"); }
+    setOpen(undefined);
     if (!rows.some(row => row.on && row.needs)) (calls.length ? calls : rows).find(row => row.needs)?.open?.();
   };
   // What it came to, once Scarlet is done, while calls still wait too: what it applied so far, with the link that opens
@@ -647,18 +649,20 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   // The full list includes the pass's calls. Leave its link out when “N need you” already lists every row.
   const soFar = (!!working || !!pass?.running) && !made;
   const seeEvery = edits.length > 0 && (fullList || need < totalRows) &&
-    <EditResultLink thread={thread} actions={actions} single={single} count={totalRows} soFar={soFar} list={listState} reveal={reveal} />;
+    <EditResultLink thread={thread} actions={actions} single={single} count={totalRows} soFar={soFar} paired={need > 0} list={listState} reveal={reveal} />;
+  // While every edit is listed, the link back to what needs the editor takes the place of "See all".
+  const needLink = need > 0 && filter === "all" && <button type="button" className="simple-pass-need" title="Show just the ones that need you" onClick={showNeeded}>
+    Just the {need} that {need === 1 ? "needs" : "need"} you</button>;
+  // A dim label over the rows says which list they are.
+  const listHead = need > 0 && (filter === "all" ? <p className="simple-list-head">All {totalRows} edits</p>
+    : <button type="button" className="simple-pass-need simple-list-head" title="Open the first one waiting" onClick={showNeeded}>{need} {need === 1 ? "needs" : "need"} you</button>);
   return <div ref={host} className="simple-pass" role="group" aria-label="Dialogue pass">
-    {made && <Made parts={made} link={seeEvery} />}
-    {/* What needs the editor reads in the block's heading, at its right. */}
-    {need > 0 && <button type="button" className="simple-pass-need" aria-pressed={calls.length ? undefined : filter === "need"}
-      title={calls.length ? "Open the first one waiting" : filter === "need" ? "Hide these" : "Show just these"} onClick={showNeeded}>
-      {need} {need === 1 ? "needs" : "need"} you</button>}
-    {filter === "calls" && rowList}
+    {made ? <Made parts={made} link={<>{seeEvery}{needLink}</>} /> : needLink && <p className="simple-made-line">{seeEvery}{needLink}</p>}
+    {filter === "calls" && <>{listHead}{rowList}</>}
     {/* A request about a cut or edit whose row isn't listed right now still shows, under what the pass made. */}
     {nests.filter(nest => !placed.has(nest.key)).map(nest => nest.node)}
     <div className="simple-pass-line req-row">
-      {!made && seeEvery}
+      {!made && !needLink && seeEvery}
       {/* Nothing here is a button the editor has to press: the pass goes in once nothing is left to decide. While
           Scarlet still checks, that is when it finishes. Only an apply that failed offers to try again. */}
       {pass?.scheduled && <span className="simple-pass-ok">Goes in when Scarlet finishes</span>}
@@ -666,7 +670,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       {waiting && !pass.deciding && !!pass.error && <button type="button" className="simple-link" onClick={pass.apply}>Retry</button>}
       <span className="req-right">{aside}</span>
     </div>
-    {(filter === "all" || filter === "need") && rowList}
+    {(filter === "all" || filter === "need") && <>{listHead}{rowList}</>}
     {pass?.error && <p className="simple-error" role="alert">{pass.error}</p>}
   </div>;
 }
@@ -674,8 +678,8 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
 /**
  * What any other request made, as the rows of its block: one sentence, then a link that opens the edits themselves,
  * numbered as on the timeline. An edit made in several places is one edit. "N need you" counts the flagged edits not
- * yet kept and reads in the block's heading: it lists just those, with their own numbers, and opens the first, unless
- * one of them is open already; pressed again it puts that list away. A request about one of the edits that is still in
+ * yet kept and follows that link: just those are listed without a click, with their own numbers, and it brings that
+ * list back after "See all" and opens the first, unless one of them is open already. A request about one of the edits that is still in
  * the chat (`nests`) sits directly under that edit's row.
  */
 function ThreadResult({ projectId, thread, edits, actions, aside, working, nests = noNests, list, listedNeed, wasShowing: heldShowing }: { projectId: string; thread: Thread; edits: Omit<ThreadEdit, "at">[]; actions: ChatActions;
@@ -706,15 +710,16 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
   const ownShowing = useRef(false);
   const wasShowing = heldShowing ?? ownShowing;
   useEffect(() => {
-    if (showingInList && !wasShowing.current) setOpen(o => o ?? (flagged.includes(shownEdit!) ? "need" : "all"));
+    if (showingInList && !wasShowing.current) setOpen(o => shownEdit!.check && !reviewed(shownEdit!) ? o ?? "need" : "all");
     wasShowing.current = showingInList;
   }, [showingInList]); // eslint-disable-line react-hooks/exhaustive-deps
   // One sent back for revision waits on Scarlet, and keeps its row in the list of what needs the editor until it is back.
   const sentBack = useMemo(() => edits.filter(e => e.check && !reviewed(e) && revising(e)).length, [edits, reviewed, revising]);
   // The list of what needs the editor has nothing to show once nothing does.
   useEffect(() => { if (open === "need" && !flagged.length && !sentBack) setOpen(undefined); }, [open, flagged.length, sentBack]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The edits listed since "N need you" was pressed: one the editor keeps stays where it was until the list closes.
-  const needing = open === "need" && flagged.length + sentBack > 0;
+  // The edits that need the editor are listed without a click, until "See all" lists every edit in their place. One the
+  // editor keeps stays where it was, ticked, until nothing needs them.
+  const needing = open !== "all" && flagged.length + sentBack > 0;
   if (!needing) listedNeed.current.clear();
   const only = needing ? (edit: Omit<ThreadEdit, "at">) => (!!edit.check && !reviewed(edit)) || listedNeed.current.has(editKey(edit)) : undefined;
   if (only) for (const edit of edits) if (only(edit)) listedNeed.current.add(editKey(edit));
@@ -729,24 +734,27 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
   // them sits under that row: every place of a row the list shows counts as listed, as the list itself picks its rows.
   const listed = new Set(showsList ? groups.filter(group => !only || group.members.some(m => only(m.edit))).flatMap(group => group.members.map(m => editKey(m.edit))) : []);
   const seeEvery = (open === "all" || !allNeed) &&
-    <EditResultLink thread={thread} actions={actions} single={single} count={groups.length} soFar={working && !made} list={list} reveal={reveal} />;
+    <EditResultLink thread={thread} actions={actions} single={single} count={groups.length} soFar={working && !made} paired={flagged.length > 0} list={list} reveal={reveal} />;
+  // While every edit is listed, the link back to the edits that need the editor takes the place of "See all", and a dim
+  // label over the rows says which list they are.
+  // Either link opens the first one waiting, unless one of them is open already, as a pass's does.
+  const showNeeded = () => {
+    setOpen(undefined);
+    if (!flagged.some(edit => !!actions.showing && matchesEdit(actions.showing, edit))) actions.openEdit(thread, flagged[0]!);
+  };
+  const needLink = flagged.length > 0 && open === "all" && <button type="button" className="simple-pass-need" title="Show just the ones that need you" onClick={showNeeded}>
+    Just the {need} that {need === 1 ? "needs" : "need"} you</button>;
+  const listHead = flagged.length > 0 && (open === "all" ? <p className="simple-list-head">All {groups.length} edits</p>
+    : <button type="button" className="simple-pass-need simple-list-head" title="Open the first one waiting" onClick={showNeeded}>{need} {need === 1 ? "needs" : "need"} you</button>);
   return <div ref={host} className="simple-pass" role="group" aria-label="Edits">
-    {made && <Made parts={made} link={seeEvery} />}
-    {flagged.length > 0 && <button type="button" className="simple-pass-need" aria-pressed={needing} title={needing ? "Hide these" : "Show just these"}
-      onClick={() => {
-        if (needing) return setOpen(undefined);
-        reveal();
-        setOpen("need");
-        // It opens the first one waiting. With one of them open already it leaves that one open, as a pass's does.
-        if (!flagged.some(edit => !!actions.showing && matchesEdit(actions.showing, edit))) actions.openEdit(thread, flagged[0]!);
-      }}>
-      {need} {need === 1 ? "needs" : "need"} you</button>}
+    {made ? <Made parts={made} link={<>{seeEvery}{needLink}</>} /> : needLink && <p className="simple-made-line">{seeEvery}{needLink}</p>}
     <div className="simple-pass-line req-row">
-      {!made && seeEvery}
+      {!made && !needLink && seeEvery}
       <span className="req-right">{aside}
         {/* Undo these edits and File this thread have no place in the chat for now. What they reported still shows. */}
         <ThreadAction projectId={projectId} thread={thread} edits={edits} onPlay={ref => actions.openEdit(thread, ref)} menuOnly menu={false} /></span>
     </div>
+    {showsList && listHead}
     {showsList && <ThreadEdits projectId={projectId} thread={thread} edits={edits} showing={actions.showing} only={only}
       onPlay={ref => actions.openEdit(thread, ref)}
       onHover={ref => actions.lightMark(undefined, ref && { threadId: thread.id, editKey: editKey(ref) })}
@@ -990,8 +998,9 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
     // Scarlet answers the editor's note and then closes the request, mostly in the same words. The closing message is
     // the reply; what it wrote on the note shows only while there is no other.
     const closed = entries.some(e => e.kind === "agent" && !e.onNote && ids.has((e.taskId ?? e.replyTo)!));
-    // While the request's list of edits is open, the list takes the place of Scarlet's reply; Hide brings it back.
-    const listing = run === owner && hasRows && !!passList[0];
+    // While every edit is listed, the list takes the place of Scarlet's reply; putting it away brings the reply back. The
+    // short list of what needs the editor, shown without a click, leaves the reply where it is.
+    const listing = run === owner && hasRows && passList[0] === "all";
     mine.forEach((e, i) => {
       // All of what Scarlet said: folded it keeps to two lines, and a click opens the rest.
       if (e.kind === "agent") { if (!quiet && !(e.onNote && closed)) { told = true; if (!listing) said.push(<Said key={i} className="req-say" text={e.fullText ?? e.text} />); } }
