@@ -349,7 +349,7 @@ export function dialogueDetector(ctx: Ctx) {
     const active = activeScans.get(key);
     if (active) {
       if (announced) active.announce();
-      return { saved, done: active.done };
+      return { saved, done: active.done, dropped: () => false };
     }
     // The pass reads another range of a recording read ahead from its start: what it asks for has the lane.
     if (announced) {
@@ -421,7 +421,7 @@ export function dialogueDetector(ctx: Ctx) {
       }
     }).finally(() => { activeScans.delete(key); unfocus(); }), projectId);
     activeScans.set(key, { edit: edit.taskId, mediaId: media.id, announce, done, drop: () => { if (!announced) dropped = true; } });
-    return { saved, done };
+    return { saved, done, dropped: () => dropped };
   }
   async function start(projectId: string, media: MediaAsset, from: number, end: number, taskId: string, startedAt?: string) {
     return (await scanRange(projectId, media, from, end, taskId, startedAt, true)).saved;
@@ -430,13 +430,15 @@ export function dialogueDetector(ctx: Ctx) {
    * Read these recordings' pages for a dialogue pass that has just been claimed, before its first `dialogue_scan`
    * asks: each recording's first page waited 25 to 80 s for its speakers once the pass asked. The scan is the one
    * that call starts, over the whole recording from its start, so the call joins it and reuses its pages. Recordings
-   * are read one at a time, in the order given, as a pass reads them, so the first has the lane to itself.
+   * are read one at a time, in the order given, as a pass reads them, so the first has the lane to itself. Once the
+   * pass reads a recording some other way than from its start, it reads by a plan of its own, and the rest wait for it.
    */
   async function prefetch(projectId: string, recordings: MediaAsset[], taskId: string, startedAt?: string) {
     for (const media of recordings) {
       if (!media.duration) continue;
-      const { done } = await scanRange(projectId, media, 0, media.duration, taskId, startedAt, false);
+      const { done, dropped } = await scanRange(projectId, media, 0, media.duration, taskId, startedAt, false);
       await done;
+      if (dropped()) return;
     }
   }
   return { detect, checkpoints, start, prefetch };
