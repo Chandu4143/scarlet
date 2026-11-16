@@ -14,7 +14,7 @@
 .simple-tools { display: flex; align-items: center; gap: 2px; }
 .simple-tools .btn-quiet { font-size: 12px; }
 
-.simple-thread { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.simple-thread { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; container-type: inline-size; }
 .simple-chat { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 12px; display: flex; flex-direction: column; gap: 16px; }
 /* The conversation sits at the bottom, by the message box. A request still in the queue is an empty section, so the
    space above is a spacer and not a margin on the first one. It gives back the gap after it with a margin on top,
@@ -439,8 +439,8 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit > .unit-msg.is-marked, .unit > .unit-msg.is-marked:hover { background: #2a2236; border-color: #3a3048; box-shadow: inset 3px 0 0 #b48ae6; }
 .unit:has(> .unit-msg.is-marked) .simple-pass-toggle:not([data-so-far]) { color: #7fd6c6; text-decoration-color: rgb(127 214 198 / 50%); }
 .unit > .unit-msg.is-marked p { color: var(--color-fg); }
-/* Where the request stands: a dot while Scarlet asks, a word once it stopped early or left a suggestion. A finished
-   request has nothing here. While Scarlet has the request, Stop follows as the heading's last word. */
+/* Where the request stands: a dot while Scarlet asks, a word once it stopped early or left a suggestion.
+   While Scarlet has the request, Stop follows its metrics as the heading's last word. */
 .unit-state { flex: none; align-self: center; display: inline-flex; align-items: center; font-size: 12.5px; line-height: 19px; color: var(--color-muted); white-space: nowrap; }
 .unit-state:empty { display: none; }
 .unit-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warn); }
@@ -459,10 +459,11 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit-stop { flex: none; align-self: center; font-size: 12.5px; line-height: 19px; }
 .unit-state:not(:empty) + .unit-stop { margin-left: -2px; }
 .unit-tokens { flex: none; align-self: baseline; font-size: 12.5px; line-height: 19px; white-space: nowrap; }
+.unit-metrics-dot { color: var(--color-dim); }
 /* A request's tokens open every part of the count on hover, in a note above the count at its right edge. It's fixed
    to the window (its place set when it opens) so the pinned request's scrolling box doesn't clip it. The empty title
    keeps the heading's own (the editor's whole message) from showing over it. */
-.run-tokens { position: relative; cursor: default; outline: none; }
+.run-tokens { position: relative; padding: 0; background: transparent; border: 0; cursor: pointer; text-align: inherit; }
 .run-tokens:hover, .run-tokens:focus-visible { color: var(--color-muted); }
 .tokens-tip { position: fixed; z-index: 40; display: flex; flex-direction: column; gap: 3px; width: max-content; min-width: 11rem;
   padding: 7px 10px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); box-shadow: 0 3px 12px rgb(0 0 0 / 35%);
@@ -474,6 +475,15 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit:has(> .unit-msg > .unit-stop) .simple-pass-need { right: 42px; }
 .unit:has(.simple-pass-need):has(> .unit-msg > .unit-stop) > .unit-msg { padding-right: var(--chat-gutter, 18px); }
 .unit:has(.simple-pass-need) > .unit-msg > .unit-stop { margin-left: 96px; }
+@container (max-width: 400px) {
+  .unit-msg:has(.unit-tokens), .subunit-msg:has(.unit-tokens) { column-gap: 7px; }
+  /* Keep room for the request when the review link also needs the first line. */
+  .unit:has(.simple-pass-need) > .unit-msg:has(> .unit-tokens) { flex-wrap: wrap; row-gap: 3px; }
+  .unit:has(.simple-pass-need) > .unit-msg > .unit-tokens { flex-basis: 100%; order: 1; text-align: end; }
+}
+@container (max-width: 350px) {
+  .unit-token-word { display: none; }
+}
 /* Stop, or the word for where it stands, sits on the first line of the editor's words, on their baseline, however
    many lines they take: level with "N need you". A dot has no baseline of its own, so it sits in the middle of that
    line, beside the Stop after it. */

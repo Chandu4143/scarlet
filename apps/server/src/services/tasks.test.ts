@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createProject, type Project } from "@scarlet/timeline";
@@ -7,7 +7,8 @@ import { ATTEMPT_HEADER, TASK_HEADER, taskPlan, type Task, type TaskEvent, type 
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { PLAN_STEPS } from "@scarlet/mcp/prompt";
-import { createTask, pairQuestionsAndAnswers } from "./tasks.js";
+import { appendTaskEvent, createTask, pairQuestionsAndAnswers, queueRepeatCheck } from "./tasks.js";
+import { recoverTasks } from "./taskRecovery.js";
 import { learningCheckContext } from "./learnings.js";
 
 let dataDir: string;
@@ -289,6 +290,65 @@ it("logs a run starting, asking and being answered, without what was asked or an
   lines.length = 0;
   await api("POST", `/tasks/${eager.id}/question`, { startedAt: eager.startedAt, text: "Which take?" });
   expect(said()).toEqual([`[task] ${eager.id} claimed → waiting_for_user: asked the editor a question`]);
+});
+
+it("persists active time across questions, queue waits, and a repeat check", async () => {
+  const start = Date.parse("2026-11-05T10:00:00.000Z");
+  const at = (seconds: number) => vi.setSystemTime(start + seconds * 1000);
+  vi.useFakeTimers({ toFake: ["Date"], now: start });
+  try {
+    const task = await claimed();
+    const read = async () => (await api<{ task: Task }>("GET", `/tasks/${task.id}?events=conversation`)).body.task;
+    const claim = async () => (await api<{ task: Task }>("POST", `/hosts/${task.hostId}/claim`, { taskId: task.id })).body.task;
+    expect(task.workedMs).toBe(0);
+    at(30);
+    await api("POST", `/tasks/${task.id}/question`, { startedAt: task.startedAt, text: "Which take?" });
+    expect(await read()).toMatchObject({ state: "waiting_for_user", workedMs: 30_000 });
+    at(90);
+    await api("POST", `/tasks/${task.id}/answer`, { text: "The second take" });
+    expect(await read()).toMatchObject({ state: "queued", workedMs: 30_000 });
+    at(150);
+    const resumed = await claim();
+    expect(resumed).toMatchObject({ state: "claimed", workedMs: 30_000, startedAt: new Date().toISOString() });
+    at(180);
+    queueRepeatCheck(app.ctx, resumed, "ver_checked");
+    expect(await read()).toMatchObject({ state: "queued", workedMs: 60_000 });
+    at(240);
+    const last = await claim();
+    at(285);
+    await api("POST", `/tasks/${task.id}/complete`, { state: "done", ifStartedAt: last.startedAt });
+    const finished = await read();
+    expect(finished).toMatchObject({ state: "done", workedMs: 105_000 });
+    at(350);
+    expect(queueRepeatCheck(app.ctx, finished, "ver_later")).toMatchObject({ state: "queued", workedMs: 105_000 });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("uses the last observed work for a lost worker and starts a separate resumed attempt", async () => {
+  const start = Date.parse("2026-11-05T10:00:00.000Z");
+  const uptime = vi.spyOn(os, "uptime").mockReturnValue(3600);
+  vi.useFakeTimers({ toFake: ["Date"], now: start });
+  try {
+    const task = await claimed();
+    const ctx = app.ctx;
+    vi.setSystemTime(start + 45_000);
+    ctx.db.prepare("UPDATE tasks SET worker_pid = ?, worker_seen_at = ? WHERE id = ?")
+      .run(2_000_000_000, new Date().toISOString(), task.id);
+    vi.setSystemTime(start + 60_000);
+    appendTaskEvent(ctx, task, { type: "log", text: "Reading transcript" });
+    vi.setSystemTime(start + 300_000);
+    recoverTasks(ctx, true);
+    const stopped = ctx.repos.tasks.get(task.id)!;
+    expect(stopped).toMatchObject({ state: "failed", workedMs: 60_000, finishedAt: new Date().toISOString() });
+    const resumed = ctx.repos.tasks.get(stopped.retryTaskId!);
+    expect(resumed).toMatchObject({ state: "queued", resumeRootId: task.id });
+    expect(resumed?.workedMs).toBeUndefined();
+  } finally {
+    vi.useRealTimers();
+    uptime.mockRestore();
+  }
 });
 
 it("still hands over the prompt for a revision whose edit can no longer be laid out, and logs what is missing", async () => {

@@ -6187,7 +6187,7 @@ const runOf = (taskId: string) => {
   return container.querySelector<HTMLElement>(`.unit[data-run="${task.resumeRootId ?? task.id}"] .req`)!;
 };
 
-it("shows a working run as one line of what it's doing and Stop, no clock, bar or steps", async () => {
+it("shows active time in the band before Stop, with one line of what the request is doing beneath it", async () => {
   const cancelTask = vi.fn().mockResolvedValue(undefined);
   useProjectStore.setState({ cancelTask });
   await show();
@@ -6197,6 +6197,7 @@ it("shows a working run as one line of what it's doing and Stop, no clock, bar o
   expect(run.closest(".simple-pin")).not.toBeNull();
   expect(run.querySelector(".req-now .working-text")).not.toBeNull();
   expect(run.querySelector('[role="timer"], [role=progressbar], .req-bar')).toBeNull();
+  expect(run.closest(".unit")!.querySelector(".unit-msg > .unit-tokens > .run-work-time")?.textContent).toMatch(/^\d+m \d+s$/);
   expect(stopOf("task_running").textContent).toBe("Stop");
   expect(run.closest(".unit")!.querySelector(".unit-msg")!.lastElementChild).toBe(stopOf("task_running"));
   expect(run.querySelector(".req-now .req-right")).toBeNull();
@@ -6229,12 +6230,13 @@ it("says what a run picked up again is doing while a request sent in its thread 
   expect(runOf("task_zoom_again").querySelector('.req-now [role="status"]')?.textContent).toBe("Looking at the timeline");
 });
 
-it("leaves a finished request as its heading and what it made: no time on it, and no steps to open", async () => {
+it("leaves a finished request as its heading with active time and what it made", async () => {
   await show();
   const run = runOf("task_done");
   const unit = run.closest<HTMLElement>(".unit")!;
   // The heading is the editor's words, with no name or number: "Edit 14" anywhere is an edit Scarlet made.
-  expect(unit.querySelector(".unit-msg > :not(.simple-who, p, .unit-state, .unit-stop)")).toBeNull();
+  expect(unit.querySelector(".unit-msg > :not(.simple-who, p, .unit-state, .unit-stop, .unit-tokens)")).toBeNull();
+  expect(unit.querySelector(".unit-msg > .unit-tokens > .run-work-time")?.textContent).toMatch(/^\d+m \d+s$/);
   const words = unit.querySelector(".unit-msg p")!;
   expect(words.lastChild?.textContent).toBe(requestTextFor("task_done"));
   // It was sent about a moment on the timeline. The box said which while it was written; the heading doesn't.
@@ -7597,7 +7599,7 @@ it("opens a finished request's edits from its result line, with no chevron, time
   // What the request made is its line, and the line is what opens its edits: there is no chevron beside it.
   expect([listOpen(), line().getAttribute("aria-expanded"), line().getAttribute("title")]).toEqual([false, "false", expect.stringContaining("Show the edits")]);
   expect(turn.querySelector(".simple-pass-chevron, .run-chevron")).toBeNull();
-  // A finished request has no time on it and no steps behind it: Scarlet's updates along the way aren't kept in the chat.
+  // Scarlet's updates along the way aren't kept in the finished request.
   expect(turn.querySelector(".req-time, .req-step, .req-steps")).toBeNull();
   expect(turn.textContent).not.toContain("Laying the music under the whole edit.");
   await click(line());
@@ -9028,14 +9030,15 @@ it("says in a suggestion's request why the video moved on from it, queues the re
   useUiStore.getState().setShowRunTokens(true);
   await act(async () => useProjectStore.setState(st => ({ current: { ...st.current!, taskUsage: { task_redo: { runs: 1, inputTokens: 2_000, outputTokens: 10_000,
     cacheReadTokens: 200_000, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 212_000, firstAt: null, lastAt: null } } } })));
-  expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens", "Stop"]);
+  const headingEnd = () => [...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent);
+  expect(headingEnd()).toEqual([expect.stringMatching(/s · 212K tokens$/), "Stop"]);
   // The suggestion comes back made again: the line gives way to it, and it plays from the same block.
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_redo" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString(), changeIds: ["chg_redone"],
       summary: "Trimmed the pause where it sits now." } : t),
     changes: [...d.changes, { ...ready, id: "chg_redone", taskId: "task_redo", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }] }));
   expect(unit().closest(".simple-chat")).not.toBeNull();
   // Done, its tokens stay in its heading, and none of its rows repeat them.
-  expect([...unit().querySelectorAll(".unit-msg > .unit-tokens, .unit-msg > .unit-stop")].map(el => el.textContent)).toEqual(["212K tokens"]);
+  expect(headingEnd()).toEqual([expect.stringMatching(/s · 212K tokens$/)]);
   expect(unit().querySelectorAll(".run-tokens").length).toBe(1);
   useUiStore.getState().setShowRunTokens(false);
   expect(unit().querySelector(".unit-state")?.textContent).toBe("Suggestion");

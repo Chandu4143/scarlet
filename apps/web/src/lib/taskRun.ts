@@ -322,6 +322,31 @@ function workClock(task: Task, events: readonly TaskEvent[]) {
   };
 }
 
+/** Active work in this task, including earlier claims when Scarlet recorded them. */
+export function workTime(task: Task, events: readonly TaskEvent[], now: number): number | undefined {
+  const working = task.state === "claimed" || task.state === "running";
+  const start = Date.parse(task.startedAt ?? "");
+  if (task.workedMs !== undefined) {
+    return task.workedMs + (working && Number.isFinite(start) ? Math.max(0, now - start) : 0);
+  }
+  if (!Number.isFinite(start)) return undefined;
+  // Earlier tasks recorded only their last claim. Use the timestamps that survive in their history.
+  if (task.state === "waiting_for_user" && !events.some(event => event.type === "question" && Date.parse(event.at ?? "") >= start)) return undefined;
+  const end = task.state === "queued" ? Date.parse(events.findLast(event => event.type === "answer")?.at ?? "")
+    : runIsActive(task) ? now : Date.parse(task.finishedAt ?? "");
+  return Number.isFinite(end) && end >= start ? workClock(task, events)(end) : undefined;
+}
+
+/** A run's elapsed work time, with units so it can't read as a place on the timeline. */
+export function workTimeLabel(ms: number, working: boolean): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds === 0 && !working) return "<1s";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 /** One line in an opened run: a step and how long it took, or an update from the agent. */
 export type RunLine = { kind: RunItem["kind"]; text: string; took?: number; live?: boolean };
 
