@@ -60,7 +60,7 @@ export interface RepeatAuditResult {
   /** Wordless stretches still playing that the pass has neither cut nor kept. They count in `remaining`. */
   silences?: SilenceLeft[];
   /**
-   * Joins that divide a sentence and that the pass has neither repaired nor kept, 25 at a time: a stray word, a
+   * Joins that divide a sentence and that the pass has neither repaired nor kept, 25 from `offset`: a stray word, a
    * sentence cut off, or a join that reads whole. They count in `remaining`.
    */
   fragments?: JoinFragment[];

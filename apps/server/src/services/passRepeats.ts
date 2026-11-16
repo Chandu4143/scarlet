@@ -120,9 +120,11 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
     const noFindings = !check.repeats.length && !check.silences.length && !check.fragments.length && !joins.length && !unheardJoins.length && !unavailable.length;
     saveTask(ctx, { ...owner, state: "running", repeatAudit: { version: tl.version, remaining, unavailable, returns, noFindings } });
     return { version: tl.version, ...(named !== tl.version && { readInsteadOf: named }), heard: check.repeats.length, staged: staged.length, remaining,
-      repeats: repeats.slice(request.offset, request.offset + 25), ...(request.offset + 25 < repeats.length && { nextOffset: request.offset + 25 }),
+      // One offset pages the repeats and the divided sentences together: a pass asked for the next pages of both at once.
+      repeats: repeats.slice(request.offset, request.offset + 25),
+      ...(request.offset + 25 < Math.max(repeats.length, fragments.length) && { nextOffset: request.offset + 25 }),
       ...(silences.length && { silences: silences.slice(0, 25) }),
-      ...(fragments.length && { fragments: fragments.slice(0, 25) }),
+      ...(fragments.length && { fragments: fragments.slice(request.offset, request.offset + 25) }),
       ...(check.unavailable.length && { unavailable: check.unavailable }),
       ...(check.joins.length && { joins }), ...(unheardJoins.length && { unheardJoins }) };
   }, "immediate")();
