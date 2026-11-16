@@ -33,6 +33,7 @@ export interface DialogueCutInput {
   productionQuote?: string;
   picture?: "safe" | "uncertain" | "protect";
   reason: string;
+  summary?: string;
   /** A doubt the editor must settle by listening or looking, for a cut that applies. */
   check?: string;
 }
@@ -319,6 +320,7 @@ type ResolvedCut = Omit<DialogueCutInput, "mediaId" | "fromWord" | "toWord" | "a
 /** One cut as sent to the engine (DialogueCutsRequest). */
 interface PlannedDecision extends TimeRange {
   reason: string;
+  summary?: string;
   review: boolean;
   kind: DialogueCutKind;
   originalRange: TimeRange | undefined;
@@ -446,7 +448,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   const report: GateLine[] = [];
   const decisions = removals.map(c => {
     const decided: PlannedDecision = { start: c.start, end: c.end, reason: c.reason, review: c.decision === "review", kind: c.kind,
-      originalRange: undefined, ...(c.check && { check: c.check }) };
+      originalRange: undefined, ...(c.check && { check: c.check }), ...(c.summary && { summary: c.summary }) };
     const adjust = (next: PlannedDecision, found: string) => {
       const reach = next.originalRange ?? next;
       if (reach.start < scope.start || reach.end > scope.end || kept.some(k => reach.start < k.end && reach.end > k.start)) {

@@ -81,7 +81,8 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     await call("project_get");
     const { secondaryStartRelativeToReference: offset } = await call("audio_sync", { referenceId: "m2-camera", secondaryId: "m1-screen" });
     expect(offset).toBeCloseTo(0.74, 4);
-    const assembly = { intent: "requested", description: "Align and compose the two recordings", ops: [
+    const assembly = { intent: "requested", description: "Align and compose the two recordings",
+      reason: "The selected screen recording and the presenter share the same speech.", ops: [
       { op: "addTrack", track: { id: "screen", kind: "video", name: "Selected screen" } },
       { op: "addClip", trackId: "v1", clip: makeMediaClip("m2-camera", 0, 4, 0, { id: "presenter" }) },
       { op: "addClip", trackId: "screen", clip: makeMediaClip("m1-screen", 0, 2.4, offset, { id: "desktop", volume: 0 }) },
@@ -90,6 +91,7 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     expect(unframed.state).toBe("ready");
     const setup = await call("timeline_propose", { ...assembly, pictureLayout: { screenClipId: "desktop", cameraClipId: "presenter" } });
     expect(setup.state).toBe("approved");
+    expect(setup.reason).toBe(assembly.reason);
     const edit = await call("dialogue_apply_cuts", { version: setup.toVersion, description: "Review two pauses", cuts: [
       { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action." },
       { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?" },

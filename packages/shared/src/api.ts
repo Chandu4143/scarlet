@@ -137,6 +137,7 @@ import { z } from "zod/v3";
 import {
   Author,
   Change,
+  CutAssessment,
   EditIntent,
   ChangeState,
   DEFAULT_PREVIEW_HEIGHT,
@@ -294,6 +295,7 @@ export const ProposeChangeRequest = z.object({
   ops: z.array(TimelineOp).optional(),
   timeline: WritableTimeline.optional(),
   description: z.string().min(1),
+  reason: Change.shape.reason,
   noteIds: z.array(Id).optional(),
   taskId: Id.optional(),
   /** Override author (agent hosts set this to the agent/model that did the work). */
@@ -328,7 +330,7 @@ export const DialogueCutsRequest = ProposeChangeRequest.pick({ description: true
   range: TimeRange.optional(),
   kept: z.array(TimeRange).optional(),
   cuts: z.array(z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive(),
-    originalRange: TimeRange.optional(), review: z.boolean(), reason: z.string().min(1),
+    originalRange: TimeRange.optional(), review: z.boolean(), reason: z.string().min(1), summary: CutAssessment.shape.summary,
     /** Editorial classification, also used to enforce the scope of a local pause edit. */
     kind: DialogueCutKind.optional(),
     /** A doubt the editor must settle by listening or looking. Marks an applied cut as needing them until they keep it. */
@@ -351,6 +353,7 @@ export const StagedCutRevision = ProposeChangeRequest.pick({ taskId: true, autho
   start: z.number().finite().nonnegative(),
   end: z.number().finite().positive(),
   reason: z.string().trim().min(1).max(800),
+  summary: CutAssessment.shape.summary,
 });
 export type StagedCutRevision = z.infer<typeof StagedCutRevision>;
 

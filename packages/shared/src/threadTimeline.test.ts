@@ -286,6 +286,25 @@ describe("reviewing one thread on the working interview timeline", () => {
 });
 
 describe("listing a thread's edits in the chat", () => {
+  it("keeps sibling reasons and replaces the revised edit's reason", () => {
+    const sibling = "Viewers need time to read both scores.";
+    const original = "The false start interrupts the score.";
+    const revised = "The fade preserves the last syllable of the score.";
+    const batch = Change.parse({ ...change, timelineEdits: [
+      { label: "Hold the scorecard", range: { start: 9, end: 13 }, summary: "Held the scorecard.", reason: sibling },
+      { label: "Mute the false start", range: { start: 10, end: 10.1 }, summary: "Muted the false start.", reason: original },
+    ] });
+    const revision = Change.parse({ ...change, id: "revision", fromVersion: "v1", toVersion: "v2", createdAt: "2026-01-02T00:00:00Z",
+      timelineEdits: [{ label: "Fade the false start", range: { start: 10, end: 10.1 }, summary: "Faded the false start.", reason: revised,
+        replaces: { changeId: batch.id, spot: 1 } }] });
+    expect(threadEditList(thread([batch])).map(edit => edit.reason)).toEqual([sibling, original]);
+    const edits = threadTimeline(thread([batch, revision]), head, links, () => earlier, 30);
+    expect(edits.map(edit => [edit.summary, edit.reason, edit.check])).toEqual([
+      ["Held the scorecard.", sibling, undefined], ["Faded the false start.", revised, undefined],
+    ]);
+    expect(matchesEdit(edits[1]!, { changeId: batch.id, spot: 1 })).toBe(true);
+  });
+
   it("numbers edits in timeline order, folds a revision into the edit it replaces, and keeps the reason to check", () => {
     const batch = { ...change, timelineEdits: [
       { label: "Raise narration volume", range: { start: 14, end: 18 }, check: "Room tone comes up with it",

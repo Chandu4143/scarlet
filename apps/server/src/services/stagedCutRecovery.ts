@@ -112,7 +112,8 @@ export function reviewedCutsOnHead(ctx: Ctx, project: Project, change: Change, r
   for (const [i, { index, range }] of selected.entries()) {
     if (i && range.start < selected[i - 1]!.range.end - 1e-6)
       return { conflict: { kind: "conflict", index, range, reason: "Two proposed cuts now cover the same footage." } };
-    joins.push({ at: range.start - removed, removed: range, reviewIndex: index });
+    joins.push({ at: range.start - removed, removed: range, reviewIndex: index,
+      ...(change.timelineEdits?.length && { proposedAt: review.cuts[index]!.at }) });
     removed += range.end - range.start;
   }
   const timeline = applyReviewRemovals(head, selected.map(c => c.range), change.toVersion);

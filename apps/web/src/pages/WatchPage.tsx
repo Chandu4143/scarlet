@@ -36,6 +36,7 @@ import { FramingPreview } from "../components/review/FramingPreview";
 import { useNotePositions } from "../lib/useNotePositions";
 import type { ProgressFocus } from "../components/player/SimpleProgress";
 import { editFocus } from "../lib/editKind";
+import { editPlaybackRange } from "../lib/editPlaybackRange";
 import { editKey } from "../lib/keptEdits";
 import { useTemplatesStore } from "../stores/templates";
 import { TransitionPicture } from "../components/agent/TemplateMenu";
@@ -476,13 +477,15 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     if (pressed && active) player.play();
   }, [change?.id, spot, editStart, draft?.version, playChange]);
 
-  const passage = simple.holdPassage ? undefined : reached?.range ?? threadView?.selected?.range;
-  useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
   const framing = threadView?.framing;
   const cutReview = threadView?.cutReview;
   const selectedEdit = threadView?.selected;
+  const selectedPassage = selectedEdit && (!framing && !selectedEdit.beforeCut && selectedEdit.at === undefined
+    ? editPlaybackRange(selectedEdit.range, duration) : selectedEdit.range);
+  const passage = simple.holdPassage ? undefined : reached?.range ?? selectedPassage;
+  useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
   const originalChange = threadView?.originalChange;
-  const original = useEditBefore(current.id, displayedTimeline, selectedEdit, originalChange, fps, !!framing);
+  const original = useEditBefore(current.id, displayedTimeline, selectedEdit, originalChange, fps, !!framing, selectedPassage);
   const cutIndex = cutReview && selectedEdit ? cutReview.cuts.indexOf(selectedEdit) : -1;
   // Before belongs to the edit that's open: it holds while that edit is played again from its top, and the next edit
   // opens on After.
@@ -679,8 +682,8 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
           <TemplateOnPicture />
-          {playingBefore && originalChange && selectedEdit ? <EditBeforePreview key={threadView?.request}
-            change={originalChange} original={original} passage={selectedEdit.range} active={active} loading={loading}
+          {playingBefore && originalChange && selectedPassage ? <EditBeforePreview key={threadView?.request}
+            change={originalChange} original={original} passage={selectedPassage} active={active} loading={loading}
             clock={<PlayerTime end={duration} coarse />} playbackRef={beforeClip} />
             : framing && displayedTimeline ? <FramingPreview
             key={JSON.stringify([selection, threadView?.threadId, threadView?.selected?.changeId, threadView?.request])}

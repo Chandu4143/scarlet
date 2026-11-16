@@ -28,8 +28,8 @@ it("names a few edits that aren't cuts, and counts many by kind", () => {
 
 it("says what Scarlet said about the one edit a request made", () => {
   expect(say([{ label: "Camera full-frame for the intro", summary: "Made the host camera fill the frame for the intro lines." }])).toBe("Made the host camera fill the frame for the intro lines.");
-  // An edit saved before Scarlet wrote summaries reads as its title, then its reason to look.
-  expect(say([{ label: "Trim the pause", check: "The join lands on a breath" }])).toBe("Trim the pause. The join lands on a breath.");
+  const flagged = { label: "Trim the pause", check: "The join lands on a breath", reason: "The gap interrupts the answer." };
+  expect(say([flagged])).toBe("Trim the pause.");
   expect(say([cut(0, 4.2)])).toBe("A stumble.");
 });
 
