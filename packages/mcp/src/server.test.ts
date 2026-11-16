@@ -1612,6 +1612,15 @@ describe("first-cut dialogue save checkpoints", () => {
     expect(JSON.parse(textOf(await scan(116)))).toMatchObject({ from: 116, to: 176 });
   });
 
+  it("reads on once a save sent at the same time as the read has saved this section", async () => {
+    await scan(0);
+    await scan(58);
+    const [saved, next] = await Promise.all([save(24), scan(116)]);
+    expect(JSON.parse(textOf(saved))).toMatchObject({ changes: [{ state: "approved" }] });
+    expect(next.isError, textOf(next)).toBeFalsy();
+    expect(JSON.parse(textOf(next))).toMatchObject({ from: 116, to: 176 });
+  });
+
   it("bounds replay of cached analysis and permits another section when no cut is ready", async () => {
     cached = [0, 58, 116, 174, 232].map(start => ({ start, end: start + 60 }));
     const first = JSON.parse(textOf(await scan(0)));

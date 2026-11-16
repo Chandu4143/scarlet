@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import type { TranscriptSegment } from "@scarlet/timeline";
-import { fillTranscriptHoles, heardInHoles, transcriptHoles, wavLevels, withHoleWords, wordsOnSound, writeHoleAudio } from "./transcriptHoles.js";
+import { fillTranscriptHoles, heardInHoles, transcriptHoles, wavLevels, withHoleWords, withoutUnheardSegments, wordsOnSound, writeHoleAudio } from "./transcriptHoles.js";
 
 const RATE = 16000;
 const seg = (...words: Array<[string, number, number]>): TranscriptSegment => ({ id: "s" + words[0]![1], start: words[0]![1], end: words.at(-1)![2],
@@ -116,4 +116,43 @@ it("only fits the words to their sound when there is no reader for the holes", a
     expect(out[0]!.words[0]).toMatchObject({ start: 9, end: 9.6 });
     expect(log).toEqual(["[transcribe] brought 1 word in from the quiet beside it"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+/** Levels in 20 ms steps: `db` wherever a range in `at` says so, the room's floor elsewhere. */
+function levelsOf(seconds: number, at: Array<[number, number, number]>, floorDb = -70) {
+  const rms = Array.from({ length: seconds * 50 }, (_, i) => {
+    const t = i / 50, hit = at.find(([a, b]) => t >= a && t < b);
+    return 10 ** ((hit ? hit[2] : floorDb) / 20);
+  });
+  return { from: 0, to: seconds, rms };
+}
+
+it("takes out a line Whisper wrote over a wait, and keeps a quiet line that was said", () => {
+  // Five lines at speaking level, one said softly (8 dB under), and "Thank you." over a wait that only reaches -45 dB.
+  const lines = [seg(["one", 1, 2]), seg(["two", 3, 4]), seg(["three", 5, 6]), seg(["four", 7, 8]), seg(["five", 9, 10]),
+    seg(["softly", 11, 12]), seg(["Thank", 20, 20.4], ["you.", 30, 30.5])];
+  const levels = levelsOf(40, [[1, 2, -26], [3, 4, -25], [5, 6, -27], [7, 8, -26], [9, 10, -24], [11, 12, -34], [20, 20.4, -45], [30, 30.5, -47]]);
+  const { segments, dropped } = withoutUnheardSegments(lines, levels);
+  expect(dropped.map(s => s.text)).toEqual(["Thank you."]);
+  expect(segments.map(s => s.text)).toEqual(["one", "two", "three", "four", "five", "softly"]);
+});
+
+it("keeps a segment whole when one of its words reaches speaking level", () => {
+  const lines = [seg(["one", 1, 2]), seg(["two", 3, 4]), seg(["three", 5, 6]), seg(["four", 7, 8]),
+    seg(["and", 9, 9.2], ["then", 9.3, 10])];
+  const levels = levelsOf(12, [[1, 2, -26], [3, 4, -26], [5, 6, -26], [7, 8, -26], [9, 9.2, -50], [9.3, 10, -27]]);
+  expect(withoutUnheardSegments(lines, levels).dropped).toEqual([]);
+});
+
+it("takes out every line of a silent track, which has no level of its own to compare with", () => {
+  const lines = [seg(["Thank", 0, 0], ["you.", 0, 0]), seg(["Thank", 30, 30], ["you.", 30, 30])];
+  const { segments, dropped } = withoutUnheardSegments(lines, levelsOf(40, [], -91));
+  expect(dropped).toHaveLength(2);
+  expect(segments).toEqual([]);
+});
+
+it("compares a short recording's lines only with the floor nobody speaks under", () => {
+  // Too few lines for a typical level: a line 15 dB under the other is still kept.
+  const lines = [seg(["hello", 1, 2]), seg(["there", 3, 4])];
+  expect(withoutUnheardSegments(lines, levelsOf(5, [[1, 2, -25], [3, 4, -40]])).dropped).toEqual([]);
 });

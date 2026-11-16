@@ -3451,10 +3451,12 @@ it.each(["a1", "alternate"])("requires an audio check of the version that plays,
   expect(await (await check(version, keep)).json()).toMatchObject({ heard: 2, remaining: 1 });
   const repaired = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Keep the second go",
     ops: [{ op: "rippleDelete", start: .5, end: 1 }] }).change.toVersion;
-  expect((await check(version)).status).toBe(409);
+  // Kept repeats are decisions about the version they were heard on, so a check that keeps needs that version.
+  expect((await check(version, keep)).status).toBe(409);
   expect((await finish()).state).toBe("queued");
   await claim();
-  expect(await (await check(repaired)).json()).toMatchObject({ heard: 1, remaining: 0, staged: 0 });
+  // A check that keeps nothing reads the edit as it is now and names the version it was given.
+  expect(await (await check(version)).json()).toMatchObject({ version: repaired, readInsteadOf: version, heard: 1, remaining: 0, staged: 0 });
   const proposed = (await (await api("POST", projectsPath() + "/dialogue-cuts", { taskId: pass.id, fromVersion: repaired, description: "Shorten the tail",
     cuts: [{ start: 4, end: 5, review: true, reason: "Check the final beat." }] })).json()).changes[0] as Change;
   expect((await finish()).state).toBe("done");

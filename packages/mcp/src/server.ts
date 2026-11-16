@@ -901,6 +901,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return json(result);
   }
 
+  // The calls of each tool under way. A harness can send several calls at once, as a save and the next read.
+  const running = new Map<ScarletToolName, Set<Promise<unknown>>>();
   function tool<Shape extends z.ZodRawShape>(
     name: ScarletToolName,
     description: string,
@@ -921,6 +923,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // edits doesn't offer rules as well, so the editor never gets the same rule twice in two wordings.
     if (ctx.task?.kind === "learning_check" ? !LEARNING_CHECK_TOOLS.has(name) : name === "learning_suggest") return;
     server.registerTool(name, { description, inputSchema: shape, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
+      const calls = running.get(name) ?? new Set<Promise<unknown>>();
+      running.set(name, calls);
+      let finish!: () => void;
+      const call = new Promise<void>(resolve => { finish = resolve; });
+      calls.add(call);
       try {
         if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
           throw new Error("This request only tightens local pauses. Save classified pauses with dialogue_apply_cuts.");
@@ -943,8 +950,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       } catch (err) {
         if (err instanceof MediaPreparing) return text(err.message);
         return await recordRefusal(name, errorResult(err));
+      } finally {
+        calls.delete(call);
+        finish();
       }
     }) as never);
+  }
+
+  /** The calls of these tools under way now, finished. */
+  async function finished(names: readonly ScarletToolName[]) {
+    await Promise.all(names.flatMap(name => [...(running.get(name) ?? [])]));
   }
 
   /**
@@ -1612,6 +1627,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   async function scanDialogue(asset: MediaAsset, from: number, end: number, batch?: DialogueScanBatch, noCutsReadyThrough?: number) {
     const mediaId = asset.id;
     const firstEnd = Math.min(from + 60, end);
+    // A harness can send a save and the next read at once. The read waits for a save or a review under way, so what it
+    // asks for first is what they left: sent together, the read was refused for the cuts its save was saving, and
+    // after a few refusals the model passed noCutsReadyThrough with every read, cuts or none (2026-11-15).
+    if (batch?.isNewPage(from, firstEnd)) await finished(["dialogue_apply_cuts", "dialogue_review_save"]);
     const reviewFirst = batch && await firstRecommendationNeeded();
     if (reviewFirst && batch?.isNewPage(from, firstEnd)) throw new Error(reviewFirst);
     batch?.startRead(from, firstEnd, noCutsReadyThrough);
@@ -1669,7 +1688,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }) };
   }
   tool("dialogue_check_repeats",
-    "Check what the audible dialogue plays across the current timeline, including kept takes and joins. Give its exact version. The independent speech reading returns repeated phrases, both occurrences in timeline seconds, and their surrounding words. Use dialogue_apply_cuts with removeRepeat to remove either measured occurrence listed under removable. The save checks playback again. Keep an intentional repeat by passing its measured id and a short editorial reason. Kept decisions belong to this pass. offset pages through the outstanding pairs, 25 at a time. The same reading hears each played join, letter by letter from the sound rather than the transcript: `joins` lists one whose edge cuts through a kept word (issue clipped: heard is what plays, expected the transcript's word) or plays a sound outside the kept words (issue fragment: a leftover of a removed take, a sigh, a breath, with keptWord, the first or last kept word, which plays whole, and keptWordAt where it starts or ends), with the side (out = before the join, in = after) and where it starts in the recording. Move that edge before you finish: the editor hears it. A clipped word needs the edge moved out to take it in whole; a fragment needs the edge moved past it, toward keptWordAt. `unheardJoins` counts, per recording, the joins with a side in a language this reading can't hear letter by letter, between from and to in timeline seconds, so it checked nothing there: measure them with timeline_join_audit from/to.",
+    "Check what the audible dialogue plays across the current timeline, including kept takes and joins. Give its version. A check that keeps nothing reads the edit as it is now, and when that is not the version you gave, `readInsteadOf` names yours: use the returned `version` for removeRepeat. A check that keeps repeats needs the version they were heard on. The independent speech reading returns repeated phrases, both occurrences in timeline seconds, and their surrounding words. Use dialogue_apply_cuts with removeRepeat to remove either measured occurrence listed under removable. The save checks playback again. Keep an intentional repeat by passing its measured id and a short editorial reason. Kept decisions belong to this pass. offset pages through the outstanding pairs, 25 at a time. The same reading hears each played join, letter by letter from the sound rather than the transcript: `joins` lists one whose edge cuts through a kept word (issue clipped: heard is what plays, expected the transcript's word) or plays a sound outside the kept words (issue fragment: a leftover of a removed take, a sigh, a breath, with keptWord, the first or last kept word, which plays whole, and keptWordAt where it starts or ends), with the side (out = before the join, in = after) and where it starts in the recording. Move that edge before you finish: the editor hears it. A clipped word needs the edge moved out to take it in whole; a fragment needs the edge moved past it, toward keptWordAt. `unheardJoins` counts, per recording, the joins with a side in a language this reading can't hear letter by letter, between from and to in timeline seconds, so it checked nothing there: measure them with timeline_join_audit from/to.",
     { version: z.string(), keep: z.array(z.object({ id: z.string(), reason: z.string().trim().min(1).max(300) })).max(100).optional(), offset: z.number().int().nonnegative().optional() },
     async ({ version, keep, offset }) => json(await checkRepeats(version, keep, offset)));
 

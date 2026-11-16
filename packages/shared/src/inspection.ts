@@ -33,6 +33,8 @@ export interface JoinHearing { at: number; mediaId: string; side: "out" | "in"; 
 export interface UnheardJoins { mediaId: string; reason: string; joins: number; from: number; to: number }
 export interface RepeatAuditResult {
   version: string;
+  /** The version the check named, when the edit had moved on from it and the check read the current one instead. */
+  readInsteadOf?: string;
   heard: number;
   remaining: number;
   repeats: RepeatEvidence[];
