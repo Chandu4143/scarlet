@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createProject, planPlaybackSegments, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
 import type { Render, RenderFileInfo } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
+import { frameKey } from "./renders.js";
 import { accessToken } from "../auth.js";
 import { FFMPEG } from "../render/ffmpeg.js";
 import { scarletRenderAdapter } from "../render/scarletRender.js";
@@ -212,4 +214,11 @@ it("answers 404 for a render that isn't there, or isn't in the project named", a
   const other = workspace.ctx.repos.projects.insert(createProject("Other"));
   const elsewhere = await read(`/projects/${other.id}/renders/${id}`);
   expect([elsewhere.status, elsewhere.body.error?.message]).toEqual([404, `render ${id} not found`]);
+});
+
+it("keeps a cut's cached stills across the transition renderer's revision unless the cut has transitions", () => {
+  const parts = ["prj_1", "v1", 12, 160, "inputs", [["/media/cam.mov", 1, 2, 3, 4, 5]]];
+  // The key a still had before transitions were drawn.
+  expect(frameKey(parts, false)).toBe(createHash("sha256").update(JSON.stringify(parts)).digest("hex"));
+  expect(frameKey(parts, true)).not.toBe(frameKey(parts, false));
 });

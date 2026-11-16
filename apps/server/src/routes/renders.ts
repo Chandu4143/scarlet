@@ -64,6 +64,14 @@ function frameSources(timeline: Timeline) {
   };
 }
 
+/**
+ * A still's cache key. A cut with transitions can keep its source files across a fix to how they are drawn, so its
+ * key names that revision too, as a section's does. A cut without them keeps the key it had, and its cached stills.
+ */
+export function frameKey(parts: unknown[], transitions: boolean) {
+  return createHash("sha256").update(JSON.stringify(transitions ? [...parts, TRANSITION_RENDER_REVISION] : parts)).digest("hex");
+}
+
 export function renderRoutes(ctx: Ctx) {
   const r = new Hono<AppEnv>();
 
@@ -89,7 +97,7 @@ export function renderRoutes(ctx: Ctx) {
   }
   // The strip requests several samples from the same immutable cut. Parse it once.
   let sampledTimeline: Timeline | undefined;
-  let sourcesAt: { projectInputs: string; read: ReturnType<typeof frameSources> } | undefined;
+  let sourcesAt: { projectInputs: string; read: ReturnType<typeof frameSources>; transitions: boolean } | undefined;
   let sampledDuration = 0;
   let sampledProject: { revision: string; project: Project; inputs: string; paths: Map<string, string> } | undefined;
   function frameProject(id: string) {
@@ -131,7 +139,7 @@ export function renderRoutes(ctx: Ctx) {
     if (!timeline) throw notFound("timeline version");
     if (sourcesAt?.projectInputs !== inputs) {
       const { timeline: picture } = planTransitions(timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
-      sourcesAt = { projectInputs: inputs, read: frameSources(picture) };
+      sourcesAt = { projectInputs: inputs, read: frameSources(picture), transitions: picture.tracks.some(track => track.clips.some(clip => clip.motion)) };
     }
     const frame = numberParam(c.req.query("frame"), "frame");
     const { fps, width, height } = project.settings;
@@ -140,9 +148,7 @@ export function renderRoutes(ctx: Ctx) {
     const range = { start: frame / fps, end: (frame + 1) / fps };
     const monitor = c.req.query("view") === "monitor";
     const size = monitor ? 960 : c.req.query("w") === "640" ? 640 : 160;
-    // A still can have the same source files after a compositor fix. Give its updated pixels a new ETag too.
-    const key = createHash("sha256").update(JSON.stringify([project.id, version, frame, size, inputs,
-      sourcesAt.read(range, paths, ctx.paths.media(project.id)), TRANSITION_RENDER_REVISION])).digest("hex");
+    const key = frameKey([project.id, version, frame, size, inputs, sourcesAt.read(range, paths, ctx.paths.media(project.id))], sourcesAt.transitions);
     const sameFormat = c.req.query("format") === `${width}x${height}@${fps}`;
     return requestFrame(c.req.raw, project.id, key, monitor || c.req.query("priority") === "interactive", sameFormat ? "private, no-cache" : "no-store", async signal => {
       const time = frame / fps;

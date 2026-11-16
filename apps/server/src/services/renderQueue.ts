@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import { DELIVERY_AUDIO_REVISION, lutFileStamps, PROXY_CLOCK_REVISION, RENDER_REVISION, segmentKey, snapRange, usesRevisedProxyClock } from "@scarlet/render";
 import type { Render, RenderKind } from "@scarlet/shared";
-import { clipEnd, intervalCandidates, newId, planTransitions, sha256, stableStringify, timelineDuration, type Clip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { clipEnd, intervalCandidates, newId, planTransitions, sha256, stableStringify, timelineDuration, type Clip, type Project, type Timeline, type TimeRange, type TransitionJoin } from "@scarlet/timeline";
 import { engineIsAlive, type Ctx } from "../context.js";
 import { conflict, HttpError } from "../errors.js";
 import { now } from "../db.js";
@@ -33,8 +33,24 @@ interface RenderVersion {
   hasLut: boolean;
   fullKeys: Map<string, string>;
   clipsIn?: Array<(start: number, end: number) => Clip[]>;
+  /** Where each clip is: its track, and its place there, which is its stacking order. */
+  clipsById?: Map<string, { track: number; index: number; clip: Clip }>;
   hasTransitions: boolean;
+  /**
+   * The version's transition joins, indexed by time. Planned once: the version never changes, and only its sources'
+   * lengths and the frame rate, named by `key`, could change the plan.
+   */
+  joins?: { key: string; overlapping: (start: number, end: number) => TransitionJoin[] };
   windows: Map<string, { timeline: Timeline; sourceIds: Set<string> }>;
+}
+
+/**
+ * What a playback section reads: the section as asked and the frame-snapped range its cache key names. Older queued
+ * sections can have a saved format or endpoints that aren't on a frame, so neither is assumed to hold the other.
+ */
+function playbackCoverage(range: TimeRange, fps: number): TimeRange {
+  const snapped = snapRange(range, fps);
+  return { start: Math.min(snapped.start, range.start), end: Math.max(snapped.end, range.end) };
 }
 
 function workerAlive(ctx: Ctx, pid?: number): boolean {
@@ -249,23 +265,39 @@ export class RenderQueue {
     return entry;
   }
 
-  private window(entry: RenderVersion, range: TimeRange, project?: Project) {
-    const transitionClips = new Set<string>();
-    if (project && entry.hasTransitions) {
-      const plan = planTransitions(entry.timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
-      for (const join of plan.joins) {
-        if (join.start >= range.end || join.end <= range.start || join.start === join.end) continue;
-        transitionClips.add(join.clipId);
-        if (join.outgoingClipId) transitionClips.add(join.outgoingClipId);
-      }
+  /** The clips a transition joins inside `range`, both sides of each join, wherever those clips start or end. */
+  private transitionClips(entry: RenderVersion, range: TimeRange, project?: Project) {
+    const clips = new Set<string>();
+    if (!project || !entry.hasTransitions) return clips;
+    const sources = project.media.filter(asset => entry.sourceIds.has(asset.id)).map(asset => [asset.id, asset.kind, asset.duration ?? null]);
+    const key = stableStringify([project.settings.fps, sources]);
+    if (entry.joins?.key !== key) {
+      const { joins } = planTransitions(entry.timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
+      entry.joins = { key, overlapping: intervalCandidates(joins, join => join.start, join => join.end) };
     }
+    for (const join of entry.joins.overlapping(range.start, range.end)) {
+      if (join.start >= range.end || join.end <= range.start || join.start === join.end) continue;
+      clips.add(join.clipId);
+      if (join.outgoingClipId) clips.add(join.outgoingClipId);
+    }
+    return clips;
+  }
+
+  private window(entry: RenderVersion, range: TimeRange, project?: Project) {
+    const transitionClips = this.transitionClips(entry, range, project);
     const key = JSON.stringify([range, [...transitionClips]]);
     const cached = entry.windows.get(key);
     if (cached) return cached;
     const clipsIn = entry.clipsIn ??= entry.timeline.tracks.map(track => intervalCandidates(track.clips, clip => clip.timelineIn, clipEnd));
     const sourceIds = new Set<string>();
     const tracks = entry.timeline.tracks.map((track, i) => {
-      const candidates = transitionClips.size ? track.clips : clipsIn[i]!(range.start, range.end);
+      let candidates = clipsIn[i]!(range.start, range.end);
+      if (transitionClips.size) {
+        // A join's clips can lie outside the window: the picture before it has ended, or the next one hasn't begun.
+        const where = entry.clipsById ??= new Map(entry.timeline.tracks.flatMap((t, track) => t.clips.map((clip, index) => [clip.id, { track, index, clip }] as const)));
+        const extra = [...transitionClips].map(id => where.get(id)).filter(found => found?.track === i && !candidates.includes(found.clip));
+        if (extra.length) candidates = [...candidates, ...extra.map(found => found!.clip)].sort((a, b) => where.get(a.id)!.index - where.get(b.id)!.index);
+      }
       const clips = candidates.filter(clip => {
         if (clip.enabled === false || (!transitionClips.has(clip.id) && (clip.timelineIn >= range.end || clipEnd(clip) <= range.start))) return false;
         if (clip.kind === "media") sourceIds.add(clip.mediaId);
@@ -285,11 +317,7 @@ export class RenderQueue {
     if (!header) return null;
     const entry = this.version(header, input.version);
     if (entry.hasTransitions) return this.ctx.repos.projects.get(input.projectId);
-    // Older queued sections can have a saved format or unsnapped endpoints. Cover
-    // both the requested section and the frame-snapped range used by its cache key.
-    const snapped = snapRange(input.range, (input.projectSettings ?? header.settings).fps);
-    const range = { start: Math.min(snapped.start, input.range.start), end: Math.max(snapped.end, input.range.end) };
-    const { sourceIds } = this.window(entry, range);
+    const { sourceIds } = this.window(entry, playbackCoverage(input.range, (input.projectSettings ?? header.settings).fps));
     return { ...header, media: this.ctx.repos.projects.assets(header.id, sourceIds) };
   }
 
@@ -648,7 +676,8 @@ export class RenderQueue {
         }
       }
       const entry = this.version(project, render.version);
-      const scope = render.kind === "playback" && render.range ? this.window(entry, snapRange(render.range, project.settings.fps), project) : entry;
+      // The window holds what is rendered, the section as asked, and the frame-snapped range its cache key names.
+      const scope = render.kind === "playback" && render.range ? this.window(entry, playbackCoverage(render.range, project.settings.fps), project) : entry;
       const { timeline } = scope;
       read = scope.sourceIds;
       // Later preview sections of this cut read small proxies instead of the originals.

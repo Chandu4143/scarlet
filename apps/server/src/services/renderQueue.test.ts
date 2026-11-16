@@ -5,10 +5,15 @@ import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi, onTestFinished } from "vitest";
 import { DELIVERY_AUDIO_REVISION, FfmpegError, runCapture, segmentKey } from "@scarlet/render";
-import { createProject, makeMediaClip, sha256, stableStringify, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
+import { createProject, makeMediaClip, planTransitions, sha256, stableStringify, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
 import { createApp, type ScarletApp } from "../app.js";
 import { scarletRenderAdapter } from "../render/scarletRender.js";
 import { storeVersion } from "./timeline.js";
+
+vi.mock("@scarlet/timeline", async importOriginal => {
+  const timeline = await importOriginal<typeof import("@scarlet/timeline")>();
+  return { ...timeline, planTransitions: vi.fn(timeline.planTransitions) };
+});
 
 let directory: string;
 let workspace: ScarletApp;
@@ -135,6 +140,40 @@ it("loads only overlapping clips and their sources for playback, in compositing 
   const [inputs, part] = render.mock.calls[0]!;
   expect(inputs.media.map(m => m.id).sort()).toEqual(["camera", "overlay"]);
   expect(part.tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[2]!.id]);
+});
+
+it("hands a playback section every clip it renders when its saved endpoints aren't on a frame", async () => {
+  const { ctx } = workspace;
+  const timeline = timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 5 }]);
+  ctx.repos.projects.putMedia(project.id, { id: "overlay", kind: "video", name: "overlay", path: "overlay.mp4", duration: 30 }, "ready");
+  // It starts after the last frame the section snaps to, and before the section's own end.
+  timeline.tracks[0]!.clips.push(makeMediaClip("overlay", 0, 1, 5.005));
+  const v = storeVersion(ctx, project.id, timeline, { parent: version }).version;
+  const render = vi.spyOn(ctx.render, "renderPlaybackSegment");
+  const range = { start: 4, end: 5.012 };
+  ctx.renders.request({ ...section(), version: v, kind: "playback", quality: "preview", range });
+  await settle();
+  const [inputs, part, rendered] = render.mock.calls[0]!;
+  expect(rendered).toEqual(range);
+  expect(part.tracks[0]!.clips.map(c => c.kind === "media" && c.mediaId)).toEqual(["camera", "overlay"]);
+  expect(inputs.media.map(m => m.id)).toContain("overlay");
+});
+
+it("plans a version's transitions once for all its playback sections", async () => {
+  const { ctx } = workspace;
+  const timeline = timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 4 }, { start: 6, end: 10 }, { start: 12, end: 16 }]);
+  const clips = timeline.tracks[0]!.clips;
+  for (const clip of clips.slice(1)) if (clip.kind === "media") clip.transitionIn = { type: "dip", duration: 1, direction: "left" };
+  const v = storeVersion(ctx, project.id, timeline, { parent: version }).version;
+  const render = vi.spyOn(ctx.render, "renderPlaybackSegment");
+  vi.mocked(planTransitions).mockClear();
+  for (const start of [0, 3, 7]) ctx.renders.request({ ...section(), version: v, kind: "playback", quality: "preview", range: { start, end: start + 2 } });
+  await settle();
+  // The whole timeline is planned once. Each section's own key plans just its window.
+  expect(vi.mocked(planTransitions).mock.calls.filter(([planned]) => planned.tracks[0]!.clips.length === clips.length)).toHaveLength(1);
+  // The section across the first dip still has both clips of its join.
+  const across = render.mock.calls.find(([, , range]) => range.start === 3)!;
+  expect(across[1].tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[1]!.id]);
 });
 
 it("renders a dissolve in a playback window whose outgoing clip has already ended", async () => {
