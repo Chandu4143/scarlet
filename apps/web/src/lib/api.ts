@@ -19,6 +19,7 @@ export type ScarletApi = Pick<
   | "makeShorts"
   | "threadEdits"
   | "recordEditReview"
+  | "keepEdits"
   | "setThreadDone"
   | "deleteProject"
   | "media"

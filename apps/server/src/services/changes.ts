@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { logId } from "../logText.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
-import { agentTarget, beginRevision, buildThreads, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
+import { agentTarget, beginRevision, buildThreads, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type KeepEditsRequest, type KeptEdit, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
@@ -2255,6 +2255,42 @@ export function reviseChange(ctx: Ctx, user: User, change: Change, body: ReviseR
     data: { changeId: change.id, threadId: saved.threadId, taskId: task.id },
   });
   return { change: saved, note, task };
+}
+
+/**
+ * The editor kept these edits. Each Keep is recorded on the change it names, with the name and reason to look the
+ * editor read then, so a run of the request hears that the doubt is settled (`keptEdits`). Keeping again changes
+ * nothing. Caller holds the write lock.
+ */
+export function keepEdits(ctx: Ctx, projectId: string, body: KeepEditsRequest) {
+  const byChange = new Map<string, KeepEditsRequest["edits"]>();
+  for (const edit of body.edits) byChange.set(edit.changeId, [...byChange.get(edit.changeId) ?? [], edit]);
+  let added = 0;
+  for (const [changeId, edits] of byChange) {
+    const change = ctx.repos.changes.get(changeId);
+    if (!change || change.projectId !== projectId) throw notFound(`change ${changeId}`);
+    const kept = [...change.kept ?? []];
+    for (const edit of edits) {
+      if (kept.some(k => k.spot === edit.spot && k.threadId === body.threadId && k.recheck === edit.recheck)) continue;
+      const named = change.timelineEdits?.[edit.spot];
+      const label = edit.label ?? named?.label, check = edit.check ?? named?.check;
+      kept.push({ spot: edit.spot, threadId: body.threadId, at: now(), ...(edit.recheck && { recheck: edit.recheck }),
+        ...(label && { label: label.slice(0, 180) }), ...(check && { check: check.slice(0, 120) }),
+        ...(edit.range && body.version && { place: { version: body.version, range: edit.range } }) });
+      added++;
+    }
+    if (kept.length !== (change.kept?.length ?? 0)) saveChange(ctx, { ...change, kept });
+  }
+  return { added };
+}
+
+/** What the editor kept in a request, oldest first, as its runs hear of it. */
+export function keptEdits(ctx: Ctx, projectId: string, threadId: string): KeptEdit[] {
+  const changes = ctx.repos.changes.select("project_id = ? AND json_extract(json, '$.kept') IS NOT NULL", [projectId]);
+  return changes.flatMap(change => (change.kept ?? []).filter(k => k.threadId === threadId).map(k => ({
+    changeId: change.id, spot: k.spot, label: k.label ?? change.description, at: k.at,
+    ...(k.check && { check: k.check }), ...(k.place && { place: k.place }) })))
+    .sort((a, b) => a.at.localeCompare(b.at));
 }
 
 /** A flagged edit as the run that flagged it hears of it: what the editor reads and which request made it. */

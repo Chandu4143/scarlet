@@ -6912,3 +6912,25 @@ it("revises an edit another request made from the request that flagged it, and f
   expect(revised.status).toBe(201);
   expect(await revised.json()).toMatchObject({ change: { state: "approved", timelineEdits: [{ replaces: { changeId: made.id, spot: 0 } }] } });
 });
+
+it("records the editor's Keep on the edit's change, once, and tells the request's runs what they kept", async () => {
+  const { ctx } = workspace;
+  ctx.repos.projects.putMedia(project.id, { id: "camera", name: "Interview", kind: "video", path: "camera.mov" }, "ready");
+  const base = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 120 }]), { parent: null });
+  ctx.repos.projects.update(project.id, { head: base.version });
+  const task = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "Hold the cube solve", createdBy: { type: "human", name: "Editor" } });
+  const saved = (await (await api("POST", projectsPath() + "/changes?summary=true", { taskId: task.id, intent: "requested", description: "Held the solve",
+    timelineEdits: [{ label: "Kept the cube solve animation", range: { start: 30, end: 32 }, check: "The cube animates for 2.1 seconds before Matt speaks." }],
+    skipRender: true, ops: [{ op: "updateClip", clipId: base.tracks[0]!.clips[0]!.id, patch: { opacity: 0.9 } }] })).json()).change;
+  const keep = (edits: object[]) => api("POST", projectsPath() + "/kept-edits", { threadId: task.id, version: base.version, edits });
+  // Named only by the change and place, it takes the edit's name and reason to look from the change.
+  expect((await keep([{ changeId: saved.id, spot: 0, range: { start: 30, end: 32 } }])).status).toBe(204);
+  expect((await keep([{ changeId: saved.id, spot: 0 }])).status).toBe(204);
+  expect(ctx.repos.changes.get(saved.id)!.kept).toHaveLength(1);
+  const heard = await (await api("GET", `${projectsPath()}/kept-edits?thread=${task.id}`)).json();
+  expect(heard.kept).toEqual([expect.objectContaining({ changeId: saved.id, spot: 0, label: "Kept the cube solve animation",
+    check: "The cube animates for 2.1 seconds before Matt speaks.", place: { version: base.version, range: { start: 30, end: 32 } } })]);
+  // Another request hears nothing of it, and an edit of another project can't be kept here.
+  expect((await (await api("GET", `${projectsPath()}/kept-edits?thread=other`)).json()).kept).toEqual([]);
+  expect((await keep([{ changeId: "chg_elsewhere", spot: 0 }])).status).toBe(404);
+});

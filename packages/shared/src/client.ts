@@ -12,6 +12,8 @@ import type { AcousticWordsRequest, DialogueRangeRequest, DialogueScanRequest, D
 import type { Author, Change, CutAssessment, CutReview, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript, TranscriptWord } from "@scarlet/timeline";
 import type {
   ActivityEntry,
+  KeepEditsRequest,
+  KeptEdit,
   MakeShortsRequest,
   AgentHost,
   ApproveResponse,
@@ -445,6 +447,14 @@ export class ScarletClient {
   flagEdit(projectId: string, body: FlagEditRequest) {
     type Flagged = { changeId: string; spot: number; label: string; request: string; range: TimeRange; at?: number };
     return this.post<{ flagged: Flagged; version: string; alsoThere?: Flagged[] }>(`/projects/${encodeURIComponent(projectId)}/edit-flags`, body);
+  }
+  /** Record that the editor kept these edits, so the runs of their request hear of it. */
+  keepEdits(projectId: string, body: KeepEditsRequest) {
+    return this.post<void>(`/projects/${encodeURIComponent(projectId)}/kept-edits`, body);
+  }
+  /** The edits the editor kept in a request (`threadId`), oldest first. */
+  keptEdits(projectId: string, threadId: string) {
+    return this.get<{ kept: KeptEdit[] }>(`/projects/${encodeURIComponent(projectId)}/kept-edits?thread=${encodeURIComponent(threadId)}`);
   }
   proposeChange(projectId: string, body: ProposeChangeRequest) {
     return this.post<{ change: Change; timeline: Timeline; diffDescription?: string[] }>(`/projects/${projectId}/changes`, body);

@@ -164,7 +164,7 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined): L
 
 /** Whether the editor has reviewed an edit: kept here, or decided cut by cut when the pass was applied. */
 export function useReviewed(projectId: string, thread: Thread | undefined) {
-  const kept = useKeptEdits(projectId, thread?.id);
+  const kept = useKeptEdits(projectId, thread);
   return useMemo(() => {
     const decided = new Set(thread?.changes.filter(c => c.state === "approved" && (c.appliedReview || c.approvedSpots)).map(c => c.id));
     // A pass decided cut by cut was reviewed as it was applied, not a doubt raised about one of its edits since,
