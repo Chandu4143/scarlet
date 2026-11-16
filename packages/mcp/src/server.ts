@@ -1617,7 +1617,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (!asset.duration) throw new Error("Source duration is unavailable. Check import status before scanning.");
       const end = Math.min(until ?? asset.duration, asset.duration);
       if (from >= end) throw new Error("Choose a nonempty range inside the source.");
-      if (!ctx.taskId || await dialogueOperation() !== "first-cut") return scanDialogue(asset, from, end);
+      // Saving in sections gets the first cuts to the editor while the pass reads on. A session that opens on a pass
+      // with saved work is checking it (the repeat check that finishes a pass, a resumed run): it re-reads what it
+      // cut, and the gate, new to that session, refused 27 such reads on one pass (2026-11-15).
+      if (!ctx.taskId || await dialogueOperation() !== "first-cut" || (ctx.task?.changeIds.length ?? 0) > 0) return scanDialogue(asset, from, end);
       let batch = scanBatches.get(mediaId);
       if (!batch) {
         batch = new DialogueScanBatch();

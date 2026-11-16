@@ -63,6 +63,10 @@ it("finds the same footage after it was reframed, as a punch-in leaves it", () =
   const camera = from.tracks[0]!.clips[0]!;
   const punched = applyOps(from, [{ op: "updateClip", clipId: camera.id, patch: { transform: { x: 0, y: 0, scale: 1.2 }, opacity: 0.9 } }]);
   expect(mapStagedCut(from, punched, range, 30)).toEqual({ kind: "exact", range });
+  // A zoom that moves over the passage is framing too.
+  const still = { x: 0, y: 0, scale: 1, rotation: 0, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 };
+  const zoomed = applyOps(from, [{ op: "updateClip", clipId: camera.id, patch: { keyframes: [{ time: 0, transform: still }, { time: 8, transform: { ...still, scale: 1.5 } }] } }]);
+  expect(mapStagedCut(from, zoomed, range, 30)).toEqual({ kind: "exact", range });
 });
 
 it("refuses a full-track cut when the picture disappeared and the same sound survived elsewhere", () => {

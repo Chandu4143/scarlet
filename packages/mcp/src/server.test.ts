@@ -1612,6 +1612,18 @@ describe("first-cut dialogue save checkpoints", () => {
     expect(JSON.parse(textOf(await scan(116)))).toMatchObject({ from: 116, to: 176 });
   });
 
+  it("lets a session that opens on a pass with saved work re-read freely", async () => {
+    await editor.close();
+    const task = Task.parse({ id: "checking", projectId: mock.state.timeline!.projectId, kind: "edit", agent: "claude", state: "running", changeIds: ["chg_saved"],
+      instruction: "/first-cut-dialogue", context: { dialogueOperation: "first-cut" }, createdBy: { type: "human", name: "Editor" } });
+    editor = await connect(task.id, undefined, task);
+    await scan(0);
+    await scan(58);
+    const next = await scan(116);
+    expect(next.isError, textOf(next)).toBeFalsy();
+    expect(JSON.parse(textOf(next))).not.toHaveProperty("saveCheckpoint");
+  });
+
   it("reads on once a save sent at the same time as the read has saved this section", async () => {
     await scan(0);
     await scan(58);
