@@ -242,6 +242,36 @@ it.each(["revoked", "paused", "archived", "trashed"] as const)("recovers a ready
   } finally { cloud.mockRestore(); }
 });
 
+it("transcribes a ready import at launch while an interrupted one is still preparing", async () => {
+  const { ctx } = workspace;
+  ctx.repos.settings.update({ transcription: { provider: "openai" } });
+  const { revision } = ctx.repos.settings.transcriptionPolicy();
+  ctx.paths.ensureProject(project.id);
+  writeFileSync(join(ctx.paths.media(project.id), "ready.wav"), "fixture");
+  writeFileSync(join(ctx.paths.media(project.id), "preparing.wav"), "fixture");
+  const consent = { transcriptionOnImport: "openai", transcriptionRevisionOnImport: revision };
+  ctx.repos.projects.putMedia(project.id, { id: "ready-clip", kind: "audio", path: "ready.wav", name: "Ready", duration: 1, hasAudio: true, ...consent }, "ready");
+  ctx.repos.projects.putMedia(project.id, { id: "preparing-clip", kind: "audio", path: "preparing.wav", name: "Preparing", duration: 1, hasAudio: true,
+    preparation: { stage: "fingerprint", fraction: 0 }, ...consent }, "ingesting");
+  // The engine preparing it quit.
+  ctx.db.prepare("UPDATE media SET ingest_pid = NULL WHERE id = 'preparing-clip'").run();
+  await ctx.close();
+  let release!: () => void;
+  let hashing = false;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe").mockResolvedValue({ segments: [] });
+  try {
+    workspace = openWorkspace({ hashFile: async () => { hashing = true; await held; return "preparing-hash"; } }, { OPENAI_API_KEY: "fixture" });
+    await vi.waitFor(() => expect(hashing).toBe(true), { timeout: 10_000 });
+    await vi.waitFor(() => expect(workspace.ctx.repos.projects.getMedia("ready-clip")?.transcriptId).toBeDefined(), { timeout: 10_000 });
+    expect(workspace.ctx.repos.projects.getMedia("preparing-clip")?.status).toBe("ingesting");
+  } finally {
+    release();
+    while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
+    cloud.mockRestore();
+  }
+});
+
 it.each(["missing", "removed"] as const)("imports audio without a transcription job when the custom model is %s", async state => {
   const { ctx } = workspace;
   const model = join(directory, "weights.bin");

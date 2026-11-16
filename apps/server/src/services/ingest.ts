@@ -96,18 +96,17 @@ export function recoverIngestInBackground(ctx: Ctx, projectId?: string): void {
 
 /**
  * Take up a library's or a project's imports when it comes back: at launch, out of the Trash, unpaused or unarchived.
- * Unfinished preparations go on, then imports left ready without their transcription begin it. The preparations
- * come first, since one finishing begins its own transcription.
+ * Unfinished preparations go on, and imports left ready without their transcription begin it, side by side: the
+ * preparations run one at a time and each waits for its own transcription, so the imports already ready don't wait
+ * behind them. One finishing during the sweep can't be transcribed twice, since a transcription is claimed only once.
  */
 export function resumeImportsInBackground(ctx: Ctx, projectId?: string): void {
-  void ctx.track((async () => {
-    await recoverIngest(ctx, projectId).catch(error => {
-      if (!ctx.shutdown.aborted) ctx.log(`[ingest] preparing unfinished imports stopped part-way: ${(error as Error).message}`);
-    });
-    await recoverImportTranscriptions(ctx, projectId).catch(error => {
-      if (!ctx.shutdown.aborted) ctx.log(`[ingest] starting transcriptions left unbegun stopped part-way: ${(error as Error).message}`);
-    });
-  })());
+  void ctx.track(recoverIngest(ctx, projectId).catch(error => {
+    if (!ctx.shutdown.aborted) ctx.log(`[ingest] preparing unfinished imports stopped part-way: ${(error as Error).message}`);
+  }));
+  void ctx.track(recoverImportTranscriptions(ctx, projectId).catch(error => {
+    if (!ctx.shutdown.aborted) ctx.log(`[ingest] starting transcriptions left unbegun stopped part-way: ${(error as Error).message}`);
+  }));
 }
 
 export type IngestSource =
