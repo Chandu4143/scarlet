@@ -129,19 +129,19 @@ it("opens a standalone review file at frame boundaries, reuses it on replay, and
   expect(encode).toHaveBeenCalledTimes(1);
 });
 
-it("stops a disconnected preparation in its first fragment without starting the following one", async () => {
+it("queues every fragment of a preparation at once, and stops them all when its caller disconnects", async () => {
   const { ctx } = workspace;
   const encode = vi.spyOn(ctx.render, "renderPlaybackSegment").mockImplementation(async (_p, _t, _r, _c, _file, opts) => {
     await new Promise<void>(resolve => opts.signal!.addEventListener("abort", () => resolve(), { once: true }));
   });
   const controller = new AbortController();
   const request = prepare([0, 15], controller.signal);
-  await vi.waitFor(() => expect(encode).toHaveBeenCalledTimes(1));
-  expect(ctx.repos.renders.select()).toHaveLength(1);
+  await vi.waitFor(() => expect(encode).toHaveBeenCalledTimes(2));
+  expect(ctx.repos.renders.select()).toHaveLength(2);
   controller.abort();
   expect((await request).status).toBe(499);
   await settle();
-  expect(ctx.repos.renders.select().map(r => r.state)).toEqual(["cancelled"]);
+  expect(ctx.repos.renders.select().map(r => r.state)).toEqual(["cancelled", "cancelled"]);
 });
 
 it("returns a playback limit for an oversized historical version before requesting an encode", async () => {
