@@ -10,6 +10,7 @@ import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timeli
 import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWaits, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
+import { useNearView } from "../lib/useNearView";
 import { needNumbers } from "../lib/needNumbers";
 import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/chat/QueueTray";
 import { recordEditReview } from "../lib/editReviews";
@@ -38,6 +39,7 @@ import { ExportButton, ExportMenuItem, useExportWarning } from "../components/re
 import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Drawer, Icon, Loading } from "../components/ui/primitives";
 import { api, errorMessage } from "../lib/client";
+import { readTimeline } from "../lib/timelineCache";
 import { appLog } from "../lib/appLog";
 import { clock as clockLabel, lengthLabel, plural, removedSeconds } from "../lib/format";
 import { madeSentence, type SentencePart } from "../lib/madeSentence";
@@ -165,7 +167,7 @@ function useCarryingFootage(projectId: string, working: Timeline | null | undefi
     const missing = wanted.filter(v => !store.timelines.has(v) && !store.asked.has(v));
     for (const version of missing) {
       store.asked.add(version);
-      api.timeline(projectId, version).then(({ timeline }) => {
+      readTimeline(projectId, version).then(timeline => {
         if (kept.current !== store) return;
         remember(timeline);
         setFetched(n => n + 1);
@@ -795,7 +797,12 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     }
   }, [historyKey, loadTaskEvents]); // eslint-disable-line react-hooks/exhaustive-deps
   const firstCuts = useMemo(() => firstCutDeliveries(thread), [thread]);
-  const listed = useThreadEdits(projectId, thread);
+  // A request's list is read again for each new working cut only while it can be seen: in the chat's view, above the
+  // message box, open, or on the timeline. Out of view it keeps its last list until it comes back.
+  const section = useRef<HTMLElement>(null);
+  const inView = useNearView(section, ".simple-chat");
+  const listed = useThreadEdits(projectId, thread, inView || !!passList[0] || actions.marked === thread.id
+    || (!!pinned && thread.tasks.some(t => t.id === pinned)));
   // A thread with a dialogue pass sums it up on one line instead of listing every cut.
   const waitingPass = openPass(thread, allTasks);
   const pendingPass = !!waitingPass;
@@ -1100,7 +1107,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   if (!owner && hasRows) nodes.push(<div key="edits" className="req">{summed
     ? <PassSummary projectId={projectId} thread={thread} edits={listed} actions={actions} list={passList} listedNeed={passListed} />
     : <ThreadResult projectId={projectId} thread={thread} edits={listed} actions={actions} list={passList} listedNeed={passListed} />}</div>);
-  return <section className="simple-turn" data-log-label="Edit thread" aria-label={thread.title} data-thread={thread.id}>
+  return <section ref={section} className="simple-turn" data-log-label="Edit thread" aria-label={thread.title} data-thread={thread.id}>
     {nodes}
   </section>;
 }
@@ -1599,8 +1606,8 @@ export function SimpleWorkspace() {
     if (!draftVersion) return;
     let live = true;
     setDraftState(state => state?.version === draftVersion && state.timeline ? state : { version: draftVersion });
-    api.timeline(current.id, draftVersion).then(
-      ({ timeline }) => { if (live) setDraftState({ version: draftVersion, timeline }); },
+    readTimeline(current.id, draftVersion).then(
+      timeline => { if (live) setDraftState({ version: draftVersion, timeline }); },
       () => { if (live) setDraftState({ version: draftVersion, failed: true }); });
     return () => { live = false; };
   }, [current.id, draftVersion, draftAttempt]);
