@@ -12,6 +12,8 @@ import type { AcousticWordsRequest, DialogueRangeRequest, DialogueScanRequest, D
 import type { Author, Change, CutAssessment, CutReview, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript, TranscriptWord } from "@scarlet/timeline";
 import type {
   ActivityEntry,
+  KeepEditsRequest,
+  KeptEdit,
   MakeShortsRequest,
   AgentHost,
   ApproveResponse,
@@ -282,6 +284,12 @@ export class ScarletClient {
   updateProject(id: string, body: Record<string, unknown>) {
     return this.patch<{ project: Project }>(`/projects/${id}`, body);
   }
+  stopEditing(id: string) {
+    return this.post<{ project: Project; tasks: Task[] }>(`/projects/${apiPathId(id)}/stop-editing`);
+  }
+  resumeEditing(id: string) {
+    return this.post<{ project: Project; tasks: Task[] }>(`/projects/${apiPathId(id)}/resume-editing`);
+  }
   /** Make shorts: a project for each short, made from this one's finished edit. The first short's run starts at once. */
   makeShorts(id: string, body: MakeShortsRequest) {
     return this.post<{ projects: Project[]; task: Task }>(`/projects/${id}/shorts`, body);
@@ -334,8 +342,8 @@ export class ScarletClient {
     if (provenance) fd.append("provenance", JSON.stringify(provenance));
     return this.post<{ media: MediaAsset }>(`/projects/${projectId}/media`, fd);
   }
-  importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string; deferFormat?: boolean }) {
-    return this.post<{ media: MediaAsset }>(`/projects/${projectId}/media/import`, body);
+  importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string; deferFormat?: boolean }, signal?: AbortSignal) {
+    return this.request<{ media: MediaAsset }>("POST", `/projects/${projectId}/media/import`, body, { signal });
   }
   /** Take a file Scarlet couldn't read out of the project. The engine refuses one the video or its history uses. */
   removeMedia(projectId: string, mediaId: string) {
@@ -445,6 +453,14 @@ export class ScarletClient {
   flagEdit(projectId: string, body: FlagEditRequest) {
     type Flagged = { changeId: string; spot: number; label: string; request: string; range: TimeRange; at?: number };
     return this.post<{ flagged: Flagged; version: string; alsoThere?: Flagged[] }>(`/projects/${encodeURIComponent(projectId)}/edit-flags`, body);
+  }
+  /** Record that the editor kept these edits, so the runs of their request hear of it. */
+  keepEdits(projectId: string, body: KeepEditsRequest) {
+    return this.post<void>(`/projects/${encodeURIComponent(projectId)}/kept-edits`, body);
+  }
+  /** The edits the editor kept in a request (`threadId`), oldest first. */
+  keptEdits(projectId: string, threadId: string) {
+    return this.get<{ kept: KeptEdit[] }>(`/projects/${encodeURIComponent(projectId)}/kept-edits?thread=${encodeURIComponent(threadId)}`);
   }
   proposeChange(projectId: string, body: ProposeChangeRequest) {
     return this.post<{ change: Change; timeline: Timeline; diffDescription?: string[] }>(`/projects/${projectId}/changes`, body);
@@ -606,8 +622,8 @@ export class ScarletClient {
   waitForTranscription(taskId: string) {
     return this.withResource("tasks", taskId, path => this.get<{ task: Task; waited?: boolean }>(path + "?wait=transcript"));
   }
-  cancelTask(taskId: string) {
-    return this.post<{ task: Task }>(`/tasks/${taskId}/cancel`);
+  cancelTask(taskId: string, queuedOnly = false) {
+    return this.post<{ task: Task }>(`/tasks/${apiPathId(taskId)}/cancel${queuedOnly ? "?queuedOnly=1" : ""}`);
   }
   /** Retry or resume a run, on the model the editor has picked now when one is given. */
   retryTask(taskId: string, body: RunChoice = {}) {

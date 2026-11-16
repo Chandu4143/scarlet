@@ -382,6 +382,8 @@ export const Project = z.object({
   /** Last conversation revision filed by the editor, independently of the timeline head. */
   completedThreads: z.record(z.string()).optional(),
   mediaPaused: z.boolean().optional(),
+  /** The editor stopped project edits and must release the queue before any more start. */
+  editingPaused: z.boolean().optional(),
   id: Id,
   archived: z.boolean().optional(),
   branch: z.string().optional(),
@@ -583,6 +585,15 @@ export const Change = z.object({
     at: z.string().datetime(),
     /** The passage the editor should inspect, in the clock of the version where it was checked. */
     location: z.object({ version: Id, range: TimeRange }).optional() })).optional(),
+  /**
+   * Edits of this change the editor kept (`spot`, as the request in `threadId` lists it), with the name and reason to
+   * look they read then and where the edit was on the video. A run hears of them, so a doubt the editor has settled
+   * isn't raised again (2026-11-16: a pass flagged a hold the editor had kept in each of its next two saves). `recheck`
+   * is the later doubt (`flags`) the Keep settles.
+   */
+  kept: z.array(z.object({ spot: z.number().int().nonnegative(), threadId: Id, at: z.string().datetime(), recheck: z.string().optional(),
+    label: z.string().max(180).optional(), check: z.string().max(120).optional(),
+    place: z.object({ version: Id, range: TimeRange }).optional() })).optional(),
   /** Timeline ranges affected by the change (merged, with handles applied by the renderer). */
   ranges: z.array(TimeRange).default([]),
   state: ChangeState.default("proposed"),

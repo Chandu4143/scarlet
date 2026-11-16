@@ -856,6 +856,23 @@ describe("transcript tools", () => {
       expect(reads.map(e => e.data)).toEqual([{ kind: "eval_transcript", mediaId: "m1", count: 10, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
     } finally { await editor.close(); }
   });
+  it("tells a request's run, on its next tool call, which edits it flagged the editor kept", async () => {
+    const task = Task.parse({ id: "tsk_pass", projectId: "prj_test", kind: "edit", state: "running", agent: "codex",
+      instruction: "Cut dialogue", context: {}, createdBy: { type: "human", name: "Editor" } });
+    const before = mock.state.extra;
+    mock.state.extra = (req, res) => {
+      if (!req.path.endsWith("/kept-edits") || req.query.get("thread") !== "tsk_pass") return before?.(req, res) ?? false;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ kept: [{ changeId: "chg_round4", spot: 2,
+        label: "Kept the cube solve animation", check: "The cube animates before Matt speaks.", at: "2026-11-16T22:25:32Z" }] }));
+      return true;
+    };
+    const editor = await connect(task.id, undefined, task);
+    try {
+      const first = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 0, toWord: 1 } }) as CallToolResult);
+      expect(first).toContain("The editor kept this flagged edit");
+      expect(first).toContain("“Kept the cube solve animation” (chg_round4, edit 2)");
+    } finally { await editor.close(); mock.state.extra = before; }
+  });
   it("transcript_search finds phrases with context", async () => {
     const r = (await client.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "WELCOME back" } })) as CallToolResult;
     const t = textOf(r);
@@ -3848,7 +3865,7 @@ it("measures every clip edge an edit makes, whichever op makes it, and refuses o
     const added = await propose([{ op: "updateClip", clipId: "whole", patch: { sourceOut: 2 } },
       { op: "addClip", trackId: "v1", clip: { id: "late", kind: "media", mediaId: "m1", sourceIn: 3.44, sourceOut: 5.5, timelineIn: 2 } }]);
     expect(added.isError).toBe(true);
-    expect(textOf(added)).toContain("clip late starts at source 3.44 s inside a sound the transcript has no word for: 40 ms of it would play at -14 dBFS, and the recording is quiet at 3.49 s (-60 dBFS)");
+    expect(textOf(added)).toContain("clip late starts at source 3.44 s inside a sound the transcript has no word for: 40 ms of it would play at -14 dBFS, and the recording is quiet at 3.48 s (-60 dBFS)");
     expect(textOf(added)).not.toContain("clip whole");
     // The same two clips with that edge on the quiet it was pointed to go ahead.
     expect((await propose([{ op: "updateClip", clipId: "whole", patch: { sourceOut: 2 } },
@@ -3872,10 +3889,10 @@ it("moves a first cut's edge off a piece of sound and reports it, and refuses a 
     const before = posts().length;
     const saved = await cut([{ start: .1, end: 2 }, { start: 3.44, end: 5.5 }]);
     expect(saved.isError).toBeFalsy();
-    expect(textOf(saved)).toContain('"movedEdges":[{"keep":1,"edge":"start","from":3.44,"to":3.49,"evidence":"40 ms of a sound the transcript has no word for played at -14 dBFS; quiet there is -60 dBFS"}]');
-    expect(textOf(saved)).toContain("First edit: 2 clip(s), 3.91 s total");
+    expect(textOf(saved)).toContain('"movedEdges":[{"keep":1,"edge":"start","from":3.44,"to":3.485,"evidence":"40 ms of a sound the transcript has no word for played at -14 dBFS; quiet there is -60 dBFS"}]');
+    expect(textOf(saved)).toContain("First edit: 2 clip(s), 3.92 s total");
     const body = ProposeChangeRequest.parse(posts().at(-1)!.body);
-    expect(body.timeline!.tracks[0]!.clips[1]).toMatchObject({ sourceIn: 3.49, sourceOut: 5.5, timelineIn: expect.closeTo(1.9, 6) });
+    expect(body.timeline!.tracks[0]!.clips[1]).toMatchObject({ sourceIn: 3.485, sourceOut: 5.5, timelineIn: expect.closeTo(1.9, 6) });
     // Which side of a word the edge was meant for is the model's call: nothing is saved, and the range is named.
     const through = await cut([{ start: .1, end: 1.7 }, { start: 3.55, end: 5.5 }]);
     expect(through.isError).toBe(true);

@@ -380,6 +380,34 @@ it("lists what each version changed, newest first, and shows a picked one with i
   }
 });
 
+it.each(["", 'description: ""\n'])("restores a version with a blank description (%j)", async olderDescription => {
+  const db = buildDb();
+  const original = db.skills.find(s => s.version === 2)!;
+  const description = "When there is a longer pause.";
+  const skill = { ...original, description, content: `---\nname: ${original.name}\ndescription: ${description}\n---\nCurrent instructions.\n` };
+  const versions = db.skillVersions[skill.id]!.map(version => ({
+    ...version, content: version.version === 2 ? skill.content : `---\nname: ${skill.name}\n${olderDescription}---\nOriginal instructions.\n`,
+  }));
+  vi.spyOn(api, "skill").mockResolvedValue({ skill, versions });
+  const update = vi.spyOn(api, "updateSkill").mockResolvedValue({ skill });
+  const view = await open(`/settings/skills/${skill.id}`);
+  const { el } = view;
+  try {
+    expect(el.querySelector<HTMLTextAreaElement>("#sk-desc")!.value).toBe(description);
+    await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Version history"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')][1]!.click());
+    await act(async () => named(el, "Restore v1")!.click());
+    expect(markdown(el).value).toContain("Original instructions.");
+    expect(el.querySelector<HTMLTextAreaElement>("#sk-desc")!.value).toBe("");
+    await act(async () => named(el, "Save")!.click());
+    expect(update).toHaveBeenCalledExactlyOnceWith(skill.id, expect.objectContaining({
+      description: "", content: expect.stringContaining("Original instructions."),
+    }));
+  } finally {
+    await view.close();
+  }
+});
+
 it("lists the latest eight versions until the older ones are asked for", async () => {
   const db = buildDb();
   const first = db.skills.find(s => s.version === 2)!;
@@ -865,6 +893,30 @@ it("keeps what was typed while a save was on its way as unsaved", async () => {
     useSkillsStore.setState(useSkillsStore.getInitialState());
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  }
+});
+
+it("keeps a new skill's fields read-only while Create is saving and restores them if it fails", async () => {
+  let fail!: () => void;
+  vi.spyOn(api, "createSkill").mockImplementation(() => new Promise((_resolve, reject) => {
+    fail = () => reject(new Error("Engine unreachable"));
+  }));
+  const view = await open("/settings/skills/new");
+  const { el } = view;
+  const name = el.querySelector<HTMLInputElement>("#sk-name")!;
+  const description = el.querySelector<HTMLTextAreaElement>("#sk-desc")!;
+  const enabled = el.querySelector<HTMLButtonElement>('[aria-label="Enabled"]')!;
+  try {
+    await write(name, "My new skill");
+    await write(markdown(el), "Never cut laughter.");
+    await act(async () => named(el, "Create skill")!.click());
+    expect([name.disabled, description.disabled, enabled.disabled, markdown(el).readOnly]).toEqual([true, true, true, true]);
+    await act(async () => fail());
+    expect([name.disabled, description.disabled, enabled.disabled, markdown(el).readOnly]).toEqual([false, false, false, false]);
+    expect(markdown(el).value).toBe("Never cut laughter.");
+    expect(el.textContent).toContain("Engine unreachable");
+  } finally {
+    await view.close();
   }
 });
 

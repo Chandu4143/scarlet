@@ -107,7 +107,7 @@ it("adds the request's tokens to its finished run line, and updates live", () =>
   expect(view.host.querySelector(".req-time, .req-steps, .run-chevron")).toBeNull();
   expect(view.host.textContent).not.toContain("tokens");
 
-  act(() => useProjectStore.getState().applyEvent({ type: "task.usage", projectId: "prj_1", taskId: task.id, usage: totals() }));
+  act(() => useProjectStore.getState().applyEvent({ type: "task.usage", projectId: "prj_1", taskId: task.id, usage: totals({ reasoningTokens: 100 }) }));
   const tokens = view.host.querySelector(".run-tokens");
   expect(tokens?.textContent).toBe("48.2K tokens");
   expect(tokens?.getAttribute("aria-label")).toContain("cache read");
@@ -206,12 +206,12 @@ it("says what Scarlet is doing this moment on one line under its opening sentenc
   const AIM = "I’ll sync the recordings, tighten the takes, and flag cuts that need your ear.";
   const opened = [{ type: "log" as const, at: at(0), text: "Starting the editing agent." }, said(AIM, 2)];
   // Before its first call, the opening sentence is above and isn't said again on the line.
-  const view = render(<RunBundle task={running} events={opened} changes={[]} stopAbove banded />);
+  const view = render(<RunBundle task={running} events={opened} changes={[]} banded />);
   expect([lead(view.host), now(view.host)]).toEqual([AIM, "Working on your edit"]);
   // The line is the latest call, in plain words, with a turning ring before it. Nothing else is under the sentence:
   // no stages, no plan, no percent, no list of what was done.
   const reading = [...opened, tool("project_get", 3), tool("audio_sync", 5), tool("dialogue_scan", 20, { mediaId: "med_1", from: 754 })];
-  view.rerender(<RunBundle task={running} events={reading} changes={[]} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={reading} changes={[]} banded />);
   const req = view.host.querySelector(".req")!;
   expect([...req.children].map(child => child.className)).toEqual(["req-said req-lead", "req-row req-now"]);
   expect(now(view.host)).toBe("Reading the dialogue at 12:34");
@@ -221,20 +221,20 @@ it("says what Scarlet is doing this moment on one line under its opening sentenc
   expect(view.host.textContent).not.toMatch(/%/);
   // Counts the engine keeps in the background are not what Scarlet is doing.
   const counting = [...reading, scanPage(754, 812), { type: "log" as const, at: at(41), text: "", data: { kind: "join_progress", mediaId: "med_1", through: 90 } }];
-  view.rerender(<RunBundle task={running} events={counting} changes={[]} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={counting} changes={[]} banded />);
   expect(now(view.host)).toBe("Reading the dialogue at 12:34");
   // Each call takes the line as it comes, and so does Scarlet's own sentence when it comes after.
   const joins = [...counting, tool("dialogue_check_join", 50, { cuts: [{}, {}, {}, {}] })];
-  view.rerender(<RunBundle task={running} events={joins} changes={[]} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={joins} changes={[]} banded />);
   expect(now(view.host)).toBe("Checking how 4 joins sound");
   const spoken = [...joins, said("The opening is saved, and I’ve found the retake of the letter.", 60)];
-  view.rerender(<RunBundle task={running} events={spoken} changes={[]} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={spoken} changes={[]} banded />);
   expect(now(view.host)).toBe("The opening is saved, and I’ve found the retake of the letter.");
   // A cut Scarlet asked about is named by its call's number, not by where it comes among the pass's cuts.
   const asked = [{ id: "chg", cutAssessments: [{ index: 1, verdict: "ask", askOrder: 1 }, { index: 7, verdict: "ask", askOrder: 0 }] }] as never;
-  view.rerender(<RunBundle task={running} events={[...spoken, tool("dialogue_review_inspect", 70, { changeId: "chg", index: 1, count: 1 })]} changes={asked} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={[...spoken, tool("dialogue_review_inspect", 70, { changeId: "chg", index: 1, count: 1 })]} changes={asked} banded />);
   expect(now(view.host)).toBe("Listening to Cut 2");
-  view.rerender(<RunBundle task={running} events={[...spoken, tool("dialogue_review_inspect", 70, { changeId: "chg", index: 3, count: 1 })]} changes={asked} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={[...spoken, tool("dialogue_review_inspect", 70, { changeId: "chg", index: 3, count: 1 })]} changes={asked} banded />);
   expect(now(view.host)).toBe("Listening to a flagged cut");
   // Under a heading that carries Stop, the line has none. With no heading, Stop ends the line.
   expect(view.host.querySelector(".run-stop")).toBeNull();
@@ -403,10 +403,10 @@ it("leaves a question under a heading to the heading, opens the steps before it 
   const question = <p className="req-say">Purple or white?</p>;
   const rows = (host: HTMLElement) => [...host.querySelectorAll(".req-step.is-note .simple-row-text")].map(row => row.textContent);
   // Under a heading the block is the question alone.
-  const view = render(<RunBundle task={asking} events={asked} changes={[]} stopAbove banded say={question} />);
+  const view = render(<RunBundle task={asking} events={asked} changes={[]} banded say={question} />);
   expect(view.host.querySelector(".req")!.textContent).toBe("Purple or white?");
   // Answered, the line says what Scarlet is doing with it.
-  view.rerender(<RunBundle task={running} events={[...asked, { type: "answer" as const, at: at(90), text: "White" }]} changes={[]} stopAbove banded />);
+  view.rerender(<RunBundle task={running} events={[...asked, { type: "answer" as const, at: at(90), text: "White" }]} changes={[]} banded />);
   expect(view.host.querySelector(".req-now [role=status]")?.textContent).toBe("Reading your answer");
   view.unmount();
   // With no heading the line says it needs an answer and opens the steps before the question.
@@ -421,7 +421,7 @@ it("leaves a question under a heading to the heading, opens the steps before it 
 it("leaves a question's tokens to its heading, and has a row for them with no heading", () => {
   useUiStore.getState().setShowRunTokens(true);
   openProject({ [task.id]: totals({ totalTokens: 900 }) });
-  const asking = render(<RunBundle task={{ ...task, state: "waiting_for_user", finishedAt: undefined }} events={[]} changes={[]} stopAbove banded />);
+  const asking = render(<RunBundle task={{ ...task, state: "waiting_for_user", finishedAt: undefined }} events={[]} changes={[]} banded />);
   expect(asking.host.querySelector(".run-tokens")).toBeNull();
   asking.unmount();
   const bare = render(<RunBundle task={{ ...task, state: "waiting_for_user", finishedAt: undefined }} events={[]} changes={[]} />);
@@ -569,7 +569,7 @@ it("names a pass's final check for what it is, and says what it is doing now, no
     { type: "tool" as const, at: at(4010), text: "dialogue_check_repeats", data: { tool: "scarlet.dialogue_check_repeats", input: {} } },
   ];
   const again: Task = { ...task, state: "running", summary: null, finishedAt: undefined, startedAt: at(4000), repeatAudit: { version: "v2", returns: 1 } };
-  const view = render(<RunBundle task={again} events={events} changes={[]} stopAbove banded />);
+  const view = render(<RunBundle task={again} events={events} changes={[]} banded />);
   expect(view.host.querySelector(".req-lead")?.textContent).toBe("Final check of the finished cut");
   expect(view.host.textContent).not.toContain(FIRST);
   expect(view.host.querySelector(".req-now [role=status]")?.textContent).toBe("Checking the finished dialogue for repeats");

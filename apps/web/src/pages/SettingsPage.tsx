@@ -67,15 +67,22 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
   const retyped = (field: keyof typeof typed) => typed[field] !== undefined && typed[field] !== String(saved?.render[field]);
   const dirty = section === "advanced" && !!settings && !!saved
     && (shown(settings) !== shown(saved) || retyped("handleSeconds") || retyped("concurrency"));
-  // Another tab or the back link would drop a change that hasn't been saved, so leaving asks first, as a skill does.
-  const leaving = useBlocker(({ currentLocation: from, nextLocation: to }) => dirty && (from.pathname !== to.pathname || from.hash !== to.hash));
+  const savingChoice = section === "general" && busy;
+  // Advanced asks before leaving with changes. General waits for its pending choice to save so the next tab reads it.
+  const leaving = useBlocker(({ currentLocation: from, nextLocation: to }) =>
+    (dirty || savingChoice) && (from.pathname !== to.pathname || from.hash !== to.hash));
+  useEffect(() => {
+    if (section !== "general" || busy || leaving.state !== "blocked") return;
+    if (saveError) leaving.reset();
+    else leaving.proceed();
+  }, [section, leaving, busy, saveError]);
   // Restart to update asks the page before it restarts, so an unsaved change holds it until it's saved or discarded.
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !savingChoice) return;
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, [dirty, savingChoice]);
 
   if (error) return <ErrorState title="Couldn’t load server settings" body={error} onRetry={() => void load()} />;
   if (!settings) return <Loading label="Loading settings…" />;
@@ -131,10 +138,10 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
       data-unsaved={dirty || undefined}
       onSubmit={(e) => {
         e.preventDefault();
-        void save();
+        if (dirty && !busy) void save();
       }}
     >
-      <div className={section === "general" ? "max-w-md" : "grid sm:grid-cols-2 gap-x-8 gap-y-4"}>
+      <fieldset disabled={busy} className={section === "general" ? "max-w-md min-w-0" : "min-w-0 grid sm:grid-cols-2 gap-x-8 gap-y-4"}>
         <div>
           {section === "general" && (
           <>
@@ -230,15 +237,16 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
           </>
           )}
         </div>
-      </div>
+      </fieldset>
       {section === "advanced" && <div className="flex justify-end gap-2 mt-2">
         <button type="submit" className="btn-primary" disabled={!dirty || busy}>
           {busy && <Spinner className="size-3" />} Save
         </button>
       </div>}
+      {savingChoice && <p role="status" className="mt-2 text-xs text-muted">Saving…</p>}
       <InlineError>{saveError}</InlineError>
     </form>
-    <Modal open={leaving.state === "blocked"} onClose={() => { if (!busy) leaving.reset?.(); }} title="Save your settings?" footer={<>
+    <Modal open={section === "advanced" && leaving.state === "blocked"} onClose={() => { if (!busy) leaving.reset?.(); }} title="Save your settings?" footer={<>
       <button className="btn-ghost" disabled={busy} onClick={() => leaving.reset?.()}>Stay</button>
       <button className="btn-ghost" disabled={busy} onClick={() => leaving.proceed?.()}>Discard changes</button>
       <button className="btn-primary" disabled={busy} onClick={() => void save().then(saved => { if (saved) leaving.proceed?.(); })}>

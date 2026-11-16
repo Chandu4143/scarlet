@@ -9,12 +9,13 @@ export function reportImportCheck(importId: string, fraction: number) {
   importChecks.get(importId)?.(fraction);
 }
 
-export async function importLocalFile(projectId: string, path: string, onCheck: (fraction: number) => void, importId: string = crypto.randomUUID(), deferFormat = false) {
+export async function importLocalFile(projectId: string, path: string, onCheck: (fraction: number) => void, importId: string = crypto.randomUUID(), deferFormat = false, signal?: AbortSignal) {
   importChecks.set(importId, onCheck);
   try {
     // A link downloads; a path is copied and reports its progress.
     const source = /^https?:\/\//i.test(path) ? { url: path, importId } : { path, importId };
-    return (await api.importMedia(projectId, { ...source, ...(deferFormat && { deferFormat }) })).media;
+    const request = { ...source, ...(deferFormat && { deferFormat }) };
+    return (await (signal ? api.importMedia(projectId, request, signal) : api.importMedia(projectId, request))).media;
   } finally {
     importChecks.delete(importId);
   }

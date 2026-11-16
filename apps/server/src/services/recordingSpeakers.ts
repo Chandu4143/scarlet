@@ -13,6 +13,7 @@ import { LocalWhisperModel } from "../transcribe/localModel.js";
 import { labelTranscript, numberSpeakers, speakerAnalysisVersion, speakerTurnCacheVersion, type SpeakerTurn } from "../transcribe/speakerLabels.js";
 import { AnalysisCache } from "./analysisCache.js";
 import { audioLane } from "./audioWork.js";
+import { editorFirst } from "./editorFirst.js";
 import { speakerGpuRuntime } from "../transcribe/speakerWorker.js";
 import { humanDuration } from "../logText.js";
 import { availableParallelism } from "node:os";
@@ -231,7 +232,8 @@ export class RecordingSpeakers {
       const paused = () => { if (!this.passWaits.has(media.id)) stop.abort(pause.reason); };
       if (always.aborted) stopped(); else always.addEventListener("abort", stopped, { once: true });
       if (pause.aborted) paused(); else pause.addEventListener("abort", paused, { once: true });
-      try { return await analyse(stop.signal); }
+      // Nobody's to wait for until a pass reads the recording, so it yields to the editor's playback meanwhile.
+      try { return await editorFirst.run(() => !this.passWaits.has(media.id) && !audioLane(ctx).focusedOn(media.id), () => analyse(stop.signal)); }
       finally {
         always.removeEventListener("abort", stopped);
         pause.removeEventListener("abort", paused);

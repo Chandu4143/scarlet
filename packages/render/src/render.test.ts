@@ -419,6 +419,21 @@ it("keeps a delayed microphone aligned with the picture in a preview and a deliv
   }
 });
 
+it("handles cancellation while FFmpeg is writing a proxy checkpoint", async () => {
+  const input = path.join(dir, "cancel-proxy-source.mp4");
+  const output = path.join(dir, "cancel-proxy-output.mp4");
+  const checkpointDir = path.join(dir, "cancel-proxy-parts");
+  await runCapture("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=32x32:r=30:d=32",
+    "-c:v", "libx264", input]);
+  const controller = new AbortController();
+  // The first progress report comes from FFmpeg, before the checkpoint is published.
+  await expect(makeProxy(input, output, { height: 32, checkpointDir, signal: controller.signal,
+    onProgress: () => controller.abort(),
+  })).rejects.toMatchObject({ name: "AbortError" });
+  expect(await fs.readdir(path.join(checkpointDir, "libx264-32"))).toEqual([]);
+  expect(syncFs.existsSync(output)).toBe(false);
+});
+
 it("reuses the last completed proxy section after interruption and preserves the audio clock", async () => {
   const input = path.join(dir, "long.mp4"), output = path.join(dir, "preview.mp4");
   await runCapture("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=32x32:r=30000/1001:d=32",

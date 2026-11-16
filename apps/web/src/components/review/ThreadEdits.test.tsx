@@ -126,8 +126,11 @@ it("reads a request's edits again for a new working cut only while they are need
   const read = vi.spyOn(api, "threadEdits").mockImplementation(async () =>
     ({ version: useProjectStore.getState().current!.project.head!, edits: useProjectStore.getState().current!.project.head === "ver_4" ? [first!, ...rest] : [first!] }));
   let shown: number[] = [];
+  let current = false;
   function Probe({ thread, needed }: { thread: Thread; needed: boolean }) {
-    shown.push(useThreadEdits(PRJ, thread, needed).length);
+    const { listed, located } = useThreadEdits(PRJ, thread, needed);
+    shown.push(listed.length);
+    current = !!located;
     return null;
   }
   useProjectStore.setState({ current: data, status: "ready" });
@@ -141,11 +144,20 @@ it("reads a request's edits again for a new working cut only while they are need
   expect(read).toHaveBeenCalledOnce();
   expect(shown).not.toContain(0);
   expect(shown.at(-1)).toBe(1);
+  // The list it kept isn't the engine's for this working cut, so nothing on the timeline is placed from it.
+  expect(current).toBe(false);
   // Back in view, it is read for the working cut it is on.
   await act(async () => root.render(<Probe thread={thread} needed />));
   expect(read).toHaveBeenCalledTimes(2);
   expect(shown.at(-1)).toBe(1 + rest.length);
+  expect(current).toBe(true);
   // In view, each new working cut is read at once.
   await act(async () => { useProjectStore.setState({ current: { ...data, project: { ...data.project, head: "ver_5" } } }); });
   expect(read).toHaveBeenCalledTimes(3);
+  // Out of view again, a change to the request's own edits is still read: only a new working cut is waited out.
+  await act(async () => root.render(<Probe thread={thread} needed={false} />));
+  expect(read).toHaveBeenCalledTimes(3);
+  const changed = { ...thread, changes: thread.changes.map((c, i) => i ? c : { ...c, appliedVersion: "ver_5" }) };
+  await act(async () => root.render(<Probe thread={changed} needed={false} />));
+  expect(read).toHaveBeenCalledTimes(4);
 });

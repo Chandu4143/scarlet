@@ -27,6 +27,7 @@ import { getWaveform, ingestMedia, readWaveformCache, removeUnreadableMedia, set
 import { realignTranscript } from "../services/realign.js";
 import { recordingSpeechActivity } from "../services/recordingAudio.js";
 import { jsonBody, numberParam, optionalNumberParam, requireMedia, requireProjectHeader } from "./util.js";
+import { editorFirst } from "../services/editorFirst.js";
 
 const ImportRequest = z
   .object({ path: z.string().optional(), url: z.string().url().optional(), kind: MediaKind.optional(), name: z.string().optional(), importId: z.string().uuid().optional(), deferFormat: z.boolean().optional() })
@@ -256,6 +257,8 @@ export function mediaRoutes(ctx: Ctx) {
 
   r.get("/media/:mediaId/preview/:index", async (c) => {
     const media = requireMedia(ctx, c.req.param("mediaId"));
+    // The editor is playing a source: background work yields meanwhile (editorFirst.ts).
+    editorFirst.touch();
     const file = await sourcePreviews.get(ctx, media, Number(c.req.param("index")), c.req.raw.signal);
     return serveFile(c.req.raw, file);
   });

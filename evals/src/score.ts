@@ -18,7 +18,9 @@ import { keptSource, playedWords, sourceSpan, timelineRangeToSource, wordsWithou
 
 export interface ScoreInput {
   media: MediaInfo[];
-  timelines: { source: Timeline; applied: Timeline; proposed: Timeline; reviewBase?: Timeline; plan?: Timeline };
+  timelines: { source: Timeline; applied: Timeline; proposed: Timeline; reviewBase?: Timeline; plan?: Timeline;
+    /** The edit the task left playing, when its own later changes moved it on from `applied`. */
+    final?: Timeline };
   appliedChange?: Change;
   /** A run saved in parts: every applied part with the version it started from, in order. Replaces appliedChange. */
   appliedParts?: Array<{ change: Change; from: Timeline }>;
@@ -207,8 +209,10 @@ export function scoreRun(input: ScoreInput): Score {
   };
   // Staged cuts are timed on the review's base version, which is the applied one whenever a review was scored.
   const recommendedCuts = (input.review?.cuts ?? []).filter(c => c.assessment?.verdict === "cut").map(c => c.removed);
-  const recommendedPacing = input.review && (!timelines.reviewBase || timelines.reviewBase.version === timelines.applied.version)
-    ? summary(pacing(wordsWithout(appliedWords, recommendedCuts))) : undefined;
+  // Where the task itself applied its picks and went on, what it left is measured, not worked out.
+  const recommendedPacing = timelines.final ? summary(pacing(words(timelines.final)))
+    : input.review && (!timelines.reviewBase || timelines.reviewBase.version === timelines.applied.version)
+      ? summary(pacing(wordsWithout(appliedWords, recommendedCuts))) : undefined;
   if (recommendedPacing) pacingScore.recommended = recommendedPacing;
 
   // The agent's own call, before the editor: applied cuts plus the review items it recommended cutting.

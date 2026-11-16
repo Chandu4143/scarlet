@@ -1,12 +1,12 @@
 import { appliedReviewChange, CutAssessment, isPublishedCall, type Change } from "@scarlet/timeline";
 import { Hono } from "hono";
 import { z } from "zod/v3";
-import { namedTimelineEdits, ApproveRequest, FlagEditRequest, CutChoicesRequest, ChangeState, DialogueCutsRequest, ProposeChangeRequest, ReviseRequest, sameRun, StagedCutRevision } from "@scarlet/shared";
+import { namedTimelineEdits, ApproveRequest, FlagEditRequest, KeepEditsRequest, CutChoicesRequest, ChangeState, DialogueCutsRequest, ProposeChangeRequest, ReviseRequest, sameRun, StagedCutRevision } from "@scarlet/shared";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { logId } from "../logText.js";
-import { approveChange, changeDiff, flagEdit, saveCutChoices, prepareCutReview, prepareFirstDecision, proposeChange, recordPlayableDecision, requireUnscopedEdit, scheduleSpotCheck, submitDialogueCuts, rejectChange, reopenChange, reviseChange, reviseStagedCut, unapproveChange, withSpotCapability } from "../services/changes.js";
+import { approveChange, changeDiff, flagEdit, keepEdits, keptEdits, saveCutChoices, prepareCutReview, prepareFirstDecision, proposeChange, recordPlayableDecision, requireUnscopedEdit, scheduleSpotCheck, submitDialogueCuts, rejectChange, reopenChange, reviseChange, reviseStagedCut, unapproveChange, withSpotCapability } from "../services/changes.js";
 import { jsonBody, requireProjectHeader, TIMELINE_JSON_BYTES } from "./util.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
 
@@ -52,6 +52,21 @@ export function changeRoutes(ctx: Ctx) {
       if (!task) throw badRequest("no_task", "Only a request's run flags an edit for the editor.");
       return flagEdit(ctx, projectId, task, body);
     }, "immediate")(), 201);
+  });
+
+  // The editor kept edits. The runs of their request hear of it, so a doubt they settled isn't raised again.
+  r.post("/projects/:id/kept-edits", async c => {
+    const body = await jsonBody(c, KeepEditsRequest);
+    const project = requireProjectHeader(ctx, c.req.param("id"));
+    ctx.db.transaction(() => keepEdits(ctx, project.id, body), "immediate")();
+    return c.body(null, 204);
+  });
+
+  r.get("/projects/:id/kept-edits", c => {
+    const project = requireProjectHeader(ctx, c.req.param("id"));
+    const thread = c.req.query("thread");
+    if (!thread) throw badRequest("no_thread", "Name the request with ?thread=.");
+    return c.json({ kept: keptEdits(ctx, project.id, thread) });
   });
 
   r.post("/projects/:id/dialogue-cuts", async c => {

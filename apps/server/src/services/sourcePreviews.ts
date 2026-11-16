@@ -8,6 +8,7 @@ import { badRequest } from "../errors.js";
 import { logId, throttledLog } from "../logText.js";
 import type { MediaWithStatus } from "../repo/projects.js";
 import { fullProxyVariants, legacyFullPicture, previewIdentity, sourceCheckpointDir } from "./previewPictures.js";
+import { editorFirst } from "./editorFirst.js";
 
 type SourceMedia = MediaWithStatus & { projectId: string };
 type SourcePlaybackCache = PlaybackCacheStatus & Pick<SourceCacheStatus, "queued">;
@@ -267,7 +268,8 @@ function queueSourceProxies(ctx: Ctx, mediaIds: string[]): void {
     q.tail = q.tail.then(async () => {
       try {
         // Nothing to cache after all, so nothing is left waiting.
-        if (!(await cacheInTurn(ctx, id))) ctx.db.prepare("DELETE FROM source_cache_requests WHERE media_id = ? AND worker_pid IS NULL").run(id);
+        // A source proxy speeds later previews. Nobody waits for it, so it yields to the editor's playback.
+        if (!(await editorFirst.run(() => true, () => cacheInTurn(ctx, id)))) ctx.db.prepare("DELETE FROM source_cache_requests WHERE media_id = ? AND worker_pid IS NULL").run(id);
       } catch (error) {
         if (!ctx.shutdown.aborted) ctx.log(`[media] ${id} couldn’t prepare its source proxy: ${error}`);
       } finally {

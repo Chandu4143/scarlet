@@ -1,6 +1,7 @@
 import os from "node:os";
 import { RecordingSpeakers } from "./services/recordingSpeakers.js";
 import { audioWorker } from "./transcribe/audioWorker.js";
+import { editorFirst } from "./services/editorFirst.js";
 import { AnalysisCache } from "./services/analysisCache.js";
 import type { ServerSettings } from "@scarlet/shared";
 import type { JoinFades, Transcript } from "@scarlet/timeline";
@@ -204,6 +205,7 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
   const whisperCli = bundledWhisperCli(env);
   // The audio helper is one per engine process. Its notes on where each model runs go to this engine's log.
   audioWorker.log = options.log ?? (m => console.log(m));
+  editorFirst.log = audioWorker.log;
   // An agent at work asks for the helper's models again within a turn or two.
   const agentAtWork = db.prepare("SELECT 1 FROM tasks WHERE state IN ('claimed','running') AND kind != 'transcribe' LIMIT 1");
   audioWorker.wanted = () => { try { return !!agentAtWork.get(); } catch { return false; } };

@@ -13,6 +13,7 @@ interface ProjectRow {
   completed_threads: string;
   style_guide?: string | null;
   media_paused: number;
+  editing_paused: number;
   archived: number;
   branch: string;
   id: string;
@@ -198,6 +199,10 @@ export class ProjectsRepo {
     this.db.prepare("UPDATE projects SET completed_threads = ?, review_revision = review_revision + 1 WHERE id = ?").run(JSON.stringify(threads), id);
   }
 
+  setEditingPaused(id: string, paused: boolean) {
+    this.db.prepare("UPDATE projects SET editing_paused = ?, row_revision = row_revision + 1 WHERE id = ? AND editing_paused != ?").run(paused, id, paused);
+  }
+
   /** Repair a missing head only if another engine hasn't set a new one since the read. */
   initializeHead(id: string, expected: string | null, version: string): void {
     this.db.prepare("UPDATE projects SET head = ?, updated_at = ? WHERE id = ? AND head IS ? AND deleted_at IS NULL")
@@ -298,6 +303,6 @@ function projectHeader(row: ProjectRow, styleGuide = true): Omit<Project, "media
   const made = row.source ? JSON.parse(row.source) as { projectId: string; name: string } : undefined;
   const source = made && { projectId: made.projectId, name: row.source_name ?? made.name,
     ...(row.source_notice ? { notice: true } : {}), ...(!row.source_name || row.source_deleted ? { gone: true } : {}) };
-  return Header.parse({ ...(styleGuide && row.style_guide && { styleGuide: JSON.parse(row.style_guide) }), ...(source && { source }), id: row.id, completedThreads: JSON.parse(row.completed_threads), name: row.name, mediaPaused: !!row.media_paused, archived: Boolean(row.archived), branch: row.branch, settings: JSON.parse(row.settings), head: row.head,
+  return Header.parse({ ...(styleGuide && row.style_guide && { styleGuide: JSON.parse(row.style_guide) }), ...(source && { source }), id: row.id, completedThreads: JSON.parse(row.completed_threads), name: row.name, mediaPaused: !!row.media_paused, editingPaused: !!row.editing_paused, archived: Boolean(row.archived), branch: row.branch, settings: JSON.parse(row.settings), head: row.head,
     createdAt: row.created_at, updatedAt: row.updated_at, rowRevision: row.row_revision });
 }

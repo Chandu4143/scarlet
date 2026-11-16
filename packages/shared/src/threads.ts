@@ -302,7 +302,7 @@ const ACTIVE_STATES = new Set(["claimed", "running", "waiting_for_user"]);
 
 const PENDING_STATES = new Set(["queued", ...ACTIVE_STATES]);
 
-export type QueueTask = Pick<Task, "id" | "projectId" | "kind" | "state" | "createdAt" | "resumeRootId" | "queueSequence" | "startsBeforeCalls"> & {
+export type QueueTask = Pick<Task, "id" | "projectId" | "kind" | "state" | "createdAt" | "resumeRootId" | "queueSequence" | "startsBeforeCalls" | "resumesAfterProjectStop"> & {
   context: Pick<Task["context"], "branch" | "changeId" | "threadId" | "cutIndex" | "editIndex">;
 };
 type EditLineage = Pick<Change, "id" | "timelineEdits">;
@@ -427,7 +427,8 @@ function inLine(tasks: readonly QueueTask[]) {
   };
   return (a: QueueTask, b: QueueTask) => {
     const x = place(a), y = place(b);
-    return compare(x.original, y.original) || compare(x.attempt, y.attempt);
+    return Number(!!b.resumesAfterProjectStop) - Number(!!a.resumesAfterProjectStop)
+      || compare(x.original, y.original) || compare(x.attempt, y.attempt);
   };
 }
 

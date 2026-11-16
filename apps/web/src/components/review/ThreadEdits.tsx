@@ -133,9 +133,11 @@ type ListedEdit = Omit<ThreadEdit, "at">;
  *
  * `needed`: whether the list is read again when the working cut moves. Every request in the chat lists its edits, and
  * each new working cut would read them all again. One out of view keeps the list it last read, and reads it again
- * once it is needed: in view, above the message box, or on the timeline. Its first read is always made.
+ * once it is needed: in view, above the message box, or on the timeline. Its first read is always made, and so is
+ * one after the request's own edits or flags change. `located` is the engine's list for the working cut as it is
+ * now, so a list kept from an earlier one has none.
  */
-export function useThreadEdits(projectId: string, thread: Thread | undefined, needed = true): ListedEdit[] {
+export function useThreadEdits(projectId: string, thread: Thread | undefined, needed = true) {
   const head = useProjectStore(s => s.current?.project.head ?? null);
   const media = useProjectStore(s => s.current?.media);
   const saved = useMemo(() => thread ? threadEditList(thread, media) : [], [thread, media]);
@@ -143,12 +145,14 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined, ne
   const applied = !!thread?.changes.some(c => c.state === "approved") || !!thread?.flagged?.length;
   const key = useThreadEditKey(projectId, head, thread);
   const [loaded, setLoaded] = useState<{ key: string; threadId: string; edits?: ThreadEdit[] }>();
-  // The read last asked for. While the list isn't needed it stays the one asked for, so nothing is read again.
-  const asked = useRef<string>(undefined);
-  const wanted = needed || asked.current === undefined ? key : asked.current;
+  // The read last asked for. While the list isn't needed it stays the one asked for, so nothing is read again,
+  // unless the request itself changed: only a new working cut is waited out.
+  const own = useThreadEditKey(projectId, null, thread);
+  const asked = useRef<{ key: string; own: string }>(undefined);
+  const wanted = needed || asked.current?.own !== own ? key : asked.current.key;
   useEffect(() => {
     if (!head || !applied || !thread) return;
-    asked.current = key;
+    asked.current = { key, own };
     let live = true;
     requestThreadEdits(key, projectId, thread.id).then(({ edits, version }) => {
       if (live && version === head) setLoaded({ key, threadId: thread.id, edits });
@@ -169,12 +173,12 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined, ne
   const kept = !needed && loaded?.threadId === thread?.id ? loaded?.edits : undefined;
   const edits = (current ? loaded.edits : previous ?? kept) ?? saved;
   useEffect(() => { if (current && loaded.edits) shown.current = { key, edits }; }, [current, loaded, key, edits]);
-  return applied ? edits : [];
+  return { listed: applied ? edits : [], located: applied && current ? loaded.edits : undefined, head };
 }
 
 /** Whether the editor has reviewed an edit: kept here, or decided cut by cut when the pass was applied. */
 export function useReviewed(projectId: string, thread: Thread | undefined) {
-  const kept = useKeptEdits(projectId, thread?.id);
+  const kept = useKeptEdits(projectId, thread);
   return useMemo(() => {
     const decided = new Set(thread?.changes.filter(c => c.state === "approved" && (c.appliedReview || c.approvedSpots)).map(c => c.id));
     // A pass decided cut by cut was reviewed as it was applied, not a doubt raised about one of its edits since,

@@ -6,7 +6,7 @@ import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { waitFor } from "../events.js";
-import { aboutStagedCut, appendTaskEvent, cancelTask, completeTask, createTask, followUpInstruction, holdForRewording, rewordTask, saveTask, startBeforeCalls, taskPrompt } from "../services/tasks.js";
+import { aboutStagedCut, appendTaskEvent, cancelTask, completeTask, createTask, FINISHED_TASK, followUpInstruction, holdForRewording, PROJECT_EDIT_KINDS, rewordTask, saveTask, startBeforeCalls, taskPrompt } from "../services/tasks.js";
 import { readPassRepeats } from "../services/passRepeats.js";
 import { callSentBack } from "../services/changes.js";
 import { jsonBody, requireProjectHeader } from "./util.js";
@@ -127,7 +127,13 @@ export function taskRoutes(ctx: Ctx) {
   });
 
   r.post("/tasks/:taskId/cancel", (c) => {
-    return c.json(ctx.db.transaction(() => ({ task: cancelTask(ctx, requireTask(c.req.param("taskId"))) }), "immediate")());
+    return c.json(ctx.db.transaction(() => {
+      const task = requireTask(c.req.param("taskId"));
+      if (c.req.query("queuedOnly") === "1" && !FINISHED_TASK.has(task.state) && (task.state !== "queued" || task.startedAt || (task.resumeRootId && !task.resumesAfterProjectStop))) {
+        throw conflict("already_started", "Scarlet has already started on this request.");
+      }
+      return { task: cancelTask(ctx, task) };
+    }, "immediate")());
   });
 
   // The editor is changing the words of a request still waiting its turn: it doesn't start until they're saved.
@@ -235,11 +241,11 @@ export function taskRoutes(ctx: Ctx) {
   r.get("/under-way", (c) => {
     const count = (sql: string) => (ctx.db.prepare(sql).get() as { n: number }).n;
     const live = "project_id IN (SELECT id FROM projects WHERE deleted_at IS NULL)";
-    const requests = `kind IN ('edit','note','revise') AND ${live}`;
+    const requests = `kind IN ${PROJECT_EDIT_KINDS} AND project_id IN (SELECT id FROM projects WHERE deleted_at IS NULL AND editing_paused = 0)`;
     // Quitting stops a skill Scarlet writes or revises too, and it carries on at the next launch as a request does.
     // A learning check isn't run again, and the request it reads is counted already.
     const runs = `kind IN ('edit','note','revise','skill_edit','skill_from_change') AND ${live}`;
-    // A request held for the editor's answer or calls waits on them, not on Scarlet, so quitting holds up nothing of it.
+    // A request held for Continue, an answer or calls will wait for the editor after a quit too.
     const queued = ctx.repos.tasks.select(`state = 'queued' AND ${requests}`);
     let waiting = 0;
     for (const projectId of new Set(queued.map(t => t.projectId))) {

@@ -254,7 +254,7 @@ function bucketing(r: Reading) {
   const step = (r.to - r.from) / Math.max(1, n);
   // A span that only touches a bucket boundary (within float error) does not voice it.
   const voiced = (s: number, e: number) => (r.speechActivity ?? []).some(v => v.start < e - 1e-6 && v.end > s + 1e-6);
-  const quietBelow = quietRms(r.rms ?? []);
+  const quietBelow = quietRms(r.rms ?? [], step);
   const low = (i: number) => i >= 0 && i < n && (r.rms?.[i] ?? 0) <= quietBelow && r.peaks[i]! <= QUIET_PEAK;
   return {
     step,

@@ -19,6 +19,7 @@ import { alignmentVersion, alignsLanguage, alignTranscript, type AlignmentCheckp
 import { fillTranscriptHoles } from "../transcribe/transcriptHoles.js";
 import { extractWav } from "../render/ffmpeg.js";
 import { audioLane, whisperLane, type AudioWork } from "./audioWork.js";
+import { editorFirst } from "./editorFirst.js";
 import { decodeWaveformCache, encodeWaveformCache, fileInDirectory, MAX_WAVEFORM_CACHE_BYTES, MAX_WAVEFORM_POINTS, WAVEFORM_CACHE_VERSION } from "@scarlet/render";
 import type { WaveformCache } from "../render/adapter.js";
 import { actorFor, logActivity, quote } from "./activity.js";
@@ -27,7 +28,11 @@ import { emissionStore, emissionStorePaths } from "./recordingAudio.js";
 import { prepareSourceProxies, sourcePreviews } from "./sourcePreviews.js";
 import { cloneOrSteadyCopy } from "./steadyCopy.js";
 
-const WAVEFORM_POINTS_PER_SECOND = 50;
+/**
+ * 10 ms a point. The dip between two words said in one breath is often 20-40 ms wide: at 20 ms it averaged into the
+ * sound either side, and edges an editor puts on the trough a waveform shows went to review as having no quiet point.
+ */
+const WAVEFORM_POINTS_PER_SECOND = 100;
 const GiB = 1024 ** 3;
 const URL_IMPORT_BYTES = 64 * GiB;
 const DOWNLOAD_RESERVE = GiB;
@@ -200,7 +205,11 @@ export async function ingestMedia(
   source: IngestSource,
   opts: { name?: string; kind?: MediaKind; deferFormat?: boolean; by?: MediaAsset["provenance"]; uploadedBy?: string; transcription: Awaited<ReturnType<typeof importTranscriptionPolicy>>; checkAttempt?: () => void },
 ): Promise<MediaWithStatus> {
-  const signal = ctx.projectSignal(project.id);
+  const projectSignal = ctx.projectSignal(project.id);
+  const clientSignal = source.type === "url" ? source.signal : undefined;
+  const cancelled = () => new HttpError(408, "download_cancelled", "The URL import was cancelled.");
+  if (clientSignal?.aborted) throw cancelled();
+  const signal = clientSignal ? AbortSignal.any([projectSignal, clientSignal]) : projectSignal;
   signal.throwIfAborted();
   ctx.paths.ensureProject(project.id);
   const mediaId = newId("med");
@@ -212,12 +221,11 @@ export async function ingestMedia(
   if (source.type === "url") {
     const url = normalizeImportUrl(source.url);
     const deadline = AbortSignal.timeout(URL_IMPORT_TIMEOUT_MS);
-    const downloadSignal = AbortSignal.any(source.signal ? [signal, source.signal, deadline] : [signal, deadline]);
+    const downloadSignal = AbortSignal.any([signal, deadline]);
     const timeout = () => new HttpError(408, "download_timed_out", "This URL import exceeded six hours. Download the recording locally and add the file.");
-    const cancelled = () => new HttpError(408, "download_cancelled", "The URL import was cancelled.");
     const res = await downloadImport(new URL(url), downloadSignal).catch(error => {
       if (deadline.aborted) throw timeout();
-      if (source.signal?.aborted) throw cancelled();
+      if (clientSignal?.aborted) throw cancelled();
       // A lookup, connection, certificate or timeout failure is about the address, not a fault in the engine.
       if (error instanceof HttpError || signal.aborted) throw error;
       throw badRequest("download_failed", `Couldn’t download that URL: ${(error as Error).message}`);
@@ -230,7 +238,7 @@ export async function ingestMedia(
       await rename(partial, join(mediaDir, mediaId + safeExt(name)));
     } catch (error) {
       if (deadline.aborted) throw timeout();
-      if (source.signal?.aborted) throw cancelled();
+      if (clientSignal?.aborted) throw cancelled();
       throw error;
     } finally {
       res.destroy();
@@ -266,6 +274,7 @@ export async function ingestMedia(
 
   let asset: MediaAsset;
   try {
+    signal.throwIfAborted();
     const probe = await ctx.render.probeMedia(dest, signal);
     const kind = opts.kind ?? probe.kind;
     // Native playable media is already in project-owned storage. Its identifier
@@ -300,6 +309,7 @@ export async function ingestMedia(
   } catch (e) {
     await rm(dest, { force: true });
     ctx.shutdown.throwIfAborted();
+    if (clientSignal?.aborted) throw cancelled();
     // An import stopped, by its project going to the trash, says so rather than blaming the file.
     signal.throwIfAborted();
     throw badRequest("probe_failed", `ffprobe could not read the file: ${(e as Error).message}`);
@@ -308,6 +318,7 @@ export async function ingestMedia(
   try {
     stored = ctx.db.transaction(() => {
       opts.checkAttempt?.();
+      if (clientSignal?.aborted) throw cancelled();
       // Another instance may have trashed the project while the original was being copied.
       const current = ctx.repos.projects.header(project.id);
       if (!current) throw notFound(`project ${project.id}`);
@@ -341,7 +352,12 @@ export async function ingestMedia(
   return stored;
 }
 
-async function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) {
+/** An import's proxy and transcript are nobody's to wait for until a pass reads the recording (editorFirst.ts). */
+function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) {
+  return editorFirst.run(() => !audioLane(ctx).focusedOn(asset.id), () => ingestInBackground(ctx, projectId, asset));
+}
+
+async function ingestInBackground(ctx: Ctx, projectId: string, asset: MediaAsset) {
   const signal = ctx.mediaSignal(projectId);
   const src = join(ctx.paths.media(projectId), asset.path);
   const proxy = join(ctx.paths.proxies(projectId), `${asset.id}.mp4`);
@@ -921,7 +937,7 @@ async function buildWaveform(ctx: Ctx, media: MediaWithStatus & { projectId: str
 
 function olderWaveforms(ctx: Ctx, projectId: string, mediaId: string) {
   const base = join(ctx.paths.waveforms(projectId), mediaId);
-  return [".v3", ".v2", ""].flatMap(version => [base + version + ".waveform", base + version + ".json"]);
+  return [".v4", ".v3", ".v2", ""].flatMap(version => [base + version + ".waveform", base + version + ".json"]);
 }
 
 function waveformBase(ctx: Ctx, projectId: string, mediaId: string) {
