@@ -53,11 +53,11 @@ const caches = new WeakMap<Ctx, AnalysisCache<Loudness>>();
  * everyone waiting on it; `signal` stops only this caller's wait.
  */
 export function measuredLoudness(ctx: Ctx, file: string, identity: unknown[],
-  opts: { from?: number; to?: number; stop?: AbortSignal; signal?: AbortSignal } = {}): Promise<Loudness> {
+  opts: { projectId?: string; from?: number; to?: number; stop?: AbortSignal; signal?: AbortSignal } = {}): Promise<Loudness> {
   let cache = caches.get(ctx);
   if (!cache) caches.set(ctx, cache = new AnalysisCache<Loudness>(() => 24, 256 * 1024, 1));
-  const { from, to, stop, signal } = opts;
+  const { projectId, from, to, stop, signal } = opts;
   const key = JSON.stringify(["ebur128", file, ...identity, from, to]);
-  return cache.get(key, work => ctx.track(measureLoudness(file, from, to, stop ? AbortSignal.any([work, stop]) : work)),
+  return cache.get(key, work => ctx.track(measureLoudness(file, from, to, stop ? AbortSignal.any([work, stop]) : work), projectId),
     signal ? { signal } : {});
 }

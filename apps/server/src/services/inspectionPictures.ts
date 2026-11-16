@@ -132,7 +132,7 @@ export function inspectionPictures(ctx: Ctx) {
         for (let at = Math.floor(first / stride) * stride; at < end; at += stride) {
           const stop = Math.min(last, at + stride);
           collect(await blocks.get(JSON.stringify([identity, at, stop]), demand =>
-            ctx.track(read(demand, (options, active) => readBlock(project, timeline, mediaRoot, at, stop, true, height, options, active))), { signal }));
+            ctx.track(read(demand, (options, active) => readBlock(project, timeline, mediaRoot, at, stop, true, height, options, active)), project.id), { signal }));
         }
       } else if (mode === "scene") {
         const uniform = indicesFor([]);
@@ -141,7 +141,7 @@ export function inspectionPictures(ctx: Ctx) {
           const samples = uniform.filter(i => i >= w.first && i < w.end);
           const sceneHeight = Math.min(height, 180, 320 * project.settings.height / project.settings.width);
           collect(await scenes.get(id, demand => ctx.track(read(demand, (options, active) =>
-            readBlock(project, timeline, mediaRoot, w.first, w.end, false, sceneHeight, options, active, samples))), { signal }));
+            readBlock(project, timeline, mediaRoot, w.first, w.end, false, sceneHeight, options, active, samples)), project.id), { signal }));
         }
       }
       const indices = indicesFor([...changes].sort((a, b) => a - b));
@@ -150,11 +150,11 @@ export function inspectionPictures(ctx: Ctx) {
       for (const i of indices) {
         if (raw) frames.push(tiles.get(i)!);
         else frames.push(await stills.get(JSON.stringify([identity, i]), demand => ctx.track(read(demand, (options, active) =>
-          renderTimelineFrame(project, timeline, { start: i / fps, end: (i + 1) / fps }, mediaRoot, active, 320, options))), { signal }));
+          renderTimelineFrame(project, timeline, { start: i / fps, end: (i + 1) / fps }, mediaRoot, active, 320, options)), project.id), { signal }));
       }
       const sheet = await packSheet(frames, indices.map(i => i / fps), raw, signal);
       return { ...sheet, changedFrames: activity ? changes.size : undefined };
-    })()), { signal: subscriber });
+    })(), project.id), { signal: subscriber });
     if (identity !== ctx.renders.inspectionKey(project, timeline.version)) throw new Error("Timeline inputs changed during inspection.");
     return { label: "Composite", clock: "timeline", id: timeline.version, range, focus, ...analysis };
   };

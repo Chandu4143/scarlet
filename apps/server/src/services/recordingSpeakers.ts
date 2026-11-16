@@ -265,7 +265,7 @@ export class RecordingSpeakers {
     if (!this.beside || ctx.settings().transcription.provider === "none" || (!media.hasAudio && media.kind !== "audio")) return;
     void ctx.track(this.turns(ctx, projectId, media).catch(err => {
       if (!ctx.mediaSignal(projectId).aborted) ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);
-    }));
+    }), projectId);
   }
 
   /** Publish a new transcript revision so already-open transcript pages refresh.
@@ -306,7 +306,7 @@ export class RecordingSpeakers {
         this.retryAfter.set(key, Date.now() + 5 * 60_000);
         ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);
       }
-    }).finally(() => this.revisions.delete(key)));
+    }).finally(() => this.revisions.delete(key)), projectId);
     this.revisions.set(key, job);
     return job;
   }

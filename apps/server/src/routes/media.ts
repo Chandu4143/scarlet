@@ -52,8 +52,9 @@ export function mediaRoutes(ctx: Ctx) {
     if (to <= from || to - from > 60 || to > (source.duration ?? 0)) throw badRequest("voice_reference", "Choose a reference of up to one minute with both voices.");
     const file = await fileInDirectoryAsync(ctx.paths.media(source.projectId), source.path);
     if (!file) throw notFound("source file");
-    if (!(await ctx.track(sourceLabels(file, ctx.mediaSignal(source.projectId)))).length) throw badRequest("voice_inputs", "Choose a synchronized recording with a mix and two isolated inputs.");
-    const { mix } = await ctx.track(readSourceEnergy(file, from, to, ctx.mediaSignal(source.projectId)));
+    const labels = await ctx.track(sourceLabels(file, ctx.mediaSignal(source.projectId)), source.projectId);
+    if (!labels.length) throw badRequest("voice_inputs", "Choose a synchronized recording with a mix and two isolated inputs.");
+    const { mix } = await ctx.track(readSourceEnergy(file, from, to, ctx.mediaSignal(source.projectId)), source.projectId);
     if (mix === undefined || mix === roles.me - 1 || mix === roles.other - 1) throw badRequest("voice_inputs", "Could not verify two isolated inputs and their mix in this reference.");
     const media = ctx.db.transaction(() => {
       requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, source.projectId));
@@ -196,7 +197,7 @@ export function mediaRoutes(ctx: Ctx) {
     const media = requireMedia(ctx, c.req.param("mediaId"), project.id);
     requireProjectEditAttempt(ctx, requestAttempt(c.req.raw), project.id);
     requireAudio(media);
-    return c.json(await ctx.track(realignTranscript(ctx, project.id, media.id, ctx.projectSignal(project.id))));
+    return c.json(await ctx.track(realignTranscript(ctx, project.id, media.id, ctx.projectSignal(project.id)), project.id));
   });
 
   r.post("/projects/:id/media/:mediaId/prepare", async (c) => {
@@ -220,7 +221,7 @@ export function mediaRoutes(ctx: Ctx) {
     if (task.state === "done") return c.json({ state: "ready" });
     if (task.state === "failed" && task.interrupted) throw conflict("transcription_unavailable",
       "The interrupted transcription cannot resume with the current provider. Retry it from Media.");
-    ctx.track(done.catch(() => null));
+    ctx.track(done.catch(() => null), project.id);
     return c.json({ state: "processing", taskId: task.id }, 202);
   });
 
@@ -279,7 +280,7 @@ export function mediaRoutes(ctx: Ctx) {
       const info = await stat(file);
       const key = JSON.stringify(["vad", file, media.hash, info.size, info.ctimeMs, info.mtimeMs, from, to]);
       // Up to a minute, read because someone asked: a running edit checks its joins with it while caching is paused too.
-      const spans = await speech.get(key, () => ctx.track(speechActivity(file, from, to, ctx.projectSignal(media.projectId))));
+      const spans = await speech.get(key, () => ctx.track(speechActivity(file, from, to, ctx.projectSignal(media.projectId)), media.projectId));
       return c.json({ mediaId: media.id, from, to, ...wf, speechActivity: spans });
     }
     return c.json({ mediaId: media.id, from, to, peaks: wf.peaks, rms: wf.rms });
@@ -302,7 +303,7 @@ export function mediaRoutes(ctx: Ctx) {
       return c.json(transcripts.search(transcript, search, contextWords));
     }
     return c.json(c.req.query("audioSources") === "1" && from !== null && to !== null && !omitWords
-      ? await ctx.track(readSources(media.projectId, media, transcript, from, to)) : transcript);
+      ? await ctx.track(readSources(media.projectId, media, transcript, from, to), media.projectId) : transcript);
   });
 
   /**
@@ -314,7 +315,7 @@ export function mediaRoutes(ctx: Ctx) {
     const range = z.tuple([z.number().finite().nonnegative(), z.number().finite().nonnegative()]).refine(([a, b]) => b >= a);
     const { words, gaps } = await jsonBody(c, z.object({ words: z.array(range).max(5000).default([]), gaps: z.array(range).max(2000).default([]) }));
     const toRange = ([start, end]: [number, number]) => ({ start, end });
-    return c.json(await ctx.track(otherInputReader(ctx).classify(media.projectId, media, words.map(toRange), gaps.map(toRange))));
+    return c.json(await ctx.track(otherInputReader(ctx).classify(media.projectId, media, words.map(toRange), gaps.map(toRange)), media.projectId));
   });
 
   /** Attempts at the same line near a source range, for comparing takes in review. Source seconds. */
@@ -338,7 +339,7 @@ export function mediaRoutes(ctx: Ctx) {
     const { status: _s, error: _e, projectId, ...asset } = media;
     // Runs in the background; the task is returned immediately and updated over WS.
     const { task, done } = startTranscription(ctx, projectId, asset, body.provider, "refuse");
-    ctx.track(done.catch(() => null));
+    ctx.track(done.catch(() => null), projectId);
     return c.json({ task }, 202);
   });
 
@@ -372,7 +373,7 @@ export function mediaRoutes(ctx: Ctx) {
     try {
       // Frames share the engine’s picture lane with contact sheets. The editor’s own requests go first.
       const priority = c.req.query("priority") === "interactive";
-      const jpeg = await frames.get(key, signal => ctx.track(pictureLane(ctx).run(() => frame(signal), { priority, signal })), {
+      const jpeg = await frames.get(key, signal => ctx.track(pictureLane(ctx).run(() => frame(signal), { priority, signal }), media.projectId), {
         priority, signal: c.req.raw.signal,
       });
       return new Response(new Uint8Array(jpeg), { headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=3600" } });

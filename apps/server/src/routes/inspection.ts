@@ -145,7 +145,7 @@ export function inspectionRoutes(ctx: Ctx) {
         const events = options.review ? await qualityEvents(file, local, origin, signal) : undefined;
         const wav = options.includeAudio ? await audition(file, local, signal) : undefined;
         return { ...sheet, events, wav };
-      })()));
+      })(), project.id));
       return { ...plan, range: { start: origin + local.start, end: origin + local.end }, ...analysis };
     }));
     return { state: "ready", windows };
@@ -206,7 +206,7 @@ export function inspectionRoutes(ctx: Ctx) {
         if (fromCopy) return fromCopy;
         const decoder = await pictureDecoder(ctx.settings().render.hwaccel);
         return lane.run(() => pictureActivity(file, range, { origin: 0, fps, decoder, signal }), { signal });
-      })()));
+      })(), project.id));
       return { mediaId, from, to, ...result };
     }));
     return c.json({ windows: measured });
@@ -260,14 +260,14 @@ export function inspectionRoutes(ctx: Ctx) {
     const { mediaId, from, to, voice } = await jsonBody(c, SourceAudioRequest);
     const project = requireProject(ctx, c.req.param("id"));
     const { file, stream } = await audioSource(project, { mediaId, to, voice });
-    return c.json({ wav: await ctx.track(audition(file, { start: from, end: to }, ctx.projectSignal(project.id), stream)) });
+    return c.json({ wav: await ctx.track(audition(file, { start: from, end: to }, ctx.projectSignal(project.id), stream), project.id) });
   });
 
   r.post("/projects/:id/sound-picture", async c => {
     const { mediaId, from, to, remove, voice, words } = await jsonBody(c, SoundPictureRequest);
     const project = requireProject(ctx, c.req.param("id"));
     const { file, stream } = await audioSource(project, { mediaId, to, voice });
-    const { jpeg, layout } = await ctx.track(soundPicture(file, { range: { start: from, end: to }, remove, words, stream, signal: ctx.projectSignal(project.id) }));
+    const { jpeg, layout } = await ctx.track(soundPicture(file, { range: { start: from, end: to }, remove, words, stream, signal: ctx.projectSignal(project.id) }), project.id);
     return c.json({ jpeg: jpeg.toString("base64"), layout });
   });
 

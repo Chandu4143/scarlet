@@ -32,7 +32,7 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
   const project = ctx.repos.projects.get(projectId);
   if (!project) throw notFound("project");
   const tl = resolveTimeline(ctx, project, request.version);
-  const check = await ctx.track(auditDialogueAudio(ctx, project, tl, task, AbortSignal.any([signal, ctx.projectSignal(projectId)])));
+  const check = await ctx.track(auditDialogueAudio(ctx, project, tl, task, AbortSignal.any([signal, ctx.projectSignal(projectId)])), projectId);
   return ctx.db.transaction(() => {
     const owner = current();
     const root = runRoot(owner);
