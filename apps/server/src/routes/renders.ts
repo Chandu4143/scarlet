@@ -20,6 +20,7 @@ import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
 import { previewPictures } from "../services/previewPictures.js";
 import { jsonBody, numberParam, requireProject, requireProjectHeader } from "./util.js";
 import { measuredLoudness, type Loudness } from "../render/loudness.js";
+import { editorFirst } from "../services/editorFirst.js";
 
 /** Index visible clip intervals once so one still stats only the files that can contribute to its pixels. */
 function frameSources(timeline: Timeline) {
@@ -82,6 +83,8 @@ export function renderRoutes(ctx: Ctx) {
   async function requestFrame(request: Request, projectId: string, key: string, priority: boolean, cacheControl: string, decode: (signal: AbortSignal) => Promise<Buffer>, etag?: string) {
     try {
       const headers = { "Cache-Control": cacheControl, ...(etag ? { ETag: etag } : {}) };
+      // Only the editor's window asks for a cut's pictures: background work yields while they look (editorFirst.ts).
+      editorFirst.touch();
       if (etag && request.headers.get("If-None-Match") === etag) return new Response(null, { status: 304, headers });
       // Frames share the engine's picture lane with the agent's contact sheets. The editor's own requests go first.
       const job = frames.get(key, demand => {

@@ -19,6 +19,7 @@ import { alignmentVersion, alignsLanguage, alignTranscript, type AlignmentCheckp
 import { fillTranscriptHoles } from "../transcribe/transcriptHoles.js";
 import { extractWav } from "../render/ffmpeg.js";
 import { audioLane, whisperLane, type AudioWork } from "./audioWork.js";
+import { editorFirst } from "./editorFirst.js";
 import { decodeWaveformCache, encodeWaveformCache, fileInDirectory, MAX_WAVEFORM_CACHE_BYTES, MAX_WAVEFORM_POINTS, WAVEFORM_CACHE_VERSION } from "@scarlet/render";
 import type { WaveformCache } from "../render/adapter.js";
 import { actorFor, logActivity, quote } from "./activity.js";
@@ -341,7 +342,12 @@ export async function ingestMedia(
   return stored;
 }
 
-async function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) {
+/** An import's proxy and transcript are nobody's to wait for until a pass reads the recording (editorFirst.ts). */
+function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) {
+  return editorFirst.run(() => !audioLane(ctx).focusedOn(asset.id), () => ingestInBackground(ctx, projectId, asset));
+}
+
+async function ingestInBackground(ctx: Ctx, projectId: string, asset: MediaAsset) {
   const signal = ctx.mediaSignal(projectId);
   const src = join(ctx.paths.media(projectId), asset.path);
   const proxy = join(ctx.paths.proxies(projectId), `${asset.id}.mp4`);
