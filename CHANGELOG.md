@@ -6,6 +6,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 15, 2026
 
+- Renaming your first-cut dialogue skill keeps its new command working as a dialogue pass.
+- Scarlet can measure the wait between a picture cut and the next spoken word when you ask it to tighten an entrance.
+- Scarlet now uses all its editing tools on every request: frame inspection, edit comparison, captions and import/export can no longer be turned off. Settings › Tools & skills lists the tools below your skills.
 - A message you're writing about the whole video stays that way when you click or scrub the timeline.
 - A time you type in your message no longer replaces the moment you picked, and taking the moment off with × keeps it off.
 - The first thing you add to an empty message box now shows its card for a moment before folding into the icon, and the card opens the same way on every computer and closes when you click elsewhere or press Esc.

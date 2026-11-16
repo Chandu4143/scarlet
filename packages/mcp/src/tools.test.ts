@@ -792,7 +792,6 @@ describe("screen_text", () => {
     expect(await description(await connect())).toContain("media_frame at a line's start second shows that frame");
     const blind = await connect({ capabilities: { images: false, audio: false, files: false } });
     expect(await description(blind)).not.toContain("media_frame");
-    expect(await description(await connect({ editingTools: { pictures: false } }))).not.toContain("media_frame");
   });
 });
 

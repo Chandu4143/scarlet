@@ -7,6 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ScarletApiError, type ProjectDetail, type ScarletClient, type ScarletToolName, type WaveformResponse } from "@scarlet/shared";
 import { timelineDuration, type Project, type Timeline, type TranscriptWord } from "@scarlet/timeline";
 import { auditJoin, formatTimelineTranscript, newJoins, timelineJoins, timelineWords, type JoinAudit, type TimelineJoin } from "./timeline-perception.js";
+import { pictureEntranceReader } from "./picture-entrance.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, text } from "./tool-result.js";
 import { OTHER_INPUT } from "./analysis.js";
@@ -83,6 +84,7 @@ export function registerPerception(deps: PerceptionDeps) {
       if (!readings.has(key)) readings.set(key, hi > lo ? deps.readLevels(mediaId, lo, hi).catch(without(`failed to read the levels of ${mediaId} for a join audit`, undefined)) : Promise.resolve(undefined));
       return readings.get(key)!;
     };
+    const entrance = pictureEntranceReader(tl, project.media, project.settings.fps);
     const audits: JoinAudit[] = [];
     for (const join of joins) {
       const number = all.findIndex(j => Math.abs(j.at - join.at) < 1e-3) + 1;
@@ -94,14 +96,15 @@ export function registerPerception(deps: PerceptionDeps) {
           deps.transcriptWords(side.out.mediaId, false, side.out.source + 2).catch(without(`failed to read the words of ${side.out.mediaId} for a join audit`, null)),
           deps.transcriptWords(side.in.mediaId, false, side.in.source + 2).catch(without(`failed to read the words of ${side.in.mediaId} for a join audit`, null)),
         ]);
+        const pictureEntrance = entrance(side, inWords, outWords, deps.settledThrough(side.in.mediaId));
         if (!out || !inn) {
-          audits.push({ join: number, at: join.at, trackId: side.trackId,
+          audits.push({ join: number, at: join.at, pictureEntrance, trackId: side.trackId,
             out: { mediaId: side.out.mediaId, source: side.out.source }, in: { mediaId: side.in.mediaId, source: side.in.source },
             levels: "", verdict: "check: no level reading for this join (waveform unavailable)" });
           continue;
         }
         const near = (list: TranscriptWord[] | null, t: number) => list?.filter(w => w.end > t - 2 && w.start < t + 2);
-        audits.push(auditJoin(number, join.at, side, out, inn, { out: outWords ?? undefined, in: near(inWords, side.in.source) }));
+        audits.push({ ...auditJoin(number, join.at, side, out, inn, { out: outWords ?? undefined, in: near(inWords, side.in.source) }), pictureEntrance });
       }
     }
     return audits;
@@ -144,7 +147,7 @@ export function registerPerception(deps: PerceptionDeps) {
       detail: z.enum(["lines", "words"]).default("lines") }, readTranscript);
 
   tool("timeline_join_audit",
-    "Measure joins on a changeId's saved version, or a version (default head) with optional at (join times) or from/to. Each audible track reports out.lastWord and its aligned source end, out.wordEndToJoin (timeline seconds from that word to the cut, at the center of a crossfade), voice activity, clipped words, and a verdict. For pacing use wordEndToJoin. airAfter/airBefore count quiet at each handle that voice detection also calls quiet. levelQuiet counts low-level sound at those handles independently. The RMS strip gives dBFS in 20 ms steps either side with the level jump in dB.",
+    "Measure joins on a changeId's saved version, or a version (default head) with optional at (join times) or from/to. Each audible track reports out.lastWord and its aligned source end, out.wordEndToJoin (timeline seconds from that word to the cut, at the center of a crossfade), voice activity, clipped words, and a verdict. pictureEntrance.gapMs measures from the first displayed frame of the incoming take to its first aligned spoken word. Positive means a wait, negative means the voice leads the picture. A trimmed word or an unverified picture has no score. Use this with the brief and the sound at the edge when deciding whether to shorten a wait. airAfter/airBefore count quiet at each handle that voice detection also calls quiet. levelQuiet counts low-level sound at those handles independently. The RMS strip gives dBFS in 20 ms steps either side with the level jump in dB.",
     { changeId: z.string().optional(), version: z.string().optional(), at: z.array(z.number().min(0)).max(MAX_AUDITS).optional(),
       from: z.number().min(0).optional(), to: z.number().min(0).optional() },
     async ({ changeId, version, at, from, to }) => {

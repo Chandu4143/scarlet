@@ -134,7 +134,6 @@
  *   WS     /ws?token=<token>        server pushes WsEvent; client may send { type: "subscribe", projectId }
  */
 import { z } from "zod/v3";
-import { EditingTools } from "./editingTools.js";
 import {
   Author,
   Change,
@@ -703,6 +702,8 @@ export const Task = z.object({
   context: z
     .object({
       branch: z.string().optional(),
+      /** Include the transcript actually read by editing tools in this evaluation task's evidence. */
+      recordTranscriptDigests: z.boolean().optional(),
       version: Id.optional(),
       mediaId: Id.optional(),
       /** The provider the editor chose for this one transcription, when it isn't the one in Settings. */
@@ -1393,7 +1394,6 @@ export type TelemetryUnavailable = "environment" | "unconfigured";
 
 export const ServerSettings = z.object({
   telemetryEnabled: z.boolean().default(true),
-  editingTools: EditingTools.default({}),
   /** Transcription provider: "openai" (API key), "whispercpp" (local binary), "none" (no engine in this build: not a choice the editor can make). */
   transcription: z.object({
     provider: z.enum(["openai", "whispercpp", "none"]).default("none"),

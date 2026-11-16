@@ -18,9 +18,12 @@ export const LOUPE_PX_PER_FRAME = 10;
 const STILL_SLOP_PX = 2;
 /** In the close-up, a hand that shifts less than this before letting go of a held press hasn't moved. */
 const PRECISE_SLOP_PX = 2;
-/** The close-up's strip: one picture a frame, this many in view, each this wide (workspace.css --loupe-picture). */
+/** The close-up's strip: one picture a frame, about this many in view, the plainest this wide (workspace.css --loupe-picture). */
 export const LOUPE_PICTURES = 7;
 const LOUPE_PICTURE_PX = 88;
+/** How much wider than the plainest picture each one is, by its distance from the held frame: the held one biggest, its neighbours stepping down. */
+export const LOUPE_SCALES = [2.4, 1.45, 1.15, 1];
+const loupeWidth = (distance: number) => LOUPE_PICTURE_PX * (LOUPE_SCALES[Math.min(LOUPE_SCALES.length - 1, Math.abs(distance))] ?? 1);
 /** Pictures drawn past each side of the strip, so a step slides the next one in instead of popping it. */
 const LOUPE_SPARE = 2;
 /** The strip's pictures come in sheets of this many frames in a row, one request a sheet. */
@@ -298,15 +301,23 @@ function RangeLoupe({ time, at, fps, last, inside, snapped, edges, frameAt, shee
   inside: "before" | "after"; snapped: boolean; edges: readonly number[]; frameAt?(time: number, exact?: boolean): string | undefined;
   sheet?: LoupeSheet; pictureAspect: number }) {
   const frame = Math.round(time * fps);
-  // Where the strip started: pictures keep their places in it, and it slides by whole frames, so each picture loads once.
-  const [origin] = useState(frame);
   const reach = (LOUPE_PICTURES - 1) / 2 + LOUPE_SPARE;
+  // Each picture's left edge from the middle line: the held one is centred on it and the rest step outwards. Pictures are
+  // keyed by frame, so a step slides and resizes them into their new places and each picture loads once.
+  const offset = (distance: number) => {
+    let x = -loupeWidth(0) / 2;
+    for (let d = 0; d < distance; d++) x += loupeWidth(d);
+    for (let d = 0; d > distance; d--) x -= loupeWidth(d - 1);
+    return x;
+  };
+  const heldHeight = loupeWidth(0) / pictureAspect;
   const pictures = [];
   for (let f = Math.max(0, frame - reach); f <= Math.min(last, frame + reach); f++) {
     const edge = snapTime(f / fps, edges, .5 / fps) !== undefined;
     const second = f % Math.round(fps) === 0;
+    const width = loupeWidth(f - frame), height = width / pictureAspect;
     pictures.push(<span key={f} className={`timeline-range-loupe-picture${f === frame ? " is-now" : ""}`} data-frame={f}
-      style={{ left: (f - origin) * LOUPE_PICTURE_PX }}>
+      style={{ left: offset(f - frame), width, height, top: heldHeight - height }}>
       <span className="timeline-range-loupe-still"><LoupePicture frame={f} last={last} fps={fps} frameAt={frameAt} sheet={sheet} /></span>
       <i className={`timeline-range-loupe-tick${second ? " is-second" : ""}${edge ? " is-edge" : ""}`} />
       {second && <small>{playbackClock(f / fps).replace(/\.\d+$/, "")}</small>}
@@ -315,8 +326,8 @@ function RangeLoupe({ time, at, fps, last, inside, snapped, edges, frameAt, shee
   return <span className="timeline-range-loupe" role="status" data-inside={inside}
     style={{ left: `clamp(var(--loupe-half), ${at}%, calc(100% - var(--loupe-half)))` } as CSSProperties}>
     <span className="timeline-range-loupe-head"><b>{playbackClock(time)}</b>{snapped && <small>On an edit’s edge</small>}</span>
-    <span className="timeline-range-loupe-row" style={{ "--picture-height": `${LOUPE_PICTURE_PX / pictureAspect}px` } as CSSProperties}>
-      <span className="timeline-range-loupe-film" style={{ transform: `translateX(${(origin - frame) * LOUPE_PICTURE_PX - LOUPE_PICTURE_PX / 2}px)` }}>{pictures}</span>
+    <span className="timeline-range-loupe-row" style={{ "--picture-height": `${heldHeight}px`, "--held-picture": `${loupeWidth(0)}px` } as CSSProperties}>
+      <span className="timeline-range-loupe-film">{pictures}</span>
       <i className="timeline-range-loupe-now" />
     </span>
     <span className="timeline-range-loupe-hint">Drag to move a frame at a time · let go to set</span>

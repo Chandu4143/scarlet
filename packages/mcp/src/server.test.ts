@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient, Task, type EditingTools } from "@scarlet/shared";
+import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient, Task } from "@scarlet/shared";
 import type { MediaClip, Timeline, Transcript } from "@scarlet/timeline";
 import { applyOps, clipEnd, emptyTimeline, makeMediaClip } from "@scarlet/timeline";
 import { createScarletMcpServer, SCARLET_TOOL_NAMES } from "./server.js";
@@ -45,13 +45,12 @@ let textOf: (r: CallToolResult) => string;
 /** A result's answer, before any line that says what it was answered without. */
 const firstJson = (r: CallToolResult) => JSON.parse((r.content[0] as { text: string }).text);
 
-async function connect(taskId?: string, workDir?: string, task?: Task, editingTools?: EditingTools, alignmentWaitMs?: number, agent = "claude", joinWaitMs?: number) {
+async function connect(taskId?: string, workDir?: string, task?: Task, alignmentWaitMs?: number, agent = "claude", joinWaitMs?: number) {
   const sc = new ScarletClient({ baseUrl: mock.url, token: "tok" });
   const server = createScarletMcpServer(sc, {
     projectId: "prj_test",
     alignmentWaitMs,
     joinWaitMs,
-    editingTools,
     taskId,
     taskStartedAt: taskId ? "2026-04-01T12:00:00.000Z" : undefined,
     task,
@@ -94,7 +93,7 @@ describe("MCP file tools", () => {
     const root = join(dir, "artifacts");
     await mkdir(root);
     // asset_add is offered only to a harness that can write files, such as Codex.
-    const c = await connect(undefined, root, undefined, undefined, undefined, "codex");
+    const c = await connect(undefined, root, undefined, undefined, "codex");
     try {
       await writeFile(join(dir, "credential"), "private");
       await writeFile(join(root, "image.png"), "graphic");
@@ -120,7 +119,7 @@ describe("MCP file tools", () => {
         // symlinked ancestor, then reuse the absolute path returned by export.
         const alias = join(dir, "alias");
         await symlink(dir, alias);
-        const aliased = await connect(undefined, join(alias, "artifacts"), undefined, undefined, undefined, "codex");
+        const aliased = await connect(undefined, join(alias, "artifacts"), undefined, undefined, "codex");
         try {
           const exported = await aliased.callTool({ name: "export_otio", arguments: { version: "v1" } }) as CallToolResult;
           const payload = JSON.parse(textOf(exported).split("\n\n").at(-1)!);
@@ -149,20 +148,8 @@ describe("tool errors", () => {
 });
 
 describe("tools/list", () => {
-  it("keeps core editing available and omits disabled tools from discovery and calls", async () => {
-    const session = await connect(undefined, undefined, undefined, { pictures: false });
-    try {
-      const names = (await session.listTools()).tools.map(t => t.name);
-      expect(names).toContain("timeline_propose");
-      expect(names).not.toContain("frame_contact_sheet");
-      expect(names).not.toContain("frame_contact_sheet_batch");
-      expect(names).not.toContain("media_frame");
-      const unavailable = await session.callTool({ name: "media_frame", arguments: { mediaId: "m1", t: 0 } });
-      expect(unavailable.isError).toBe(true);
-    } finally { await session.close(); }
-  });
   it("offers asset_add only to a harness that can write files", async () => {
-    const codex = await connect(undefined, undefined, undefined, undefined, undefined, "codex");
+    const codex = await connect(undefined, undefined, undefined, undefined, "codex");
     try {
       expect((await codex.listTools()).tools.map(t => t.name)).toContain("asset_add");
     } finally { await codex.close(); }
@@ -908,6 +895,19 @@ it("combines word context and independently detected speech on a waveform sugges
 });
 
 describe("transcript tools", () => {
+  it("records the actual timed word list once for an evaluation task", async () => {
+    const task = Task.parse({ id: "eval-words", projectId: "prj_test", kind: "edit", state: "running", agent: "codex",
+      instruction: "Cut dialogue", context: { recordTranscriptDigests: true }, createdBy: { type: "human", name: "Editor" } });
+    const editor = await connect(task.id, undefined, task);
+    try {
+      for (const fromWord of [0, 5]) {
+        const result = await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord } });
+        expect(result.isError).toBeFalsy();
+      }
+      const reads = mock.state.events.filter(e => e.data?.kind === "eval_transcript");
+      expect(reads.map(e => e.data)).toEqual([{ kind: "eval_transcript", mediaId: "m1", count: 10, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+    } finally { await editor.close(); }
+  });
   it("transcript_search finds phrases with context", async () => {
     const r = (await client.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "WELCOME back" } })) as CallToolResult;
     const t = textOf(r);
@@ -2378,7 +2378,7 @@ it.each(["pending conflict", "saved override", "background join"])("requires a c
   const task = Task.parse({ id: "rollback", state: "running", projectId: "prj_test", kind: "revise", agent: "codex",
     instruction: "Remove the repeated word.", context: { changeId: "pass", cutIndex: 0 }, createdBy: { type: "human", name: "Editor" },
     ...(evidence !== "saved override" && { cutConflict: { version: "intervening", range } }) });
-  const editor = await connect(task.id, undefined, task, undefined, undefined, "codex", 20);
+  const editor = await connect(task.id, undefined, task, undefined, "codex", 20);
   const before = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform };
   const tl = emptyTimeline("prj_test");
   tl.version = "original";
@@ -3637,7 +3637,7 @@ it("measures the sound beside an edge once, also within a second of where a reco
 
 it("returns progress for a cold 12-cut batch and collects the same measurements on retry", async () => {
   const original = { timeline: mock.state.timeline, transcripts: mock.state.transcripts, waveform: mock.state.waveform };
-  const editor = await connect(undefined, undefined, undefined, undefined, undefined, "codex", 20);
+  const editor = await connect(undefined, undefined, undefined, undefined, "codex", 20);
   const tl = emptyTimeline(mock.state.project.id);
   tl.version = "slow-batch";
   tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 52, 0)];
@@ -3691,7 +3691,7 @@ it("returns progress for a cold 12-cut batch and collects the same measurements 
 
 it("delivers ready cuts and errors while another cut waits for its waveform", async () => {
   const original = { timeline: mock.state.timeline, waveform: mock.state.waveform };
-  const editor = await connect(undefined, undefined, undefined, undefined, undefined, "codex", 20);
+  const editor = await connect(undefined, undefined, undefined, undefined, "codex", 20);
   const tl = emptyTimeline(mock.state.project.id);
   tl.version = "partial-waves";
   tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 52, 0)];
@@ -3926,7 +3926,7 @@ it("reads a transcript whose words are still being placed on the audio, and hold
     return true;
   };
   mock.state.transcripts = { m1: estimated };
-  const editor = await connect(undefined, undefined, undefined, undefined, 0);
+  const editor = await connect(undefined, undefined, undefined, 0);
   try {
     // The words and their indices can be read at once. The result says how far their times are final.
     const read = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 4 } }) as CallToolResult);
@@ -3968,7 +3968,7 @@ it("refuses a word reference read from a list that has changed since, instead of
     return true;
   };
   mock.state.transcripts = { m1: estimated };
-  const editor = await connect(undefined, undefined, undefined, undefined, 0);
+  const editor = await connect(undefined, undefined, undefined, 0);
   try {
     // The model reads the words while they are still being placed, and their indices may still change.
     const read = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1" } }) as CallToolResult);
@@ -4009,7 +4009,7 @@ it("refuses a word reference from an earlier read even after a later read showed
     return true;
   };
   mock.state.transcripts = { m1: estimated };
-  const editor = await connect(undefined, undefined, undefined, undefined, 0);
+  const editor = await connect(undefined, undefined, undefined, 0);
   try {
     expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1" } }) as CallToolResult)).toContain("#4 2.20-2.40 Um,");
     const [segment] = transcript.segments;
@@ -4071,7 +4071,7 @@ it("holds an edit whose edges need words still being placed, instead of saving i
   mock.state.timeline = tl;
   mock.state.waveform = spokenWaveform;
   mock.state.transcripts = { m1: estimated };
-  const editor = await connect(undefined, undefined, undefined, undefined, 0);
+  const editor = await connect(undefined, undefined, undefined, 0);
   const saves = () => mock.requests.filter(r => r.method === "POST" && r.path === "/projects/prj_test/changes").length;
   try {
     const before = saves();
@@ -4127,7 +4127,7 @@ it("holds captions until the words they are timed from are placed on the audio",
     res.end(JSON.stringify({ change: { id: "chg_captions", state: "approved", description: "Captions", fromVersion: tl.version, toVersion: "captioned", ranges: [] }, duration: 6, diffDescription: [] }));
     return true;
   };
-  const editor = await connect(undefined, undefined, undefined, undefined, 0);
+  const editor = await connect(undefined, undefined, undefined, 0);
   const generate = () => editor.callTool({ name: "captions_generate", arguments: { intent: "requested", description: "Captions" } }) as Promise<CallToolResult>;
   try {
     // A cue keeps the times it is saved with, and nothing places them again. Past the first second these are estimates.
@@ -4244,6 +4244,9 @@ it("marks a recommendation inspected only after the join on the suggestion's ver
     expect(inspected.isError).toBeFalsy();
     const joinAudit = inspected.content.flatMap(c => c.type === "text" && c.text.includes("joinAudit") ? [JSON.parse(c.text).joinAudit] : [])[0];
     expect(joinAudit[0]).toMatchObject({ at: 1.9, verdict: "clean" });
+    const nearby = inspected.content.flatMap(c => c.type === "text" ? JSON.parse(c.text).nearbyWords ?? [] : [])[0];
+    expect(nearby.start[0].words).toEqual(expect.arrayContaining([[.2, .5, "Hello"]]));
+    expect(nearby.end[0].words.length).toBeGreaterThan(0);
     expect(textOf(inspected)).toContain('"levelsDb":[');
     // The editor's count moves as soon as a cut is looked at, before any recommendation for it is saved.
     expect(mock.state.events.findLast(e => e.data?.kind === "cut_progress")?.data).toMatchObject({ changeId: "pass", looked: 1 });
