@@ -5477,7 +5477,7 @@ it("opens Media, Export and History from the header and keeps project tools in t
   const back = container.querySelector<HTMLAnchorElement>('a[href="/"]');
   expect(back?.getAttribute("aria-label")).toBe("All projects");
   const tools = container.querySelector(".simple-tools")!;
-  expect([...tools.querySelectorAll("button")].map(b => b.textContent?.trim()).slice(0, 3)).toEqual(["Media", "Export", "History"]);
+  expect([...tools.querySelectorAll(":scope > button, :scope > .media-hover > button")].map(b => b.textContent?.trim())).toEqual(["Media", "Export", "History"]);
   for (const [name, field] of [["Media", "#media-file-types"], ["Export", "#export-range"]] as const) {
     await click(buttonIn(tools, name)!);
     await act(async () => { await vi.dynamicImportSettled(); });
@@ -5596,10 +5596,10 @@ it("caches the edit without a ring on the picture or a word on the Media button,
   await act(async () => {});
   expect(container.querySelector(".simple-cache")).toBeNull();
   expect(cachingLine()).toBeNull();
-  expect(mediaButton().title).toBe("");
+  expect(mediaButton().getAttribute("aria-description")).toBeNull();
   await openMenu();
   expect(menuItems()).not.toContain("Media");
-  expect(menuItems()).not.toContain("Pause caching");
+  expect(menuItems()).not.toContain("Pause");
 });
 
 it("marks the Media button, not the menu, when a file couldn't be read or a transcription stopped, and not otherwise", async () => {
@@ -5612,7 +5612,7 @@ it("marks the Media button, not the menu, when a file couldn't be read or a tran
   await act(async () => useProjectStore.setState({ current: data }));
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(mediaButton().querySelector(".menu-dot")?.getAttribute("aria-label")).toBe(`Couldn’t read ${broken!.name}`);
-  expect(mediaButton().title).toContain(`Couldn’t read ${broken!.name}`);
+  expect(mediaButton().getAttribute("aria-description")).toContain(`Couldn’t read ${broken!.name}`);
   await openMenu();
   expect(container.querySelector('[role="menu"] .menu-dot')).toBeNull();
   // So is a recording whose transcription stopped before it had a transcript.
@@ -5629,7 +5629,7 @@ it("marks the Media button when a file failed to import, until Media's list of i
   await act(async () => { await enqueueImports(PRJ, ["/Users/me/Movies/drone.mov"]); });
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(mediaButton().querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("Some files need attention");
-  expect(mediaButton().title).toBe("Some files need attention");
+  expect(mediaButton().getAttribute("aria-description")).toBe("Some files need attention");
   // Media lists the file with why it failed. Dismissed there, nothing is marked.
   await click(mediaButton());
   await act(async () => { await vi.dynamicImportSettled(); });
@@ -5731,7 +5731,7 @@ it("keeps the menu's Model row while no model is ready, and marks it only once w
   }
 });
 
-it("says how far a video's cache has got on the menu's Media row, with Pause under it", async () => {
+it("shows cache progress on the Media button and offers Pause from More", async () => {
   const [first, ...rest] = data.media.filter(m => m.kind === "video");
   vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [
     { mediaId: first!.id, state: "caching", progress: 0.3 }, ...rest.map(m => ({ mediaId: m.id, state: "ready" as const })),
@@ -5747,12 +5747,11 @@ it("says how far a video's cache has got on the menu's Media row, with Pause und
   expect(moreTitle()).toBe("More");
   expect(lineDrawn()).toBe(30);
   expect(cachingLine()!.classList.contains("is-unknown")).toBe(false);
-  expect(mediaButton().title).toBe("Caching 30%");
   expect(mediaButton().getAttribute("aria-description")).toBe("Caching 30%");
   expect(mediaButton().textContent).toBe("Media");
   await openMenu();
-  await click(menuItem("Pause caching"));
-  expect(updateProject).toHaveBeenCalledWith({ mediaPaused: true });
+  await click(menuItem("Pause"));
+  expect(updateProject).toHaveBeenCalledWith({ mediaPaused: true }, PRJ);
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 
@@ -5777,20 +5776,20 @@ it("draws a line under the Media button's word only while videos cache, and neve
   await cachesBecome({ state: "caching" });
   expect(cachingLine()!.classList.contains("is-unknown")).toBe(true);
   expect(lineDrawn()).toBe(0);
-  expect(mediaButton().title).toBe("Caching");
+  expect(mediaButton().getAttribute("aria-description")).toBe("Caching");
   expect(moreButton().querySelector(".progress-line")).toBeNull();
   await cachesBecome({ state: "caching", progress: 0.71 });
   expect(cachingLine()!.classList.contains("is-unknown")).toBe(false);
   expect(lineDrawn()).toBe(71);
-  expect(mediaButton().title).toBe("Caching 71%");
+  expect(mediaButton().getAttribute("aria-description")).toBe("Caching 71%");
   // A file that needs the editor marks the Media button, which says it first, and not the menu.
   const broken = rest[0] ?? first!;
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "failed" as const, error: "moov atom not found" } : m) });
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(cachingLine()).not.toBeNull();
-  expect(mediaButton().title).toBe(`Couldn’t read ${broken.name}. Caching 71%`);
+  expect(mediaButton().getAttribute("aria-description")).toBe(`Couldn’t read ${broken.name}. Caching 71%`);
   await cachesBecome({ state: "caching", progress: 0.71 }, { media: data.media.map(m => m.id === broken.id ? { ...m, status: "ready" as const, error: undefined } : m) });
-  // Paused, nothing is caching: the ring is gone, and nothing under the header says so. The menu's Resume caching row does.
+  // Paused, nothing is caching: the ring is gone, and nothing under the header says so. The menu's Resume row does.
   await cachesBecome({ state: "uncached", queued: true }, { project: { ...data.project, mediaPaused: true } });
   expect(cachingLine()).toBeNull();
   expect(container.querySelector(".simple-banner")).toBeNull();
@@ -5802,7 +5801,7 @@ it("draws a line under the Media button's word only while videos cache, and neve
   expect(moreTitle()).toBe("More");
 });
 
-it("says that caching is paused once, on the menu's Media row with Resume under it, and in no banner", async () => {
+it("offers Resume from the Media hover card and More while media processing is paused", async () => {
   data = { ...data, project: { ...data.project, mediaPaused: true } };
   const [video] = data.media.filter(m => m.kind === "video");
   vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [{ mediaId: video!.id, state: "uncached", queued: true }] });
@@ -5812,12 +5811,13 @@ it("says that caching is paused once, on the menu's Media row with Resume under 
   await act(async () => {});
   // The editor paused it, so nothing under the header says so, and nothing is amber or marked for it.
   expect(container.querySelector(".simple-banner")).toBeNull();
-  expect(container.querySelector("#simple-chat")!.textContent).not.toMatch(/paused|Resume/i);
+  expect(container.querySelector(".simple-thread")!.textContent).not.toMatch(/paused|Resume/i);
   expect(moreButton().querySelector(".needs-you")).toBeNull();
-  expect(mediaButton().title).toBe("Caching is paused");
+  expect(mediaButton().getAttribute("aria-description")).toBe("Media processing is paused");
+  expect(buttonIn(container.querySelector(".media-hover-card")!, "Resume")).toBeTruthy();
   await openMenu();
-  await click(menuItem("Resume caching"));
-  expect(updateProject).toHaveBeenCalledExactlyOnceWith({ mediaPaused: false });
+  await click(menuItem("Resume"));
+  expect(updateProject).toHaveBeenCalledExactlyOnceWith({ mediaPaused: false }, PRJ);
 });
 
 it("says how an export is going on the menu's Export row, and marks the menu for one that stopped until Export has shown why", async () => {
