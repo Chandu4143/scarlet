@@ -107,7 +107,7 @@ it("adds the request's tokens to its finished run line, and updates live", () =>
   expect(view.host.querySelector(".req-time, .req-steps, .run-chevron")).toBeNull();
   expect(view.host.textContent).not.toContain("tokens");
 
-  act(() => useProjectStore.getState().applyEvent({ type: "task.usage", projectId: "prj_1", taskId: task.id, usage: totals() }));
+  act(() => useProjectStore.getState().applyEvent({ type: "task.usage", projectId: "prj_1", taskId: task.id, usage: totals({ reasoningTokens: 100 }) }));
   const tokens = view.host.querySelector(".run-tokens");
   expect(tokens?.textContent).toBe("48.2K tokens");
   expect(tokens?.getAttribute("aria-label")).toContain("cache read");
