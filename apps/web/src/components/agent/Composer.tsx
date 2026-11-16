@@ -338,7 +338,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   };
   const aimItems: AimItem[] = [
     ...placeTag ? [{ key: `target:${placeTag}`, name: placeTag,
-      displayName: placeTag.startsWith("Cut at ") ? placeTag.slice("Cut at ".length) : undefined,
+      displayName: placeTag.replace(/^(?:Cut|Edit) at /, ""),
       clearLabel: targetIsPoint ? `Take “${placeTag}” off: the message is about the whole video` : `Start a new edit instead of ${tagAct!.charAt(0).toLowerCase()}${tagAct!.slice(1)}`,
       onClear: takeOffTarget }] : [],
     ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: `Range ${markedWords}`,

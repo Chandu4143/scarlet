@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- The message box shows an edit’s time on its own and widens its tag to show the × on hover. Open +1 to see and clear an additional marked range.
 - An edit you kept stays kept when Scarlet, still working, lists it again in other words, instead of asking you about it a second time.
 - About puts the installed version and update check at the top, shows the latest release notes, and folds earlier changes and usage report details into sections you can open.
 - Pause and resume background caching and transcription from the Projects menu, the Media panel, or by hovering over Media.
