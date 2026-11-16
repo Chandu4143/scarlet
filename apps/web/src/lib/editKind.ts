@@ -11,8 +11,8 @@ export function editKindWord(edit: Pick<ThreadEdit, "kind">): string | undefined
   return edit.kind && WORDS[edit.kind];
 }
 
-/** The card shows why Scarlet made the edit, followed by any cue for the editor to check. */
-export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker" | "todo">): string {
+/** The card shows why Scarlet made the edit and what to check. */
+export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker" | "todo">, reviewFirst = false): string {
   // A marker changed nothing the editor sees or hears: what it asks of them is the point, so it comes first. A revision
   // only says it was revised, so what the marker asks is kept apart from it.
   const todo = edit.marker ? edit.todo ?? (edit.check !== REVISED_CHECK ? edit.check : undefined) : undefined;
@@ -20,6 +20,11 @@ export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | 
     const why = edit.reason || edit.summary;
     if (!why) return todo;
     return said(why, todo) ? why : `${todo.replace(/[.!?]*$/, ".")} ${why.replace(/[.!?]*$/, ".")}`;
+  }
+  // A located review starts with what the editor should look for in the passage.
+  if (reviewFirst && edit.check) {
+    const why = edit.reason || edit.summary || edit.label;
+    return said(why, edit.check) ? why : `${endSentence(edit.check)} ${endSentence(why)}`;
   }
   if (edit.reason) {
     if (!edit.check || edit.reason.includes(edit.check)) return edit.reason;
@@ -30,6 +35,8 @@ export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | 
   if (edit.summary) return edit.summary;
   return edit.check ? `${edit.label.replace(/[.!?]+$/, "")}. ${edit.check}` : edit.label;
 }
+
+const endSentence = (text: string) => /[.!?]$/.test(text) ? text : `${text}.`;
 
 /** Whether a sentence already says a few words, whatever their case, spacing and closing stop. */
 function said(sentence: string | undefined, words: string) {

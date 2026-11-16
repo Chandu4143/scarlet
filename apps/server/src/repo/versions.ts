@@ -131,10 +131,10 @@ export class VersionsRepo {
   }
 
   links(projectId: string) {
-    return this.db.prepare(`SELECT v.version, v.parent, v.change_id AS changeId, v.description,
+    return this.db.prepare(`SELECT v.version, v.parent, v.change_id AS changeId, v.description, v.created_at AS createdAt,
       json_extract(c.json, '$.revertsVersion') AS revertsVersion
       FROM timeline_versions v LEFT JOIN changes c ON c.id = v.change_id WHERE v.project_id = ?`)
-      .all(projectId) as Array<{ version: string; parent: string | null; changeId: string | null; description?: string; revertsVersion?: string }>;
+      .all(projectId) as Array<{ version: string; parent: string | null; changeId: string | null; description?: string; createdAt: string; revertsVersion?: string }>;
   }
 
   summaries(projectId: string, head: string | null): VersionSummary[] {

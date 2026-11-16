@@ -578,7 +578,9 @@ export const Change = z.object({
    * that needs the editor until they keep it there.
    */
   flags: z.array(z.object({ spot: z.number().int().nonnegative(), check: z.string().trim().min(1).max(120), taskId: Id,
-    at: z.string().datetime() })).optional(),
+    at: z.string().datetime(),
+    /** The passage the editor should inspect, in the clock of the version where it was checked. */
+    location: z.object({ version: Id, range: TimeRange }).optional() })).optional(),
   /** Timeline ranges affected by the change (merged, with handles applied by the renderer). */
   ranges: z.array(TimeRange).default([]),
   state: ChangeState.default("proposed"),

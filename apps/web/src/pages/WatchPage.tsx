@@ -177,6 +177,8 @@ interface PreviewProps {
     onRange?(range: MarkedRange | undefined, byKey?: boolean): void;
     /** The chosen edit is about to play on another version: don't start its passage on this one meanwhile. */
     holdPassage?: boolean;
+    /** Passage a pending check asks the editor to see on the working cut. */
+    reviewRange?: TimeRange;
     /** A revision was requested from the open card. Its message box is outside the player. */
     writeRequest?: number;
     /**
@@ -482,8 +484,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const selectedEdit = threadView?.selected;
   const selectedPassage = selectedEdit && (!framing && !selectedEdit.beforeCut && selectedEdit.at === undefined
     ? editPlaybackRange(selectedEdit.range, duration) : selectedEdit.range);
-  const passage = simple.holdPassage ? undefined : reached?.range ?? selectedPassage;
-  useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
   const originalChange = threadView?.originalChange;
   // A marker left for the editor changed nothing in the video, so it has no Before to read.
   const compared = selectedEdit?.marker ? undefined : selectedEdit;
@@ -499,6 +499,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   // The next edit can carry the same request number, so a stretch left behind would play as its passage.
   useLayoutEffect(() => { if (!selectedEdit) setReach(undefined); }, [selectedEdit]);
   const playingBefore = before && !framing;
+  const reviewPassage = selectedEdit && simple.reviewRange && !playingBefore ? editPlaybackRange(simple.reviewRange, duration) : undefined;
+  const reviewPoint = simple.reviewRange?.start;
+  const passage = simple.holdPassage ? undefined : reached?.range ?? reviewPassage ?? selectedPassage;
+  useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
   useLayoutEffect(() => { beforeShown.current = playingBefore; }, [playingBefore]);
   const overlay = playingBefore ? "before-clip" : framing ? "framing" : undefined;
   const overlaid = useRef<string>(undefined);
@@ -533,7 +537,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     // The clip moves the playhead as it plays. The player under it waits, and takes up from the playhead afterwards.
     if (playingBefore) return player.lendPlayhead({ pause: () => beforeClip.current?.pause() });
     if (framing && !reached) {
-      const at = framing.cue ?? usePlayerStore.getState().time;
+      const at = reviewPoint ?? framing.cue ?? usePlayerStore.getState().time;
       return player.previewRange(passage, fps, at >= passage.start && at < passage.end ? at : passage.start);
     }
     // An edit goes by its first version: a revision that lands under it is still the passage the editor chose.
@@ -551,7 +555,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       return release;
     }
     return player.previewRange(passage, fps, undefined, again);
-  }, [threadView?.request, passage?.start, passage?.end, framing?.beforeVersion, framing?.cue, playingBefore, selectedEdit?.at, active, playable, fps, selection, duration, reached]);
+  }, [threadView?.request, passage?.start, passage?.end, framing?.beforeVersion, framing?.cue, reviewPoint, playingBefore, selectedEdit?.at, active, playable, fps, selection, duration, reached]);
 
   // Decode the selected edit's paused frame, including effects and overlays.
   const editedVersion = draft?.version ?? head;

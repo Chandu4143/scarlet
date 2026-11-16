@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Change, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
+import { Change, emptyTimeline, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
 import { buildThreads } from "./threads.js";
 import { Task } from "./api.js";
 import { changeRemovals, matchesEdit, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
@@ -363,6 +363,34 @@ describe("a doubt a later request raises about an edit already in the video", ()
     expect(dialogue!.flagged).toBeUndefined();
     expect(threadEditList(dialogue!).map(e => [e.spot, e.check, e.recheck, e.elsewhere])).toEqual([
       [0, undefined, undefined, undefined], [1, "Black gap and overlapping lines", flags[0]!.at, undefined]]);
+  });
+
+  it("opens a broad edit at the flagged footage after later cuts move it", () => {
+    const working = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 80 }, { start: 100, end: 3468 }]), version: "v3" };
+    const history = [
+      { ...links[0]!, createdAt: "2026-01-01T00:00:00Z" },
+      { ...links[1]!, createdAt: "2026-01-02T00:00:00Z" },
+      { version: "v3", parent: "v2", createdAt: "2026-01-03T00:00:00Z" },
+    ];
+    const blank = { ...emptyTimeline("project"), version: "base" };
+    const versions = { base: blank, v1: earlier, v2: head };
+    const at = "2026-01-02T00:05:00Z";
+    const edit = { ...pass, timelineEdits: [{ label: "Assemble the video", range: { start: 0, end: 3468 } }] };
+    const project = (check: string, location?: NonNullable<Change["flags"]>[number]["location"]) => {
+      const [review] = buildThreads({
+        changes: [{ ...edit, flags: [{ spot: 0, taskId: "cutting", at, check, location }] }],
+        notes: [], tasks: [run("cutting", "dialogue")],
+      });
+      return threadTimeline(review!, working, history, version => versions[version as keyof typeof versions], 30)[0]!;
+    };
+    expect(project("Check the phone comparison.", { version: "v2", range: { start: 518.4, end: 524.5 } })).toMatchObject({
+      changeId: "pass", spot: 0, range: { start: 0, end: 3448 }, reviewRange: { start: 498.4, end: 504.5 },
+    });
+    expect(project("The comparison at 8:38.4 needs different footage.").reviewRange).toEqual({ start: 498.4, end: 498.4 });
+    expect(project("Compare the moments at 8:38.4 and 8:42.").reviewRange).toBeUndefined();
+    expect(project("The source recording at 8:38.4 needs a look.").reviewRange).toBeUndefined();
+    expect(project("Look at 8:38.4 in the source recording.").reviewRange).toBeUndefined();
+    expect(project("Check the removed footage.", { version: "v2", range: { start: 85, end: 90 } }).reviewRange).toBeUndefined();
   });
 
   it("puts a revision the raising request made of it in its place", () => {

@@ -568,8 +568,9 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       // it follows the row's amount, as in any other request's list, and the amount stays.
       const word = sent ? "Revising…" : revised ? REVISED_CHECK : undefined;
       const at = (e as ThreadEdit).at ?? e.range.start;
+      const displayAt = (!seen && !sent ? e.reviewRange?.start : undefined) ?? at;
       // Listed with the calls, it has the number it has among them.
-      return [{ key, at, mark: at as number | undefined, hover: { threadId: thread.id, editKey: key }, label: (e.reason && e.summary) || e.label, n: 0, num: pass?.editNumbers.get(key)?.n,
+      return [{ key, at, displayAt, mark: displayAt as number | undefined, hover: { threadId: thread.id, editKey: key }, label: (e.reason && e.summary) || e.label, n: 0, num: pass?.editNumbers.get(key)?.n,
         state: word, value: editRemoved(e) ?? editKindWord(e), word, revised,
         // Scarlet is on that revision now, so its word moves; one still waiting its turn sits still.
         busy: isWorking(sent),
@@ -580,7 +581,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
         on: !!showing && matchesEdit(showing, e), open: () => actions.openEdit(thread, e), fresh: fresh.has(e.changeId) }];
     }),
     // A call goes by its number, as on its card and on the timeline.
-    ...(pass?.calls ?? []).map(c => ({ key: callRowKey(c), at: c.start, mark: c.at, hover: { threadId: thread.id, call: c.index }, label: c.summary, n: c.n, num: c.n as number | undefined, needs: c.state === "open", sentBack: c.state === "revising",
+    ...(pass?.calls ?? []).map(c => ({ key: callRowKey(c), at: c.start, displayAt: c.start, mark: c.at, hover: { threadId: thread.id, call: c.index }, label: c.summary, n: c.n, num: c.n as number | undefined, needs: c.state === "open", sentBack: c.state === "revising",
       decided: c.state === "approved" || c.state === "skipped",
       state: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : c.version > 1 ? `v${c.version}` : undefined,
       value: c.state === "approved" ? "Approved" : c.state === "skipped" ? "Skipped" : c.state === "revising" ? "Revising…" : undefined,
@@ -616,7 +617,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
     : calls.length || quiet ? undefined : [{ strong: plural(count, "cut") }, " proposed."];
   const placed = new Set(filter ? shown.map(row => row.key) : []);
   // A list that leads with times widens their column for all its rows once one of them is past an hour ("1:02:07").
-  const hours = filter !== "calls" && shown.some(row => clockLabel(row.at).length > 5);
+  const hours = filter !== "calls" && shown.some(row => clockLabel(row.displayAt).length > 5);
   const rowList = filter && <ol ref={list} className={filter === "calls" ? "simple-pass-list is-short" : hours ? "simple-pass-list has-hours" : "simple-pass-list"}
     aria-label={filter === "calls" ? "Calls that need you" : filter === "need" ? "Edits that need you" : "Every edit"}>
     {shown.map(row => <li key={row.key}><button type="button" className={row.on ? "is-on" : row.decided ? "is-decided" : undefined} aria-current={row.on || undefined}
@@ -627,7 +628,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
           counted on from the calls, so the list is one run of numbers. The full list keeps each row's time, version
           and amount: the time is bold amber on a tint while the row needs the editor, and a decided row is ticked. */}
       {filter === "calls" && row.num ? <EditBadge n={row.num} check={row.needs} />
-        : <span className={row.needs ? "simple-pass-time is-need" : "simple-pass-time"}>{clockLabel(row.at)}{row.needs && <span>, needs you</span>}</span>}
+        : <span className={row.needs ? "simple-pass-time is-need" : "simple-pass-time"}>{clockLabel(row.displayAt)}{row.needs && <span>, needs you</span>}</span>}
       <span className="simple-pass-label">{filter === "calls" ? row.label : <>{row.decided && !row.needs && <span className="simple-pass-tick" aria-label="Decided"><Icon name="check" size={10} /></span>}<span className="simple-pass-words">{row.label}</span>
         {row.version > 0 && <EditVersion n={row.version} />}{row.fresh && <small className="edit-version is-new">New</small>}</>}</span>
       {filter === "calls" ? row.state && <span className={row.busy ? "simple-pass-value working-text" : "simple-pass-value"}>{row.state}</span>
@@ -2166,6 +2167,9 @@ export function SimpleWorkspace() {
   // What the video shows of the open call. Nothing, while its cut isn't on the working cut to be shown.
   const cutPosition = openCall && heard ? `cut at ${clockLabel(heard.start)} · ${callNo.get(openCall.index)}${ofCalls(callNo.get(openCall.index))}` : "";
   const shownEdit = actions.showing;
+  const reviewed = useReviewed(current.id, focusThread);
+  const revisingEdit = useRevising(focusThread);
+  const reviewRange = shownEdit?.check && !reviewed(shownEdit) && !revisingEdit(shownEdit) ? shownEdit.reviewRange : undefined;
   const shownAt = shownEdit && (shownEdit.at ?? shownEdit.range.start);
   // The applied edit on screen, so Revise is about it and not a proposal still waiting.
   // An edit another request made is open here when this request flagged it (`Thread.flagged`).
@@ -2368,7 +2372,7 @@ export function SimpleWorkspace() {
     : suggestion ? `Showing the suggestion · ${side === "after" ? "After" : "Before"}`
     : shownEdit && visiting ? `Showing what the cut at ${visiting.at} took out · Before`
     : shownEdit && appliedCut ? `Showing “${shownEdit.label}” · ${appliedSide === "after" ? "After" : "Before"}`
-    : shownEdit ? `Showing “${shownEdit.label}” at ${clockLabel(shownEdit.at ?? shownEdit.range.start)}`
+    : shownEdit ? `Showing “${shownEdit.label}” at ${clockLabel(reviewRange?.start ?? shownEdit.at ?? shownEdit.range.start)}`
     : chosenSource && source === chosenSource ? `Showing ${chosenSource.name}` : undefined;
   // A call's passage is shaded where its footage is on the working cut. One that can't be placed there shades nothing.
   const lineFocus = listening ? heard && callTimeline && focusAround(heard, callDuration ?? 0, conflict ? "Current passage" : `Removed · ${lengthLabel(heard.end - heard.start)}`)
@@ -2378,11 +2382,11 @@ export function SimpleWorkspace() {
     : shownEdit?.beforeCut ? focusAround({ start: shownAt!, end: shownAt! }, cutDuration ?? 0,
       `Removed · ${lengthLabel(shownEdit.beforeCut.removed.end - shownEdit.beforeCut.removed.start)}`)
     // Any other edit is drawn for what it did: a sound fix or a zoom keeps its footage, so After plays it.
+    : reviewRange ? focusAround(reviewRange, cutDuration ?? 0, undefined, { tone: "kept" })
     : shownEdit ? editFocus(shownEdit, cutDuration ?? 0) : undefined;
   const playerView = suggestion || appliedCut ? undefined : !listening && focusThread && !source ? threadTimeline : undefined;
   // Each applied edit's dot names it, says where it sits and how long it runs, and quotes the change it came from.
-  const editDot = (thread: Thread, e: Omit<ThreadEdit, "at"> & { at?: number }, title: string): TimelineDot => {
-    const at = e.at ?? e.range.start;
+  const editDot = (thread: Thread, e: ThreadEdit, title: string, at: number): TimelineDot => {
     const landed = justLanded(e.changeId) ? e.beforeCut || e.at !== undefined ? "cut" as const : "edit" as const : undefined;
     return { time: at, landed, title, summary: e.label, edit: `${e.changeId}/${e.spot}`,
       detail: e.beforeCut ? `Removed ${lengthLabel(e.beforeCut.removed.end - e.beforeCut.removed.start)}`
@@ -2392,17 +2396,15 @@ export function SimpleWorkspace() {
       open: () => actions.openEdit(thread, e) };
   };
   /** A pass's edit by its time, as its row in the pass's list and the message box's tag say it: "Cut at 2:05". */
-  const passEditName = (e: Omit<ThreadEdit, "at"> & { at?: number }) => `${e.beforeCut ? "Cut" : "Edit"} at ${clockLabel(e.at ?? e.range.start)}`;
+  const passEditName = (e: ThreadEdit, at: number) => `${e.beforeCut ? "Cut" : "Edit"} at ${clockLabel(at)}`;
   /** One that asks for a look while the pass waits has its number, counted on from the calls: "Cut 6 · 8:52". */
-  const passEditDot = (thread: Thread, e: Omit<ThreadEdit, "at"> & { at?: number }) => {
+  const passEditDot = (thread: Thread, e: ThreadEdit, at: number) => {
     const numbered = passEditNo.get(editKey(e));
-    return numbered ? { ...editDot(thread, e, `${numbered.name} · ${clockLabel(e.at ?? e.range.start)}`), n: numbered.n } : editDot(thread, e, passEditName(e));
+    return numbered ? { ...editDot(thread, e, `${numbered.name} · ${clockLabel(at)}`, at), n: numbered.n } : editDot(thread, e, passEditName(e, at), at);
   };
 
   const [compareHost, setCompareHost] = useState<HTMLElement | null>(null);
 
-  const reviewed = useReviewed(current.id, focusThread);
-  const revisingEdit = useRevising(focusThread);
   const passReviewed = useReviewed(current.id, passThread);
   const passRevising = useRevising(passThread);
   // The timeline numbers the edits of the request picked in the chat, or of the one that's open, as the chat does:
@@ -2420,17 +2422,21 @@ export function SimpleWorkspace() {
   const numberedDots: TimelineDot[] = playerView && focusThread ? playerView.edits.flatMap((e, i): TimelineDot[] => {
     const state = reviewed(e) ? "kept" as const : e.check && !revisingEdit(e) ? "check" as const : undefined;
     const current = e === shownEdit;
-    const need = state === "check" ? passEditNo.get(editKey(e))?.name ?? passEditName(e) : undefined;
-    if (passWaits) return state === "check" || current ? [{ ...passEditDot(focusThread, e), group: "pass", state, current, need }] : [];
+    const at = (state === "check" ? e.reviewRange?.start : undefined) ?? e.at ?? e.range.start;
+    const need = state === "check" ? passEditNo.get(editKey(e))?.name ?? passEditName(e, at) : undefined;
+    if (passWaits) return state === "check" || current ? [{ ...passEditDot(focusThread, e, at), group: "pass", state, current, need }] : [];
     // The hover note names the request first: "Edit 3" alone would read as the chat's third request.
-    const dot = editDot(focusThread, e, `${shortTitle(focusThread.title)} · ${dotNumbers.get(e) ?? i + 1} of ${playerView.edits.length} · ${clockLabel(e.at ?? e.range.start)}`);
+    const dot = editDot(focusThread, e, `${shortTitle(focusThread.title)} · ${dotNumbers.get(e) ?? i + 1} of ${playerView.edits.length} · ${clockLabel(at)}`, at);
     return [{ ...dot, n: dotNumbers.get(e) ?? i + 1, state, current, need }];
   }) : [];
   // The waiting pass's edits that ask for a look are with its calls when the timeline is on another request, numbered
   // after the calls as "N need you" counts them. While the timeline is the pass's own, its dots above draw them.
   const passDots: TimelineDot[] = !callsShown || !passThread || suggestion || (playerView && focusThread?.id === passThread.id) ? []
-    : passEdits.flatMap(e => e.check && !passReviewed(e) && !passRevising(e)
-      ? [{ ...passEditDot(passThread, e), group: "pass", state: "check" as const, need: passEditNo.get(editKey(e))?.name ?? passEditName(e) }] : []);
+    : passEdits.flatMap(e => {
+      if (!e.check || passReviewed(e) || passRevising(e)) return [];
+      const at = e.reviewRange?.start ?? (e as ThreadEdit).at ?? e.range.start;
+      return [{ ...passEditDot(passThread, e, at), group: "pass", state: "check" as const, need: passEditNo.get(editKey(e))?.name ?? passEditName(e, at) }];
+    });
   // Once the edit or the list closes, the timeline stays with that request only while it still has an edit to check.
   // Otherwise it goes back: to a pass whose full list is still open in the chat, else to the latest request. The latest
   // request also takes it when it is new or has just applied an edit: the editor asked for something else.
@@ -2742,7 +2748,7 @@ export function SimpleWorkspace() {
         : editPlace >= 0 && <span className="edit-card-count" title="Edits still to check">{editPlace + 1} of {flaggedRows.length}</span>}
       {/* The note explains the choice and includes any cue for the editor to check. */}
       {/* It's on up to two lines, so an edit with a short note is a single line. A clipped note opens on a click. */}
-      <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit)} />
+      <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} />
       {!beforeCut && shownKind && <span className={reviewingEdit.kind === "restore" ? "edit-card-length is-added" : "edit-card-length is-kind"}>{shownKind}</span>}
       <span className="edit-card-side">
         {/* A cut's words open under this row, behind a small icon. An edit that isn't a cut has none. */}
@@ -3286,7 +3292,7 @@ export function SimpleWorkspace() {
                 ? { key: callPlaybackKey(listening.index, callTimeline.version), start: audition.start, side: listening.side,
                   beforeWindow: preparedCall?.before.window, afterWindow: preparedCall?.after.window,
                   beforeFile: preparedCall?.before.file, afterFile: preparedCall?.after.file } : undefined,
-            onGap: hearInBefore, onBand, onPick: pickPoint, onRange: markRange, holdPassage: cutWaits, writeRequest, heard: heardPick, quiet: quietOpen }} threadView={playerView}
+            onGap: hearInBefore, onBand, onPick: pickPoint, onRange: markRange, holdPassage: cutWaits, reviewRange, writeRequest, heard: heardPick, quiet: quietOpen }} threadView={playerView}
             workingCache={workingCache} draftVersion={previewVersion} draft={previewTimeline}
             openingJoin={openingJoin && !source && !appliedCut}
             draftFailed={openingJoin ? !!single.error || (!!single.preview && !listenJoined) : pinnedCallVersion ? !!savedBefore.error : !appliedCut && !!draftVersion && draftState?.version === draftVersion && !!draftState.failed}

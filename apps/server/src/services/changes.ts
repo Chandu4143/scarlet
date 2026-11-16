@@ -2221,8 +2221,8 @@ interface FlaggedEdit { changeId: string; spot: number; label: string; request: 
  * A run found a doubt about an edit already in the video, its own or another request's: a black gap a cut left, a line
  * played twice. The doubt goes on that edit, and the request that raised it lists the edit as one that needs the
  * editor until they keep it there, as an edit the run flagged as it made it does. Nothing about the edit changes.
- * The edit is named by its change and place, or found on the working cut where `range` falls; when several edits are
- * there, the one that covers most of it, and the run is told of the others. Caller holds the write lock.
+ * The edit is named by its change and place, or found on the working cut where `range` falls. The range also
+ * records what the editor should inspect. Caller holds the write lock.
  */
 export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEditRequest): { flagged: FlaggedEdit; version: string; alsoThere?: FlaggedEdit[] } {
   const project = ctx.repos.projects.get(projectId);
@@ -2230,6 +2230,21 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
   const read = (version: string) => ctx.repos.versions.get(projectId, version)?.timeline;
   const head = read(project.head);
   if (!head) throw conflict("no_timeline", "There is no video to flag an edit in yet.");
+  let location: NonNullable<Change["flags"]>[number]["location"];
+  if (body.range) {
+    const version = body.version && body.version !== "head" ? body.version : head.version;
+    if (body.changeId === undefined && version !== head.version) {
+      throw conflict("stale_flag_range", `The working cut is now ${head.version}. Read it with timeline_get or timeline_at and give the range there, or identify the edit by changeId and spot.`,
+        { currentVersion: head.version });
+    }
+    const timeline = version === head.version ? head : read(version);
+    if (!timeline) throw notFound(`version ${version}`);
+    const duration = timelineDuration(timeline);
+    if (body.range.end > duration + 1e-6) {
+      throw badRequest("invalid_flag_range", `The range must lie on version ${version}, which is ${duration.toFixed(3)} s long. Read that version with timeline_get or timeline_at.`);
+    }
+    location = { version, range: { start: Math.min(body.range.start, duration), end: Math.min(body.range.end, duration) } };
+  }
   const threads = buildThreads({
     changes: ctx.repos.changes.select("project_id = ?", [projectId]),
     tasks: ctx.repos.tasks.select("project_id = ? AND kind != 'transcribe'", [projectId]),
@@ -2276,10 +2291,14 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
   // A resumed run is a new task of the same run: the doubt it flags again is the one its earlier attempt flagged.
   const root = runRoot(task);
   const sameRun = (taskId: string) => taskId === task.id || (ctx.repos.tasks.get(taskId)?.resumeRootId ?? taskId) === root;
-  if (!flags.some(f => f.spot === found!.edit.spot && f.check === body.check && sameRun(f.taskId)))
-    saveChange(ctx, { ...change, flags: [...flags, { spot: found!.edit.spot, check: body.check, taskId: task.id, at: now() }] });
-  logActivity(ctx, { projectId, actor: { type: "scarlet", name: "Scarlet" }, type: "change.flagged",
-    summary: `Scarlet flagged ${quote(found!.edit.label)}: ${quote(body.check, 120)}`,
-    data: { changeId: change.id, threadId: change.threadId, taskId: task.id } });
+  const existing = flags.find(f => f.spot === found!.edit.spot && f.check === body.check && sameRun(f.taskId));
+  if (!existing) {
+    saveChange(ctx, { ...change, flags: [...flags, { spot: found!.edit.spot, check: body.check, taskId: task.id, at: now(), location }] });
+    logActivity(ctx, { projectId, actor: { type: "scarlet", name: "Scarlet" }, type: "change.flagged",
+      summary: `Scarlet flagged ${quote(found!.edit.label)}: ${quote(body.check, 120)}`,
+      data: { changeId: change.id, threadId: change.threadId, taskId: task.id } });
+  } else if (location && !existing.location) {
+    saveChange(ctx, { ...change, flags: flags.map(f => f === existing ? { ...f, location } : f) });
+  }
   return { flagged: named(found!), version: project.head, ...(alsoThere.length && { alsoThere: alsoThere.slice(0, 6).map(named) }) };
 }
