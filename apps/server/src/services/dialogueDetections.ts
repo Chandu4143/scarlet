@@ -15,7 +15,7 @@ import { alignmentVersion, readsEnglishSpeech, alignWords } from "../transcribe/
 import { bundledWhisperModel } from "../transcribe/localModel.js";
 import { resolveLocalRuntime, resolvedBinary, type LocalRuntime } from "../transcribe/localRuntime.js";
 import { transcriptLanguage } from "./transcriptReader.js";
-import { readSourceEnergy } from "./transcriptSources.js";
+import { sourceEnergyReader } from "./sourceEnergy.js";
 import { otherInputReader } from "./otherInput.js";
 import { otherVoiceTurns } from "./otherVoiceTurns.js";
 import { appendTaskEvent, editsDialogue } from "./tasks.js";
@@ -242,7 +242,7 @@ export function dialogueDetector(ctx: Ctx) {
         if (unaligned) unalignedPages.add(result);
         if (media.voiceRoles) {
           try {
-            const measured = await readSourceEnergy(file, from, to, signal);
+            const measured = await sourceEnergyReader(ctx).energy(file, from, to, signal);
             const roles = media.voiceRoles;
             if (measured.mix === roles.me - 1 || measured.mix === roles.other - 1) throw new Error("The source layout conflicts with its saved roles.");
             const turns = otherVoiceTurns(measured.energy, roles, from, to);

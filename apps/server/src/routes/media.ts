@@ -1,4 +1,4 @@
-import { readSourceEnergy, sourceLabels, transcriptSourceReader } from "../services/transcriptSources.js";
+import { sourceEnergyReader, transcriptSourceReader } from "../services/sourceEnergy.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { rm, stat } from "node:fs/promises";
@@ -56,9 +56,9 @@ export function mediaRoutes(ctx: Ctx) {
     if (to <= from || to - from > 60 || to > (source.duration ?? 0)) throw badRequest("voice_reference", "Choose a reference of up to one minute with both voices.");
     const file = await fileInDirectoryAsync(ctx.paths.media(source.projectId), source.path);
     if (!file) throw notFound("source file");
-    const labels = await ctx.track(sourceLabels(file, ctx.mediaSignal(source.projectId)), source.projectId);
+    const labels = await ctx.track(sourceEnergyReader(ctx).labels(file, ctx.mediaSignal(source.projectId)), source.projectId);
     if (!labels.length) throw badRequest("voice_inputs", "Choose a synchronized recording with a mix and two isolated inputs.");
-    const { mix } = await ctx.track(readSourceEnergy(file, from, to, ctx.mediaSignal(source.projectId)), source.projectId);
+    const { mix } = await ctx.track(sourceEnergyReader(ctx).energy(file, from, to, ctx.mediaSignal(source.projectId)), source.projectId);
     if (mix === undefined || mix === roles.me - 1 || mix === roles.other - 1) throw badRequest("voice_inputs", "Could not verify two isolated inputs and their mix in this reference.");
     const media = ctx.db.transaction(() => {
       requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, source.projectId));
