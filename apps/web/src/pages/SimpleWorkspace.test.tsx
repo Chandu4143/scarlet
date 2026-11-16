@@ -128,7 +128,7 @@ const withSimpleSheet = async (see: () => Promise<void>) => {
 };
 /** What the stylesheet sets for `el`, property by property. */
 const styled = (el: Element, ...properties: string[]) => { const style = getComputedStyle(el); return properties.map(property => style.getPropertyValue(property)); };
-/** The open cut's or edit's card on top of the timeline. It holds the link to a cut's words, and Undo edit on an applied edit. */
+/** The open cut's or edit's card on top of the timeline. It holds the link to a cut's words and the edit's decisions. */
 const openHead = () => container.querySelector<HTMLElement>(".cut-transport > .edit-card");
 /** The icon on a cut's card that opens its words. It has no text: its name is what hovering says. */
 const transcriptLink = () => openHead()!.querySelector<HTMLButtonElement>(".edit-card-words")!;
@@ -136,8 +136,6 @@ const transcriptName = () => [transcriptLink().textContent, transcriptLink().get
 /** The icon on a cut's card that plays it with the cut footage: whether it's lit, and what hovering says. */
 const compareButton = (scope: Element) => scope.querySelector<HTMLButtonElement>('button[aria-label="Before"]')!;
 const beforeIcon = (card: Element) => { const b = compareButton(card); return b && [b.textContent, b.getAttribute("aria-label"), b.getAttribute("aria-pressed"), b.getAttribute("title")]; };
-/** Undo edit on an applied edit's card: a small icon ahead of Revise, named on hover. */
-const undoIcon = () => openHead()!.querySelector<HTMLButtonElement>(".edit-card-acts > .edit-card-undo:first-child")!;
 /** The tag in the message box: what the next message revises or answers. None is a new edit. */
 const boxTag = () => composer.props!.targetTag;
 /** A request in the editor's words, as its heading says it. */
@@ -397,14 +395,13 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   expect(compareButton(panel).querySelector("svg")).not.toBeNull();
   expect(panel.querySelector(".edit-card-count")).toBeNull();
   // The conversation stays as it was: every request is still there, and nothing sits over the message box, which is
-  // tagged with the edit it now revises. Undo edit is on the card, before its decisions. This edit isn't a cut, so
-  // it has no transcript link.
+  // tagged with the edit it now revises. Its decisions are Revise and Keep, with no Undo edit: "undo this" in the box
+  // asks for that. This edit isn't a cut, so it has no transcript link.
   expect(turns().some(t => t.hidden)).toBe(false);
   expect(container.querySelector(".simple-open")).toBeNull();
-  // Undo edit is a small icon, named with its key on hover like Revise and Keep.
   expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
-    .toEqual([["", "U", "Undo edit (U)"], ["Revise", "R", "Revise (R)"], ["Keep", "K", "Keep (K)"]]);
-  expect(undoIcon().getAttribute("aria-label")).toBe("Undo edit");
+    .toEqual([["Revise", "R", "Revise (R)"], ["Keep", "K", "Keep (K)"]]);
+  expect(panel.querySelector(".edit-card-undo")).toBeNull();
   expect(panel.querySelector(".thread-transcript")).toBeNull();
   expect(boxTag()).toBe("Edit at 0:00");
   // No Close button: Esc and the open row close it.
@@ -1911,28 +1908,7 @@ it("leaves the message box where it is now aimed when an earlier message lands",
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_ready", cutIndex: 1 });
 });
 
-it("undoes one applied edit by asking Scarlet to put back just that edit", async () => {
-  appliedEdits();
-  const createTask = vi.fn().mockResolvedValue({ id: "task_undo" });
-  useProjectStore.setState({ createTask });
-  await show();
-  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
-  await act(async () => {});
-  // The box is on the edit as soon as it opens, and Undo edit sits over the box while the edit is open.
-  expect(container.querySelector(".simple-target")!.textContent).toContain("Revising “captions” at 0:00");
-  await click(undoIcon());
-  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
-    kind: "edit", agent: "claude", model: "opus",
-    instruction: "Undo edit 2, “captions”. Put back exactly what this edit changed and leave every other edit as it is.",
-    // The editor's own words for it are "Undo": the instruction is what Scarlet is told.
-    context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, editNumber: 2, threadId: threadWith("chg_approved_2").id, message: "Undo" }),
-  }));
-  // Sent: the box is no longer aimed at the edit, and the player goes back to the whole timeline.
-  expect(boxTag()).not.toBe("Edit at 0:00");
-  expect(editPanel()).toBeNull();
-});
-
-it("saves a graphic from its card as a template, with an icon before Undo edit and T as its key", async () => {
+it("saves a graphic from its card as a template, with an icon before Revise and T as its key", async () => {
   appliedEdits();
   // The engine says the second edit laid a graphic over the picture.
   vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
@@ -1948,11 +1924,11 @@ it("saves a graphic from its card as a template, with an icon before Undo edit a
   await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
   const panel = editPanel()!;
-  // The card names what the edit is, and its small icons come before Revise and Keep: Save as template, then Undo edit.
+  // The card names what the edit is, and its small icon, Save as template, comes before Revise and Keep.
   expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("Graphic");
   expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-label"), b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
-    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["", "Undo edit", "U", "Undo edit (U)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"]]);
-  // T sends one request however long it is held, worded as Undo edit's is: about this edit, named "Save as template".
+    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"]]);
+  // T sends one request however long it is held: about this edit, named "Save as template".
   await press("t");
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", repeat: true, bubbles: true })); });
   await press("t");
@@ -2011,57 +1987,6 @@ it("opens a marker Scarlet left for the editor as a to-do: what to add first, no
   await press("d");
   await act(async () => {});
   expect(localStorage.getItem(`scarlet.kept-edits.v1/${PRJ}/${threadWith("chg_approved_2").id}`)).toContain("chg_approved_2/1");
-});
-
-it("undoes the open edit with U, once however long the key is held", async () => {
-  appliedEdits();
-  let sent!: () => void;
-  const createTask = vi.fn(() => new Promise(resolve => { sent = () => resolve({ id: "task_undo" }); }));
-  useProjectStore.setState({ createTask: createTask as never });
-  await show();
-  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
-  await act(async () => {});
-  // U with Shift held is not the shortcut: it sends nothing.
-  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "U", shiftKey: true, bubbles: true })); });
-  expect(createTask).not.toHaveBeenCalled();
-  await press("u");
-  // The request is on its way: the icon says so, and another press or a held key sends nothing more.
-  expect(undoIcon().disabled).toBe(true);
-  expect(undoIcon().getAttribute("title")).toBe("Undoing…");
-  await press("u");
-  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "u", repeat: true, bubbles: true })); });
-  expect(createTask).toHaveBeenCalledTimes(1);
-  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
-    instruction: "Undo edit 2, “captions”. Put back exactly what this edit changed and leave every other edit as it is." }));
-  await act(async () => { sent(); });
-  expect(editPanel()).toBeNull();
-});
-
-it("leaves the edit the editor stepped to open, with its own Undo edit, when an undo sent from the edit before lands", async () => {
-  appliedEdits();
-  const landing: (() => void)[] = [];
-  const createTask = vi.fn(() => new Promise(resolve => { landing.push(() => resolve({ id: "task_undo" })); }));
-  useProjectStore.setState({ createTask: createTask as never });
-  await show();
-  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
-  await act(async () => {});
-  await press("u");
-  expect(undoIcon().disabled).toBe(true);
-  // ↓ goes on to the next edit while the request is on its way. That edit's Undo edit is its own: ready, not "Undoing…".
-  await press("ArrowDown");
-  expect(openTitle()).toBe("wrap");
-  expect([undoIcon().disabled, undoIcon().getAttribute("title")]).toEqual([false, "Undo edit (U)"]);
-  // The request lands. It undid "captions", so the edit that's open now stays open.
-  await act(async () => { landing[0]!(); });
-  expect(openTitle()).toBe("wrap");
-  expect([undoIcon().disabled, undoIcon().getAttribute("title")]).toEqual([false, "Undo edit (U)"]);
-  // U here undoes this edit, and its own request closes it.
-  await press("u");
-  expect(createTask).toHaveBeenCalledTimes(2);
-  expect(createTask).toHaveBeenLastCalledWith(PRJ, expect.objectContaining({
-    instruction: "Undo edit 3, “wrap”. Put back exactly what this edit changed and leave every other edit as it is." }));
-  await act(async () => { landing[1]!(); });
-  expect(editPanel()).toBeNull();
 });
 
 it("has no menu on a request for now: Undo these edits and File this thread aren't in the chat", async () => {
@@ -7166,7 +7091,7 @@ it("lets a box that holds only a space follow the edit that opens, as an empty b
   expect(aimLine()).toEqual(["Revising “wrap” at 0:11", true, undefined]);
 });
 
-it("keeps the message box and Undo edit on an edit that's opened again while it's open", async () => {
+it("keeps the message box on an edit that's opened again while it's open", async () => {
   appliedEdits();
   await show();
   const need = () => turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass-need")!;
@@ -7182,7 +7107,6 @@ it("keeps the message box and Undo edit on an edit that's opened again while it'
   expect(aimLine()).toEqual(aimed);
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_approved_2", editIndex: 2 });
   expect(boxTag()).toBe("Edit at 0:11");
-  expect(undoIcon()).not.toBeNull();
 });
 
 it("brings a message kept for a request back aimed as it was, not at what's open now", async () => {
@@ -7205,14 +7129,6 @@ it("brings a message kept for a request back aimed as it was, not at what's open
   await act(async () => {});
   expect(boxNow()).toMatchObject(["Make the captions smaller", { changeId: "chg_approved_2", editIndex: 1 }, JSON.stringify([PRJ, threadWith("chg_approved_2").id])]);
   expect(aimLine()).toEqual(["Revising “captions”", false, "Move here"]);
-  // Undo edit is about the edit that's open, so it undoes that edit, not the one the message is about.
-  // The message keeps its aim through it.
-  await click(undoIcon());
-  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
-    instruction: "Undo edit 3, “wrap”. Put back exactly what this edit changed and leave every other edit as it is.",
-    context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 2, threadId: threadWith("chg_approved_2").id }) }));
-  expect(editPanel()).toBeNull();
-  expect(boxNow()).toMatchObject(["Make the captions smaller", { changeId: "chg_approved_2", editIndex: 1 }, JSON.stringify([PRJ, threadWith("chg_approved_2").id])]);
 });
 
 it("says Queued on the card of a cut sent back until Scarlet starts on it, and steps through it with the arrows", async () => {
@@ -9112,30 +9028,6 @@ it("says under a request why Stop or Resume failed, until the same press works",
   expect(said()).toEqual([]);
 });
 
-it("says on the edit's card why Undo edit couldn't be sent, and leaves the edit open", async () => {
-  appliedEdits();
-  const createTask = vi.fn().mockRejectedValueOnce(new Error("Scarlet can’t take requests right now.")).mockResolvedValue({ id: "task_undo" });
-  useProjectStore.setState({ createTask });
-  await show();
-  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
-  await act(async () => {});
-  // Undo edit is the small icon ahead of Revise. Once a reason is said it sits before the icon, so the icon is found by its name.
-  const undo = () => openHead()!.querySelector<HTMLButtonElement>('.edit-card-acts > .edit-card-undo[aria-label="Undo edit"]')!;
-  expect(undo()).toBe(undoIcon());
-  await click(undo());
-  expect(createTask).toHaveBeenCalledTimes(1);
-  // Nothing was sent: the edit stays open with its decisions, the icon is ready again, and the reason sits beside it.
-  expect(openTitle()).toBe("captions");
-  expect(buttonIn(editPanel()!, "Keep")).not.toBeUndefined();
-  expect(openHead()!.querySelector('.edit-card-acts .simple-error[role="alert"]')?.textContent).toBe("Scarlet can’t take requests right now.");
-  expect([undo().disabled, undo().title]).toEqual([false, "Undo edit (U)"]);
-  // The next press sends it, and the reason goes with the card.
-  await click(undo());
-  expect(createTask).toHaveBeenCalledTimes(2);
-  expect(editPanel()).toBeNull();
-  expect(container.querySelector(".simple-error")).toBeNull();
-});
-
 it("says in the banner why a queued request couldn't be taken out, until one is", async () => {
   const base = data.tasks.find(t => t.id === "task_done")!;
   const queued = { ...base, id: "task_waiting", kind: "edit" as const, state: "queued" as const, startedAt: undefined, finishedAt: undefined, hostId: null, summary: null, changeIds: [],
@@ -10476,40 +10368,6 @@ const captionFix = (base: ProjectData["tasks"][number], threadId: string, over: 
     createdAt: now, startedAt: now, finishedAt: undefined, expectedSeconds: undefined,
     context: { threadId, changeId: "chg_approved_2", editIndex: 1, time: 0.2, end: 2.4, message: "Make the captions bigger." }, ...over };
 };
-
-it("reads an undo as Undo in the chat and in the queue, and keeps the instruction for Scarlet", async () => {
-  madeRequest();
-  // The engine saves each request as the app sent it, with the words the app gave for the editor.
-  const sent: ProjectData["tasks"][number][] = [];
-  const createTask = vi.fn(async (_project: string, body: Partial<ProjectData["tasks"][number]>) => {
-    const task = { ...data.tasks.find(t => t.id === "task_made")!, ...body, id: `task_undo_${sent.length}`, state: "queued" as const, changeIds: [], summary: null,
-      createdAt: new Date(Date.now() + sent.length).toISOString(), startedAt: undefined, finishedAt: undefined } as ProjectData["tasks"][number];
-    sent.push(task);
-    return task;
-  });
-  useProjectStore.setState({ createTask: createTask as never });
-  await show();
-  await act(async () => {});
-  // Undo edit on the captions, then on the wrap. Scarlet starts on the first and the second waits its turn.
-  for (const row of [1, 2]) {
-    await click(editRows("chg_approved_2")[row]!);
-    await act(async () => {});
-    await click(undoIcon());
-  }
-  expect(vi.mocked(api.recordEditReview).mock.calls).toEqual(sent.map(task => [PRJ, { changeId: task.context.changeId, spot: task.context.editIndex, decision: "undo" }]));
-  expect(sent.every(task => !("reviewRef" in task.context))).toBe(true);
-  expect(sent.map(t => [t.instruction.slice(0, 12), t.context.message])).toEqual([["Undo edit 2,", "Undo"], ["Undo edit 3,", "Undo"]]);
-  await event(d => ({ ...d, tasks: [...d.tasks, { ...sent[0]!, state: "running" as const, startedAt: new Date().toISOString() }, sent[1]!] }));
-  await act(async () => {});
-  // Under its edit's row the request is one word. The editor pressed Undo and wrote nothing, so nothing longer is theirs.
-  const under = container.querySelector<HTMLElement>('.subunit[data-run="task_undo_0"]')!;
-  expect(wordsOf(under.querySelector(".subunit-msg p"))).toBe("Undo");
-  expect(under.previousElementSibling?.querySelector(".simple-edit-title")?.textContent).toBe("captions");
-  // In the queue it carries its edit's tag and the same word.
-  const queued = container.querySelector<HTMLElement>('[aria-label="Queued requests"] .queue-row')!;
-  expect([queued.querySelector(".queue-target")?.textContent, queued.querySelector(".queue-text")?.textContent]).toEqual(["Edit at 0:11", "Undo"]);
-  expect(container.querySelector(".simple-thread")!.textContent).not.toContain("Put back exactly");
-});
 
 it("takes Scarlet's closing words out of the chat with a revision that has left, and keeps the request's own under its block", async () => {
   const { base, thread } = madeRequest();

@@ -14,53 +14,6 @@ import { useAgentAvailability } from "../agent/AgentChip";
 import { useHotkeys } from "../../lib/hotkeys";
 import type { AgentContext } from "../../stores/ui";
 
-/** What Scarlet is asked to do when the editor undoes one edit of a change that made several. */
-export function undoInstruction(target: Pick<AgentContext, "editNumber" | "label">) {
-  const which = [target.editNumber && `edit ${target.editNumber}`, target.label && `“${target.label}”`].filter(Boolean).join(", ");
-  return `Undo ${which || "this edit"}. Put back exactly what this edit changed and leave every other edit as it is.`;
-}
-
-/**
- * Undo one edit: a small icon on the edit's card, named "Undo edit (U)" on hover, with U as its key. The engine can
- * only revert a whole change, so this sends Scarlet a revision of just that edit, with the same agent and the same
- * target as typing the request would. The editor pressed Undo and wrote nothing, so the request reads "Undo" under
- * its edit's tag, in the chat and in the queue; what Scarlet is asked to do is the instruction, which is for the agent.
- */
-export function UndoEdit({ projectId, thread, target, onSent }: { projectId: string; thread: Thread; target: AgentContext; onSent(): void }) {
-  const { effective, unavailableReason } = useAgentAvailability();
-  const createTask = useProjectStore(s => s.createTask);
-  const head = useProjectStore(s => s.current?.project.head ?? undefined);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  async function undo() {
-    // One request per press: U held down, or pressed again while the first is on its way, sends nothing more.
-    if (busy) return;
-    if (!effective) { setError(unavailableReason); return; }
-    setBusy(true);
-    setError("");
-    try {
-      await createTask(projectId, { kind: "edit", ...effective, instruction: undoInstruction(target),
-        context: { version: head, ...requestPosition(target), threadId: thread.id, message: "Undo" } });
-      recordEditReview(projectId, target, "undo");
-      onSent();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  useHotkeys(event => {
-    if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "u") return;
-    event.preventDefault();
-    void undo();
-  });
-  return <>
-    {error && <span className="simple-error" role="alert">{error}</span>}
-    <button type="button" className="edit-card-icon edit-card-undo" data-log-control="undo-edit" aria-label="Undo edit" aria-keyshortcuts="U" aria-busy={busy || undefined}
-      title={busy ? "Undoing…" : "Undo edit (U)"} disabled={busy} onClick={() => void undo()}><Icon name="undo" size={14} /></button>
-  </>;
-}
-
 /** What Scarlet is asked to do when the editor saves a graphic from its card to use again. */
 export function saveTemplateInstruction(target: Pick<AgentContext, "editNumber" | "label">) {
   const which = [target.editNumber && `edit ${target.editNumber}`, target.label && `“${target.label}”`].filter(Boolean).join(", ");
@@ -70,8 +23,8 @@ export function saveTemplateInstruction(target: Pick<AgentContext, "editNumber" 
 }
 
 /**
- * Save a graphic as a template: a small bookmark icon on a graphic's card, before Undo edit, named "Save as template (T)"
- * on hover, with T as its key. It sends Scarlet a request about just that edit, as Undo edit does, and the request reads
+ * Save a graphic as a template: a small bookmark icon on a graphic's card, before Revise, named "Save as template (T)"
+ * on hover, with T as its key. It sends Scarlet a request about just that edit, and the request reads
  * "Save as template" in the chat and in the queue; what Scarlet is asked to do is the instruction, which is for the agent.
  */
 export function SaveAsTemplate({ projectId, thread, target, onSent }: { projectId: string; thread: Thread; target: AgentContext; onSent?(): void }) {

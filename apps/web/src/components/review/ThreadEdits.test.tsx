@@ -8,7 +8,7 @@ import { buildDb, PRJ } from "../../lib/mock/fixtures";
 import { useProjectStore, type ProjectData } from "../../stores/project";
 import { NO_AGENT_REASON } from "../agent/AgentChip";
 import { useHostsStore } from "../../stores/hosts";
-import { ThreadAction, UndoEdit, undoInstruction, useThreadEdits } from "./ThreadEdits";
+import { ThreadAction, useThreadEdits } from "./ThreadEdits";
 import type { Thread, ThreadEdit } from "@scarlet/shared";
 
 let root: Root;
@@ -89,34 +89,6 @@ it("leaves the menu out where it is turned off, and still says what it reported"
   const filed = { ...data, project: { ...data.project, completedThreads: { [thread.id]: JSON.stringify([thread.tasks.at(-1)?.id, thread.changes.at(-1)?.id, thread.updatedAt]) } } };
   await act(async () => { useProjectStore.setState({ current: filed }); });
   expect(container.textContent).toBe("Filed");
-});
-
-it("words the request to undo one edit by its number and name, and by neither when it has none", () => {
-  expect(undoInstruction({ editNumber: 2, label: "captions" })).toBe("Undo edit 2, “captions”. Put back exactly what this edit changed and leave every other edit as it is.");
-  expect(undoInstruction({ label: "captions" })).toMatch(/^Undo “captions”\. /);
-  expect(undoInstruction({ editNumber: 3 })).toMatch(/^Undo edit 3\. /);
-  expect(undoInstruction({})).toMatch(/^Undo this edit\. /);
-});
-
-it("says why Undo edit can't be sent when no agent can take it, and sends nothing", async () => {
-  const hosts = useHostsStore.getState();
-  useHostsStore.setState({ hosts: [] });
-  const createTask = vi.fn();
-  useProjectStore.setState({ current: data, status: "ready", createTask });
-  const thread = buildThreads(data).find(t => t.changes.some(c => c.id === "chg_approved_2"))!;
-  const onSent = vi.fn();
-  await act(async () => root.render(<UndoEdit projectId={PRJ} thread={thread} onSent={onSent}
-    target={{ changeId: "chg_approved_2", editIndex: 1, editNumber: 2, time: 0.2, end: 2.4, clipIds: [], label: "captions" }} />));
-  const undo = container.querySelector("button")!;
-  // A small icon, named for screen readers and, with its key, on hover.
-  expect([undo.textContent, undo.getAttribute("aria-label"), undo.title, undo.getAttribute("aria-keyshortcuts")]).toEqual(["", "Undo edit", "Undo edit (U)", "U"]);
-  expect(undo.querySelector("svg")).not.toBeNull();
-  await click(undo);
-  expect(container.querySelector('[role="alert"]')?.textContent).toBe(NO_AGENT_REASON);
-  expect(createTask).not.toHaveBeenCalled();
-  expect(onSent).not.toHaveBeenCalled();
-  expect(undo.disabled).toBe(false);
-  await act(async () => useHostsStore.setState(hosts, true));
 });
 
 it("reads a request's edits again for a new working cut only while they are needed, and keeps the last ones meanwhile", async () => {
