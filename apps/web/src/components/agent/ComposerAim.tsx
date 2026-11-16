@@ -35,7 +35,7 @@ export function ComposerAim({ items, cue, onClick, disabled, disabledReason }: {
       {cue > 0 && <EditPoint key={cue} className="composer-aim-sheen" />}
     </button>
     {items.map(item => <button key={item.key} type="button" className="composer-aim-clear" disabled={disabled}
-      aria-label={item.clearLabel} aria-description={disabled ? disabledReason : undefined} onClick={item.onClear}>
+      title={item.clearLabel} aria-label={item.clearLabel} aria-description={disabled ? disabledReason : undefined} onClick={item.onClear}>
       <Icon name="x" size={10} />
     </button>)}
   </span>;
