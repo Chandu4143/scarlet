@@ -48,9 +48,9 @@ function writeDraft(key: string, kept: Draft | Draft[] | null) {
   } catch { /* Storage is optional. */ }
 }
 
-/** What the page holds, as one string. A change is unsaved only while this differs from what was loaded or last saved. */
+/** Compare what the page holds using the textarea's line endings. */
 const pageOf = (name: string, description: string, body: string, enabled: boolean, original?: SplitSkill) =>
-  JSON.stringify([name, enabled, composeSkill({ name: slugify(name) || name, description }, body, original)]);
+  JSON.stringify([name, enabled, normalizeSkillLines(composeSkill({ name: slugify(name) || name, description }, body, original))]);
 
 export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => void } = {}) {
   const { skillId } = useParams();

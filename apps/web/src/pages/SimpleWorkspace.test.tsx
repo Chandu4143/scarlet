@@ -10146,17 +10146,17 @@ it("takes up an open cut as it was when its revision puts footage back, so it is
   const { audition, passage, play, lands } = await openCutThenRevise();
   const listens = audition.mock.calls.length;
   await lands({ range: { start: 9.6, end: 10.8 }, kind: "restore" });
-  // The card is an edit's now, with Before/After, and the player has its passage. It was started as a cut's listen,
-  // and isn't started again.
+  // The card now has an edit's Before/After controls and the player includes the restored footage in its three-second preview.
+  // It takes up the listen already in progress.
   expect(editPanel()!.querySelector(".edit-card-length.is-added")?.textContent).toBe("Added");
   expect(editPanel()!.querySelector(".edit-card-words")).toBeNull();
   expect(beforeIcon(editPanel()!)).toEqual(["", "Before", "false", "Play Before (\\)"]);
   expect(audition).toHaveBeenCalledTimes(listens);
-  expect(passage).toHaveBeenLastCalledWith({ start: 9.6, end: 10.8 }, expect.any(Number), undefined, true);
+  expect(passage).toHaveBeenLastCalledWith({ start: 8.7, end: 11.7 }, expect.any(Number), undefined, true);
   expect(play).not.toHaveBeenCalled();
   // Its row pressed again plays the passage from its top, as any edit's does.
   await click(turnFor("chg_approved_2").querySelector(".simple-edits .simple-edit")!);
-  expect(passage).toHaveBeenLastCalledWith({ start: 9.6, end: 10.8 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 8.7, end: 11.7 }, expect.any(Number), undefined, false);
   expect(play).toHaveBeenCalledTimes(1);
 });
 
@@ -10167,25 +10167,25 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  expect(passage).toHaveBeenLastCalledWith({ start: 0.2, end: 2.4 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
   play.mockClear();
-  // The revision starts the captions later. The engine lists it in the edit's place, linked to the version it replaces.
+  // The revision moves the captions and their surrounding preview later. The engine lists it in the same edit's place.
   edits.mockImplementation(async (_project, threadId) => ({ version: useProjectStore.getState().current!.project.head!,
     edits: threadId !== threadWith("chg_approved_2").id ? [] : [
       { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
-      { changeId: "chg_revised", spot: 0, label: "captions", range: { start: 0.6, end: 2.4 }, previous: [{ changeId: "chg_approved_2", spot: 1 }] },
+      { changeId: "chg_revised", spot: 0, label: "captions", range: { start: 1.25, end: 2.75 }, previous: [{ changeId: "chg_approved_2", spot: 1 }] },
       { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY },
     ] }));
   await headMoves("ver_revised");
   await act(async () => {});
   expect(openTitle()).toBe("captionsv2");
-  expect(passage).toHaveBeenLastCalledWith({ start: 0.6, end: 2.4 }, expect.any(Number), undefined, true);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0.5, end: 3.5 }, expect.any(Number), undefined, true);
   expect(play).not.toHaveBeenCalled();
   // Closed and opened again, it plays from its top.
   await press("Escape");
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
-  expect(passage).toHaveBeenLastCalledWith({ start: 0.6, end: 2.4 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0.5, end: 3.5 }, expect.any(Number), undefined, false);
   expect(play).toHaveBeenCalledTimes(1);
 });
 
@@ -10687,17 +10687,18 @@ it("keeps a passage stretched by a skip through a reload of its edit's markers, 
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  // A skip past the passage's end stretches it to there: 0:00.2 to 0:02.4 becomes 0:00.2 to 0:07.2, the playhead at 0:05.2.
+  expect(passages).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  // Skipping five seconds from the start stretches the three-second preview through two seconds after the playhead.
   await act(async () => { player.pause(); });
   await press("ArrowRight");
-  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0.2, end: 7.2 }, expect.any(Number), 5.2, false]);
+  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 7 }, expect.any(Number), 5, false]);
   // The working cut moves on, and the edit is where it was. The stretch stands, taken up again as it was left.
   passages.mockClear();
   later.hold(later.earlier);
   await headMoves("ver_moved");
   await later.release();
   expect(openTitle()).toBe("captions");
-  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0.2, end: 7.2 }, expect.any(Number), 5.2, true]);
+  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 7 }, expect.any(Number), 5, true]);
   // It moves on again, and this time the edit comes back shorter: it was revised. The stretch was measured on the
   // passage it had: kept, the transport stayed bound to seconds that are somewhere else now, and played from there.
   // The edit's own passage is taken up, and still as the edit it was, not as one newly chosen.
@@ -10707,7 +10708,7 @@ it("keeps a passage stretched by a skip through a reload of its edit's markers, 
   await headMoves("ver_moved_again");
   await later.release();
   expect(openTitle()).toBe("captions");
-  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0.2, end: 1.8 }, expect.any(Number), undefined, true]);
+  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 3 }, expect.any(Number), undefined, true]);
 });
 
 it("leaves full screen when Revise hands the keyboard to the message box, which full screen hides", async () => {

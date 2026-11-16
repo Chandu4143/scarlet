@@ -50,10 +50,11 @@ it("shows the name as it was saved once a renamed skill is saved", async () => {
   }
 });
 
-it("says unsaved only while the page differs from what was loaded, and keeps no draft of a change that was put back", async () => {
+it.each(["\n", "\r\n"])("says unsaved only while the page differs from what was loaded (line endings %j)", async (lineEnding) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const db = buildDb();
-  const skill = db.skills[0]!;
+  const bundled = db.skills[0]!;
+  const skill = { ...bundled, content: bundled.content.replace(/\r?\n/g, lineEnding) };
   vi.spyOn(api, "skill").mockImplementation(async () => ({ skill, versions: db.skillVersions[skill.id] ?? [] }));
   const el = document.createElement("div");
   document.body.append(el);
