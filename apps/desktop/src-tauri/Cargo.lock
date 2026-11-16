@@ -3392,7 +3392,9 @@ dependencies = [
  "tokio-util",
  "url",
  "webkit2gtk",
+ "webview2-com",
  "which",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

@@ -270,6 +270,67 @@ const write = async (field: HTMLInputElement | HTMLTextAreaElement, text: string
 const named = (el: Element, text: string) => [...el.querySelectorAll("button")].find(b => b.textContent?.trim() === text);
 const markdown = (el: Element) => el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
 
+it("replaces the active match or every match in the draft", async () => {
+  let skill = {
+    ...buildDb().skills[0]!,
+    id: "skill-replace-test",
+    description: "cut [here]",
+    content: "First CUT [HERE].\r\nThen cut [here].\r\nLast Cut [here].\r\nLeave the cut here.",
+  };
+  vi.spyOn(api, "skill").mockImplementation(async () => ({ skill, versions: [] }));
+  const update = vi.spyOn(api, "updateSkill").mockImplementation(async (_id, input) => {
+    skill = { ...skill, content: input.content ?? skill.content };
+    return { skill };
+  });
+  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: [] });
+  vi.spyOn(api, "skills").mockResolvedValue({ skills: [] });
+  const view = await open(`/settings/skills/${skill.id}`);
+  const { el } = view;
+  const button = (label: string) => el.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`) ?? named(el, label)!;
+  const click = (label: string) => act(() => button(label).click());
+  const replacement = () => el.querySelector<HTMLInputElement>('input[aria-label="Replace with"]');
+  const replacementIsHidden = () => !replacement() || !!replacement()?.closest("[hidden]");
+  const search = () => el.querySelector<HTMLInputElement>('input[aria-label="Find in skill"]')!;
+  try {
+    const editor = markdown(el);
+    expect(button("Save").disabled).toBe(true);
+    await act(() => editor.dispatchEvent(new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(search());
+    expect(button("Show replace").getAttribute("aria-expanded")).toBe("false");
+    expect(replacementIsHidden()).toBe(true);
+    await click("Show replace");
+    expect(replacementIsHidden()).toBe(false);
+    await write(search(), "cut [here]");
+    await write(replacement()!, "$& beat");
+    await click("Next match");
+    await click("Replace");
+    const oneChanged = "First CUT [HERE].\nThen $& beat.\nLast Cut [here].\nLeave the cut here.";
+    expect(editor.value).toBe(oneChanged);
+    expect(el.querySelector("mark[data-active]")?.textContent).toBe("Cut [here]");
+    await click("Replace All");
+    const final = "First $& beat.\nThen $& beat.\nLast $& beat.\nLeave the cut here.";
+    expect(editor.value).toBe(final);
+    expect(button("Replace All").disabled).toBe(true);
+    await click("Undo");
+    expect(editor.value).toBe(oneChanged);
+    await click("Replace All");
+    expect(editor.value).toBe(final);
+    expect(button("Save").disabled).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    await act(() => search().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(view.router.state.location.pathname).toBe(`/settings/skills/${skill.id}`);
+    await click("Find in skill");
+    expect(button("Show replace").getAttribute("aria-expanded")).toBe("false");
+    expect(replacementIsHidden()).toBe(true);
+    await click("Save");
+    expect(update).toHaveBeenCalledExactlyOnceWith(skill.id, expect.objectContaining({
+      content: expect.stringContaining(final.replace(/\n/g, "\r\n")),
+      description: "cut [here]",
+    }));
+    expect(button("Save").disabled).toBe(true);
+  } finally { await view.close(); }
+});
+
 it("lists what each version changed, newest first, and shows a picked one with its changes until Done", async () => {
   const db = buildDb();
   const skill = db.skills.find(s => s.version === 2)!;
@@ -298,6 +359,11 @@ it("lists what each version changed, newest first, and shows a picked one with i
     expect(el.querySelector('[aria-label="Skill markdown, v1"]')!.textContent).toContain("(v1)");
     expect(said()).toMatch(/^v1, the first version/);
     expect(named(el, "Restore v1")).toBeDefined();
+    await act(() => el.querySelector<HTMLButtonElement>('button[aria-label="Find in skill"]')!.click());
+    const find = el.querySelector<HTMLInputElement>('input[aria-label="Find in skill"]')!;
+    await write(find, "(v1)");
+    expect(find.closest('[role="search"]')?.querySelector('[role="status"]')?.textContent).toBe("1 of 1");
+    expect(el.querySelector('button[aria-label="Show replace"], button[aria-label="Hide replace"]')).toBeNull();
     // The newest shows what it changed from the one before, with the way to undo it.
     await pick(0);
     expect(said()).toMatch(/^What Scarlet changed in v2/);
