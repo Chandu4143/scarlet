@@ -3471,8 +3471,9 @@ it("prepares waiting calls before the first click and skips a call the editor al
   await show();
   expect(call()).toBeNull();
   expect(listen).not.toHaveBeenCalled();
+  // The two waiting calls are prepared side by side.
   const warmed = prepare.mock.calls.filter(([, version]) => version === data.timeline!.version).map(([, , positions]) => positions[0]);
-  expect(warmed).toEqual([0, 9]);
+  expect(warmed.sort((a, b) => a! - b!)).toEqual([0, 9]);
   await reviewCalls();
   expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 1");
   const listens = listen.mock.calls.length;
@@ -3483,6 +3484,22 @@ it("prepares waiting calls before the first click and skips a call the editor al
   expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 1");
   await press("s");
   expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 3");
+});
+
+it("warms the call ↑ goes back to, also one the editor already decided", async () => {
+  const prepare = vi.mocked(api.preparePlayback);
+  runningPass();
+  await event(d => ({ ...d, changes: d.changes.map(c => c.id === "chg_ready"
+    ? { ...c, cutChoices: [{ index: 1, start: STAGED[1]!.start, end: STAGED[1]!.end, choice: "keep" }] } : c) }));
+  await show();
+  // Cut 2's lead-in starts at four seconds. It has a decision, so nothing waits on it.
+  const warmed = () => prepare.mock.calls.some(([, version, times]) => version === data.timeline!.version && times[0] === 4);
+  expect(warmed()).toBe(false);
+  await press("ArrowUp");
+  expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 3");
+  // Once Cut 3 plays, the one before it is prepared.
+  await act(async () => usePlayerStore.setState({ playing: true, playbackReady: true }));
+  await vi.waitFor(() => expect(warmed()).toBe(true));
 });
 
 it("marks, shades and plays a waiting call where its footage sits once the working cut has moved on from the pass's version", async () => {
@@ -6401,6 +6418,33 @@ it("warms and opens the actual saved After for a named removal alongside restore
   expect([player.mediaTime(8), player.mediaTime(11), player.mediaTime(13)]).toEqual([10, 12, 13]);
   await press("\\");
   expect(player.mediaTime(11)).toBe(11);
+});
+
+it("warms the edit ↑ goes back to as well as the next one", async () => {
+  const ranges = [{ start: 45.75, end: 46.25 }, { start: 60, end: 61 }, { start: 80, end: 82 }];
+  const before = { ...data.timeline!, version: "v_before", tracks: [
+    { ...makeTrack("video", "Video"), clips: [makeMediaClip(data.media.find(m => m.kind === "video")!.id, 0, 120, 0)] },
+  ] };
+  const ops = [...ranges].reverse().map(range => ({ op: "rippleDelete" as const, ...range }));
+  const working = { ...applyOps(before, ops), version: data.project.head! };
+  const edits = ranges.map((removed, spot) => ({
+    changeId: "chg_approved_2", spot, label: `Trim pause ${spot + 1}`, beforeCut: { version: before.version, removed },
+    range: removed, at: removed.start - [0, 0.5, 3.5][spot]!, previous: [],
+  }));
+  data = { ...data, timeline: working, changes: data.changes.map(c => c.id === "chg_approved_2"
+    ? { ...c, ops, fromVersion: before.version, toVersion: working.version, appliedVersion: working.version,
+      timelineEdits: undefined, approvedSpots: undefined, appliedReview: undefined, cutReasons: undefined } : c) };
+  useProjectStore.setState({ current: data });
+  vi.spyOn(api, "timeline").mockImplementation(async (_, version) => ({ timeline: version === before.version ? before : working }));
+  vi.spyOn(api, "threadEdits").mockResolvedValue({ version: working.version, edits });
+  await event(d => ({ ...d, changes: d.changes.filter(c => c.id === "chg_approved_2"),
+    tasks: d.tasks.filter(t => t.changeIds.includes("chg_approved_2")), notes: [] }));
+  await show();
+  const warmed = (at: number) => vi.mocked(api.preparePlayback).mock.calls.some(([, version, times]) => version === before.version && times.includes(at));
+  expect(warmed(60)).toBe(false);
+  // The last edit opens straight from the list. Keep would go round to the first: only ↑ goes to the second.
+  await click(appliedRows()[2]!);
+  await vi.waitFor(() => expect(warmed(60)).toBe(true));
 });
 
 it("keeps the selected cut centered and its playhead in view through the whole After audition", async () => {

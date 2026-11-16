@@ -2490,7 +2490,7 @@ export function SimpleWorkspace() {
   const passFlagged = !pass || !passThread ? [] : passThread.id === focusThread?.id ? flaggedEdits
     : passEdits.filter(e => !!e.check && !passReviewed(e) && !passRevising(e));
   const closeEdit = () => { player.pause(); threadTimeline.clear(); };
-  function stepEdit(delta: number) {
+  function editBeside(delta: number) {
     // From an edit that leads with its place among the ones still to check ("1 of 3"), ↑ and ↓ step to the others of
     // those: the next of every edit would be one of a pass's hundreds of settled cuts, and the count would go. One of
     // them sent back for revision has no card to say so and steps the same way, to the ones that still wait. While
@@ -2502,7 +2502,10 @@ export function SimpleWorkspace() {
     // A row stands for its first place that waits, else its first, as in the list.
     const beside = delta > 0 ? editsByRow.slice(shownRow + 1) : editsByRow.slice(0, Math.max(0, shownRow)).reverse();
     const row = among ? beside.find(other => other.some(waitingEdit)) : editsByRow[shownRow + delta];
-    const next = row && (row.find(waitingEdit) ?? row[0]);
+    return row && (row.find(waitingEdit) ?? row[0]);
+  }
+  function stepEdit(delta: number) {
+    const next = editBeside(delta);
     if (!next) return;
     // ↑ and ↓ reach the log as a bare key: this says which edit they went to.
     appLog("action", "step", { to: "edit", edit: threadEdits.indexOf(next) + 1, of: threadEdits.length, change: next.changeId });
@@ -2542,6 +2545,9 @@ export function SimpleWorkspace() {
   }, [hoveredRow]);
   const waitingOrder = waitingCalls.map(c => c.index).join(",");
   const flaggedOrder = passFlagged.map(editKey).join(",");
+  // Where ↑ goes from the open edit or call, so going back isn't cold either.
+  const previousEdit = reviewingEdit ? editBeside(-1) : undefined;
+  const previousCall = onCall ? allCalls[allCalls.indexOf(openCall!) - 1] : undefined;
   const reviewQueue = useMemo(() => {
     if (!activeReview || !timeline || head !== timeline.version) return [];
     const queue = new Map<string, CutToPrepare>();
@@ -2590,6 +2596,9 @@ export function SimpleWorkspace() {
     }
     addCall(upcomingCall);
     if (upcomingEdit) addEdit(upcomingEdit, onCall ? passThread : focusThread, onCall ? passEdits : threadEdits);
+    // After the next one, the one before: the editor steps back less often than on.
+    if (previousCall && !sentBack(previousCall.index)) addCall(previousCall);
+    if (previousEdit && !revisingEdit(previousEdit)) addEdit(previousEdit, focusThread, threadEdits);
     waitingCalls.forEach(addCall);
     if (passThread?.id !== focusThread?.id) passFlagged.forEach(edit => addEdit(edit, passThread, passEdits));
     flaggedEdits.forEach(edit => addEdit(edit, focusThread, threadEdits));
@@ -2598,7 +2607,7 @@ export function SimpleWorkspace() {
     if (visible) addEdit(visible, focusThread, threadEdits);
     return [...queue.values()];
   }, [activeReview, timeline, head, pass, review, liveReview, returningCall, placed, waitingOrder, flaggedOrder, openCall?.index, openCallBack, conflict, onCall, reviewingEdit, upcomingCall, upcomingEdit,
-    flaggedEdits, threadEdits, passEdits, passThread, focusThread, toWorkingCut, placing, priorityRow, listShown, onLatest, nextEditAfterKeep,
+    flaggedEdits, threadEdits, passEdits, passThread, focusThread, toWorkingCut, placing, priorityRow, listShown, onLatest, nextEditAfterKeep, previousEdit, previousCall,
     beforeTimeline, afterTimeline, appliedSide, madeBy, callTimeline, needsSingleCut, single.preview, listening?.side, versionAfter, savedAfter.timeline, !!preparedCall]); // eslint-disable-line react-hooks/exhaustive-deps
   const openVersion = versionBefore ?? head;
   const openCut = !activeReview ? undefined : beforeCut ?? (openCall && openVersion && heard ? { version: openVersion, removed: heard } : undefined);
