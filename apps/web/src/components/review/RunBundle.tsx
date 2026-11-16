@@ -14,10 +14,10 @@ import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
 
 /**
  * Tokens the agent used on a request. Hovering or focusing the count opens a note above it with every part: input,
- * output, cache read and write, reasoning, and how many runs it took. Shown only when turned on in Settings → Usage.
+ * output, cache read and write, and how many runs it took. Shown only when turned on in Settings → Usage.
  * The note is placed against the window, so the pinned request's scrolling box doesn't clip it.
  */
-type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models">;
+type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens">;
 
 function Tokens({ usage, className, time, details = [] }: {
   usage?: RunUsage; className?: string; time?: string; details?: [label: string, value: string][];
@@ -68,7 +68,7 @@ function Tokens({ usage, className, time, details = [] }: {
   </span> : null;
   const parts: [string, number][] = [
     ["Input", usage.inputTokens], ["Output", usage.outputTokens], ["Cache read", usage.cacheReadTokens],
-    ["Cache write", usage.cacheWriteTokens], ["Reasoning", usage.reasoningTokens],
+    ["Cache write", usage.cacheWriteTokens],
   ];
   const label = tokenLabel(usage.totalTokens);
   const [count, unit] = label.split(" ");
@@ -223,7 +223,7 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
   const usage = totalTokens ? {
     runs: sum("runs"), inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
     cacheReadTokens: sum("cacheReadTokens"), cacheWriteTokens: sum("cacheWriteTokens"),
-    reasoningTokens: sum("reasoningTokens"), totalTokens,
+    totalTokens,
   } : undefined;
   const models = new Set<string>();
   const efforts = new Set<string>();
