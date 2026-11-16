@@ -67,17 +67,17 @@ export async function recoverIngest(ctx: Ctx, projectId?: string) {
 
 /**
  * A quit between preparing a recording and beginning its transcription can leave it ready without a job.
- * Take up recent imports with the same authorization when the library opens or the project resumes.
+ * Check recent imports at startup. An explicit project resume also takes up older authorized imports.
  */
 async function recoverImportTranscriptions(ctx: Ctx, projectId?: string) {
-  const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const since = projectId ? null : new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
   const waiting = ctx.db.prepare(`SELECT m.id FROM media m JOIN projects p ON p.id = m.project_id
-    WHERE m.status = 'ready' AND m.created_at > ? AND p.deleted_at IS NULL AND NOT p.media_paused AND NOT p.archived
+    WHERE m.status = 'ready' AND (? IS NULL OR m.created_at > ?) AND p.deleted_at IS NULL AND NOT p.media_paused AND NOT p.archived
       AND (? IS NULL OR p.id = ?)
       AND json_extract(m.json, '$.transcriptionOnImport') IS NOT NULL AND json_extract(m.json, '$.transcriptId') IS NULL
       AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.kind = 'transcribe' AND t.project_id = m.project_id AND json_extract(t.json, '$.context.mediaId') = m.id)
       AND NOT EXISTS (SELECT 1 FROM transcripts s WHERE s.media_id = m.id)
-    ORDER BY m.created_at`).all(since, projectId, projectId) as Array<{ id: string }>;
+    ORDER BY m.created_at`).all(since, since, projectId, projectId) as Array<{ id: string }>;
   for (const { id } of waiting) {
     if (ctx.shutdown.aborted) return;
     const media = ctx.repos.projects.getMedia(id);

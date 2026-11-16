@@ -205,6 +205,7 @@ it.each(["revoked", "paused", "archived"] as const)("recovers a ready import aft
     ctx.repos.settings.update({ transcription: { provider: "openai" } });
   } else {
     ctx.repos.projects.update(project.id, condition === "paused" ? { mediaPaused: true } : { archived: true });
+    ctx.db.prepare("UPDATE media SET created_at = ? WHERE id = 'ready-clip'").run(new Date(Date.now() - 7 * 86_400_000).toISOString());
   }
   const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe").mockResolvedValue({ segments: [] });
   try {

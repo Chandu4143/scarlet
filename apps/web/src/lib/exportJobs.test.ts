@@ -316,6 +316,20 @@ it("leaves settlement to the other Scarlet window when it already has the resume
   expect(lines).toEqual([]);
 });
 
+it("keeps a resumed export pending when its destination record is temporarily unavailable", async () => {
+  const kept: Render = { ...render, state: "done", export: { owner: "11111111-1111-4111-8111-111111111111", name: NAME, ...DESTINATION } };
+  vi.spyOn(api, "exports").mockResolvedValue({ renders: [kept] });
+  asked.save.mockRejectedValueOnce("Export destinations could not be saved or read.");
+  await resumeExports();
+  await vi.waitFor(() => expect(job()).toMatchObject({ phase: "failed", error: "Export destinations could not be saved or read." }));
+  expect(asked.release).not.toHaveBeenCalled();
+  expect(asked.discard).not.toHaveBeenCalled();
+
+  await resumeExports();
+  await vi.waitFor(() => expect(job()).toMatchObject({ phase: "done", path: DESTINATION.path }));
+  expect(asked.release).toHaveBeenCalledTimes(1);
+});
+
 it("counts an export's percent only while it moves", () => {
   const job: ExportJob = { file: video, context: "c", version: "v", phase: "rendering", progress: 0.42, cancel: () => {} };
   expect(exportCounting(job)).toBe(true);
