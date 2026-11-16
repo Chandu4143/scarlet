@@ -271,7 +271,9 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
   const seconds = c.start !== undefined || c.end !== undefined;
   if (c.leave !== undefined && seconds) throw new Error(`${label}: leave goes with a word or pause reference. A range in seconds already says what plays.`);
   if (c.occurrence) {
-    if (words || seconds || c.leave !== undefined) throw new Error(`${label}: a measured occurrence already identifies the range to remove.`);
+    // The recording's id beside removeRepeat names nothing new. A range or a word reference would be a second, different removal.
+    if (c.fromWord !== undefined || c.toWord !== undefined || pause || seconds || c.leave !== undefined)
+      throw new Error(`${label}: removeRepeat already identifies the range to remove. Leave out start/end, fromWord/toWord, afterWord and leave on that cut.`);
     const { mediaId, clipId, words: heard, before, after } = c.occurrence;
     const around = [...(before ? [before] : []), ...heard, ...(after ? [after] : [])];
     const fromWord = before ? 1 : 0;

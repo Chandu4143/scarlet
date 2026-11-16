@@ -4,7 +4,7 @@ import {
   DEFAULT_EDGE_OPTIONS, DEFAULT_PACING_OPTIONS, KEPT_SIDE_EDGE_OPTIONS, classifyEdges, compareToDecisions, compareToReference, cutEdges, joinEdges, labelWords,
   levelIn, levelStats, matchEdges, pacing, planMetrics, prf, removedSource, sentences, summarizeEdges, traceMetrics, type EventLike, type MediaEvidence,
 } from "../src/metrics.ts";
-import { keptSource, playedWords, timelineRangeToSource } from "../src/timeline.ts";
+import { keptSource, playedWords, timelineRangeToSource, wordsWithout } from "../src/timeline.ts";
 import { BREATH_DB, FLOOR_DB, SPEECH_DB, cut, lines, media, recording } from "./fixtures.ts";
 
 const MIC = "med_mic";
@@ -163,6 +163,19 @@ describe("against a reference", () => {
 });
 
 describe("pacing", () => {
+  it("scores a version with staged cuts taken out: words inside go, later words move up across a new join", () => {
+    const w = (text: string, start: number, end: number) => ({ text, start, end, sourceStart: start, sourceEnd: end, mediaId: MIC, piece: 0 });
+    const played = [w("Here's", 0, 0.4), w("the", 0.4, 0.6), w("okay", 1, 1.3), w("test.", 5, 5.5)];
+    // A held cut takes out "okay" and the long wait after it, up to just before "test.".
+    const out = wordsWithout(played, [{ start: 0.8, end: 4.9 }]);
+    expect(out.map(x => x.text)).toEqual(["Here's", "the", "test."]);
+    expect(out[2]!.start).toBeCloseTo(0.9);
+    expect(out[2]!.piece).not.toBe(out[1]!.piece);
+    expect(pacing(played).gaps.excessSeconds).toBeGreaterThan(3);
+    expect(pacing(out).gaps).toMatchObject({ inside: 0, atJoins: 0, excessSeconds: 0 });
+  });
+
+
   const w = (text: string, start: number, end: number, piece = 0) => ({ text, start, end, mediaId: MIC, piece });
 
   it("places a version's words on its timeline, one piece per unbroken run of the recording", () => {

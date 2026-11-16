@@ -14,7 +14,7 @@ import {
 import { pictureAt } from "./layout.ts";
 import { comparePicture, summarizePicture, type PictureComparison, type PictureSample, type PictureSummary } from "./picture.ts";
 import { comparePublishedJoinSpacing, type PublishedReference } from "./published.ts";
-import { keptSource, playedWords, sourceSpan, timelineRangeToSource, type MediaInfo, type SourceRange } from "./timeline.ts";
+import { keptSource, playedWords, sourceSpan, timelineRangeToSource, wordsWithout, type MediaInfo, type SourceRange } from "./timeline.ts";
 
 export interface ScoreInput {
   media: MediaInfo[];
@@ -65,6 +65,8 @@ interface PacingScore {
   source: PacingSummary;
   applied: PacingSummary;
   proposed: PacingSummary;
+  /** The applied cut with the staged cuts the agent recommended cutting taken out too: what the editor gets by accepting its picks. */
+  recommended?: PacingSummary;
   reference?: PacingSummary;
   sharedJoins?: Record<"applied" | "proposed", ReturnType<typeof comparePublishedJoinSpacing>>;
   appliedGaps: PacingGap[];
@@ -203,6 +205,11 @@ export function scoreRun(input: ScoreInput): Score {
     } : input.reference?.timeline && { reference: summary(pacing(words(input.reference.timeline))) }),
     appliedGaps: gapList.sort((a, b) => b.seconds - a.seconds).slice(0, 60), appliedRepeats: repeatList,
   };
+  // Staged cuts are timed on the review's base version, which is the applied one whenever a review was scored.
+  const recommendedCuts = (input.review?.cuts ?? []).filter(c => c.assessment?.verdict === "cut").map(c => c.removed);
+  const recommendedPacing = input.review && (!timelines.reviewBase || timelines.reviewBase.version === timelines.applied.version)
+    ? summary(pacing(wordsWithout(appliedWords, recommendedCuts))) : undefined;
+  if (recommendedPacing) pacingScore.recommended = recommendedPacing;
 
   // The agent's own call, before the editor: applied cuts plus the review items it recommended cutting.
   const recommended = new Map(kA);
@@ -261,6 +268,11 @@ export function scoreRun(input: ScoreInput): Score {
       gapsLeft: appliedPacing.gaps.inside + appliedPacing.gaps.atJoins,
       looseJoins: appliedPacing.gaps.atJoins,
       deadAirSeconds: appliedPacing.gaps.excessSeconds,
+      // Accepting the agent's picks on the staged cuts. Without a review that is the applied cut.
+      recommendedDeadAirSeconds: (recommendedPacing ?? appliedPacing).gaps.excessSeconds,
+      recommendedLooseJoins: (recommendedPacing ?? appliedPacing).gaps.atJoins,
+      restartsLeft: (recommendedPacing ?? appliedPacing).restarts,
+      silencesLeft: (recommendedPacing ?? appliedPacing).silences,
       repeatsLeft: appliedPacing.repeats.total,
       repeatsAtJoins: appliedPacing.repeats.atJoins,
       sharedAppliedJoins: pacingScore.sharedJoins?.applied.shared ?? null,

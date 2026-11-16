@@ -74,6 +74,23 @@ export function playedWords(tl: Timeline, media: readonly MediaInfo[], evidence:
   return out;
 }
 
+/**
+ * What a version plays once timeline ranges of it are taken out: the words inside them go, later words move up by what
+ * came out before them, and a word after a removal is in a new piece, since the removal makes a join there.
+ */
+export function wordsWithout(words: readonly TimelineWord[], removals: readonly Range[]): TimelineWord[] {
+  const cuts = removals.filter(r => r.end > r.start).slice().sort((a, b) => a.start - b.start);
+  const out: TimelineWord[] = [];
+  for (const w of words) {
+    const middle = (w.start + w.end) / 2;
+    if (cuts.some(r => middle >= r.start && middle < r.end)) continue;
+    let shift = 0, before = 0;
+    for (const r of cuts) if (r.end <= middle) { shift += r.end - r.start; before++; }
+    out.push({ ...w, start: w.start - shift, end: w.end - shift, piece: w.piece * 1000 + before });
+  }
+  return out;
+}
+
 /** A timeline range on each audible recording it plays. */
 export function timelineRangeToSource(tl: Timeline, media: readonly MediaInfo[], range: Range): SourceRange[] {
   const out: SourceRange[] = [];

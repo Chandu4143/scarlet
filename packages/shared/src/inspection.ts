@@ -21,7 +21,19 @@ export interface RepeatEvidence {
   followingStart?: number;
   protected?: "first" | "second";
   occurrences: Partial<Record<"first" | "second", RepeatOccurrence>>;
+  /**
+   * The phrase comes back after other words: `first` is the whole first attempt, the phrase and what followed it
+   * (`between`), up to where the phrase starts again; `second` is the phrase as said again.
+   */
+  restart?: true;
+  between?: string;
 }
+/** A stretch the edit plays with no word in it, on any dialogue recording. Timeline seconds. */
+export interface SilenceLeft { id: string; start: number; end: number; seconds: number; mediaId: string;
+  /** Where it starts in the recording. */
+  source: number; after: string; before: string; atJoin: boolean }
+/** A wordless stretch this long that a pass leaves playing is accounted for: cut, or kept for what the viewer sees or hears in it. */
+export const SILENCE_LEFT_SECONDS = 2;
 /** A join whose sound, read letter by letter, doesn't match the words the transcript says it plays. */
 export interface JoinHearing { at: number; mediaId: string; side: "out" | "in"; issue: "clipped" | "fragment"; heard: string;
   /** A clipped word: the transcript's word the cut goes through. */
@@ -38,6 +50,8 @@ export interface RepeatAuditResult {
   heard: number;
   remaining: number;
   repeats: RepeatEvidence[];
+  /** Wordless stretches still playing that the pass has neither cut nor kept. They count in `remaining`. */
+  silences?: SilenceLeft[];
   staged: number;
   nextOffset?: number;
   unavailable?: { mediaId: string; reason: string }[];
