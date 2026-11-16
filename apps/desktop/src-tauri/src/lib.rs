@@ -129,6 +129,7 @@ pub fn run() {
             commands::pick_files,
             commands::desktop_log,
             commands::desktop_info,
+            commands::save_editor_model,
             logs::export_logs,
             storage::measure_project_storage,
             storage::developer_storage,

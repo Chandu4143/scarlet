@@ -5,6 +5,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::config::EditorModelSelection;
 use crate::engine::EngineStatus;
 use crate::host::login::LoginStatus;
 use crate::host::HostStatus;
@@ -434,6 +435,7 @@ pub struct DesktopInfo {
     pub updates: Option<crate::updates::Source>,
     pub custom_openai_models: Vec<String>,
     pub custom_claude_models: Vec<String>,
+    pub editor_model: Option<EditorModelSelection>,
     pub version: String,
     pub platform: String,
     pub arch: String,
@@ -449,6 +451,7 @@ pub fn desktop_info(app: AppHandle, state: State<'_, AppState>) -> DesktopInfo {
         updates: tauri::Manager::try_state::<crate::updates::Source>(&app).map(|source| *source),
         custom_openai_models: state.paths.custom_openai_models(),
         custom_claude_models: state.paths.custom_claude_models(),
+        editor_model: state.paths.editor_model(),
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
@@ -457,6 +460,11 @@ pub fn desktop_info(app: AppHandle, state: State<'_, AppState>) -> DesktopInfo {
         work_dir: state.paths.work_dir.to_string_lossy().to_string(),
         log_dir: state.paths.log_dir.to_string_lossy().to_string(),
     }
+}
+
+#[tauri::command]
+pub fn save_editor_model(state: State<'_, AppState>, selection: EditorModelSelection) -> Result<(), String> {
+    state.paths.save_editor_model(&selection).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

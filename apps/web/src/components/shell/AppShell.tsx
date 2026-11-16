@@ -7,7 +7,7 @@ import { reconnectRealtime, startRealtime } from "../../lib/realtime";
 import { useAuthStore } from "../../stores/auth";
 import { useHostsStore } from "../../stores/hosts";
 import { useProjectStore } from "../../stores/project";
-import { loadAgent, useUiStore } from "../../stores/ui";
+import { useUiStore } from "../../stores/ui";
 import { scheduleStorageScan } from "../../lib/storage";
 import { ExportStarNotice } from "./ExportStarNotice";
 import { ShortcutsModal } from "./ShortcutsModal";
@@ -113,7 +113,7 @@ export function AppShell() {
     const stop = startRealtime();
     let active = true;
     void api.settings().then(({ settings }) => {
-      if (active) useUiStore.setState({ agent: loadAgent(settings.defaultAgent) });
+      if (active) useUiStore.getState().setDefaultAgent(settings.defaultAgent);
     }).catch(() => undefined);
     void useHostsStore.getState().load();
     void useProjectStore.getState().loadList();
