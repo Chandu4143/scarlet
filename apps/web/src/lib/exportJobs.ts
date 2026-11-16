@@ -98,6 +98,7 @@ async function run(projectId: string, file: ExportFile, context: string, version
   const wait = new AbortController();
   let cancelled = false;
   let keepPending = false;
+  let unrecorded = false;
   const owner = resumed?.export?.owner ?? crypto.randomUUID();
   let ownedId = resumed?.id;
   let job: ExportJob = { file, context, version, projectSettings: resumed?.projectSettings ?? project?.project.settings,
@@ -216,9 +217,12 @@ async function run(projectId: string, file: ExportFile, context: string, version
     result = { phase: "done", path: saved, context: job.context };
   } catch (err) {
     const message = errorMessage(err);
-    const savingElsewhere = !!resumed && message === "Export is already saving in another Scarlet window.";
-    keepPending = savingElsewhere || (!!ownedId && message === "Export destinations could not be saved or read.");
-    if (savingElsewhere) return;
+    // Another window is saving the file: it resumed this export, whichever window started it, and it settles it.
+    keepPending = message === "Export is already saving in another Scarlet window.";
+    if (keepPending) return;
+    // The app couldn't read its record of where exports go. The failure is shown, so the export is let go even if
+    // the engine can't hear: a later launch must never save it over whatever the editor has put there since.
+    unrecorded = message === "Export destinations could not be saved or read.";
     // A resumed export whose destination is gone was already saved or discarded before the restart.
     const settled = resumed && message === "Export destination expired";
     if (!cancelled && !settled) {
@@ -238,7 +242,7 @@ async function run(projectId: string, file: ExportFile, context: string, version
     // Tell the engine the export is settled. If it can't hear, leave the destination for the next launch to finish.
     if (!keepPending) {
       const released = !ownedId || cancelled || await api.releaseRender(ownedId, owner).then(() => true, () => false);
-      if (released) await discard();
+      if (released || unrecorded) await discard();
     }
   }
 }

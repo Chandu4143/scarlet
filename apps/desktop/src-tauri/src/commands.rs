@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use tauri_plugin_opener::OpenerExt;
 
@@ -127,11 +127,23 @@ struct ExportDestination {
 
 const EXPORT_ALREADY_SAVING: &str = "Export is already saving in another Scarlet window.";
 
-impl ExportDestination {
-    fn saving(&self) -> bool {
-        self.saver.as_ref().is_some_and(|(pid, scarlet)| crate::host::spawn::still_runs(*pid, scarlet))
-    }
+/// The Scarlet writing an export's file: its process id, then its program and start time.
+type Saver = (u32, String);
 
+/// Whether that Scarlet is still open. Asking can start `ps`, or PowerShell on Windows for about a second, so it is
+/// never asked while the destinations are locked.
+fn still_saving(saver: &Saver) -> bool {
+    crate::host::spawn::still_runs(saver.0, &saver.1)
+}
+
+/// What a save's claim on its destination found.
+enum Claim {
+    Taken(bool),
+    /// Another Scarlet recorded a save. Whether it is still open is asked outside the locks, then the claim is tried again.
+    Check(Saver),
+}
+
+impl ExportDestination {
     fn clear_partial(&mut self) {
         self.saver = None;
         if let Some(temp) = self.temp.take() {
@@ -146,20 +158,24 @@ impl ExportDestination {
 impl ExportDestinations {
     /// Restore the destinations of exports that were in progress at the last quit, and remove what a killed save left behind.
     pub fn load(&self, file: PathBuf) {
+        self.load_with(file, still_saving)
+    }
+
+    fn load_with(&self, file: PathBuf, still_saving: impl Fn(&Saver) -> bool) {
         let stored = self.file.get_or_init(|| file);
         let loaded = (|| -> io::Result<()> {
+            // Which recorded saves have ended, asked before anything is locked.
+            let recorded = { let _lock = Self::lock(stored)?; Self::read(stored).unwrap_or_default() };
+            let ended: Vec<(u64, Saver)> = recorded.into_iter()
+                .filter_map(|(ticket, d)| d.saver.filter(|saver| !still_saving(saver)).map(|saver| (ticket, saver)))
+                .collect();
             let mut paths = self.paths.lock().map_err(|_| io::Error::other("export destinations unavailable"))?;
             let _lock = Self::lock(stored)?;
-            let mut saved = match Self::read(stored) {
-                Ok(saved) => saved,
-                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                    log::warn!("export destinations in {} unreadable ({e}); an export under way at the last quit is forgotten", stored.display());
-                    HashMap::new()
-                }
-                Err(e) => return Err(e),
-            };
-            for destination in saved.values_mut() {
-                if !destination.saving() {
+            let mut saved = Self::read_or_reset(stored)?;
+            for (ticket, destination) in saved.iter_mut() {
+                // A save recorded since was claimed by a Scarlet that is open, and is left to it.
+                let over = destination.saver.as_ref().is_none_or(|saver| ended.iter().any(|(t, s)| t == ticket && s == saver));
+                if over {
                     destination.clear_partial();
                 }
             }
@@ -172,17 +188,41 @@ impl ExportDestinations {
         }
     }
 
-    fn start_save(&self, ticket: u64, temp: &Path, saver: (u32, String)) -> Result<bool, String> {
-        self.change(|paths| match paths.get_mut(&ticket) {
-            Some(destination) if !destination.kept => (Ok(false), false),
-            Some(destination) if destination.saving() => (Err(EXPORT_ALREADY_SAVING.to_owned()), false),
-            Some(destination) => {
-                destination.clear_partial();
-                (destination.temp, destination.saver) = (Some(temp.to_path_buf()), Some(saver));
-                (Ok(true), true)
+    /// Claim the destination for this save. Blocks: run it off the async runtime.
+    fn start_save(&self, ticket: u64, temp: &Path, saver: Saver) -> Result<bool, String> {
+        self.start_save_with(ticket, temp, saver, still_saving)
+    }
+
+    fn start_save_with(&self, ticket: u64, temp: &Path, saver: Saver, still_saving: impl Fn(&Saver) -> bool) -> Result<bool, String> {
+        // The recorded saver last asked about, and whether it was still open.
+        let mut checked: Option<(Saver, bool)> = None;
+        // Each round asks about a save that started since the last one. A record that keeps changing is a save under way.
+        for _ in 0..4 {
+            let claim = self.change(|paths| match paths.get_mut(&ticket) {
+                None => (Err("Export destination expired".to_owned()), false),
+                Some(destination) if !destination.kept => (Ok(Claim::Taken(false)), false),
+                Some(destination) => {
+                    if let Some(recorded) = &destination.saver {
+                        match &checked {
+                            Some((asked, true)) if asked == recorded => return (Err(EXPORT_ALREADY_SAVING.to_owned()), false),
+                            Some((asked, false)) if asked == recorded => {}
+                            _ => return (Ok(Claim::Check(recorded.clone())), false),
+                        }
+                    }
+                    destination.clear_partial();
+                    (destination.temp, destination.saver) = (Some(temp.to_path_buf()), Some(saver.clone()));
+                    (Ok(Claim::Taken(true)), true)
+                }
+            })??;
+            match claim {
+                Claim::Taken(kept) => return Ok(kept),
+                Claim::Check(recorded) => {
+                    let open = still_saving(&recorded);
+                    checked = Some((recorded, open));
+                }
             }
-            None => (Err("Export destination expired".to_owned()), false),
-        })?
+        }
+        Err(EXPORT_ALREADY_SAVING.to_owned())
     }
 
     fn finish_save(&self, ticket: u64, temp: &Path, kept: bool, saved: bool) -> Result<(), String> {
@@ -205,6 +245,18 @@ impl ExportDestinations {
         let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(file.with_extension("lock"))?;
         lock.lock()?;
         Ok(lock)
+    }
+
+    /// The record, or none when it can't be parsed: a crash cut it off mid-write, or it was damaged. The exports it
+    /// listed are forgotten and the log says so, and the record is usable again at once.
+    fn read_or_reset(file: &Path) -> io::Result<HashMap<u64, ExportDestination>> {
+        match Self::read(file) {
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                log::warn!("export destinations in {} unreadable ({e}); the exports it listed are forgotten", file.display());
+                Ok(HashMap::new())
+            }
+            read => read,
+        }
     }
 
     fn read(file: &Path) -> io::Result<HashMap<u64, ExportDestination>> {
@@ -234,7 +286,7 @@ impl ExportDestinations {
         let Some(file) = self.file.get() else { return Ok(change(&mut paths).0) };
         let changed = (|| -> io::Result<T> {
             let _lock = Self::lock(file)?;
-            let mut current = Self::read(file)?;
+            let mut current = Self::read_or_reset(file)?;
             // Only uncommitted picker selections belong exclusively to this instance.
             current.extend(paths.iter().filter(|(_, d)| !d.kept).map(|(ticket, d)| (*ticket, d.clone())));
             let (value, durable) = change(&mut current);
@@ -335,9 +387,12 @@ pub async fn finish_video_export(app: AppHandle, state: State<'_, AppState>, des
     let parent = path.parent().ok_or("Unsupported save destination")?;
     let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Could not write to the chosen folder ({})", e.kind()))?;
     let partial = temp.path().to_path_buf();
-    // Process inspection can start PowerShell on Windows. Claim the ticket before writing any bytes.
-    let saver = tauri::async_runtime::spawn_blocking(crate::host::spawn::this_scarlet).await.map_err(|e| e.to_string())?;
-    let kept = destinations.start_save(ticket, &partial, saver)?;
+    // Process inspection can start PowerShell on Windows, so the claim runs on a blocking thread. It is made before any
+    // bytes are written.
+    let (handle, claimed) = (app.clone(), partial.clone());
+    let kept = tauri::async_runtime::spawn_blocking(move || {
+        handle.state::<ExportDestinations>().start_save(ticket, &claimed, crate::host::spawn::this_scarlet())
+    }).await.map_err(|e| e.to_string())??;
     let saved = save_engine_file(&app, &state, &url, &path, temp).await;
     // Never where it went: the editor typed the file's name.
     match &saved {
@@ -739,6 +794,82 @@ mod tests {
         }).unwrap();
         let again = ExportDestinations::default();
         again.load(damaged);
+        assert!(again.paths.lock().unwrap().contains_key(&7));
+    }
+
+    /// Whether another Scarlet is still saving is asked of the system, which can take a second on Windows. Nothing is
+    /// locked meanwhile: not this process's destinations, and not the record other Scarlets share.
+    #[test]
+    fn asks_whether_another_save_is_under_way_with_nothing_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("export-destinations.json");
+        let partial = dir.path().join(".tmpOther");
+        std::fs::write(&partial, "partial").unwrap();
+        let other: Saver = (1, "another Scarlet".into());
+        let saved = serde_json::json!({ "1": { "path": dir.path().join("Cut.mp4"), "temp": partial, "saver": other } });
+        std::fs::write(&record, saved.to_string()).unwrap();
+        let app = ExportDestinations::default();
+        let unlocked = |gone: bool| {
+            let shared = OpenOptions::new().read(true).write(true).open(record.with_extension("lock")).unwrap();
+            let free = app.paths.try_lock().is_ok() && shared.try_lock().is_ok();
+            assert!(free, "the destinations were locked while a process was looked up");
+            !gone
+        };
+        // At launch the other Scarlet is still open: its partial file is left.
+        app.load_with(record.clone(), |_| unlocked(false));
+        assert!(partial.exists());
+        // While it is open, a save can't take the destination.
+        let mine = dir.path().join(".tmpMine");
+        assert_eq!(app.start_save_with(1, &mine, (2, "this Scarlet".into()), |_| unlocked(false)).unwrap_err(), EXPORT_ALREADY_SAVING);
+        // Once it has quit, its partial file goes and this save takes the destination.
+        assert!(app.start_save_with(1, &mine, (2, "this Scarlet".into()), |_| unlocked(true)).unwrap());
+        assert!(!partial.exists());
+        let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+        assert_eq!(kept["1"]["saver"], serde_json::json!([2, "this Scarlet"]));
+    }
+
+    /// A save another Scarlet claimed while this one asked about the save before it is a new save, asked about in turn.
+    #[test]
+    fn asks_again_about_a_save_claimed_while_it_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("export-destinations.json");
+        let (app, other) = (ExportDestinations::default(), ExportDestinations::default());
+        app.load(record.clone());
+        other.load(record);
+        app.change(|paths| {
+            paths.insert(1, ExportDestination { path: dir.path().join("Cut.mp4"), temp: None, saver: Some((1, "quit".into())), kept: true });
+            ((), true)
+        }).unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let result = app.start_save_with(1, &dir.path().join(".tmpMine"), (3, "this Scarlet".into()), |saver| {
+            asked.borrow_mut().push(saver.1.clone());
+            if saver.1 == "quit" {
+                other.change(|paths| { paths.get_mut(&1).unwrap().saver = Some((2, "open".into())); ((), true) }).unwrap();
+                return false;
+            }
+            true
+        });
+        assert_eq!(result.unwrap_err(), EXPORT_ALREADY_SAVING);
+        assert_eq!(*asked.borrow(), ["quit", "open"]);
+    }
+
+    #[test]
+    fn carries_on_when_its_record_is_damaged_while_it_runs() {
+        crate::util::test_log::capture();
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("damaged-later-export-destinations.json");
+        let app = ExportDestinations::default();
+        app.load(record.clone());
+        std::fs::write(&record, "{\"1\":{\"path\":\"/Users/me/Cut.mp").unwrap();
+        // Every export command goes on working, as it does when the record is damaged before launch, and the log says so.
+        app.change(|paths| {
+            paths.insert(7, ExportDestination { path: dir.path().join("Cut.mp4"), temp: None, saver: None, kept: true });
+            ((), true)
+        }).unwrap();
+        let (level, _) = crate::util::test_log::find(&["export destinations in", "damaged-later-export-destinations.json", "unreadable"]).expect("the damaged record was not logged");
+        assert_eq!(level, log::Level::Warn);
+        let again = ExportDestinations::default();
+        again.load(record);
         assert!(again.paths.lock().unwrap().contains_key(&7));
     }
 
