@@ -57,6 +57,13 @@ fn s(v: Option<&Value>) -> Option<String> {
     v.filter(|x| !x.is_null()).map(value_text)
 }
 
+fn record_codex_plan(steps: Option<Vec<PlanStep>>, st: &mut CodexState, events: &mut Vec<RunnerEvent>) {
+    if let Some(steps) = steps.filter(|steps| st.plan.as_ref() != Some(steps)) {
+        events.push(plan_event(&steps));
+        st.plan = Some(steps);
+    }
+}
+
 /// Parse one JSONL line from `codex exec --json`.
 pub fn parse_codex_line(line: &str, st: &mut CodexState) -> Vec<RunnerEvent> {
     let msg: Value = match serde_json::from_str(line) {
