@@ -4,6 +4,7 @@ import { mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { processIsAlive, type Ctx } from "../context.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
+import { logId } from "../logText.js";
 import { appendTaskEvent, createTask, FINISHED_TASK, hasTranscript, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { prepareCutReview } from "./changes.js";
@@ -30,12 +31,12 @@ const LOST_WORKER_ATTEMPTS = 3;
  */
 function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean, lastSeen?: string | null): Task {
   let saved = settleTask(ctx, task, unstarted, lastSeen);
-  ctx.log(`[task] ${task.id} recovered after its worker stopped: ${task.state} → ${saved.state}${saved.error ? ` (${saved.error})` : ""}`);
   const attempts = runAttempts(task.projectId, runRoot(task));
   // Only the attempts that lost their worker count. A pass that came through three quits, or that the editor resumed
   // by hand, still carries on by itself the first time its worker goes missing.
   if (!quit && saved.state === "failed" && saved.interrupted) saved = saveTask(ctx, { ...saved, lostWorker: true });
-  const again = quit || ctx.repos.tasks.count(`${attempts.where} AND json_extract(json, '$.lostWorker') = 1`, attempts.params) < LOST_WORKER_ATTEMPTS;
+  const lost = quit ? 0 : ctx.repos.tasks.count(`${attempts.where} AND json_extract(json, '$.lostWorker') = 1`, attempts.params);
+  const again = quit || lost < LOST_WORKER_ATTEMPTS;
   let carriesOn = false;
   // A learning check cut short isn't run again: its request has moved on, and the next message is read anyway.
   if (again && saved.state === "failed" && saved.interrupted && saved.kind !== "transcribe" && saved.kind !== "learning_check") {
@@ -61,6 +62,9 @@ function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean, 
   // A rule the editor approved was being saved by this run. An attempt that carries on is still saving it, so the
   // rule stays with that attempt and the skill's next rule waits for it: a skill's edits run one at a time.
   if (!carriesOn) skillEditEnded(ctx, saved);
+  const outcome = carriesOn ? "resumed" : saved.retryTaskId ? "retried" : !again ? "retry_limit" : saved.state;
+  ctx.db.afterCommit(() => ctx.log(`[task] recovery task=${logId(task.id)} project=${logId(task.projectId)} ` +
+    `state=${saved.state} outcome=${outcome} reason=${quit ? "engine_stopped" : "worker_lost"} attempts=${lost}`));
   return saved;
 }
 

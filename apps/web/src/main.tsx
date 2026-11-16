@@ -1,7 +1,7 @@
 import { restoreLastProject, restoreUpdatePlace } from "./lib/updatePlace";
 import { StrictMode } from "react";
 import { desktop, isDesktop } from "./lib/desktop";
-import { startAppLog } from "./lib/appLog";
+import { appLog, errorName, startAppLog, withoutAddresses } from "./lib/appLog";
 import { startPlaybackLog } from "./lib/playbackLog";
 import { startUiLog } from "./lib/uiLog";
 import { BootSplash } from "./components/shell/BootSplash";
@@ -52,11 +52,14 @@ async function launch() {
       <App platform={platform} />
     </StrictMode>);
   } catch (error) {
-    const view = await opening;
+    appLog("app", "startup-failed", { name: errorName(error), error: withoutAddresses(describeUiError(error)).slice(0, 2000) }, { level: "error" });
+    const view = await opening.catch(() => undefined);
+    if (!view) {
+      root.textContent = "Scarlet couldn’t start. Close Scarlet and open it again.";
+      return;
+    }
     view.render(<StartupRecovery title="Scarlet couldn’t start"
       detail={`${error instanceof Error ? error.message : String(error)}\nClose Scarlet and open it again.`} />);
-    console.error("Scarlet desktop startup failed", error);
-    void desktop.log(`startup failed: ${describeUiError(error)}`, "error");
   }
 }
 
@@ -74,10 +77,10 @@ function logUncaughtErrors() {
     if (last !== undefined && Date.now() - last < 60_000) return;
     recent.set(message, Date.now());
     if (recent.size > 100) recent.delete(recent.keys().next().value!);
-    void desktop.log(`${message} (at ${location.pathname})`, "error");
+    appLog("error", kind, { name: errorName(error), error: withoutAddresses(message), path: location.pathname }, { level: "error" });
   };
-  window.addEventListener("error", event => report("uncaught error", event.error ?? event.message));
-  window.addEventListener("unhandledrejection", event => report("unhandled rejection", event.reason));
+  window.addEventListener("error", event => report("uncaught", event.error ?? event.message));
+  window.addEventListener("unhandledrejection", event => report("unhandled-rejection", event.reason));
 }
 
 if (isDesktop()) {

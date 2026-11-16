@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { matchedRoutes } from "hono/route";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ZodError } from "zod/v3";
 import { OpError, TimelinePlanningError } from "@scarlet/timeline";
 import { authMiddleware, type AppEnv } from "./auth.js";
 import { createContext, noteEngineStart, type Ctx, type ServerOptions } from "./context.js";
 import { HttpError } from "./errors.js";
-import { clip, humanDuration } from "./logText.js";
+import { clip, humanDuration, requestLogId, REQUEST_ID_HEADER } from "./logText.js";
+import { startFileLog } from "./files.js";
 import { logStateChanges } from "./eventLog.js";
 import { authRoutes } from "./routes/auth.js";
 import { changeRoutes } from "./routes/changes.js";
@@ -50,7 +52,7 @@ const SLOW_REQUEST_MS = 30_000;
 /** A request this slow held the window back, even when it then succeeded. */
 const NOTABLE_REQUEST_MS = 1000;
 /** Writes too frequent to log one by one while they succeed quickly: a host's check-ins, and render requests, whose renders are logged as they finish. */
-const ROUTINE_WRITES = /\/hosts\/[^/]+\/(heartbeat|claim)$|\/renders$|\/renders\/[^/]+\/owners\/[^/]+$/;
+const ROUTINE_WRITES = /\/hosts\/[^/]+\/(heartbeat|claim)$|\/renders$|\/renders\/[^/]+\/owners\/[^/]+$|\/tool-diagnostic$/;
 
 /**
  * Where a request failed validation: the first field and the kind of problem, with a count of the rest.
@@ -67,7 +69,9 @@ function invalidAt(error: { code?: string; details?: unknown }): string {
 export function createApp(options: ServerOptions): ScarletApp {
   const partial = createContext(options);
   const ctx = partial as Ctx;
-  logStateChanges(ctx);
+  const projects = ctx.db.prepare(`SELECT id, head, media_paused FROM projects WHERE deleted_at IS NULL
+    ORDER BY updated_at DESC LIMIT 2000`).all() as { id: string; head: string | null; media_paused: number }[];
+  logStateChanges(ctx, projects);
   migrateGlobalSkills(ctx);
   ctx.renders = new RenderQueue(ctx);
   wireChangeRenderCompletion(ctx);
@@ -223,40 +227,46 @@ export function createApp(options: ServerOptions): ScarletApp {
   const repeats = new Map<string, { at: number; more: number }>();
   api.use("*", async (c, next) => {
     const started = Date.now();
+    const request = requestLogId(c.req.raw);
+    const route = () => matchedRoutes(c).findLast(r => /^\/api(?:\/(?:[a-z0-9.-]+|:[a-z][a-z0-9]*))+$/i.test(r.path))?.path ?? "unmatched";
+    startFileLog(c.req.raw, line => ctx.log(line), route);
+    c.header(REQUEST_ID_HEADER, request);
     await next();
     const ms = Date.now() - started;
     const { method, path } = c.req;
     const status = c.res.status;
     const waited = c.req.query("wait") !== undefined;
     const gone = c.req.raw.signal?.aborted ? "; the caller had already disconnected" : "";
-    if (ms >= SLOW_REQUEST_MS && !waited) {
-      ctx.log(`[http] slow request: ${method} ${path} → ${status} after ${humanDuration(ms)}${gone}`);
-      return;
-    }
     if (method === "OPTIONS") return;
     const failed = status >= 400, writes = method !== "GET" && method !== "HEAD";
     if (!failed && ms < NOTABLE_REQUEST_MS && (!writes || ROUTINE_WRITES.test(path))) return;
+    const slow = ms >= SLOW_REQUEST_MS && !waited;
+    let code = "", reason = "";
+    if (failed && c.res.headers.get("content-type")?.includes("json")) {
+      const body = await c.res.clone().json().catch(() => undefined) as { error?: { code?: string; message?: string; details?: unknown } } | undefined;
+      if (body?.error) {
+        const error = body.error;
+        code = typeof error.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(error.code) ? error.code : "error";
+        reason = `: ${code}: ${clip(error.message ?? "", 200)}${invalidAt(error)}`;
+      }
+    }
     // The same request answered the same way again and again (a poll for something that isn't there) is one line
     // every ten seconds, with a count of the rest.
-    const key = `${method} ${path} ${status}`;
+    const key = `${method} ${path} ${status} ${code}`;
     const last = repeats.get(key);
     if (last && started - last.at < 10_000 && ms < NOTABLE_REQUEST_MS) { last.more++; return; }
     repeats.delete(key);
     repeats.set(key, { at: started, more: 0 });
     if (repeats.size > 500) repeats.delete(repeats.keys().next().value!);
-    let reason = "";
-    if (failed && c.res.headers.get("content-type")?.includes("json")) {
-      const body = await c.res.clone().json().catch(() => undefined) as { error?: { code?: string; message?: string; details?: unknown } } | undefined;
-      if (body?.error) reason = `: ${body.error.code ?? "error"}: ${clip(body.error.message ?? "", 200)}${invalidAt(body.error)}`;
-    }
-    ctx.log(`[http] ${method} ${path} → ${status} in ${humanDuration(ms)}${last?.more ? ` (and ${last.more} more like it)` : ""}${gone}${reason}`);
+    ctx.log(`[http] ${slow ? "slow request: " : ""}${method} ${path} → ${status} ${slow ? "after" : "in"} ${humanDuration(ms)}` +
+      ` request=${request} route=${route()}${code ? ` code=${code}` : ""}${last?.more ? ` (and ${last.more} more like it)` : ""}${gone}${reason}`);
   });
   api.use(
     "*",
     cors({
       origin: (origin) => (DEV_ORIGIN.test(origin) ? origin : null),
-      allowHeaders: ["Authorization", "Content-Type", "Range"],
-      exposeHeaders: ["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"],
+      allowHeaders: ["Authorization", "Content-Type", "Range", REQUEST_ID_HEADER],
+      exposeHeaders: ["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition", REQUEST_ID_HEADER],
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
       credentials: true,
     }),

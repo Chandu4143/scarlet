@@ -5,7 +5,7 @@ import type { PlaybackCacheStatus, SourceCacheStatus } from "@scarlet/shared";
 import { isPlayableMedia, SOURCE_PREVIEW_SECONDS } from "@scarlet/timeline";
 import { engineIsAlive, type Ctx } from "../context.js";
 import { badRequest } from "../errors.js";
-import { throttledLog } from "../logText.js";
+import { logId, throttledLog } from "../logText.js";
 import type { MediaWithStatus } from "../repo/projects.js";
 import { fullProxyVariants, legacyFullPicture, previewIdentity, sourceCheckpointDir } from "./previewPictures.js";
 
@@ -101,18 +101,27 @@ class SourcePreviews {
       const temp = file + "." + randomUUID() + ".part.mp4";
       const checkpointDir = sourceCheckpointDir(ctx.paths.proxies(media.projectId), identity.local, suffix);
       const timeLeft = cacheTimeLeft();
+      const started = performance.now();
+      const target = `media=${logId(media.id)} project=${logId(media.projectId)} height=${height}`;
+      const result = (outcome: "done" | "failed" | "interrupted", reason?: "shutdown" | "media_stopped") => {
+        ctx.log(`[media] proxy_finished ${target} outcome=${outcome} elapsed_ms=${Math.round(performance.now() - started)}` +
+          (reason ? ` reason=${reason}` : ""));
+      };
+      ctx.log(`[media] proxy_started ${target}`);
       let interrupted = false;
       try {
         await mkdir(ctx.paths.proxies(media.projectId), { recursive: true });
         signal.throwIfAborted();
         await ctx.render.makeProxy(identity.file, temp, {
           height, hwaccel: ctx.settings().render.hwaccel, signal, checkpointDir,
+          onFallback: stage => ctx.log(`[media] proxy_fallback ${target} stage=${stage}`),
           onProgress: p => { job.progress = p; job.remainingSeconds = timeLeft(p); },
         });
         await identity.check();
         signal.throwIfAborted();
         await rename(temp, file);
         ctx.bus.publish({ type: "media.previewReady", projectId: media.projectId, mediaId: media.id });
+        result("done");
         // A scrub may still have a finished checkpoint open on Windows.
         await rm(checkpointDir, { recursive: true, force: true, maxRetries: 5 }).catch(error => ctx.log(`[media] ${media.id} couldn’t remove its source checkpoints: ${error}`));
         this.fullJobs.delete(file);
@@ -124,8 +133,10 @@ class SourcePreviews {
           job.queued = true;
           delete job.progress;
           this.fullJobs.delete(file);
+          result("interrupted", ctx.shutdown.aborted ? "shutdown" : "media_stopped");
         } else {
           job.state = "failed";
+          result("failed");
           ctx.log(`[media] ${media.id} couldn’t cache its source preview: ${error}`);
         }
       } finally {
@@ -184,7 +195,14 @@ class SourcePreviews {
       if ((await stat(file).catch(() => null))?.size) return;
       const temp = file + "." + randomUUID() + ".part.mp4";
       try {
-        await ctx.render.makeProxy(identity.file, temp, { height, range, hwaccel: ctx.settings().render.hwaccel, signal: lifetime });
+        await ctx.render.makeProxy(identity.file, temp, {
+          height, range, hwaccel: ctx.settings().render.hwaccel, signal: lifetime,
+          onFallback: stage => {
+            let log = proxyFallbacks.get(ctx);
+            if (!log) proxyFallbacks.set(ctx, log = throttledLog(ctx.log));
+            log(`${media.id}/${stage}`, `[media] proxy_fallback media=${logId(media.id)} project=${logId(media.projectId)} height=${height} stage=${stage}`);
+          },
+        });
         await identity.check();
         try { await rename(temp, file); }
         catch (error) { if (!(await stat(file).catch(() => null))?.size) throw error; }
@@ -215,6 +233,7 @@ export const sourcePreviews = new SourcePreviews();
 const proxyQueue = new WeakMap<Ctx, { queued: Set<string>; tail: Promise<void> }>();
 // The window polls every cache's status, so a status that can't be read is logged once a minute, not once a poll.
 const statusFailures = new WeakMap<Ctx, ReturnType<typeof throttledLog>>();
+const proxyFallbacks = new WeakMap<Ctx, ReturnType<typeof throttledLog>>();
 
 /**
  * Prepare complete proxies at the editing resolution, one source at a time, when the GPU can encode them.
@@ -241,7 +260,8 @@ function queueSourceProxies(ctx: Ctx, mediaIds: string[]): void {
   if (!queue) proxyQueue.set(ctx, queue = { queued: new Set(), tail: Promise.resolve() });
   for (const id of mediaIds) {
     if (queue.queued.has(id)) continue;
-    ctx.db.prepare("INSERT OR IGNORE INTO source_cache_requests SELECT id, NULL FROM media WHERE id = ?").run(id);
+    const added = ctx.db.prepare("INSERT OR IGNORE INTO source_cache_requests SELECT id, NULL FROM media WHERE id = ?").run(id);
+    if (added.changes) ctx.log(`[media] proxy_queued media=${logId(id)}`);
     queue.queued.add(id);
     const q = queue;
     q.tail = q.tail.then(async () => {

@@ -302,7 +302,7 @@ const letGo = (act: () => void) => (e: MouseEvent<HTMLElement>) => { if (e.detai
  */
 function TranscriptLink({ open, toggle, disabled }: { open: boolean; toggle(): void; disabled?: boolean }) {
   const name = open ? "Hide transcript" : "Show transcript";
-  return <button type="button" className="edit-card-icon edit-card-words" aria-label={name} title={name} aria-expanded={open} disabled={disabled} onClick={letGo(toggle)}>
+  return <button type="button" className="edit-card-icon edit-card-words" data-log-control="toggle-transcript" aria-label={name} title={name} aria-expanded={open} disabled={disabled} onClick={letGo(toggle)}>
     <Icon name="diff" size={14} /></button>;
 }
 
@@ -367,11 +367,11 @@ function CallActions({ choice, proposes = "cut", disabled, decide, revise }: { c
   // The decisions stay on the card for the next call. Clicked, one lets go of the focus (WebView2 leaves it there), or
   // Space would press it again on the next call while the video is paused. Pressed by keyboard, it keeps it.
   return <div className="review-actions">
-    <button type="button" className="btn-quiet" data-key="R" aria-keyshortcuts="R" title="Revise (R)" disabled={disabled} onClick={revise}>Revise</button>
-    <button type="button" className="btn-primary" data-key="A" aria-keyshortcuts="A" title="Approve (A)" aria-pressed={choice === proposes} disabled={disabled}
+    <button type="button" className="btn-quiet" data-key="R" data-log-control="revise-call" aria-keyshortcuts="R" title="Revise (R)" disabled={disabled} onClick={revise}>Revise</button>
+    <button type="button" className="btn-primary" data-key="A" data-log-control="approve-call" aria-keyshortcuts="A" title="Approve (A)" aria-pressed={choice === proposes} disabled={disabled}
       onClick={letGo(() => decide(proposes))}>Approve</button>
     {/* Skip is a small × after the decision, named on hover, so the row's one button is Approve. */}
-    <button type="button" className="edit-card-icon edit-card-skip" aria-label="Skip" aria-keyshortcuts="S" title="Skip (S)" aria-pressed={choice === skips}
+    <button type="button" className="edit-card-icon edit-card-skip" data-log-control="skip-call" aria-label="Skip" aria-keyshortcuts="S" title="Skip (S)" aria-pressed={choice === skips}
       disabled={disabled} onClick={letGo(() => decide(skips))}><Icon name="x" size={12} /></button>
   </div>;
 }
@@ -621,7 +621,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   const rowList = filter && <ol ref={list} className={filter === "calls" ? "simple-pass-list is-short" : hours ? "simple-pass-list has-hours" : "simple-pass-list"}
     aria-label={filter === "calls" ? "Calls that need you" : filter === "need" ? "Edits that need you" : "Every edit"}>
     {shown.map(row => <li key={row.key}><button type="button" className={row.on ? "is-on" : row.decided ? "is-decided" : undefined} aria-current={row.on || undefined}
-      disabled={!row.open} title={row.title || row.label} onClick={letGo(() => row.open?.())}
+      data-log-control="open-pass-item" data-log-label="Pass item" disabled={!row.open} title={row.title || row.label} onClick={letGo(() => row.open?.())}
       onPointerEnter={() => actions.lightMark(row.mark, row.hover)} onPointerLeave={() => actions.lightMark()}>
       {/* The calls are the short list: a call is its number, Scarlet's note and, once it's settled, sent back or
           revised, a word for where it stands. An edit that asks for a look is listed with them by its number too,
@@ -1100,7 +1100,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
   if (!owner && hasRows) nodes.push(<div key="edits" className="req">{summed
     ? <PassSummary projectId={projectId} thread={thread} edits={listed} actions={actions} list={passList} listedNeed={passListed} />
     : <ThreadResult projectId={projectId} thread={thread} edits={listed} actions={actions} list={passList} listedNeed={passListed} />}</div>);
-  return <section className="simple-turn" aria-label={thread.title} data-thread={thread.id}>
+  return <section className="simple-turn" data-log-label="Edit thread" aria-label={thread.title} data-thread={thread.id}>
     {nodes}
   </section>;
 }

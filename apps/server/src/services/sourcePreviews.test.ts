@@ -190,7 +190,12 @@ it("says which video couldn't be cached and why, and shows it as failed", () => 
   engine.app().ctx.log = line => lines.push(line);
   prepareSourceProxies(engine.app().ctx, ["first"], true);
   await engine.settle();
-  expect(lines).toEqual(["[media] first couldn’t cache its source preview: Error: encoder exited with code 1"]);
+  expect(lines).toEqual([
+    "[media] proxy_queued media=unknown",
+    expect.stringContaining("[media] proxy_started media=unknown"),
+    expect.stringContaining("outcome=failed elapsed_ms="),
+    "[media] first couldn’t cache its source preview: Error: encoder exited with code 1",
+  ]);
   expect(await engine.states()).toEqual({ first: "failed", second: "uncached" });
   // Nothing is left written down for a cache that failed: it is not retried by itself.
   expect(engine.app().ctx.db.prepare("SELECT media_id FROM source_cache_requests").all()).toEqual([]);
@@ -212,7 +217,7 @@ it("logs a GPU that can't be asked about, and a video whose turn to cache couldn
     const proxies = vi.spyOn(ctx.paths, "proxies").mockImplementation(() => { throw new Error("EACCES: permission denied"); });
     prepareSourceProxies(ctx, ["first"], true);
     await engine.settle();
-    expect(lines).toEqual(["[media] first couldn’t prepare its source proxy: Error: EACCES: permission denied"]);
+    expect(lines).toEqual(["[media] proxy_queued media=unknown", "[media] first couldn’t prepare its source proxy: Error: EACCES: permission denied"]);
     proxies.mockRestore();
   });
 });

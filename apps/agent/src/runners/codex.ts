@@ -11,7 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { apiKeyVars, stripVars } from "../detect.js";
 import { privateDirectory, writePrivateFile } from "../private-files.js";
-import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
+import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, type CodexFallbackReason, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, codexUsage, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
@@ -278,31 +278,31 @@ function codexModelConfig(opts: Pick<RunAgentOptions, "effort" | "serviceTier" |
   ];
 }
 
-async function isolatedCodexHome(cwd: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+async function isolatedCodexHome(cwd: string, env: NodeJS.ProcessEnv): Promise<{ home: string } | { reason: CodexFallbackReason }> {
   // App Server cannot skip the user's config, rules or MCP servers. Share only
   // file-backed login, with a symlink so Codex can still refresh that login.
   const keyNames = apiKeyVars("codex");
-  if (Object.entries(env).some(([name, value]) => value && keyNames.includes(name.toUpperCase()))) return undefined;
+  if (Object.entries(env).some(([name, value]) => value && keyNames.includes(name.toUpperCase()))) return { reason: "api_key" };
   const projectConfig = await lstat(join(cwd, ".codex")).catch((err: NodeJS.ErrnoException) => {
     if (err.code !== "ENOENT") throw err;
   });
-  if (projectConfig) return undefined;
+  if (projectConfig) return { reason: "project_config" };
   const configuredHome = Object.entries(env).find(([name]) => name.toUpperCase() === "CODEX_HOME")?.[1];
   const originalHome = await realpath(resolve(cwd, configuredHome || join(homedir(), ".codex"))).catch(() => undefined);
-  if (!originalHome) return undefined;
+  if (!originalHome) return { reason: "home_unavailable" };
   const authFile = join(originalHome, "auth.json");
   const auth = await stat(authFile).catch(() => undefined);
-  if (!auth?.isFile() || !auth.size) return undefined;
+  if (!auth?.isFile() || !auth.size) return { reason: "auth_unavailable" };
   const home = await mkdtemp(join(tmpdir(), "scarlet-codex-"));
   try {
     await privateDirectory(home);
     await symlink(authFile, join(home, "auth.json"), "file");
     // The store locks around refresh commits. Use the same lock as the ordinary CLI.
     await symlink(join(originalHome, "auth.lock"), join(home, "auth.lock"), "file");
-    return home;
+    return { home };
   } catch {
     await rm(home, { recursive: true, force: true });
-    return undefined;
+    return { reason: "isolation_unavailable" };
   }
 }
 
@@ -356,6 +356,7 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
   let threadId: string | undefined;
   let turnId: string | undefined;
   let turnRequested = false;
+  let startupFailure: CodexFallbackReason | undefined;
   let interrupted = false;
   let completed = false;
   let model = opts.model;
@@ -467,7 +468,10 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
       if (id !== pending) return;
       const result = object(message.result);
       if (id === 1) {
-        if (!result) return complete();
+        if (!result) {
+          startupFailure = "initialize_failed";
+          return complete();
+        }
         send({ method: "initialized" });
         pending = 2;
         send({ id: 2, method: "thread/start", params: { ephemeral: true, model, serviceTier } });
@@ -477,6 +481,7 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
         const profile = result?.activePermissionProfile;
         const approval = result?.approvalPolicy;
         if (!threadId || thread?.ephemeral !== true || object(profile)?.id !== "scarlet" || approval !== "never") {
+          startupFailure = threadId ? "thread_policy_mismatch" : "thread_start_failed";
           return complete();
         }
         model = string(result?.model) ?? model;
@@ -500,7 +505,10 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
   const outcome = await handle.done;
   clearTimeout(stopTimer);
   // Startup can fail on older CLIs. Never retry a turn that may already have edited the project.
-  if (!turnRequested && !outcome.aborted && !outcome.timedOut) return undefined;
+  if (!turnRequested && !outcome.aborted && !outcome.timedOut) {
+    opts.onCodexFallback?.(startupFailure ?? "app_server_unavailable");
+    return undefined;
+  }
   return codexResult(state, outcome, state.lastMessage, model, state.turnCompleted);
 }
 
@@ -508,14 +516,16 @@ export async function runCodex(opts: RunAgentOptions): Promise<RunAgentResult> {
   const env = { ...(opts.env ?? process.env), ...opts.mcp.env };
   const bin = await resolveCli("codex", opts.bin, env);
   await writePrivateFile(join(opts.cwd, "AGENTS.md"), opts.systemPrompt);
-  const home = await isolatedCodexHome(opts.cwd, env).catch(() => undefined);
-  if (home) {
+  const isolation = await isolatedCodexHome(opts.cwd, env).catch(() => ({ reason: "isolation_unavailable" as const }));
+  if ("home" in isolation) {
     try {
-      const result = await runCodexServer(opts, env, bin, home);
+      const result = await runCodexServer(opts, env, bin, isolation.home);
       if (result) return result;
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(isolation.home, { recursive: true, force: true });
     }
+  } else {
+    opts.onCodexFallback?.(isolation.reason);
   }
 
   const tmpDir = join(opts.cwd, ".scarlet");

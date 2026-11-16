@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentUsage } from "@scarlet/shared";
 import { windowsAclShell } from "../private-files.js";
 import { runClaude } from "./claude.js";
@@ -395,12 +395,16 @@ describe.skipIf(process.platform === "win32")("runCodex App Server", { timeout: 
   });
 
   it("falls back only before an App Server turn is sent", async () => {
-    const old = await run(runCodex, { appServer: "unsupported", lines: [message("Old CLI finished."), completed] });
+    const fallback = vi.fn();
+    const old = await run(runCodex, { appServer: "unsupported", lines: [message("Old CLI finished."), completed] }, { onCodexFallback: fallback });
     expect(old.result).toMatchObject({ ok: true, summary: "Old CLI finished." });
     expect((await old.args())[0]).toBe("exec");
-    const rejected = await run(runCodex, { appServer: "reject-turn" });
+    expect(fallback).toHaveBeenCalledExactlyOnceWith("app_server_unavailable");
+    fallback.mockClear();
+    const rejected = await run(runCodex, { appServer: "reject-turn" }, { onCodexFallback: fallback });
     expect(rejected.result).toMatchObject({ ok: false, error: "Turn rejected" });
     expect((await rejected.args())[0]).toBe("app-server");
+    expect(fallback).not.toHaveBeenCalled();
   });
 
 });

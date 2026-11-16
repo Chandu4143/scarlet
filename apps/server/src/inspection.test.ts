@@ -382,8 +382,8 @@ it("reads a cut's pictures from the originals when a preview copy goes missing b
     expect(sheet).toMatchObject({ clock: "timeline", id: version });
     expect(sheet!.timestamps.length).toBeGreaterThan(0);
     // Each reader says it went back to the originals, and why, once for all the pictures that took.
-    expect(lines.filter(line => line.includes("again from the originals"))).toEqual([
-      expect.stringMatching(new RegExp(`^\\[render\\] reading a frame of ${version} again from the originals on the CPU: .+`)),
+    expect(lines.filter(line => line.startsWith("[render] frame_fallback") || line.includes("again from the originals"))).toEqual([
+      `[render] frame_fallback project=${p.id} version=${version} reason=decode_retry frame=4`,
       expect.stringMatching(new RegExp(`^\\[inspection\\] reading ${version} again from the originals on the CPU: .+`)),
     ]);
   } finally { ctx.log = log; copies.mockRestore(); }

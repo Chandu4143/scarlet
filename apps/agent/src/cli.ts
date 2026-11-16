@@ -197,6 +197,7 @@ async function cmdRun(flags: Record<string, string>, positional: string[]): Prom
     },
     timeoutMs: flags.timeout ? Number(flags.timeout) * 60_000 : undefined,
     env: runnerEnv(agent, await detect({ models: cfg.models }), process.env),
+    onCodexFallback: reason => console.error(`[host] codex-fallback task=none attempt=unknown reason=${reason}`),
     onEvent: (ev) => console.log(`[${ev.type}] ${ev.text}`),
   }).finally(() => removeControlFiles(cwd).catch(error => {
     console.error(`[scarlet-agent] could not clean one-shot folder ${cwd}: ${error instanceof Error ? error.message : String(error)}`);

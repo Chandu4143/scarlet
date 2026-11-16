@@ -6,7 +6,7 @@
 import { WsEvent } from "@scarlet/shared";
 import type { WsClientMessage } from "@scarlet/shared";
 import { api, IS_MOCK, mockClient } from "./client";
-import { appLog } from "./appLog";
+import { appLog, errorName, withoutAddresses } from "./appLog";
 import { reportImportCheck } from "./upload";
 import { useHostsStore } from "../stores/hosts";
 import { useProjectStore } from "../stores/project";
@@ -114,7 +114,9 @@ function connect() {
   let ws: WebSocket;
   try {
     ws = new WebSocket(api.wsUrl());
-  } catch {
+  } catch (error) {
+    appLog("realtime", "connect-failed", { attempt: attempts + 1, project: currentProjectId ?? undefined,
+      name: errorName(error) }, { level: "warn" });
     scheduleReconnect();
     useUiStore.getState().setWsStatus(downStatus());
     return;
@@ -166,7 +168,7 @@ function connect() {
   ws.onclose = (e) => {
     if (socket !== ws) return;
     // Until it reconnects, nothing the engine does reaches the window: lists and progress go stale.
-    if (!stopped) appLog("realtime", "disconnected", { code: e.code, reason: e.reason || undefined, clean: e.wasClean }, { level: "warn" });
+    if (!stopped) appLog("realtime", "disconnected", { code: e.code, reason: e.reason ? withoutAddresses(e.reason) : undefined, clean: e.wasClean }, { level: "warn" });
     socket = null;
     confirmedProjectId = null;
     pendingSubscription?.finish();
@@ -175,7 +177,10 @@ function connect() {
     scheduleReconnect();
     useUiStore.getState().setWsStatus(downStatus());
   };
-  ws.onerror = () => ws.close();
+  ws.onerror = () => {
+    if (socket === ws && !stopped) appLog("realtime", "socket-error", { attempt: attempts + 1, project: currentProjectId ?? undefined }, { level: "warn" });
+    ws.close();
+  };
 }
 
 function scheduleReconnect() {

@@ -14,6 +14,9 @@ export interface McpSpec {
   env: Record<string, string>;
 }
 
+export type CodexFallbackReason = "api_key" | "project_config" | "home_unavailable" | "auth_unavailable" | "isolation_unavailable" |
+  "initialize_failed" | "thread_start_failed" | "thread_policy_mismatch" | "app_server_unavailable";
+
 export interface RunAgentOptions {
   agent: AgentId;
   model?: string;
@@ -31,6 +34,7 @@ export interface RunAgentOptions {
   cwd: string;
   mcp: McpSpec;
   onEvent: (ev: RunnerEvent) => void;
+  onCodexFallback?: (reason: CodexFallbackReason) => void;
   /** Cumulative tokens observed so far in this CLI invocation. */
   onUsage?: (usage: AgentUsage) => void;
   signal?: AbortSignal;

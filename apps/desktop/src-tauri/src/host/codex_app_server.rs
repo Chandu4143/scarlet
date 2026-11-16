@@ -16,6 +16,26 @@ const START_TURN: u64 = 3;
 const INTERRUPT_TURN: u64 = 4;
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
+/// A failed handshake: what the editor reads, and a fixed phase name the log can carry without provider output.
+#[derive(Debug)]
+struct HandshakeError {
+    phase: &'static str,
+    message: String,
+}
+impl std::fmt::Display for HandshakeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.message) }
+}
+impl std::error::Error for HandshakeError {}
+
+fn handshake(phase: &'static str, message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(HandshakeError { phase, message: message.into() })
+}
+
+/// Extract the safe handshake phase without exposing provider output from the error chain.
+pub fn fallback_reason(error: &anyhow::Error) -> &'static str {
+    error.downcast_ref::<HandshakeError>().map_or("app_server_unavailable", |error| error.phase)
+}
+
 /// Receive one notification for this run. Returning true interrupts the turn.
 pub type NotificationHandler = Box<dyn FnMut(&str, &Value) -> bool + Send>;
 
@@ -107,11 +127,16 @@ impl Session {
             START_TURN => "turn/start",
             _ => unreachable!(),
         };
+        let phase = match id {
+            INITIALIZE => "initialize_failed",
+            START_THREAD => "thread_start_failed",
+            _ => "turn_start_failed",
+        };
         if let Some(error) = message.get("error") {
             let detail = error["message"].as_str().unwrap_or("unknown error");
-            bail!("Codex App Server {method} failed: {detail}");
+            return Err(handshake(phase, format!("Codex App Server {method} failed: {detail}")));
         }
-        let result = message.get("result").with_context(|| format!("Codex App Server {method} returned no result"))?;
+        let result = message.get("result").ok_or_else(|| handshake(phase, format!("Codex App Server {method} returned no result")))?;
         match id {
             INITIALIZE => {
                 self.send(json!({ "method": "initialized" }))?;
@@ -120,15 +145,15 @@ impl Session {
             }
             START_THREAD => {
                 if result.pointer("/thread/ephemeral").and_then(Value::as_bool) != Some(true) {
-                    bail!("Codex App Server did not confirm an ephemeral thread");
+                    return Err(handshake("thread_policy_mismatch", "Codex App Server did not confirm an ephemeral thread"));
                 }
                 if result["approvalPolicy"].as_str() != Some("never") {
-                    bail!("Codex App Server did not apply Scarlet's approval policy");
+                    return Err(handshake("thread_policy_mismatch", "Codex App Server did not apply Scarlet's approval policy"));
                 }
                 if result.pointer("/activePermissionProfile/id").and_then(Value::as_str) != Some("scarlet") {
-                    bail!("Codex App Server did not apply Scarlet's permission profile");
+                    return Err(handshake("thread_policy_mismatch", "Codex App Server did not apply Scarlet's permission profile"));
                 }
-                let thread_id = result.pointer("/thread/id").and_then(Value::as_str).context("Codex App Server returned no thread ID")?;
+                let thread_id = result.pointer("/thread/id").and_then(Value::as_str).ok_or_else(|| handshake("thread_start_failed", "Codex App Server returned no thread ID"))?;
                 self.thread = Some(thread_id.into());
                 on_event("thread/started", result);
                 turn_params["threadId"] = json!(thread_id);
@@ -188,7 +213,14 @@ pub async fn run_app_server(
     let mut session = state.lock().unwrap();
     if let Some(error) = session.error.take() {
         if !outcome.aborted && !outcome.timed_out {
-            bail!("{error}{}", stderr_tail(&outcome.stderr));
+            // The editor reads the failure first and the stderr after it, as before; a handshake keeps its phase.
+            let tail = stderr_tail(&outcome.stderr);
+            let mut error = error;
+            if let Some(handshake) = error.downcast_mut::<HandshakeError>() {
+                handshake.message.push_str(&tail);
+                return Err(error);
+            }
+            bail!("{error}{tail}");
         }
     }
     if !session.completed && !session.interrupted && !outcome.aborted && !outcome.timed_out {
@@ -321,6 +353,7 @@ lines.on('line', line => console.log(JSON.stringify({id: JSON.parse(line).id, er
         let (node, opts) = process_options(CancellationToken::new());
         let error = run_app_server(&node, &["-e".into(), script.into()], opts, json!({}), json!({}), Box::new(|_, _| false))
             .await.unwrap_err();
-        assert!(error.to_string().contains("initialize failed: Connection failed"), "{error}");
+        assert!(error.to_string().starts_with("Codex App Server initialize failed: Connection failed"), "{error:#}");
+        assert_eq!(fallback_reason(&error), "initialize_failed");
     }
 }

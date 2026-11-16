@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, queueAdmission, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, queueBlocker, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { carriesAudio, describeDialogueRemovals, dialogueReceipt, dialogueRemova
 import { mimeFor, styleGuidePath } from "./graphics.js";
 import type { Ctx } from "../context.js";
 import { now } from "../db.js";
-import { clip, since } from "../logText.js";
+import { clip, logId, since, throttledLog } from "../logText.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { recordTaskFinished, recordTaskRequested } from "../telemetry/events.js";
 import { notify } from "./notify.js";
@@ -20,6 +20,7 @@ import { learningCheckContext, skillEditEnded, startLearningCheck } from "./lear
 
 /** States a task never leaves. */
 export const FINISHED_TASK: ReadonlySet<string> = new Set(["done", "failed", "cancelled"]);
+const queueLogs = new WeakMap<Ctx, ReturnType<typeof throttledLog>>();
 
 /** The recording has a saved transcript. */
 export function hasTranscript(ctx: Ctx, mediaId: string): boolean {
@@ -264,6 +265,7 @@ export function queueRepeatCheck(ctx: Ctx, task: Task, version: string, changeId
     ? Math.max(0, Date.parse(task.finishedAt) - Date.parse(task.startedAt)) : undefined);
   const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
     repeatAudit: { ...receipt, version, noFindings: undefined, returns: (receipt?.returns ?? 0) + 1 } });
+  ctx.db.afterCommit(() => ctx.log(`[task] repeat_check task=${logId(task.id)} project=${logId(task.projectId)} outcome=queued attempt=${queued.repeatAudit!.returns}`));
   ctx.bus.taskQueued({ taskId: task.id, projectId: task.projectId });
   return queued;
 }
@@ -279,13 +281,18 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     if (!task.cutConflict.retried) {
       const queued = saveTask(ctx, { ...recordWorkThrough(task, now()), state: "queued", hostId: null, session: undefined,
         cutConflict: { ...task.cutConflict, retried: true } });
+      ctx.db.afterCommit(() => ctx.log(`[task] completion_deferred task=${logId(task.id)} project=${logId(task.projectId)} outcome=queued reason=cut_changed`));
       ctx.bus.taskQueued({ taskId: queued.id, projectId: queued.projectId });
       return queued;
     }
     if (task.state === "queued") return task;
-    if (!task.cutConflict.answered) return appendTaskEvent(ctx, task, { type: "question", text: task.cutConflict.range
-      ? "The take here changed. Should I trim the current take or keep it as it plays?"
-      : "The takes have changed. Which words should I keep here?" }).task;
+    if (!task.cutConflict.answered) {
+      const asked = appendTaskEvent(ctx, task, { type: "question", text: task.cutConflict.range
+        ? "The take here changed. Should I trim the current take or keep it as it plays?"
+        : "The takes have changed. Which words should I keep here?" }).task;
+      ctx.db.afterCommit(() => ctx.log(`[task] completion_deferred task=${logId(task.id)} project=${logId(task.projectId)} outcome=waiting_for_user reason=cut_changed`));
+      return asked;
+    }
     body = { state: "failed", error: "Scarlet could not finish the cut using your answer. Your answer is saved." };
   }
   if (task.kind === "skill_from_change" && body.state === "done" && !task.resultSkillId) {
@@ -367,9 +374,12 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   });
   recordTaskFinished(ctx, saved);
   const ran = since(saved.startedAt, Date.parse(saved.finishedAt!));
-  ctx.log(`[task] ${saved.id} ${body.state}${ran ? ` after ${ran}` : ""}${body.error ? `: ${clip(body.error, 400)}` : ""}` +
-    `${changeIds.length ? ` (${changeIds.length} change${changeIds.length === 1 ? "" : "s"})` : ""}` +
-    `${needsTranscripts.length ? `, without the transcript of ${needsTranscripts.join(", ")}` : ""}`);
+  ctx.db.afterCommit(() => {
+    ctx.log(`[task] ${saved.id} ${saved.state}${ran ? ` after ${ran}` : ""}${body.error ? `: ${clip(body.error, 400)}` : ""}` +
+      `${changeIds.length ? ` (${changeIds.length} change${changeIds.length === 1 ? "" : "s"})` : ""}` +
+      `${needsTranscripts.length ? `, without the transcript of ${needsTranscripts.join(", ")}` : ""}`);
+    if (needsTranscripts.length) ctx.log(`[task] completion_deferred task=${logId(task.id)} project=${logId(task.projectId)} outcome=awaiting_transcripts reason=transcripts remaining=${needsTranscripts.length}`);
+  });
   const asked = saved.context.message ?? saved.instruction.split("\n").pop() ?? saved.instruction;
   // A learning check is Scarlet's own reading of a request. What it offers is in Learnings; the run itself is no one's news.
   if (!isLearningCheck(saved)) logActivity(ctx, {
@@ -679,13 +689,14 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   const filter = taskId ? "q.id = ?" : "q.kind != 'transcribe' AND q.agent IN (SELECT value FROM json_each(?))";
   // Include only tasks this host can claim in the candidate scan. The shared queue still sees
   // requests for other hosts and requests being reworded, since they can hold up later work.
-  const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at FROM tasks q JOIN projects p ON p.id = q.project_id
+  const checkedAt = now();
+  const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at,
+    coalesce(json_extract(q.json, '$.rewordingUntil') > ?, 0) AS rewording FROM tasks q JOIN projects p ON p.id = q.project_id
     LEFT JOIN tasks root ON root.id = json_extract(q.json, '$.resumeRootId')
     WHERE p.deleted_at IS NULL AND q.state = 'queued' AND ${filter}
-    AND (json_extract(q.json, '$.rewordingUntil') IS NULL OR json_extract(q.json, '$.rewordingUntil') <= ?)
     ORDER BY coalesce(root.created_at, q.created_at), coalesce(root.rowid, q.rowid), q.rowid`)
-    .iterate(taskId ?? JSON.stringify(agents.map(a => a.id)), now()) as Iterable<{
-      id: string; project_id: string; kind: TaskKind; json: string; created_at: string;
+    .iterate(checkedAt, taskId ?? JSON.stringify(agents.map(a => a.id))) as Iterable<{
+      id: string; project_id: string; kind: TaskKind; json: string; created_at: string; rewording: number;
     }>;
   // Only the columns the queue reads: an open pass's cut reasons are counted in SQL, never parsed, and an edit's
   // lineage is read only for a request about an applied edit.
@@ -708,19 +719,38 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
       }
       return edits.get(id);
     };
-    return { canClaim: queueAdmission(tasks, changes, lookup),
+    return { blocker: queueBlocker(tasks, changes, lookup),
       byId: new Map(tasks.map(task => [task.id, task])) };
   }
   const queues = new Map<string, ReturnType<typeof readQueue>>();
+  const logBlocked = (row: { id: string; project_id: string; created_at: string }, reason: string, blocker?: string) => {
+    const wait = Date.parse(checkedAt) - Date.parse(row.created_at);
+    if (!(wait >= 30_000)) return;
+    let write = queueLogs.get(ctx);
+    if (!write) queueLogs.set(ctx, write = throttledLog(ctx.log, 60_000, 5000));  // One key per blocked queued request.
+    write(`${row.id}/${reason}/${blocker ?? ""}`, `[task] claim_blocked task=${logId(row.id)} project=${logId(row.project_id)} reason=${reason} wait_ms=${wait}` +
+      (blocker ? ` blocker=${logId(blocker)}` : ""));
+  };
   for (const row of rows) {
+    if (row.rewording) {
+      logBlocked(row, "rewording");
+      continue;
+    }
     // A host that can't run the request never reads the project's queue for it.
     const task = ctx.repos.tasks.parse(row.json);
-    if (!hostCanRun(host, task)) continue;
+    if (!hostCanRun(host, task)) {
+      logBlocked(row, "capability");
+      continue;
+    }
     if (!isAsideTask({ kind: row.kind })) {
       const queue = queues.get(row.project_id) ?? readQueue(row.project_id);
       queues.set(row.project_id, queue);
       const candidate = queue.byId.get(row.id)!;
-      if (!queue.canClaim(candidate)) continue;
+      const blocker = queue.blocker(candidate);
+      if (blocker) {
+        logBlocked(row, blocker.reason, blocker.id);
+        continue;
+      }
     }
     const createdAt = task.createdAt ?? row.created_at;
     const seenAt = now();

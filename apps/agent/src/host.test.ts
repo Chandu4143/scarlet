@@ -162,6 +162,39 @@ function makeHost(srv: Srv, runner: RunAgentFn, wsUrl?: string, options: Partial
   return { host, saved, client };
 }
 
+it("records the engine's resulting state and a question that no longer pauses the task", async () => {
+  const startedAt = "2026-11-16T16:45:00.000Z";
+  const claimed = { ...task, state: "claimed" as const, startedAt };
+  const lines: string[] = [];
+  const requests: string[] = [];
+  let completion = { ...claimed, state: "queued", changeIds: [] };
+  const client = new ScarletClient({
+    baseUrl: "https://fixture.test",
+    fetch: async input => {
+      const { pathname } = new URL(String(input));
+      requests.push(pathname);
+      if (pathname.endsWith("/prompt")) return Response.json({ systemPrompt: "SYS", instruction: "Edit this" });
+      if (pathname.endsWith("/complete")) return Response.json({ task: completion });
+      if (pathname.endsWith("/question")) return Response.json({ waiting: false });
+      return Response.json({ task: claimed, events: [] });
+    },
+  });
+  const host = (runner: RunAgentFn) => new AgentHost({
+    client, config: { server: "https://fixture.test", token: "fixture" }, workRoot,
+    mcpCliPath: "fixture-mcp", runner, log: line => lines.push(line),
+  });
+  const result = async () => ({ ok: true, summary: "Private edit" });
+  await host(result).runTask(claimed, new AbortController().signal);
+  completion = { ...completion, state: "done", startedAt: "2026-11-16T16:46:00.000Z" };
+  await host(result).runTask(claimed, new AbortController().signal);
+  await host(async () => ({ ok: true, summary: "", question: "Private question" })).runTask(claimed, new AbortController().signal);
+  expect(lines).toContainEqual(expect.stringMatching(/requested=done state=queued outcome=changed/));
+  expect(lines).toContainEqual(expect.stringMatching(/requested=done state=done outcome=superseded/));
+  expect(lines).toContain(`[host] question task=${task.id} attempt=${startedAt} outcome=not_waiting`);
+  expect(requests.filter(path => path.endsWith("/complete"))).toHaveLength(2);
+  expect(lines.join("\n")).not.toContain("Private");
+});
+
 async function startHostAndWait(host: AgentHost, ready: Promise<unknown>) {
   const started = host.start();
   onTestFinished(async () => {
@@ -746,7 +779,7 @@ describe("AgentHost when a run or the engine misbehaves", { timeout: 30_000 }, (
     expect(after).toContain("POST /tasks/task_1/complete");
     expect(after).not.toContain("GET /tasks/task_1");
     expect(srv.completes).toEqual([{ state: "done", summary: "Cut made." }]);
-    await vi.waitFor(() => expect(lines).toContainEqual(expect.stringMatching(/^task task_1 done after \d+(ms|s) \(1 changes: chg_7\)$/)));
+    await vi.waitFor(() => expect(lines).toContainEqual(expect.stringMatching(/^\[host\] completion task=task_1 attempt=unknown requested=done state=done outcome=accepted elapsedMs=\d+ changes=1$/)));
   });
 
   it("takes a completion the engine answered with nothing as landed", async ({ signal }) => {
@@ -756,7 +789,7 @@ describe("AgentHost when a run or the engine misbehaves", { timeout: 30_000 }, (
     // A reply with no body reaches the host as nothing.
     const completeTask = vi.spyOn(client, "completeTask").mockResolvedValue(undefined as never);
     await startHostAndWait(host, once(srv.events, "claim", { signal }));
-    await vi.waitFor(() => expect(lines).toContainEqual(expect.stringMatching(/^task task_1 done after \d+(ms|s)$/)), { timeout: 5_000 });
+    await vi.waitFor(() => expect(lines).toContainEqual(expect.stringMatching(/^\[host\] completion task=task_1 attempt=unknown requested=done state=unknown outcome=unconfirmed elapsedMs=\d+ changes=0$/)), { timeout: 5_000 });
     expect(completeTask).toHaveBeenCalledTimes(1);
   });
 

@@ -14,6 +14,7 @@ import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { requestAttempt, requireLocalPauseTarget, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
+import { logId, throttledLog } from "../logText.js";
 import { serveFile, serveOriginal } from "../files.js";
 import { getTranscriptionProvider, importTranscriptionPolicy } from "../transcribe/index.js";
 import { AnalysisCache } from "../services/analysisCache.js";
@@ -43,6 +44,7 @@ export function mediaRoutes(ctx: Ctx) {
   const frames = new AnalysisCache<Buffer>(frame => frame.length, undefined, Infinity);
   const speech = new AnalysisCache<Awaited<ReturnType<typeof speechActivity>>>(spans => 48 * spans.length, 1024 * 1024);
   const imports = new Map<string, ReturnType<typeof ingestMedia>>();
+  const frameFallback = throttledLog(ctx.log);
 
   r.put("/media/:mediaId/voice-roles", async c => {
     const source = requireMedia(ctx, c.req.param("mediaId"));
@@ -361,7 +363,10 @@ export function mediaRoutes(ctx: Ctx) {
         const picture = await previewPictures(ctx.paths.media(media.projectId), { signal })(media, t, t + 1 / media.fps, minimumHeight);
         if (picture) {
           try { return await ctx.render.extractFrame(picture.file, Math.max(0, t - picture.start), { width: w, signal, indexedMp4: true }); }
-          catch { signal.throwIfAborted(); } // An evicted or damaged preview can be sampled from the original.
+          catch {
+            signal.throwIfAborted();
+            frameFallback(media.id, `[media] frame_fallback media=${logId(media.id)} project=${logId(media.projectId)} reason=cached_preview`);
+          }
         }
       }
       // The agent's frames read the movie's index too: the same picture, a third sooner on a long recording.

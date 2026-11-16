@@ -406,29 +406,31 @@ fn app_server_args(opts: &RunOptions, executable: Option<&str>) -> Vec<String> {
 
 /// App Server reads user configuration from CODEX_HOME. Give it a private directory
 /// with the existing login and its write lock linked so Codex still owns token refreshes.
-fn isolated_codex_home(opts: &RunOptions) -> Option<tempfile::TempDir> {
+fn isolated_codex_home(opts: &RunOptions) -> std::result::Result<tempfile::TempDir, &'static str> {
     if api_key_vars("codex").iter().any(|key| env_get(&opts.env, key).is_some_and(|value| !value.is_empty())) {
-        return None;
+        return Err("api_key");
     }
     // A task must not be able to supply its own App Server configuration or MCP servers.
-    if !std::fs::symlink_metadata(opts.cwd.join(".codex")).is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound) {
-        return None;
+    match std::fs::symlink_metadata(opts.cwd.join(".codex")) {
+        Ok(_) => return Err("project_config"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("isolation_unavailable"),
     }
     let codex_home = env_get(&opts.env, "CODEX_HOME").filter(|home| !home.is_empty()).map(std::path::PathBuf::from)
         .unwrap_or_else(|| home_dir().join(".codex"));
-    let codex_home = opts.cwd.join(codex_home).canonicalize().ok()?;
+    let codex_home = opts.cwd.join(codex_home).canonicalize().map_err(|_| "home_unavailable")?;
     let auth = codex_home.join("auth.json");
-    let metadata = auth.metadata().ok()?;
-    if !metadata.is_file() || metadata.len() == 0 { return None; }
-    let home = tempfile::Builder::new().prefix("scarlet-codex-").tempdir().ok()?;
-    crate::config::private_directory(home.path()).ok()?;
+    let metadata = auth.metadata().map_err(|_| "auth_unavailable")?;
+    if !metadata.is_file() || metadata.len() == 0 { return Err("auth_unavailable"); }
+    let home = tempfile::Builder::new().prefix("scarlet-codex-").tempdir().map_err(|_| "isolation_unavailable")?;
+    crate::config::private_directory(home.path()).map_err(|_| "isolation_unavailable")?;
     #[cfg(unix)]
     use std::os::unix::fs::symlink as link_file;
     #[cfg(windows)]
     use std::os::windows::fs::symlink_file as link_file;
-    link_file(auth, home.path().join("auth.json")).ok()?;
-    link_file(codex_home.join("auth.lock"), home.path().join("auth.lock")).ok()?;
-    Some(home)
+    link_file(auth, home.path().join("auth.json")).map_err(|_| "isolation_unavailable")?;
+    link_file(codex_home.join("auth.lock"), home.path().join("auth.lock")).map_err(|_| "isolation_unavailable")?;
+    Ok(home)
 }
 
 async fn try_app_server(opts: &RunOptions, bin: &str, home: &Path) -> Option<RunResult> {
@@ -458,16 +460,23 @@ async fn try_app_server(opts: &RunOptions, bin: &str, home: &Path) -> Option<Run
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) if !state.turn_requested && !opts.cancel.is_cancelled() => {
-            log::warn!("Codex App Server could not start an isolated turn: {error:#}. Using codex exec for this edit.");
+            log_fallback(opts, super::codex_app_server::fallback_reason(&error));
             return None;
         }
         Err(error) => {
-            if state.failed.is_none() { state.failed = Some(error.to_string()); }
+            if state.failed.is_none() { state.failed = Some(format!("{error:#}")); }
             super::spawn::SpawnOutcome { aborted: opts.cancel.is_cancelled(), ..Default::default() }
         }
     };
     let last = state.final_message.take().or_else(|| state.last_message.take());
     Some(codex_result(state, opts.model.as_deref(), &outcome, last, false))
+}
+
+fn log_fallback(opts: &RunOptions, reason: &str) {
+    let task = opts.task.as_deref().unwrap_or("none");
+    let attempt = opts.mcp.env.get("SCARLET_TASK_STARTED_AT").map(String::as_str).unwrap_or("unknown");
+    let level = if reason == "api_key" { log::Level::Info } else { log::Level::Warn };
+    log::log!(level, "[host] codex-fallback task={task} attempt={attempt} reason={reason}");
 }
 
 fn spawn_options(opts: &RunOptions, stdin: Option<String>) -> SpawnLinesOptions {
@@ -486,10 +495,13 @@ pub async fn run_codex(mut opts: RunOptions) -> RunResult {
     if let Err(e) = write_files(&built.cmd.files).await {
         return RunResult::failed(e.to_string());
     }
-    if let Some(home) = isolated_codex_home(&opts) {
-        if let Some(result) = try_app_server(&opts, &bin, home.path()).await {
-            return result;
+    match isolated_codex_home(&opts) {
+        Ok(home) => {
+            if let Some(result) = try_app_server(&opts, &bin, home.path()).await {
+                return result;
+            }
         }
+        Err(reason) => log_fallback(&opts, reason),
     }
     let st = Arc::new(Mutex::new(CodexState::default()));
     let st2 = st.clone();

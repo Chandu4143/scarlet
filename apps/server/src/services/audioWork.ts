@@ -1,4 +1,4 @@
-import { humanDuration } from "../logText.js";
+import { logId } from "../logText.js";
 
 /**
  * Local audio models (Whisper, word alignment and speaker analysis) each use most of the CPU. Run side by
@@ -95,14 +95,24 @@ export class AudioLane {
     if (resumes) this.unhold();
     const behind = this.busy && !resumes ? this.current ?? this.held?.work : undefined;
     const ahead = behind ? this.waiting.length + 1 : 0;
+    const lane = this.name === "Whisper lane" ? "whisper" : "audio";
+    const target = `lane=${lane} work=${work.kind} media=${logId(work.mediaId)}`;
     if (resumes) {
       // The lane was kept for this step.
     } else if (this.busy) {
       await new Promise<void>((resolve, reject) => {
-        const entry = { work, seq, start: () => { signal?.removeEventListener("abort", cancel); resolve(); } };
+        const slow = this.log ? setTimeout(() => {
+          const blocker = this.current ?? this.held?.work;
+          this.log?.(`[audio] waiting ${target} wait_ms=${Math.max(0, Date.now() - queuedAt)} ahead=${ahead}` +
+            (blocker ? ` blocker_work=${blocker.kind} blocker=${logId(blocker.mediaId)}` : ""));
+        }, LOG_WAIT_MS) : undefined;
+        slow?.unref();
+        const entry = { work, seq, start: () => { clearTimeout(slow); signal?.removeEventListener("abort", cancel); resolve(); } };
         const cancel = () => {
+          clearTimeout(slow);
           const index = this.waiting.indexOf(entry);
           if (index >= 0) this.waiting.splice(index, 1);
+          this.log?.(`[audio] cancelled_while_waiting ${target} wait_ms=${Math.max(0, Date.now() - queuedAt)}`);
           reject(signal!.reason);
         };
         this.waiting.push(entry);
@@ -120,6 +130,10 @@ export class AudioLane {
     }
     const startedAt = Date.now();
     this.current = work;
+    const waited = Math.max(0, startedAt - queuedAt);
+    if (waited >= LOG_WAIT_MS) this.log?.(`[audio] started ${target} wait_ms=${waited}`);
+    const slow = this.log ? setTimeout(() => this.log?.(`[audio] running ${target} elapsed_ms=${Math.max(0, Date.now() - startedAt)}`), LOG_RUN_MS) : undefined;
+    slow?.unref();
     let failed = false;
     try {
       signal?.throwIfAborted();
@@ -128,10 +142,10 @@ export class AudioLane {
       failed = true;
       throw error;
     } finally {
-      const waited = startedAt - queuedAt, ran = Date.now() - startedAt;
+      clearTimeout(slow);
+      const ran = Math.max(0, Date.now() - startedAt);
       if (this.log && (waited >= LOG_WAIT_MS || ran >= LOG_RUN_MS)) {
-        const queue = waited >= LOG_WAIT_MS ? `waited ${humanDuration(waited)} for the ${this.name}${behind ? ` behind ${behind.kind} ${behind.mediaId}` : ""}${ahead > 1 ? ` (${ahead} jobs ahead)` : ""}, then ` : "";
-        this.log(`[audio] ${work.kind} ${work.mediaId}: ${queue}${failed ? "failed" : "ran"} for ${humanDuration(ran)}`);
+        this.log(`[audio] finished ${target} outcome=${signal?.aborted ? "cancelled" : failed ? "failed" : "done"} wait_ms=${waited} elapsed_ms=${ran}`);
       }
       this.current = undefined;
       if (options.more && !failed) this.hold(work);

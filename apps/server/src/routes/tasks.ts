@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { checkAttachments } from "../services/graphics.js";
 import { z } from "zod/v3";
-import { CompleteTaskRequest, CreateTaskRequest, queueWaits, RecordTaskUsageRequest, RepeatAuditRequest, RewordTaskRequest, RunChoice, TaskEvent, TaskState, UsageGroupBy, type Task } from "@scarlet/shared";
+import { CompleteTaskRequest, CreateTaskRequest, EDITING_TOOL_GROUPS, queueWaits, RecordTaskUsageRequest, RepeatAuditRequest, RewordTaskRequest, RunChoice, TaskEvent, TaskState, UsageGroupBy, type Task } from "@scarlet/shared";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
@@ -13,6 +13,14 @@ import { jsonBody, requireProjectHeader } from "./util.js";
 import { actorFor, agentName, logActivity, quote } from "../services/activity.js";
 import { continueWhenReady, interruptTask, retryTask } from "../services/taskRecovery.js";
 import { requestAttempt, requireActiveAttempt } from "../services/taskAttempt.js";
+
+const diagnosticTools = new Set<string>(EDITING_TOOL_GROUPS.flatMap(group => [...group.tools]));
+const ToolDiagnostic = z.object({
+  tool: z.string().refine(name => diagnosticTools.has(name)),
+  outcome: z.enum(["ok", "failed", "refused", "preparing", "degraded"]),
+  elapsedMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  evidenceMisses: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+}).strict();
 
 function usageGroupBy(value: string | undefined, fallback: UsageGroupBy): UsageGroupBy {
   if (value === undefined || value === "") return fallback;
@@ -187,6 +195,17 @@ export function taskRoutes(ctx: Ctx) {
       appendTaskEvent(ctx, task, body);
     }, "immediate")();
     return c.json({});
+  });
+
+  // Diagnostics can arrive after the tool asked a question or the host ended its claim. Match the
+  // claim identity without reopening the task or writing a conversation event.
+  r.post("/projects/:projectId/tasks/:taskId/tool-diagnostic", async c => {
+    const body = await jsonBody(c, ToolDiagnostic, 1024);
+    const task = requireTask(c.req.param("taskId"), c.req.param("projectId"));
+    const attempt = requestAttempt(c.req.raw);
+    if (!attempt?.startedAt || attempt.taskId !== task.id || attempt.startedAt !== task.startedAt) return c.body(null, 204);
+    ctx.log(`[mcp] tool-finished task=${task.id} attempt=${attempt.startedAt} tool=${body.tool} outcome=${body.outcome} elapsedMs=${body.elapsedMs} evidenceMisses=${body.evidenceMisses}`);
+    return c.body(null, 204);
   });
 
   // Reported once per run, whatever its outcome, so pauses for a question and failures still count.

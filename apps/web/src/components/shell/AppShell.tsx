@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { api, IS_MOCK, serverUrl } from "../../lib/client";
+import { api, IS_MOCK } from "../../lib/client";
+import { appLog } from "../../lib/appLog";
 import { desktop } from "../../lib/desktop";
 import { useHotkeys } from "../../lib/hotkeys";
 import { reconnectRealtime, startRealtime } from "../../lib/realtime";
@@ -102,11 +103,7 @@ export function AppShell() {
     return () => { active = false; clearTimeout(timer); };
   }, [status, bootstrap]);
 
-  useEffect(() => {
-    const user = useAuthStore.getState().user;
-    void desktop.log(`ui auth=${status} server=${serverUrl} user=${user?.name ?? "-"} path=${location.pathname}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  useEffect(() => { appLog("app", "auth", { state: status }); }, [status]);
 
   useEffect(() => {
     if (status !== "ready") return;

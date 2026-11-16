@@ -1,6 +1,8 @@
 import { interactiveFrameUrl } from "../review/thumbs";
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { playbackClock } from "../../lib/format";
+import { errorName, logPath } from "../../lib/appLog";
+import { logId, playbackLog } from "../../lib/playbackLog";
 
 const WIDTH = 320;
 // Give a nearby seek a chance to finish while the pointer is moving. Once it
@@ -27,8 +29,9 @@ function hoverMovie(video: HTMLVideoElement, lastFrame: number, paint: (frame: H
     window.clearTimeout(timeout);
     timeout = undefined;
   }
-  function fail() {
+  function fail(reason: "timeout" | "out-of-range" | "no-picture" | "media-error") {
     if (!video.hasAttribute("src")) return;
+    playbackLog("scrub-video-fallback", { reason, el: logId(video), t: time, ready: video.readyState });
     clearWait();
     unload(video);
     if (time !== undefined) useStill();
@@ -39,7 +42,8 @@ function hoverMovie(video: HTMLVideoElement, lastFrame: number, paint: (frame: H
     if (video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0) {
       // The MP4's audio can extend past the final picture.
       const at = Math.floor(Math.min(time, lastFrame) * 4) / 4;
-      if (at >= video.duration || (video.readyState >= 2 && !video.videoWidth)) { fail(); return; }
+      const reason = at >= video.duration ? "out-of-range" : video.readyState >= 2 && !video.videoWidth ? "no-picture" : undefined;
+      if (reason) { fail(reason); return; }
       const matches = Math.abs(video.currentTime - at) < 0.001;
       const decoded = !video.seeking && video.readyState >= 2;
       ready = decoded && matches;
@@ -54,14 +58,15 @@ function hoverMovie(video: HTMLVideoElement, lastFrame: number, paint: (frame: H
         video.currentTime = at;
       }
     }
-    if (!ready) timeout ??= window.setTimeout(fail, 500);
+    if (!ready) timeout ??= window.setTimeout(() => fail("timeout"), 500);
     else clearWait();
   }
   function progress() { clearWait(); seek(); }
   video.addEventListener("loadedmetadata", progress);
   video.addEventListener("loadeddata", progress);
   video.addEventListener("seeked", progress);
-  video.addEventListener("error", fail);
+  const mediaError = () => fail("media-error");
+  video.addEventListener("error", mediaError);
   return {
     show(at: number) { time = at; seek(); return video.hasAttribute("src"); },
     hide() { time = requested = drawn = undefined; clearWait(); },
@@ -69,7 +74,7 @@ function hoverMovie(video: HTMLVideoElement, lastFrame: number, paint: (frame: H
       video.removeEventListener("loadedmetadata", progress);
       video.removeEventListener("loadeddata", progress);
       video.removeEventListener("seeked", progress);
-      video.removeEventListener("error", fail);
+      video.removeEventListener("error", mediaError);
       clearWait();
     },
   };
@@ -148,19 +153,30 @@ export function ScrubPreview({ start = 0, duration, pictureAspect = 16 / 9, fram
       const request = new AbortController();
       pending = { url, controller: request };
       let objectUrl: string | undefined;
+      const started = performance.now(), target = time;
+      let phase = "fetch", status: number | undefined;
       try {
         const response = await fetch(url, { signal: request.signal });
+        status = response.status;
+        phase = "http";
         if (!response.ok) throw Error("Unavailable preview frame");
+        phase = "body";
         const bytes = await response.blob();
         if (request.signal.aborted) return;
         objectUrl = URL.createObjectURL(bytes);
         const image = new Image();
         image.src = objectUrl;
+        phase = "decode";
         await image.decode();
         if (request.signal.aborted || (dragId !== undefined && wanted !== url)) return;
         draw(image);
         displayed = url;
-      } catch {
+      } catch (error) {
+        if (!request.signal.aborted) {
+          const path = logPath(url);
+          playbackLog("scrub-frame-failed", { phase, status, t: target, ms: performance.now() - started,
+            path: path.startsWith("/api/") ? path : undefined, name: errorName(error) });
+        }
         if (!request.signal.aborted && wanted === url) {
           canvas.hidden = true;
           displayed = undefined;

@@ -36,6 +36,7 @@ flate2 = "1"
 sha2 = "0.10"
 regex = "1"
 url = "2"
+uuid = { version = "1", features = ["v4"] }
 tauri-plugin-updater = "2.14.1"
 semver = "1"
 
