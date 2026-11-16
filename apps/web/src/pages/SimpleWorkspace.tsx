@@ -838,9 +838,11 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList }: {
     ?? (pendingPass ? runs.find(run => !aboutOne(run) && run.attempts.some(t => t.id === waitingPass?.taskId)) ?? runs.find(run => !aboutOne(run)) : undefined)
     ?? runs[0];
   const hasRows = summed ? listed.length > 0 || actions.pass?.threadId === thread.id : listed.length > 0;
-  // With no line for the pass (it was thrown away), its list is closed: a pass staged again starts folded.
+  // With no line for the pass (it was thrown away), its list is closed: a pass staged again starts folded. A pass that
+  // went in leaves the thread's edits, and the list of those still waiting on the editor stays open: their place in
+  // the chat must not go with the calls (2026-11-16).
   const passLine = summed && hasRows;
-  useEffect(() => { if (!passLine) passList[1](undefined); }, [passLine]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!passLine) passList[1](open => open === "need" && hasRows ? open : undefined); }, [passLine]); // eslint-disable-line react-hooks/exhaustive-deps
   // Each press starts clean: the last failure's line doesn't stay under a request once the same action works.
   const attempt = (run: string, job: Promise<unknown>) => { setFailed(undefined); void job.catch(e => setFailed({ run, text: errorMessage(e) })); };
   // Nor once the request has moved on by itself: a Stop refused because the run had just ended has nothing left to press.
