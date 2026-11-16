@@ -20,7 +20,7 @@ import { otherInputReader } from "./otherInput.js";
 import { otherVoiceTurns } from "./otherVoiceTurns.js";
 import { appendTaskEvent, editsDialogue } from "./tasks.js";
 import { AnalysisCache } from "./analysisCache.js";
-import { audioLane, whisperLane, type AudioWork } from "./audioWork.js";
+import { askFor, audioLane, whisperLane, type AudioWork } from "./audioWork.js";
 import { emissionStore, emissionStorePaths, recordingWav } from "./recordingAudio.js";
 
 const verbatim = "Um, well, uh, I think, I think we should go ahead. Hmm. Yeah.";
@@ -48,13 +48,23 @@ async function localModelIdentity(runtime: LocalRuntime) {
     ...(runtime.script ? [fileStamp(runtime.script)] : [])]);
 }
 
+const detectors = new WeakMap<Ctx, ReturnType<typeof dialogueDetector>>();
+
+/** The engine's one detector, so a scan started ahead of a pass and the pass's own calls share pages under way. */
+export function sharedDialogueDetector(ctx: Ctx) {
+  let detector = detectors.get(ctx);
+  if (!detector) detectors.set(ctx, detector = dialogueDetector(ctx));
+  return detector;
+}
+
 /** First-cut-only evidence, kept separate from the editor's transcript and captions. */
 export function dialogueDetector(ctx: Ctx) {
   const uhm = new UhmDetector(join(ctx.paths.root, "models"));
   // SQLite owns completed pages. Share in-flight work and run one cold window at a time.
   const acousticWindows = new AnalysisCache<DialogueDetections>(() => 0, 0, 1);
   const keptWindows = new AnalysisCache<DialogueDetections>(r => r.segments.reduce((n, s) => n + 100 * s.words.length, 0), 2 * 1024 * 1024);
-  type Page = { analyzed: Promise<DialogueDetections>; ready: Promise<DialogueDetections> };
+  /** `work`: the page's place in the audio lanes, while it is analysed. */
+  type Page = { analyzed: Promise<DialogueDetections>; ready: Promise<DialogueDetections>; work?: AudioWork };
   const pending = new Map<string, Page>();
   const unalignedPages = new WeakSet<DialogueDetections>();
   function scanEdit(projectId: string, taskId: string, startedAt?: string): ScanEdit {
@@ -258,7 +268,7 @@ export function dialogueDetector(ctx: Ctx) {
       }
     }, { signal }), projectId);
     // A cut reads only its surviving words. Its short window is never a completed dialogue-scan page.
-    if (keptSide) return { analyzed, ready: analyzed };
+    if (keptSide) return { analyzed, ready: analyzed, work };
     // The expensive window detectors share one worker. Whole-recording speaker
     // matching runs independently so the next window can start before labels arrive.
     const speakers = ctx.track(ctx.speakers.turns(ctx, projectId, media, undefined, !!edit), projectId);
@@ -282,7 +292,7 @@ export function dialogueDetector(ctx: Ctx) {
       }
       return result;
     }).finally(() => pending.delete(key)), projectId);
-    const page = { analyzed, ready };
+    const page = { analyzed, ready, work };
     pending.set(key, page);
     return page;
   }
@@ -305,13 +315,27 @@ export function dialogueDetector(ctx: Ctx) {
   }
 
   async function detect(projectId: string, media: MediaAsset, from: number, to: number, taskId?: string, startedAt?: string, keptSide?: { audioStream?: number; cachedOnly?: true }) {
-    const result = await (await openPage(projectId, media, from, to, taskId ? scanEdit(projectId, taskId, startedAt) : undefined, undefined, keptSide)).ready;
+    const page = await openPage(projectId, media, from, to, taskId ? scanEdit(projectId, taskId, startedAt) : undefined, undefined, keptSide);
+    // The request's tool call waits on this page now, also when the background scan queued it first.
+    if (taskId && page.work) askFor(ctx, page.work);
+    const result = await page.ready;
     return keptSide ? result : withOtherInput(projectId, media, from, to, result);
   }
   // The engine owns the requested range. A slow reader or an MCP timeout does
   // not stall the next page. Foreground requests join the same detector window.
-  const activeScans = new Set<string>();
-  async function start(projectId: string, media: MediaAsset, from: number, end: number, taskId: string, startedAt?: string) {
+  /**
+   * Scans under way, by edit and range. `announce` makes one started ahead of the pass's own call report its pages, and
+   * `drop` ends one the pass didn't ask for after the page it is on.
+   */
+  type Scan = { edit: string; mediaId: string; announce(): void; drop(): void; done: Promise<void> };
+  const activeScans = new Map<string, Scan>();
+  /**
+   * Scan `from`–`end` of a recording in the background for an edit. `announced`: the pass asked for this range, so the
+   * scan reports each page it reads to the run. One started ahead of the pass's call (`prefetch`) reports nothing until
+   * the pass asks for the same range, and then reports what it has read so far: what the pass doesn't read isn't shown
+   * as read.
+   */
+  async function scanRange(projectId: string, media: MediaAsset, from: number, end: number, taskId: string, startedAt: string | undefined, announced: boolean) {
     const edit = scanEdit(projectId, taskId, startedAt);
     const policy = ctx.repos.settings.transcriptionPolicy();
     const signal = AbortSignal.any([stops(projectId, edit), policy.signal]);
@@ -322,9 +346,31 @@ export function dialogueDetector(ctx: Ctx) {
     if (!currentEdit()) throw conflict("edit_inactive", "This edit is no longer running.");
     const saved = await checkpoints(projectId, media, from, end, policy.settings);
     const key = JSON.stringify([taskId, edit.startedAt, media.id, from, end, policy.revision]);
-    if (activeScans.has(key)) return saved;
+    const active = activeScans.get(key);
+    if (active) {
+      if (announced) active.announce();
+      return { saved, done: active.done };
+    }
+    // The pass reads another range of a recording read ahead from its start: what it asks for has the lane.
+    if (announced) {
+      for (const other of activeScans.values()) if (other.edit === edit.taskId && other.mediaId === media.id) other.drop();
+    }
     const pages = new Map(saved.map(page => [page.start, page.end]));
-    activeScans.add(key);
+    let dropped = false;
+    // Pages read before the pass asked, reported once it does.
+    const unreported: Array<{ from: number; to: number }> = [];
+    function report(page: { from: number; to: number }) {
+      const task = currentEdit();
+      if (!task) return;
+      if (!announced) { unreported.push(page); return; }
+      appendTaskEvent(ctx, task, { type: "log", text: `Dialogue scan · ${media.name}`,
+        data: { kind: "editor_progress", scanPage: { mediaId: media.id, ...page, end } } });
+    }
+    const announce = () => {
+      if (announced) return;
+      announced = true;
+      for (const page of unreported.splice(0)) report(page);
+    };
     // While the pass reads this recording, its transcript, speakers and pages go ahead of other audio work.
     const unfocus = audioLane(ctx).focus(media.id);
     async function scan() {
@@ -338,25 +384,23 @@ export function dialogueDetector(ctx: Ctx) {
         for (let start = from; start < end;) {
           const to = Math.min(end, start + 60);
           if (pages.get(start) !== to) {
-            if (failure || !currentEdit()) break;
+            if (failure || dropped || !currentEdit()) break;
             const page = await openPage(projectId, media, start, to, edit, policy);
             const pageStart = start;
-            const report = page.ready.then(result => {
-              const task = currentEdit();
-              if (!task || failure) return;
+            const reported = page.ready.then(result => {
+              if (!currentEdit() || failure) return;
               if (result.speakerIssue || result.voiceRoleIssue) throw new Error(result.speakerIssue || result.voiceRoleIssue);
-              appendTaskEvent(ctx, task, { type: "log", text: `Dialogue scan · ${media.name}`,
-                data: { kind: "editor_progress", scanPage: { mediaId: media.id, from: pageStart, to, end } } });
+              report({ from: pageStart, to });
             }).catch(err => { failure = err instanceof Error ? err : new Error(String(err)); });
-            labeling.add(report);
-            void report.then(() => labeling.delete(report));
+            labeling.add(reported);
+            void reported.then(() => labeling.delete(reported));
             await page.analyzed;
             // No page can be read before the recording's speakers are known, and their analysis runs slower beside
             // page after page of Whisper and alignment: a pass's first page came at 48 to 53 s instead of 25 to 37 s.
             // So the scan goes no further than its first page until that page has its labels, and until the speakers
             // of the other recordings the pass reads are in too (RecordingSpeakers.awaitedByPass).
             if (!ahead) {
-              await report;
+              await reported;
               if (ctx.speakers.beside) await ctx.speakers.awaitedByPass(projectId);
             }
             ahead = true;
@@ -368,15 +412,32 @@ export function dialogueDetector(ctx: Ctx) {
       } finally { await Promise.all(labeling); }
       if (failure) throw failure;
     }
-    ctx.track(scan().catch(err => {
+    const done = ctx.track(scan().catch(err => {
       const task = currentEdit();
-      if (task) {
-        ctx.log(`[dialogue-scan] ${media.id}: ${(err as Error).message}`);
+      ctx.log(`[dialogue-scan] ${media.id}${announced ? "" : " (ahead of the pass)"}: ${(err as Error).message}`);
+      if (task && announced) {
         appendTaskEvent(ctx, task, { type: "log", text: "The background dialogue scan paused. Completed sections are saved.",
           data: { kind: "editor_progress" } });
       }
     }).finally(() => { activeScans.delete(key); unfocus(); }), projectId);
-    return saved;
+    activeScans.set(key, { edit: edit.taskId, mediaId: media.id, announce, done, drop: () => { if (!announced) dropped = true; } });
+    return { saved, done };
   }
-  return { detect, checkpoints, start };
+  async function start(projectId: string, media: MediaAsset, from: number, end: number, taskId: string, startedAt?: string) {
+    return (await scanRange(projectId, media, from, end, taskId, startedAt, true)).saved;
+  }
+  /**
+   * Read these recordings' pages for a dialogue pass that has just been claimed, before its first `dialogue_scan`
+   * asks: each recording's first page waited 25 to 80 s for its speakers once the pass asked. The scan is the one
+   * that call starts, over the whole recording from its start, so the call joins it and reuses its pages. Recordings
+   * are read one at a time, in the order given, as a pass reads them, so the first has the lane to itself.
+   */
+  async function prefetch(projectId: string, recordings: MediaAsset[], taskId: string, startedAt?: string) {
+    for (const media of recordings) {
+      if (!media.duration) continue;
+      const { done } = await scanRange(projectId, media, 0, media.duration, taskId, startedAt, false);
+      await done;
+    }
+  }
+  return { detect, checkpoints, start, prefetch };
 }

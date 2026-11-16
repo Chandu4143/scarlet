@@ -402,6 +402,12 @@ describe("transcript alignment", () => {
     turns.length = 0;
     await aligner.align(join(dir, "decoded.wav"), segments, { language: "en", signal, lane: { lane, work: { mediaId: "media-1", kind: "alignment" } } });
     expect(turns).toEqual([10, 10, 4]);
+    // A pass reading another recording: this one's turns are short too, so the pass's pages wait for less.
+    const other = lane.focus("media-2");
+    turns.length = 0;
+    await aligner.align(join(dir, "decoded.wav"), segments, { language: "en", signal, lane: { lane, work: { mediaId: "media-1", kind: "alignment" } } });
+    expect(turns).toEqual([4, 4, 4, 4, 4, 4]);
+    other();
   });
 
   it("asks nothing of the aligner for words it can't spell, and stops before a turn once cancelled", async () => {
