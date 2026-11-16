@@ -130,8 +130,12 @@ type ListedEdit = Omit<ThreadEdit, "at">;
 /**
  * A thread's edits as the timeline numbers them: the engine's list for the working cut, which leaves out
  * undone work, and the thread's own saved list until that arrives. With no thread, none.
+ *
+ * `needed`: whether the list is read again when the working cut moves. Every request in the chat lists its edits, and
+ * each new working cut would read them all again. One out of view keeps the list it last read, and reads it again
+ * once it is needed: in view, above the message box, or on the timeline. Its first read is always made.
  */
-export function useThreadEdits(projectId: string, thread: Thread | undefined): ListedEdit[] {
+export function useThreadEdits(projectId: string, thread: Thread | undefined, needed = true): ListedEdit[] {
   const head = useProjectStore(s => s.current?.project.head ?? null);
   const media = useProjectStore(s => s.current?.media);
   const saved = useMemo(() => thread ? threadEditList(thread, media) : [], [thread, media]);
@@ -139,8 +143,12 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined): L
   const applied = !!thread?.changes.some(c => c.state === "approved") || !!thread?.flagged?.length;
   const key = useThreadEditKey(projectId, head, thread);
   const [loaded, setLoaded] = useState<{ key: string; threadId: string; edits?: ThreadEdit[] }>();
+  // The read last asked for. While the list isn't needed it stays the one asked for, so nothing is read again.
+  const asked = useRef<string>(undefined);
+  const wanted = needed || asked.current === undefined ? key : asked.current;
   useEffect(() => {
     if (!head || !applied || !thread) return;
+    asked.current = key;
     let live = true;
     requestThreadEdits(key, projectId, thread.id).then(({ edits, version }) => {
       if (live && version === head) setLoaded({ key, threadId: thread.id, edits });
@@ -151,13 +159,15 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined): L
       if (live) setLoaded(had => had?.threadId === thread.id && had.edits ? had : { key, threadId: thread.id });
     });
     return () => { live = false; };
-  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wanted]); // eslint-disable-line react-hooks/exhaustive-deps
   // While a new list loads, keep the engine's numbering and the flags the editor saw. A flagged edit shows while its
   // request still works: "N need you" counts it from the moment it lands.
   const shown = useRef<{ key: string; edits: ListedEdit[] }>(undefined);
   const current = loaded?.key === key;
   const previous = loaded && loaded.threadId === thread?.id && shown.current?.key === loaded.key ? shown.current.edits : undefined;
-  const edits = (current ? loaded.edits : previous) ?? saved;
+  // Out of view, the engine's last list stands even when it arrived after the working cut had moved on.
+  const kept = !needed && loaded?.threadId === thread?.id ? loaded?.edits : undefined;
+  const edits = (current ? loaded.edits : previous ?? kept) ?? saved;
   useEffect(() => { if (current && loaded.edits) shown.current = { key, edits }; }, [current, loaded, key, edits]);
   return applied ? edits : [];
 }

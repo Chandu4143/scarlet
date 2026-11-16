@@ -3,6 +3,7 @@ import { fullRenderContext, type ThreadEdit } from "@scarlet/shared";
 import { cutPlaybackWindow, firstIndex, mergeRanges, CUT_LEAD_SECONDS, snapToFrame, timelineDuration, type Change, type CutAssessment, type CutReview, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import { appliedCutClock, appliedCutSource } from "../../lib/appliedCutPlayback";
 import { api, IS_MOCK } from "../../lib/client";
+import { readTimeline } from "../../lib/timelineCache";
 import { cutAudition, cutAuditionClock, isolatedReviewCut } from "../../lib/cutAudition";
 import { besides, removedSince } from "../../lib/removedSince";
 import { usePlayerStore } from "../../stores/player";
@@ -105,7 +106,7 @@ export async function prepareCut(projectId: string, fps: number, target: CutToPr
     if (current?.id === projectId && current.timeline?.version === version) return current.timeline;
     const cached = media?.timelines.get(version);
     if (cached) return cached;
-    const { timeline } = await api.timeline(projectId, version, signal);
+    const timeline = await readTimeline(projectId, version, signal);
     remember(media?.timelines, version, timeline);
     return timeline;
   };

@@ -105,16 +105,21 @@ export function AppShell() {
 
   useEffect(() => { appLog("app", "auth", { state: status }); }, [status]);
 
+  // The connection starts before any page's effects run, so a project opened in the same moment reads once, after the
+  // engine is listening, and not a second time when the connection opens.
+  useLayoutEffect(() => {
+    if (status !== "ready") return;
+    return startRealtime();
+  }, [status]);
   useEffect(() => {
     if (status !== "ready") return;
-    const stop = startRealtime();
     let active = true;
     void api.settings().then(({ settings }) => {
       if (active) useUiStore.getState().setDefaultAgent(settings.defaultAgent);
     }).catch(() => undefined);
     void useHostsStore.getState().load();
     void useProjectStore.getState().loadList();
-    return () => { active = false; stop(); };
+    return () => { active = false; };
   }, [status]);
 
   useHotkeys((e) => {
