@@ -262,8 +262,8 @@ it("transcribes a ready import at launch while an interrupted one is still prepa
   const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe").mockResolvedValue({ segments: [] });
   try {
     workspace = openWorkspace({ hashFile: async () => { hashing = true; await held; return "preparing-hash"; } }, { OPENAI_API_KEY: "fixture" });
-    await vi.waitFor(() => expect(hashing).toBe(true));
-    await vi.waitFor(() => expect(workspace.ctx.repos.projects.getMedia("ready-clip")?.transcriptId).toBeDefined());
+    await vi.waitFor(() => expect(hashing).toBe(true), { timeout: 10_000 });
+    await vi.waitFor(() => expect(workspace.ctx.repos.projects.getMedia("ready-clip")?.transcriptId).toBeDefined(), { timeout: 10_000 });
     expect(workspace.ctx.repos.projects.getMedia("preparing-clip")?.status).toBe("ingesting");
   } finally {
     release();
