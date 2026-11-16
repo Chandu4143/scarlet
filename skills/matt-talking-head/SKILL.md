@@ -1,16 +1,17 @@
 ---
 name: matt-talking-head
-description: Edit Matt Berman’s recorded talking-head videos in Scarlet. Choose his audience-facing takes, pace dialogue joins and presenter entrances, add camera punch-ins, and frame any synchronized screen demo around what he shows.
+description: Edit Matt Berman’s recorded talking-head videos in Scarlet. A dialogue pass cut to his pace, acting on his notes to the editor, with camera punch-ins and any synchronized screen demo framed around what he shows.
 category: Story and pacing
+extends: dialogue-pass
 ---
 
 # Matt’s talking-head edit
 
-Use this guide for my presenter footage. A bare `/matt-talking-head` covers the current edit, including camera punch-ins and any screen demos. If I name a pass, source, selection or cut, work just on that. Keep an existing edit’s sync and composition. For separate raw camera, screen and mic recordings, align the common sound, play the dialogue mic once, and carry cuts across all synchronized tracks. Check that my mouth, voice and the action I describe still line up.
+My style on top of the dialogue pass. A bare `/matt-talking-head` covers the current edit, including camera punch-ins and any screen demos. If I name a pass, source, selection or cut, work just on that. Keep an existing edit’s sync and composition. For separate camera, screen and mic recordings, play the dialogue mic once and carry cuts across all synchronized tracks, so my mouth, my voice and the action I describe still line up.
 
 ## Choose the take
 
-Keep the complete delivery meant for the viewer. Read through the restart and into what comes next. A second attempt may correct a number, add a qualification or finish a sentence the first attempt abandoned. Keep those details, deliberate emphasis and genuine reactions. If the wording is equivalent but the splice changes which performance survives, listen for the take I meant. Read the whole joined sentence and check the edited audio for a doubled word, the tail of a false start or a clipped syllable. Recheck the join after moving an edge.
+Keep the delivery meant for the viewer. If the wording of two takes is the same but the splice changes which performance survives, keep the take I meant. Keep my genuine reactions.
 
 ## Notes to my editor
 
@@ -18,17 +19,15 @@ I leave notes for my editor while I record. I often say them low, well under my 
 
 Do what a note asks whenever Scarlet can: show the screenshot or the part of the screen I point at, put the two things I name side by side, use the take I ask for, cut what I say to cut. Say what you did in that edit’s summary and quote my words. A note you can’t carry out, such as an opening montage or a music cue, goes in your reply to me with my words and where I said them.
 
-A note never plays in the finished video. Cut a clear one with its lead-in and the wait around it, and don’t flag it. If you can’t tell whether a line is a note or meant for the viewer, keep it and flag it with a `check` naming the doubt. Where a note runs into narration, cut the note alone and flag the join. If Scarlet holds the cut, tell me what remains to review.
+A note never plays in the finished video. Cut a clear one with its lead-in and the wait around it, and don’t flag it. If you can’t tell whether a line is a note or meant for the viewer, keep it and flag it with the doubt. Where a note runs into narration, cut the note alone and flag the join.
 
-## Pace the dialogue
+## My pace
 
-Judge the quiet on both sides of a join as one audible beat. Within a sentence, take out the wait and let the words run together naturally. At a join, leave one to two tenths of a second from the last word to the next, and three tenths at most between two ideas. A pause left inside kept footage comes down to about a third of a second between sentences. Six tenths or more with nothing happening in it is dead air. My published cuts run this tight. Give a reveal, reaction, purposeful breath or change of subject the time it earns. Trim fillers, coughs, lip smacks, chimes and off-mic interruptions when the line reads cleanly without them. Preserve hesitation that carries meaning and quiet speech the viewer needs. A transcript gap can contain speech or a demonstration. Check the sound and picture before trimming it.
+I cut tight. At a join, leave one to two tenths of a second from the last word to the next, and three tenths at most between two ideas. A pause left inside kept footage comes down to about a third of a second between sentences. Six tenths or more with nothing happening in it is dead air. My published cuts run this tight. A reveal, a reaction or a change of subject still gets the time it earns.
 
-Cut silent typing, searching and loading to the result. Hold the result long enough to see what changed. Flag any silence of two seconds or more that you keep in full, with what the viewer sees or hears during it.
+Cut silent typing, searching and loading to the result, and hold the result long enough to see what changed. Flag any silence of two seconds or more that you keep in full, with what the viewer sees or hears during it.
 
-Use a **two-frame audio crossfade** at dialogue joins and a straight picture cut. Bring my voice in promptly when the picture cuts back to me, especially in the first 40 seconds. On a straight pickup, around a tenth of a second between the picture cut and my first word is a good starting point. Later, a completed thought can breathe for closer to an eighth of a second. Keep a longer beat for a demonstration, a reaction or a purposeful breath. If my voice already enters naturally, keep that timing.
-
-Measure from the incoming picture to the first word with `timeline_join_audit`. Choose the nearest whole frame that protects the first consonant and the release of the outgoing word through the crossfade. Trust the recording when the transcript disagrees. Use `dialogue_check_repeats` on the edited dialogue and check the surrounding delivery before removing a repeat. Apply confident cuts. Stage a genuine choice for me with the words or reaction I would lose.
+Use a two-frame audio crossfade at dialogue joins and a straight picture cut. Bring my voice in promptly when the picture cuts back to me, especially in the first 40 seconds: about a tenth of a second from the picture cut to my first word on a straight pickup, closer to an eighth later on. Keep a longer beat for a demonstration, a reaction or a purposeful breath, and keep my timing where my voice already enters naturally. Protect the first consonant and the release of the outgoing word through the crossfade.
 
 ## Show the demo
 
