@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { isComposing } from "../../lib/hotkeys";
 import { useUiStore } from "../../stores/ui";
 import { Icon } from "../ui/primitives";
 
@@ -6,37 +7,68 @@ import { Icon } from "../ui/primitives";
 export interface AimItem {
   key: string;
   name: string;
+  displayName?: string;
   clearLabel: string;
   onClear(): void;
 }
 
-/** An edit point: two clips meeting at a line. */
-function EditPoint({ className }: { className?: string }) {
-  return <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
-    strokeLinejoin="round" aria-hidden="true"><path d="M8 1.5v13" /><path d="M3 4.5h3.5v7H3M13 4.5H9.5v7H13" /></svg>;
-}
-
-export function ComposerAim({ items, cue, onClick, disabled, disabledReason }: {
-  items: AimItem[]; cue: number; onClick(): void; disabled?: boolean; disabledReason?: string;
+export function ComposerAim({ items, disabled, disabledReason }: {
+  items: [AimItem, ...AimItem[]]; disabled?: boolean; disabledReason?: string;
 }) {
+  const id = useId();
+  const group = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const setLit = useUiStore(s => s.setAimLit);
   useEffect(() => {
-    setLit(hovered || focused);
+    setLit(hovered || focused || open);
     return () => setLit(false);
-  }, [hovered, focused, setLit]);
+  }, [hovered, focused, open, setLit]);
 
-  return <span className="composer-aim" onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: Event) => {
+      if (!group.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isComposing(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      trigger.current?.focus({ preventScroll: true });
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("focusin", dismissOutside);
+    document.addEventListener("keydown", dismissOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("focusin", dismissOutside);
+      document.removeEventListener("keydown", dismissOnEscape, true);
+    };
+  }, [open]);
+
+  const label = `About ${items.map(item => item.name).join(" and ")}`;
+  return <div ref={group} className="composer-aim" onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
     onFocus={() => setFocused(true)}
     onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false); }}>
-    <button type="button" className="composer-aim-icon" aria-label={`About ${items.map(item => item.name).join(" and ")}`} onClick={onClick}>
-      <EditPoint />
-      {cue > 0 && <EditPoint key={cue} className="composer-aim-sheen" />}
+    <button ref={trigger} type="button" className="composer-aim-button" aria-label={label} title={label}
+      aria-expanded={open} aria-controls={open ? id : undefined}
+      onClick={e => { e.currentTarget.focus({ preventScroll: true }); setOpen(value => !value); }}>
+      <span className="composer-aim-name">{items[0].displayName ?? items[0].name}</span>
+      {items.length > 1 && <span className="composer-aim-more" aria-hidden="true">+{items.length - 1}</span>}
+      <Icon name="chevron" size={11} />
     </button>
-    {items.map(item => <button key={item.key} type="button" className="composer-aim-clear" disabled={disabled}
-      title={item.clearLabel} aria-label={item.clearLabel} aria-description={disabled ? disabledReason : undefined} onClick={item.onClear}>
-      <Icon name="x" size={10} />
-    </button>)}
-  </span>;
+    {open && <div id={id} className="composer-aim-card" data-escape-owner data-shortcut-overlay>
+      {items.map(item => <div key={item.key} className="composer-aim-row" role="group" aria-label={item.name}>
+        <span aria-hidden="true" title={item.name}>{item.displayName ?? item.name}</span>
+        <button type="button" className="composer-aim-clear" disabled={disabled}
+          title={disabled ? disabledReason : item.clearLabel} aria-label={item.clearLabel} aria-description={disabled ? disabledReason : undefined}
+          onClick={() => { setOpen(false); item.onClear(); }}>
+          <Icon name="x" size={12} />
+        </button>
+      </div>)}
+    </div>}
+  </div>;
 }
