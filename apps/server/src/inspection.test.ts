@@ -238,7 +238,8 @@ it("classifies and caches source voice activity only on an explicit speech analy
   workspace.ctx.repos.projects.update(projectId, { mediaPaused: true });
   try {
     expect((await client.waveform("m", 1.2, 2, 40, true, true)).speechActivity).toBeInstanceOf(Array);
-    expect(spawnStats.ffmpeg).toBeGreaterThan(decodes);
+    // Another window is read from the recording's one decode, with no decode of its own.
+    expect(spawnStats.ffmpeg).toBe(decodes);
     // A pass's inspection of a cut reads levels and voice in one request, which prepares a waveform that isn't
     // cached yet. The timeline's drawing asks for no voice, and its waveform waits for resume.
     for (const id of ["drawn", "inspected"]) workspace.ctx.repos.projects.putMedia(projectId, { id, kind: "video", name: id, path: "sample.mp4",
