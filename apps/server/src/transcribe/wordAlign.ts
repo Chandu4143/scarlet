@@ -57,9 +57,12 @@ const CONTEXT_WORDS = 4;
 /** Seconds of audio one worker aligns before yielding its turn. */
 const BATCH_SECONDS = 300;
 /**
- * The same for a recording a dialogue pass is reading. A scan page advances 58 s and runs between two turns, so a
- * turn covers more than a page (runs are at most 30 s, so 90 to 120 s): alignment stays ahead of the pages the
- * pass reads, the first turn included, and no page waits longer than one short turn.
+ * The same while a dialogue pass reads any recording. A scan page advances 58 s and runs between two turns, so a
+ * turn covers more than a page (runs are at most 30 s, so 90 to 120 s): alignment of the recording read stays ahead
+ * of the pages the pass reads, the first turn included, and no page waits longer than one short turn. Another
+ * recording's alignment takes these turns too: on 2026-11-16 a pass's pages waited 1 to 1¾ minutes each for the
+ * five-minute turn of a transcript under way in the background. Turn boundaries can move a word edge by a frame, in
+ * about 0.3% of edges, so a transcript aligned during a pass can differ that much from one aligned without.
  */
 const SHARED_BATCH_SECONDS = 120;
 
@@ -192,9 +195,9 @@ export class WordAligner {
       await opts.hold?.();
       opts.signal.throwIfAborted();
       const { lane } = opts;
-      // Read each turn: a pass can start reading the recording while its transcript is under way.
+      // Read each turn: a pass can start reading the recording, or another one, while its transcript is under way.
       const shared = lane?.lane.focusedOn(lane.work.mediaId) ?? false;
-      const seconds = shared ? SHARED_BATCH_SECONDS : BATCH_SECONDS;
+      const seconds = shared || lane?.lane.reading() ? SHARED_BATCH_SECONDS : BATCH_SECONDS;
       let last = first + 1;
       while (last < groups.length && groups[last]!.end - groups[first]!.start <= seconds) last++;
       const batch = groups.slice(first, last);
@@ -244,8 +247,9 @@ function recordingAligner(ctx: { paths: { root: string } }) {
   return aligner;
 }
 
+/** A request is waiting on this measurement now, so it goes ahead of background work in the audio lane. */
 export function measureRecordingWords(ctx: { paths: { root: string } }, mediaId: string, source: EmissionSource, ranges: TimeRange[], signal: AbortSignal) {
-  return audioLane(ctx).run({ mediaId, kind: "page" }, signal, () => recordingAligner(ctx).measure(source, ranges, signal));
+  return audioLane(ctx).run({ mediaId, kind: "page", asked: true }, signal, () => recordingAligner(ctx).measure(source, ranges, signal));
 }
 
 /**

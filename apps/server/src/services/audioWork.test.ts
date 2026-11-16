@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AudioLane, audioLane, whisperLane, type AudioWork } from "./audioWork.js";
+import { AudioLane, askFor, audioLane, whisperLane, type AudioWork } from "./audioWork.js";
 
 function gate() {
   let open!: () => void;
@@ -211,6 +211,64 @@ describe("audio lane", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(order).toEqual(["whisper", "speakers"]);
       speakers.release(); await speakers.done;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("puts work a request waits on ahead of background work, also on a recording no pass has focused", async () => {
+    vi.useFakeTimers();
+    try {
+      const lane = new AudioLane();
+      const { order, add } = harness(lane);
+      // Another recording's transcript is under way and keeps the lane for its next turn.
+      const turn1 = add("background turn 1", { mediaId: "b", kind: "alignment" }, undefined, true);
+      await vi.advanceTimersByTimeAsync(0);
+      const background = add("background page", { mediaId: "c", kind: "page" });
+      const asked = add("asked page", { mediaId: "a", kind: "page", asked: true });
+      expect(lane.rank({ mediaId: "a", kind: "page", asked: true })).toBe(1);
+      turn1.release(); await turn1.done;
+      await vi.advanceTimersByTimeAsync(0);
+      // The asked page doesn't wait for the background transcript to finish, nor for work queued before it.
+      expect(order).toEqual(["background turn 1", "asked page"]);
+      // The transcript's next turn, queued meanwhile, still finishes it before other background work starts.
+      const turn2 = add("background turn 2", { mediaId: "b", kind: "alignment" });
+      asked.release(); await asked.done;
+      await vi.advanceTimersByTimeAsync(0);
+      for (const job of [turn2, background]) { job.release(); await job.done; await vi.advanceTimersByTimeAsync(0); }
+      expect(order).toEqual(["background turn 1", "asked page", "background turn 2", "background page"]);
+
+      // Among a read recording's work, the page a request joins goes ahead of the scan's pages queued before it.
+      const unfocus = lane.focus("a");
+      const running = add("running", { mediaId: "a", kind: "alignment" });
+      await vi.advanceTimersByTimeAsync(0);
+      const scanned = add("scan page", { mediaId: "a", kind: "page" });
+      const joined: AudioWork = { mediaId: "a", kind: "page" };
+      const read = add("read page", joined);
+      lane.ask(joined);
+      expect(lane.queued().map(w => w.kind + (w.asked ? " asked" : ""))).toEqual(["page asked", "page"]);
+      for (const job of [running, read, scanned]) { job.release(); await job.done; await vi.advanceTimersByTimeAsync(0); }
+      expect(order.slice(-3)).toEqual(["running", "read page", "scan page"]);
+      unfocus();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("stops keeping the lane for a step when a request joins work that goes ahead of it", async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = { paths: { root: "/tmp/asked-hold" } };
+      const lane = audioLane(ctx);
+      const { order, add } = harness(lane);
+      const whisper = add("background whisper", { mediaId: "b", kind: "transcript" }, undefined, true);
+      await vi.advanceTimersByTimeAsync(0);
+      whisper.release(); await whisper.done;
+      const work: AudioWork = { mediaId: "a", kind: "page" };
+      const page = add("page", work);
+      await vi.advanceTimersByTimeAsync(0);
+      // Equal in rank, the page waits for the step the background transcript kept the lane for.
+      expect(order).toEqual(["background whisper"]);
+      askFor(ctx, work);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(order).toEqual(["background whisper", "page"]);
+      page.release(); await page.done;
     } finally { vi.useRealTimers(); }
   });
 

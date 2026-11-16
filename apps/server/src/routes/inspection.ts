@@ -8,7 +8,7 @@ import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { prepareCutReview } from "../services/changes.js";
-import { dialogueDetector } from "../services/dialogueDetections.js";
+import { sharedDialogueDetector } from "../services/dialogueDetections.js";
 import { transcribeForDialogue } from "../services/ingest.js";
 import { inspectionPictures } from "../services/inspectionPictures.js";
 import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
@@ -63,7 +63,7 @@ export function newCutEvents(before: InspectionWindow[], after: InspectionWindow
 
 export function inspectionRoutes(ctx: Ctx) {
   const r = new Hono<AppEnv>();
-  const dialogue = dialogueDetector(ctx);
+  const dialogue = sharedDialogueDetector(ctx);
   // One transcript attempt per source per pass, so a failing provider is not retried on every page.
   const transcribing = new Set<string>();
   const pictures = inspectionPictures(ctx);
