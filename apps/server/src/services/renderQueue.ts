@@ -8,7 +8,7 @@ import { clipEnd, intervalCandidates, newId, planTransitions, sha256, stableStri
 import { engineIsAlive, type Ctx } from "../context.js";
 import { conflict, HttpError } from "../errors.js";
 import { now } from "../db.js";
-import { clip } from "../logText.js";
+import { clip, logId } from "../logText.js";
 import type { RenderEncoding } from "../render/adapter.js";
 import { recordRenderFinished } from "../telemetry/events.js";
 import { prepareSourceProxies } from "./sourcePreviews.js";
@@ -138,8 +138,11 @@ export class RenderQueue {
   }
 
   private releaseWorker(id: string) {
-    this.update(id, r => r.queuePid === process.pid && (r.state === "running" || r.state === "queued")
+    const queued = this.update(id, r => r.queuePid === process.pid && (r.state === "running" || r.state === "queued")
       ? { state: "queued", progress: 0, queuePid: undefined } : undefined);
+    if (queued && queued.kind !== "playback") this.ctx.db.afterCommit(() => {
+      this.ctx.log(`[render] requeued render=${logId(id)} project=${logId(queued.projectId)} reason=shutdown`);
+    });
   }
 
   /**
@@ -161,6 +164,9 @@ export class RenderQueue {
         const project = this.ctx.repos.projects.header(render.projectId);
         if (!project || (project.mediaPaused && render.kind === "full" && render.quality === "preview") || (render.demandPid && !render.export)) {
           this.cancel(render.id, true);
+          const target = `render=${logId(render.id)} project=${logId(render.projectId)}`;
+          const reason = !project ? "project_unavailable" : project.mediaPaused && render.kind === "full" && render.quality === "preview" ? "media_paused" : "viewer_gone";
+          this.ctx.db.afterCommit(() => this.ctx.log(`[render] recovered ${target} outcome=cancelled reason=${reason}`));
           // A killed engine leaves the file its encoder was writing.
           if (render.demandPid) {
             // Windows refuses while another program holds the file. The render is given up either way.
@@ -202,6 +208,7 @@ export class RenderQueue {
         const owner = render.demandPid && render.export?.owner;
         const queued = this.ctx.repos.renders.put({ ...render, state: "queued", progress: 0, queuePid: process.pid, ...(owner && { demandPid: process.pid }) });
         this.ctx.db.afterCommit(() => {
+          this.ctx.log(`[render] recovered render=${logId(queued.id)} project=${logId(queued.projectId)} outcome=queued reason=worker_gone`);
           if (owner) this.owners.set(queued.id, new Map([[owner, "viewer"]]));
           this.queue.push({ id: queued.id, projectId: queued.projectId, key: queued.previewContentKey ?? queued.key });
         });
@@ -600,6 +607,7 @@ export class RenderQueue {
         if (priority < Priority.FullCache && ![...this.running.values()].some(worker => worker.signal.aborted)) {
           for (const [id, worker] of this.running) {
             if (this.backgroundCaches.has(id) || (priority < Priority.Preparation && this.preparingOnly(id))) {
+              this.ctx.log(`[render] preempted render=${logId(id)} blocker=${logId(this.queue[index]!.id)} reason=higher_priority`);
               worker.abort(yieldCacheWorker);
               break;
             }
@@ -620,6 +628,7 @@ export class RenderQueue {
             else if (ac.signal.reason === yieldCacheWorker) {
               const queued = this.update(id, r => r.state === "running" ? { state: "queued", progress: 0 } : undefined);
               if (queued) {
+                this.ctx.log(`[render] requeued render=${logId(id)} project=${logId(projectId)} reason=higher_priority`);
                 this.ctx.bus.publish({ type: "render.updated", projectId: queued.projectId, render: queued });
                 this.queue.push({ id, projectId, key, playback: queued.kind === "playback" && this.owners.has(id) });
               }

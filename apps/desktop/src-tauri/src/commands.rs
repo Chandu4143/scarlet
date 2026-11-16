@@ -151,7 +151,13 @@ impl ExportDestination {
             // Only ever a temporary file this app created next to the chosen destination.
             let ours = temp.parent() == self.path.parent()
                 && temp.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".tmp"));
-            if ours && fs::remove_file(&temp).is_ok() { log::info!("removed a partial export at {}", temp.display()); }
+            if ours {
+                match fs::remove_file(&temp) {
+                    Ok(()) => log::info!("[export] partial-cleanup outcome=done"),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+                    Err(error) => log::warn!("[export] partial-cleanup outcome=failed code={}", error.raw_os_error().unwrap_or(0)),
+                }
+            }
         }
     }
 }
@@ -344,7 +350,15 @@ pub fn discard_video_export(destinations: State<'_, ExportDestinations>, ticket:
     destinations.change(|paths| { let kept = paths.remove(&ticket).is_some_and(|d| d.kept); ((), kept) })
 }
 
-async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &Path, temp: tempfile::NamedTempFile) -> Result<String, String> {
+struct ExportTransfer {
+    request: uuid::Uuid,
+    stage: &'static str,
+    status: u16,
+    bytes: u64,
+    render: Option<String>,
+}
+
+async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &Path, temp: tempfile::NamedTempFile, transfer: &mut ExportTransfer) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
     let (file, temp_path) = temp.into_parts();
     let mut file = tokio::io::BufWriter::with_capacity(1024 * 1024, tokio::fs::File::from_std(file));
@@ -364,45 +378,63 @@ async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &P
         }
     }
     if !demo_content {
+        transfer.stage = "connect";
         let base = state.engine.status().url.ok_or("Not connected to the engine")?;
         let source = engine_file(&base, url)?;
+        transfer.render = source.path().strip_prefix("/api/renders/").and_then(|path| path.strip_suffix("/file"))
+            .filter(|id| id.strip_prefix("rnd_").is_some_and(|value| value.len() == 12 && value.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())))
+            .map(str::to_owned);
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(|e| e.to_string())?;
-        let mut res = client.get(source).header("x-scarlet-download", "1").send().await.map_err(|e| e.without_url().to_string())?;
+        let mut res = client.get(source).header("x-scarlet-download", "1").header("x-scarlet-request-id", transfer.request.to_string())
+            .send().await.map_err(|e| e.without_url().to_string())?;
+        transfer.stage = "headers";
+        transfer.status = res.status().as_u16();
         if !res.status().is_success() { return Err(format!("The engine could not deliver the file ({})", res.status())); }
-        while let Some(chunk) = res.chunk().await.map_err(|e| e.without_url().to_string())? {
+        loop {
+            transfer.stage = "read";
+            let Some(chunk) = res.chunk().await.map_err(|e| e.without_url().to_string())? else { break };
+            transfer.bytes += chunk.len() as u64;
+            transfer.stage = "write";
             file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         }
     }
+    transfer.stage = "sync";
     file.flush().await.map_err(|e| e.to_string())?;
     // On the disk before it takes the chosen name: after a power cut the file there is whole or isn't there, and an
     // export that isn't there is still owed and saved again at the next launch.
     file.get_ref().sync_all().await.map_err(|e| e.to_string())?;
     drop(file);
+    transfer.stage = "publish";
     temp_path.persist(path).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 pub async fn finish_video_export(app: AppHandle, state: State<'_, AppState>, destinations: State<'_, ExportDestinations>, ticket: u64, url: String) -> Result<String, String> {
-    let path = destinations.change(|paths| (paths.get(&ticket).map(|d| d.path.clone()), false))?.ok_or("Export destination expired")?;
-    let parent = path.parent().ok_or("Unsupported save destination")?;
-    let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Could not write to the chosen folder ({})", e.kind()))?;
-    let partial = temp.path().to_path_buf();
-    // Process inspection can start PowerShell on Windows, so the claim runs on a blocking thread. It is made before any
-    // bytes are written.
-    let (handle, claimed) = (app.clone(), partial.clone());
-    let kept = tauri::async_runtime::spawn_blocking(move || {
-        handle.state::<ExportDestinations>().start_save(ticket, &claimed, crate::host::spawn::this_scarlet())
-    }).await.map_err(|e| e.to_string())??;
-    let saved = save_engine_file(&app, &state, &url, &path, temp).await;
-    // Never where it went: the editor typed the file's name.
-    match &saved {
-        Ok(_) => log::info!("export saved"),
-        Err(e) => log::warn!("export could not be saved: {}", e.replace(&*path.to_string_lossy(), "…")),
-    }
-    // A save cut short by quitting is retried at the next launch. A returned failure leaves the ticket available for retry.
-    // The chosen file is already complete on success. A ledger error is logged separately from that outcome.
-    let _ = destinations.finish_save(ticket, &partial, kept, saved.is_ok());
+    let started = std::time::Instant::now();
+    let mut transfer = ExportTransfer { request: uuid::Uuid::new_v4(), stage: "destination", status: 0, bytes: 0, render: None };
+    let saved: Result<String, String> = async {
+        let path = destinations.change(|paths| (paths.get(&ticket).map(|d| d.path.clone()), false))?.ok_or("Export destination expired")?;
+        let parent = path.parent().ok_or("Unsupported save destination")?;
+        let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Could not write to the chosen folder ({})", e.kind()))?;
+        let partial = temp.path().to_path_buf();
+        // Process inspection can start PowerShell on Windows. Claim the destination off the runtime before writing.
+        transfer.stage = "claim";
+        let (handle, claimed) = (app.clone(), partial.clone());
+        let kept = tauri::async_runtime::spawn_blocking(move || {
+            handle.state::<ExportDestinations>().start_save(ticket, &claimed, crate::host::spawn::this_scarlet())
+        }).await.map_err(|e| e.to_string())??;
+        log::info!("[export] save-started request={} stage=claim", transfer.request);
+        let saved = save_engine_file(&app, &state, &url, &path, temp, &mut transfer).await;
+        // A failed save keeps the ticket available for retry. A ledger error is separate from the file outcome.
+        if destinations.finish_save(ticket, &partial, kept, saved.is_ok()).is_err() {
+            log::warn!("[export] ledger-failed request={} stage=finish", transfer.request);
+        }
+        saved
+    }.await;
+    let (level, outcome) = if saved.is_ok() { (log::Level::Info, "done") } else { (log::Level::Warn, "failed") };
+    log::log!(level, "[export] save-finished request={} outcome={outcome} stage={} status={} bytes={} elapsedMs={} render={}",
+        transfer.request, transfer.stage, transfer.status, transfer.bytes, started.elapsed().as_millis(), transfer.render.as_deref().unwrap_or("none"));
     saved
 }
 

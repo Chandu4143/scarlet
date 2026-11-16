@@ -454,11 +454,18 @@ function queuePolicy<T extends QueueTask, C extends QueueChange>(tasks: readonly
   const holding = (task: T) => task.startsBeforeCalls ? [] : reviews(task).filter(change => !aboutChange(task, change));
   const ahead = (task: T, prior: T) => others(task, prior) && order(prior, task) < 0
     && !reviews(task).some(change => aboutChange(task, change) && !aboutChange(prior, change));
+  const running = (task: T) => active.find(other => others(task, other));
+  const blocker = (task: T, remaining: readonly T[] = queued) => {
+    const run = running(task);
+    if (run) return { reason: run.state === "waiting_for_user" ? "question" : "active_run", id: run.id } as const;
+    const review = holding(task)[0];
+    if (review) return { reason: "review", id: review.id } as const;
+    const prior = remaining.find(other => ahead(task, other));
+    return prior ? { reason: "earlier_request", id: prior.id } as const : undefined;
+  };
 
-  return { active, queued, holding, ahead,
-    running: (task: T) => active.find(other => others(task, other)),
-    canClaim: (task: T, remaining: readonly T[] = queued) =>
-      !active.some(other => others(task, other)) && !holding(task).length && !remaining.some(prior => ahead(task, prior)) };
+  return { active, queued, holding, ahead, running, blocker,
+    canClaim: (task: T, remaining?: readonly T[]) => blocker(task, remaining) === undefined };
 }
 
 /**
@@ -467,7 +474,13 @@ function queuePolicy<T extends QueueTask, C extends QueueChange>(tasks: readonly
  * only for a request about an applied edit.
  */
 export function queueAdmission(tasks: readonly QueueTask[], changes: readonly QueueChange[], lookup: (id: string) => EditLineage | undefined) {
-  return queuePolicy(tasks, changes, lookup).canClaim;
+  const policy = queuePolicy(tasks, changes, lookup);
+  return policy.canClaim;
+}
+
+/** The first reason admission would hold this request, using the same policy as the editor's queue. */
+export function queueBlocker(tasks: readonly QueueTask[], changes: readonly QueueChange[], lookup: (id: string) => EditLineage | undefined) {
+  return queuePolicy(tasks, changes, lookup).blocker;
 }
 
 /** A pass being staged is described as a run while Scarlet is making it. */

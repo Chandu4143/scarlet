@@ -56,7 +56,7 @@ export function UndoEdit({ projectId, thread, target, onSent }: { projectId: str
   });
   return <>
     {error && <span className="simple-error" role="alert">{error}</span>}
-    <button type="button" className="edit-card-icon edit-card-undo" aria-label="Undo edit" aria-keyshortcuts="U" aria-busy={busy || undefined}
+    <button type="button" className="edit-card-icon edit-card-undo" data-log-control="undo-edit" aria-label="Undo edit" aria-keyshortcuts="U" aria-busy={busy || undefined}
       title={busy ? "Undoing…" : "Undo edit (U)"} disabled={busy} onClick={() => void undo()}><Icon name="undo" size={14} /></button>
   </>;
 }
@@ -265,7 +265,7 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
       // One that came back revised with no reason from Scarlet says so on its row until it is kept: its card has no
       // sentence for that.
       const revised = edit.check === REVISED_CHECK && !reviewed(edit) && !isRevising;
-      return <li key={editKey(edit)}><button type="button" ref={on ? opened : undefined} aria-current={on || undefined}
+      return <li key={editKey(edit)}><button type="button" ref={on ? opened : undefined} aria-current={on || undefined} data-log-control="open-edit" data-log-label="Edit"
         // Clicked, the row lets go of the focus (WebView2 leaves it there), or Space would press the row again and start
         // the edit over, instead of playing the video.
         className={on ? "simple-edit is-on" : "simple-edit"} onClick={e => { if (e.detail) e.currentTarget.blur(); onPlay(edit); }}

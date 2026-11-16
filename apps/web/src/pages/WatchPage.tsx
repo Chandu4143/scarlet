@@ -12,7 +12,7 @@ import { ImportProgress } from "../components/media/ImportProgress";
 import { pauseForScrub, player, type ScrubRelease } from "../lib/player";
 import { playbackLog } from "../lib/playbackLog";
 import type { JoinClock } from "../lib/joinClock";
-import { api, IS_MOCK, loggedFetch } from "../lib/client";
+import { api, IS_MOCK, loggedFetch, readLoggedBody } from "../lib/client";
 import { usePlayerStore } from "../stores/player";
 import { selectRender, useProjectStore } from "../stores/project";
 import { editTargetAt, markedRangeOf, useUiStore, type AgentContext, type MarkedRange } from "../stores/ui";
@@ -76,13 +76,16 @@ export function ImportPreview({ projectId, preparing, onMedia }: { projectId: st
     const controller = new AbortController();
     let url: string | undefined;
     void (async () => {
-      // Through the logged fetch, like every other request: a frame that never comes is in the log with the engine's reason.
+      // Correlate the preview with the engine log and record any transfer failure after the headers.
       const response = await loggedFetch(api.url(`/projects/${projectId}/media/import-frame`), {
         method: "POST", signal: controller.signal, body: JSON.stringify({ path }),
         headers: { "Content-Type": "application/json", ...(api.token && { Authorization: `Bearer ${api.token}` }) },
       });
-      if (!response.ok) return;
-      const image = await response.blob();
+      if (!response.ok) {
+        await readLoggedBody(response, () => response.text());
+        return;
+      }
+      const image = await readLoggedBody(response, () => response.blob());
       if (controller.signal.aborted) return;
       url = URL.createObjectURL(image);
       setFrame({ path, url });

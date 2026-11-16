@@ -103,7 +103,7 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
   </> : <>
     {switchTo}
     <button type="button" className="btn-ghost" onClick={onClose}>{busy || exported ? "Close" : "Cancel"}</button>
-    <button type="submit" form="export-working-cut" className="btn-primary" disabled={!!busy || !!invalid}>
+    <button type="submit" form="export-working-cut" className="btn-primary" data-log-control="export" disabled={!!busy || !!invalid}>
       {failed ? "Retry" : "Export"}
     </button>
   </>}>
@@ -148,10 +148,10 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
       {running && <p className="mt-2 text-xs text-muted">Your export continues in the background while you edit.</p>}
     </div>}
     {exported && <p className="mt-3 flex items-center gap-2 text-xs" role="status"><Icon name="check" />
-      <span className="truncate" title={exported.path}>{exported.path.split(/[\\/]/).pop()}</span>
-      <button className="btn-quiet shrink-0" onClick={() => { setRevealError(""); void desktop.revealPath(exported.path).catch(e => setRevealError(errorMessage(e))); }}>Show in folder</button>
+      <span className="truncate" title={exported.path} data-log-private>{exported.path.split(/[\\/]/).pop()}</span>
+      <button className="btn-quiet shrink-0" data-log-control="reveal-export" onClick={() => { setRevealError(""); void desktop.revealPath(exported.path).catch(e => setRevealError(errorMessage(e))); }}>Show in folder</button>
     </p>}
-    <InlineError>{failed ? job.error : revealError}</InlineError>
+    <InlineError>{(failed || revealError) && <span data-log-private>{failed ? job.error : revealError}</span>}</InlineError>
   </Modal>;
 }
 

@@ -6,7 +6,7 @@
  */
 import type { AgentAvailability, AgentEffort, AgentId, HandoffFile } from "@scarlet/shared";
 import { invoke as nativeInvoke } from "@tauri-apps/api/core";
-import { appLog, withoutAddresses } from "./appLog";
+import { appLog, errorName, withoutAddresses } from "./appLog";
 
 export function isDesktop(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -111,6 +111,16 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   }
 }
 
+/** Listener registration bypasses invoke, but failures still need a record when callers fall back to polling. */
+async function registerListener(event: string, register: () => Promise<Unlisten>) {
+  try {
+    return await register();
+  } catch (error) {
+    appLog("error", "desktop-listen", { event, name: errorName(error), error: failureReason(error) }, { level: "warn" });
+    throw error;
+  }
+}
+
 export interface StorageSize { bytes: number; files: number; estimated: boolean }
 export interface DeveloperStorage extends StorageSize { kind: "cargo" | "scratch"; path: string }
 
@@ -123,8 +133,10 @@ export interface UpdateStatus { ready: string | null; building: UpdateBuild | nu
 
 export const desktop = {
   async onDropFiles(cb: (event: import("@tauri-apps/api/webview").DragDropEvent) => void): Promise<Unlisten> {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    return getCurrentWindow().onDragDropEvent(event => cb(event.payload));
+    return registerListener("file-drop", async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      return getCurrentWindow().onDragDropEvent(event => cb(event.payload));
+    });
   },
   measureProjectStorage: (projects: Pick<import("@scarlet/shared").StorageProject, "id" | "deletedAt" | "segments">[]) =>
     invoke<Record<string, StorageSize>>("measure_project_storage", { projects }),
@@ -165,16 +177,22 @@ export const desktop = {
   log: (message: string | string[], level: "info" | "warn" | "error" | "debug" = "info") => invoke<void>("desktop_log", { level, message }).catch(() => undefined),
 
   async onEngineStatus(cb: (s: EngineStatus) => void): Promise<Unlisten> {
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<EngineStatus>("engine://status", (e) => cb(e.payload));
+    return registerListener("engine-status", async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<EngineStatus>("engine://status", e => cb(e.payload));
+    });
   },
   async onAgentLogin(cb: (s: AgentLoginStatus) => void): Promise<Unlisten> {
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<AgentLoginStatus>("agent-login://status", (e) => cb(e.payload));
+    return registerListener("agent-login", async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<AgentLoginStatus>("agent-login://status", e => cb(e.payload));
+    });
   },
   async onHostStatus(cb: (s: HostStatus) => void): Promise<Unlisten> {
-    const { listen } = await import("@tauri-apps/api/event");
-    return listen<HostStatus>("host://status", (e) => cb(e.payload));
+    return registerListener("host-status", async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<HostStatus>("host://status", e => cb(e.payload));
+    });
   },
 };
 

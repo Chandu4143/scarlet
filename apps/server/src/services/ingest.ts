@@ -8,7 +8,7 @@ import { engineIsAlive, type Ctx } from "../context.js";
 import { quietProgress } from "./progressSave.js";
 import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
-import { humanDuration } from "../logText.js";
+import { humanDuration, logId } from "../logText.js";
 import type { MediaWithStatus } from "../repo/projects.js";
 import { decodeImportFilename, importLinkFilename, type Task, type User } from "@scarlet/shared";
 import { cancelTask, createTask, hasTranscript, saveTask } from "./tasks.js";
@@ -400,7 +400,9 @@ async function backgroundIngest(ctx: Ctx, projectId: string, asset: MediaAsset) 
       const height = Math.min(ctx.settings().render.previewHeight, asset.height ?? 720);
       const onProgress = reportStage("preview");
       onProgress(0);
-      await ctx.render.makeProxy(src, proxy, { height, onProgress, signal });
+      await ctx.render.makeProxy(src, proxy, { height, onProgress, signal,
+        onFallback: stage => ctx.log(`[media] proxy_fallback media=${logId(asset.id)} project=${logId(projectId)} height=${height} stage=${stage}`),
+      });
     }
     signal.throwIfAborted();
     asset = publish("ready");
@@ -658,8 +660,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
   /** The transcript was saved with its alignment still to come. */
   let early = false;
   const started = Date.now();
-  const audio = asset.duration ? ` (${humanDuration(asset.duration * 1000)} of audio)` : "";
-  ctx.log(`[transcribe] ${asset.id} started with ${provider.localModel ?? provider.name}${audio} for ${task.id}`);
+  const target = `media=${logId(asset.id)} project=${logId(projectId)} task=${logId(task.id)}`;
   try {
     const src = join(ctx.paths.media(projectId), asset.path);
     const stamp = statSync(src, { throwIfNoEntry: false });
@@ -679,6 +680,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     ctx.speakers.begin(ctx, projectId, asset);
     const recognized = saved.fraction ?? (asset.duration ? Math.min(1, saved.recognition.through / asset.duration) : 0);
     const transcribe = () => {
+      ctx.log(`[transcribe] recognition_started ${target} provider=${provider.name}`);
       progress.transcribing(recognized);
       return provider.transcribe({ path: src, duration: asset.duration, tmpDir: ctx.paths.tmp, signal, keepWavAt: wav,
         checkpoint: saved.recognition, onProgress: progress.transcribing, beforeUpload: checkRunning,
@@ -690,6 +692,8 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     else if (provider.name === "whispercpp") progress.queued();
     // Word alignment follows. In the same lane, the lane waits for it rather than starting another recording.
     const lane = whisperLane(ctx, provider.separateWhisperLane);
+    if (saved.aligned) ctx.log(`[transcribe] recognition_reused ${target} provider=${provider.name}`);
+    else if (provider.name === "whispercpp") ctx.log(`[transcribe] recognition_queued ${target} provider=${provider.name}`);
     const result = saved.aligned ?? (provider.name === "whispercpp" ? await lane.run(work, signal, transcribe, { more: lane === audioLane(ctx) }) : await transcribe());
     const configuredLanguage = ctx.settings().transcription.language;
     const language = result.language || (configuredLanguage === "auto" ? undefined : configuredLanguage);

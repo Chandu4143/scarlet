@@ -21,6 +21,27 @@ function harness(lane: AudioLane) {
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe("audio lane", () => {
+  it("records a blocked wait before the worker finishes and records cancellation while queued", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const lines: string[] = [];
+      const { add } = harness(new AudioLane(line => lines.push(line)));
+      const running = add("first", { mediaId: "med_aaaaaaaaaaaa", kind: "transcript" });
+      const cancel = new AbortController();
+      const waiting = add("second", { mediaId: "med_bbbbbbbbbbbb", kind: "alignment" }, cancel.signal);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(lines).toEqual(["[audio] waiting lane=audio work=alignment media=med_bbbbbbbbbbbb wait_ms=30000 ahead=1 blocker_work=transcript blocker=med_aaaaaaaaaaaa"]);
+      const rejected = expect(waiting.done).rejects.toMatchObject({ name: "AbortError" });
+      cancel.abort();
+      await rejected;
+      expect(lines.at(-1)).toBe("[audio] cancelled_while_waiting lane=audio work=alignment media=med_bbbbbbbbbbbb wait_ms=30000");
+      running.release();
+      await running.done;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs one job at a time, first come first served when nothing is focused", async () => {
     const lane = new AudioLane();
     const { order, add } = harness(lane);

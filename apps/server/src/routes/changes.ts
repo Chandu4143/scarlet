@@ -5,6 +5,7 @@ import { namedTimelineEdits, ApproveRequest, FlagEditRequest, CutChoicesRequest,
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
+import { logId } from "../logText.js";
 import { approveChange, changeDiff, flagEdit, saveCutChoices, prepareCutReview, prepareFirstDecision, proposeChange, recordPlayableDecision, requireUnscopedEdit, scheduleSpotCheck, submitDialogueCuts, rejectChange, reopenChange, reviseChange, reviseStagedCut, unapproveChange, withSpotCapability } from "../services/changes.js";
 import { jsonBody, requireProjectHeader, TIMELINE_JSON_BYTES } from "./util.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
@@ -219,6 +220,12 @@ export function changeRoutes(ctx: Ctx) {
           cutAssessments.some(a => a !== previous.get(a.index))) {
         const saved = ctx.repos.changes.put({ ...change, cutAssessments, assessedForReview, firstDecisionPreview, applyWhenDone });
         ctx.bus.publish({ type: "change.updated", projectId: change.projectId, change: saved });
+        const published = calls.filter(a => !previous.has(a.index) || !isPublishedCall(previous.get(a.index)!)).length;
+        if (published || (change.applyWhenDone && !applyWhenDone)) ctx.db.afterCommit(() => {
+          const target = `change=${logId(change.id)} project=${logId(change.projectId)}${change.taskId ? ` task=${logId(change.taskId)}` : ""}`;
+          if (published) ctx.log(`[review] calls_published ${target} count=${published}`);
+          if (change.applyWhenDone && !applyWhenDone) ctx.log(`[review] schedule ${target} outcome=cleared reason=new_call`);
+        });
         if (firstDecisionPreview && firstDecisionPreview.briefToPlayableMs === undefined) recordPlayableDecision(ctx, saved);
       }
       return { total: review.cuts.length, assessed: cutAssessments.filter(a => !a.provisional).length,

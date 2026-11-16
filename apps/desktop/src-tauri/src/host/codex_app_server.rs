@@ -16,6 +16,18 @@ const START_TURN: u64 = 3;
 const INTERRUPT_TURN: u64 = 4;
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
+#[derive(Debug)]
+struct HandshakeError(&'static str);
+impl std::fmt::Display for HandshakeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
+}
+impl std::error::Error for HandshakeError {}
+
+/// Extract the safe handshake phase without exposing provider output from the error chain.
+pub fn fallback_reason(error: &anyhow::Error) -> &'static str {
+    error.downcast_ref::<HandshakeError>().map_or("app_server_unavailable", |phase| phase.0)
+}
+
 /// Receive one notification for this run. Returning true interrupts the turn.
 pub type NotificationHandler = Box<dyn FnMut(&str, &Value) -> bool + Send>;
 
@@ -107,11 +119,17 @@ impl Session {
             START_TURN => "turn/start",
             _ => unreachable!(),
         };
+        let phase = || HandshakeError(match id {
+            INITIALIZE => "initialize_failed",
+            START_THREAD => "thread_start_failed",
+            _ => "turn_start_failed",
+        });
         if let Some(error) = message.get("error") {
             let detail = error["message"].as_str().unwrap_or("unknown error");
-            bail!("Codex App Server {method} failed: {detail}");
+            return Err(anyhow!("Codex App Server {method} failed: {detail}").context(phase()));
         }
-        let result = message.get("result").with_context(|| format!("Codex App Server {method} returned no result"))?;
+        let result = message.get("result").with_context(phase)?;
+
         match id {
             INITIALIZE => {
                 self.send(json!({ "method": "initialized" }))?;
@@ -120,15 +138,15 @@ impl Session {
             }
             START_THREAD => {
                 if result.pointer("/thread/ephemeral").and_then(Value::as_bool) != Some(true) {
-                    bail!("Codex App Server did not confirm an ephemeral thread");
+                    return Err(anyhow!("Codex App Server did not confirm an ephemeral thread").context(HandshakeError("thread_policy_mismatch")));
                 }
                 if result["approvalPolicy"].as_str() != Some("never") {
-                    bail!("Codex App Server did not apply Scarlet's approval policy");
+                    return Err(anyhow!("Codex App Server did not apply Scarlet's approval policy").context(HandshakeError("thread_policy_mismatch")));
                 }
                 if result.pointer("/activePermissionProfile/id").and_then(Value::as_str) != Some("scarlet") {
-                    bail!("Codex App Server did not apply Scarlet's permission profile");
+                    return Err(anyhow!("Codex App Server did not apply Scarlet's permission profile").context(HandshakeError("thread_policy_mismatch")));
                 }
-                let thread_id = result.pointer("/thread/id").and_then(Value::as_str).context("Codex App Server returned no thread ID")?;
+                let thread_id = result.pointer("/thread/id").and_then(Value::as_str).context(HandshakeError("thread_start_failed"))?;
                 self.thread = Some(thread_id.into());
                 on_event("thread/started", result);
                 turn_params["threadId"] = json!(thread_id);
@@ -188,7 +206,8 @@ pub async fn run_app_server(
     let mut session = state.lock().unwrap();
     if let Some(error) = session.error.take() {
         if !outcome.aborted && !outcome.timed_out {
-            bail!("{error}{}", stderr_tail(&outcome.stderr));
+            let tail = stderr_tail(&outcome.stderr);
+            return Err(if tail.is_empty() { error } else { error.context(format!("Codex App Server stderr{tail}")) });
         }
     }
     if !session.completed && !session.interrupted && !outcome.aborted && !outcome.timed_out {
@@ -321,6 +340,7 @@ lines.on('line', line => console.log(JSON.stringify({id: JSON.parse(line).id, er
         let (node, opts) = process_options(CancellationToken::new());
         let error = run_app_server(&node, &["-e".into(), script.into()], opts, json!({}), json!({}), Box::new(|_, _| false))
             .await.unwrap_err();
-        assert!(error.to_string().contains("initialize failed: Connection failed"), "{error}");
+        assert!(format!("{error:#}").contains("initialize failed: Connection failed"), "{error:#}");
+        assert_eq!(fallback_reason(&error), "initialize_failed");
     }
 }

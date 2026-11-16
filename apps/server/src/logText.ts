@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 /** Elapsed time for log lines: "850ms", "12s", "45m 2s", "1h 3m". Matches the desktop host's log. */
 export function humanDuration(ms: number): string {
   const secs = Math.floor(ms / 1000);
@@ -34,4 +36,19 @@ export function throttledLog(log: (line: string) => void, everyMs = 60_000) {
 export function clip(text: string, max = 160): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+export const REQUEST_ID_HEADER = "x-scarlet-request-id";
+const requestIds = new WeakMap<Request, string>();
+
+export function requestLogId(request: Request): string {
+  const claimed = request.headers.get(REQUEST_ID_HEADER);
+  if (claimed && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(claimed)) return claimed;
+  let id = requestIds.get(request);
+  if (!id) requestIds.set(request, id = randomUUID());
+  return id;
+}
+
+/** Only opaque engine-generated identifiers belong in shareable diagnostics. */
+export function logId(id: string): string {
+  return /^(?:(?:tsk|med|prj|rnd|chg|host)_[a-z0-9]{12}|chg_[a-f0-9]{64}_(?:applied|review))$/.test(id) ? id : "unknown";
 }

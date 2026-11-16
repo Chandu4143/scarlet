@@ -3,7 +3,7 @@
  * millisecond; the gap is since that tag's last line) and lands in the desktop log as its own `[ui]` record, in order with the
  * engine's and the desktop's own lines. Tags: `app` (the session), `nav`, `action` (what the editor pressed), `api`,
  * `realtime`, `playback`, `window`, `error`.
- * Nothing is written per frame, a burst is capped per tag, and no typed text, token or query value is logged.
+ * Routine event bursts are capped per tag, and no typed text, token or query value is logged.
  */
 import { desktop } from "./desktop";
 
@@ -28,7 +28,7 @@ function show(value: unknown): string {
   return String(value);
 }
 
-function flush() {
+export function flushAppLog() {
   clearTimeout(timer);
   timer = undefined;
   const lines = pending.map(p => p.count > 1 ? `${p.text} x${p.count}` : p.text);
@@ -50,7 +50,8 @@ export function appLog(tag: string, event: string, fields?: LogFields, { key, le
   bucket.at = now;
   const last = pending.at(-1);
   const repeat = level === "info" && key !== undefined && last?.key === `${tag}/${key}`;
-  if (!repeat) {
+  // Progress and scrubbing must never spend the budget for the failure that ends them.
+  if (level === "info" && !repeat) {
     if (bucket.tokens < 1) { bucket.dropped++; return; }
     bucket.tokens--;
   }
@@ -61,12 +62,12 @@ export function appLog(tag: string, event: string, fields?: LogFields, { key, le
   const text = parts.join(" ");
   if (repeat) { last.text = text; last.count++; return; }
   if (level !== "info") {
-    flush();
+    flushAppLog();
     write([text], level);
     return;
   }
   pending.push({ key: key === undefined ? undefined : `${tag}/${key}`, text, count: 1 });
-  timer ??= setTimeout(flush, 250);
+  timer ??= setTimeout(flushAppLog, 250);
 }
 
 export const appLogging = () => !!write;
@@ -79,7 +80,7 @@ export function startAppLog(to: Write = (lines, level) => { void desktop.log(lin
 
 export function stopAppLog() {
   if (!write) return;
-  flush();
+  flushAppLog();
   write = undefined;
   buckets.clear();
 }
@@ -104,6 +105,11 @@ export function logId(of: object, prefix = "v") {
   let id = ids.get(of);
   if (!id) ids.set(of, id = `${prefix}${nextId++}`);
   return id;
+}
+
+export function errorName(error: unknown) {
+  if (!(error instanceof Error || (typeof DOMException !== "undefined" && error instanceof DOMException))) return "unknown";
+  return /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name) ? error.name : "Error";
 }
 
 /** Text someone else wrote (an error, an alert) without the addresses in it: a sign-in page or a file's link carries a token or a path. */

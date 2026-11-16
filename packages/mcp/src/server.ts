@@ -84,7 +84,7 @@ import {
 } from "./analysis.js";
 import { toolAnnotations } from "./annotations.js";
 import { transitionOps } from "./transition.js";
-import { MediaPreparing, describeError, errorResult, errorText, formatZodError, json, noteUnmeasured, text, toolRefusal, unavailable, unmeasured, unmeasuredLine, type ToolResult } from "./tool-result.js";
+import { MediaPreparing, describeError, errorResult, errorText, formatZodError, json, noteEvidenceMiss, notePreparing, noteUnmeasured, text, toolDiagnostics, toolRefusal, unavailable, unmeasured, unmeasuredLine, type ToolResult } from "./tool-result.js";
 import { registerPerception } from "./perception-tools.js";
 import { registerGraphics } from "./graphics-tools.js";
 import { sourceRangeToTimeline, sourceToTimeline, timelineWords } from "./timeline-perception.js";
@@ -313,6 +313,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand.",
     },
   );
+  let diagnosticSessionClosed = false;
+  server.server.onclose = () => { diagnosticSessionClosed = true; };
   const fetchImpl = ctx.fetch ?? globalThis.fetch.bind(globalThis);
   let tempDir: Promise<string> | undefined;
   const artifactDir = () => ctx.workDir ?? (tempDir ??= mkdtemp(join(tmpdir(), "scarlet-mcp-")));
@@ -328,7 +330,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const unavailableOnce = (what: string, err: unknown) => {
     if (err instanceof MediaPreparing) return;
     const line = `${what}: ${describeError(err)}`;
-    if (noted.has(line)) return;
+    if (noted.has(line)) {
+      noteEvidenceMiss(what);
+      return;
+    }
     noted.add(line);
     unavailable(what, err);
   };
@@ -828,6 +833,19 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }
   }
 
+  type ToolOutcome = "ok" | "failed" | "refused" | "preparing" | "degraded";
+  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number) {
+    if (!ctx.taskId || !startedAt || diagnosticSessionClosed) return;
+    const path = `/projects/${apiPathId(ctx.projectId)}/tasks/${apiPathId(ctx.taskId)}/tool-diagnostic`;
+    const signal = AbortSignal.timeout(2000);
+    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses }, { signal })
+      .catch((err: unknown) => {
+        // Let outstanding reports finish when the tool session closes, but quiet failures during teardown.
+        if (!diagnosticSessionClosed && !(err instanceof ScarletApiError && err.status === 404))
+          console.error(`[scarlet-mcp] task ${ctx.taskId}: could not report ${tool} outcome=${outcome} elapsedMs=${elapsedMs} evidenceMisses=${evidenceMisses}`);
+      });
+  }
+
   const intent = z.enum(["requested", "suggestion", "alternative"]);
   const intentInput = (ctx.taskId ? intent : intent.optional()).describe(
     "Use requested only for edits the editor asked you to make. Choose suggestion for extra ideas or previews, and alternative for each option offered. Omitting intent leaves the edit in review.",
@@ -947,28 +965,36 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       let finish!: () => void;
       const call = new Promise<void>(resolve => { finish = resolve; });
       calls.add(call);
+      const began = performance.now();
       try {
-        if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
-          throw new Error("This request only tightens local pauses. Save classified pauses with dialogue_apply_cuts.");
-        if (PASS_WIDE_TOOLS.has(name)) {
-          const selected = await useStagedCut();
-          if (selected) throw selected;
-        }
         const missed = new Map<string, string>();
-        const result = await unmeasured.run(missed, async () => {
-          try {
-            return await handler(args);
-          } catch (err) {
-            if (err instanceof MediaPreparing) return text(err.message);
-            return errorResult(err);
+        const diagnostic = { misses: new Set<string>(), preparing: false };
+        let outcome: ToolOutcome;
+        let result: ToolResult;
+        try {
+          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
+            throw new Error("This request only tightens local pauses. Save classified pauses with dialogue_apply_cuts.");
+          if (PASS_WIDE_TOOLS.has(name)) {
+            const selected = await useStagedCut();
+            if (selected) throw selected;
           }
-        });
-        // A read the result was built without is reported with it, so a clean-looking answer is never one that went unmeasured.
+          result = await toolDiagnostics.run(diagnostic, () => unmeasured.run(missed, () => handler(args)));
+          outcome = result.isError ? "failed" : diagnostic.preparing ? "preparing" : "ok";
+        } catch (err) {
+          outcome = err instanceof MediaPreparing ? "preparing" : "failed";
+          result = err instanceof MediaPreparing ? text(err.message) : errorResult(err);
+        }
+        // Count omissions without logging the measurement or the words returned to the model.
+        const misses = new Set([...missed.keys(), ...diagnostic.misses]).size;
+        if (outcome === "ok" && misses) outcome = "degraded";
         const line = unmeasuredLine(missed);
-        return await recordRefusal(name, line ? { ...result, content: [...result.content, { type: "text" as const, text: line }] } : result);
-      } catch (err) {
-        if (err instanceof MediaPreparing) return text(err.message);
-        return await recordRefusal(name, errorResult(err));
+        if (line) result = { ...result, content: [...result.content, { type: "text", text: line }] };
+        // Preserve the project's existing refusal receipt separately from the operational log.
+        const refusal = toolRefusal(result);
+        if (refusal && !result.isError) outcome = "refused";
+        logToolResult(name, outcome, Math.round(performance.now() - began), misses);
+        if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
+        return result;
       } finally {
         calls.delete(call);
         finish();
@@ -979,16 +1005,6 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   /** The calls of these tools under way now, finished. */
   async function finished(names: readonly ScarletToolName[]) {
     await Promise.all(names.flatMap(name => [...(running.get(name) ?? [])]));
-  }
-
-  /**
-   * Saves why a call did nothing to the task's events, whatever the harness reports: an error, or a save that
-   * asks for revision. The model's next call is read against it, so a decision it drops is never unexplained.
-   */
-  async function recordRefusal(name: ScarletToolName, result: ToolResult): Promise<ToolResult> {
-    const refusal = toolRefusal(result);
-    if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
-    return result;
   }
 
   /** The includeAudio flag exists only for a model that can hear; the type always carries it so handlers stay simple. */
@@ -1044,7 +1060,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       }
     }
     if (result.state === "preparing" && batchSignal) throw new Error("The preview is still preparing. Retry this window.");
-    if (result.state === "preparing") return text("Scarlet is preparing the inspection windows. Repeat this call to collect them. Render IDs: " + result.renderIds.join(", "));
+    if (result.state === "preparing") {
+      notePreparing();
+      return text("Scarlet is preparing the inspection windows. Repeat this call to collect them. Render IDs: " + result.renderIds.join(", "));
+    }
     onReady?.(result.windows);
     const content: ToolResult["content"] = [];
     if (result.total !== undefined) content.push({ type: "text", text: JSON.stringify({
@@ -1502,6 +1521,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       detections = ready;
     } catch (err) {
       if (err instanceof MediaPreparing) throw err;
+      noteEvidenceMiss("dialogue detection");
       detectorIssue = describeError(err);
     } finally { timer.abort(); }
     const wf = await readPrepared(mediaId, "waveform", () => client.waveform(mediaId, from, to, levelPoints(from, to), true, !detections?.speechActivity));
@@ -1795,6 +1815,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
             result.content.push({ type: "text", text: `Original ${edge.edge} edge of ${edge.mediaId}: the boundary is ${(edge.at - from).toFixed(2)} s into this clip (source ${edge.at} s).` },
               { type: "audio", mimeType: "audio/wav", data: wav });
           } catch (err) {
+            noteEvidenceMiss("join audio");
             result.content.push({ type: "text", text: `Audio for the ${edge.edge} edge is unavailable: ${describeError(err)}. Judge it from the levels.` });
           }
         }
@@ -2038,7 +2059,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         };
       })().catch(without(`failed to place the kept silences on ${continueFrom}`, { kept: [], keptPauses: [], repeatedWords: [], unexplainedSound: [] }));
       const audioRecheck = checkedVersion === tl.version || ctx.task?.repeatAudit?.version === tl.version
-        ? await checkRepeats(continueFrom).catch((error: Error) => ({ version: continueFrom, error: error.message, next: "The edit was saved. Retry dialogue_check_repeats on this version." }))
+        ? await checkRepeats(continueFrom).catch((error: Error) => {
+          noteEvidenceMiss("repeat audit");
+          return { version: continueFrom, error: error.message, next: "The edit was saved. Retry dialogue_check_repeats on this version." };
+        })
         : undefined;
       return json({ ...reported, continueFrom, ...(audioRecheck && { audioRecheck }), gate: dialogueGate(plan),
         ...(plan.unreadJoinAudio && { unreadJoinAudio: plan.unreadJoinAudio }),
@@ -2092,6 +2116,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }) });
     // How the join sounds on the suggestion's version, measured the same way for every model.
     const { audits, noJoin } = await perception.auditAt(playback?.previewVersion ?? change.toVersion, playback?.range.start ?? cut.at).catch(err => {
+      noteEvidenceMiss("join audit");
       result.content.push({ type: "text", text: JSON.stringify({ joinAudit: `unavailable: ${describeError(err)}` }) });
       return { audits: [], noJoin: undefined };
     });
@@ -2254,6 +2279,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         return { outgoingPause: { ...outgoingPause, remainingSeconds: reading.out.wordEndToJoin }, joinAudit: audits };
       return { outgoingPause, joinAudit: audits, verification: noJoin ?? "The preview could not verify the distance from this word to the join." };
     } catch (err) {
+      noteEvidenceMiss("preview measurement");
       return { outgoingPause, verification: `Preview measurement unavailable: ${describeError(err)}` };
     }
   }

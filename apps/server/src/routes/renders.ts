@@ -13,7 +13,7 @@ import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttem
 import { badRequest, conflict, notFound } from "../errors.js";
 import { requestCutPlaybackFile, waitForPlayback } from "../services/playback.js";
 import { serveFile } from "../files.js";
-import { clip, throttledLog } from "../logText.js";
+import { logId, throttledLog } from "../logText.js";
 import { ensureHead } from "../services/timeline.js";
 import { AnalysisCache } from "../services/analysisCache.js";
 import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
@@ -155,13 +155,16 @@ export function renderRoutes(ctx: Ctx) {
       const targetHeight = Math.min(height, ctx.settings().render.previewHeight, Math.ceil(size * height / Math.max(width, height)));
       const preview = ctx.renders.coveringPreview(project, version, range, targetHeight);
       const file = preview?.path && await fileInDirectoryAsync(ctx.paths.renders(project.id), preview.path);
-      if (file) {
+      if (preview && file) {
         try {
           const local = time - (preview.range?.start ?? 0);
           return await extractFrame(file, Math.max(0, local - 0.1 / fps), {
             width: Math.round(width * Math.min(1, size / Math.max(width, height))), signal,
           });
-        } catch { signal.throwIfAborted(); } // Sample the timeline if the cached file is damaged.
+        } catch {
+          signal.throwIfAborted();
+          retried(`cached-frame/${preview.id}`, `[render] frame_fallback render=${logId(preview.id)} project=${logId(project.id)} version=${version} reason=cached_preview frame=${frame}`);
+        }
       }
       const root = ctx.paths.media(project.id);
       const pictures = previewPictures(root, { signal });
@@ -179,7 +182,7 @@ export function renderRoutes(ctx: Ctx) {
         });
       } catch (error) {
         if ((!usedProxy && !decoder) || signal.aborted) throw error;
-        retried("frame", `[render] reading a frame of ${version} again from the originals on the CPU: ${clip((error as Error).message, 300)}`);
+        retried(`frame/${project.id}`, `[render] frame_fallback project=${logId(project.id)} version=${version} reason=decode_retry frame=${frame}`);
         return renderTimelineFrame(project, timeline, range, root, signal, size);
       }
     }, sameFormat ? `"${key}"` : undefined);
@@ -194,7 +197,7 @@ export function renderRoutes(ctx: Ctx) {
     const file = await waitForPlayback(ctx, render, AbortSignal.any([request.signal, ctx.shutdown]));
     if (!file) return new Response(null, { status: ctx.shutdown.aborted ? 503 : 499 });
     return serveFile(request, file, {
-      cacheControl: request.method === "GET" ? "private, max-age=31536000, immutable" : "private, no-store",
+      cacheControl: request.method === "GET" ? "private, max-age=31536000, immutable" : "private, no-store", renderId: render.id,
     });
   }
 

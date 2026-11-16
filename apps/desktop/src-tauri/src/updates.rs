@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 /// Where this copy of Scarlet gets its updates. A release build checks the release manifest it was built with. A build
@@ -57,23 +58,51 @@ fn valid_revision(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
+/// The updater has no socket while idle. Report real polling faults, and rate-limit repeated ones.
+fn update_fault(stage: &'static str, reason: &'static str, code: i32) {
+    use std::sync::{LazyLock, Mutex};
+    static LAST: LazyLock<Mutex<std::collections::HashMap<(&'static str, &'static str, i32), Instant>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut last) = LAST.lock() else { return };
+    let key = (stage, reason, code);
+    let at = Instant::now();
+    if last.get(&key).is_some_and(|last| at.duration_since(*last) < Duration::from_secs(60)) { return; }
+    last.retain(|_, last| at.duration_since(*last) < Duration::from_secs(60));
+    last.insert(key, at);
+    log::warn!("[update] local-updater-failed stage={stage} reason={reason} code={code}");
+}
+
 #[cfg(target_os = "macos")]
-async fn exchange(app: &AppHandle, message: String) -> Option<String> {
-    use std::time::Duration;
+async fn exchange(app: &AppHandle, operation: &'static str, message: String) -> Option<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let path = socket_path(app)?;
     let reply = async {
-        let mut socket = tokio::net::UnixStream::connect(path).await?;
-        socket.write_all(message.as_bytes()).await?;
+        let mut socket = tokio::net::UnixStream::connect(path).await.map_err(|e| ("connect", e))?;
+        socket.write_all(message.as_bytes()).await.map_err(|e| ("write", e))?;
         let mut response = String::new();
-        socket.take(65).read_to_string(&mut response).await?;
-        Ok::<_, std::io::Error>(response.trim_end().to_owned())
+        socket.take(65).read_to_string(&mut response).await.map_err(|e| ("read", e))?;
+        Ok(response.trim_end().to_owned())
     };
-    tokio::time::timeout(Duration::from_secs(2), reply).await.ok()?.ok()
+    match tokio::time::timeout(Duration::from_secs(2), reply).await {
+        Err(_) => update_fault(operation, "timeout", 0),
+        Ok(Err(("connect", error))) if operation != "restart" && error.kind() == std::io::ErrorKind::NotFound => {},
+        Ok(Err((stage, error))) => update_fault(operation, stage, error.raw_os_error().unwrap_or(0)),
+        Ok(Ok(response)) => {
+            let expected = match operation {
+                "ready" => valid_revision(&response),
+                "check" => response == "ok",
+                "restart" => matches!(response.as_str(), "accepted" | "stale"),
+                _ => false,
+            };
+            if !expected { update_fault(operation, "invalid_reply", 0); }
+            return expected.then_some(response);
+        }
+    }
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn exchange(_app: &AppHandle, _message: String) -> Option<String> {
+async fn exchange(_app: &AppHandle, _operation: &'static str, _message: String) -> Option<String> {
     None
 }
 
@@ -107,7 +136,7 @@ pub async fn latest_update_revision(app: AppHandle) -> Result<String, String> {
         "GitHub returned an unexpected revision. Try again.".to_owned()
     })?;
     // A worker offering an older build can fetch main now, even between its scheduled checks.
-    let _ = exchange(&app, format!("check {revision}\n")).await;
+    let _ = exchange(&app, "check", format!("check {revision}\n")).await;
     Ok(revision)
 }
 
@@ -142,11 +171,24 @@ pub struct UpdateStatus {
 fn building(app: &AppHandle) -> Option<UpdateBuild> {
     let path = socket_path(app)?.with_file_name("status.json");
     // No part of a build runs longer than an hour, so an older file was left by an updater that was killed.
-    let age = std::fs::metadata(&path).ok()?.modified().ok()?.elapsed().unwrap_or_default();
-    if age > std::time::Duration::from_secs(3600) {
-        return None;
+    let status = (|| -> std::io::Result<Option<UpdateBuild>> {
+        let age = std::fs::metadata(&path)?.modified()?.elapsed().unwrap_or_default();
+        if age > Duration::from_secs(3600) {
+            update_fault("status", "stale", 0);
+            return Ok(None);
+        }
+        let build = build_status(&std::fs::read(&path)?);
+        if build.is_none() { update_fault("status", "invalid_status", 0); }
+        Ok(build)
+    })();
+    match status {
+        Ok(build) => build,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            update_fault("status", "read", error.raw_os_error().unwrap_or(0));
+            None
+        }
     }
-    build_status(&std::fs::read(&path).ok()?)
 }
 
 /// The build a status file describes, when it describes one under way.
@@ -168,7 +210,7 @@ pub async fn update_status(app: AppHandle) -> UpdateStatus {
         let building = status.downloading.map(|(version, done)| UpdateBuild { revision: version, done, step: 0.0, step_started: 0.0, step_seconds: 0.0 });
         return UpdateStatus { ready: status.ready, building, source };
     }
-    let ready = exchange(&app, "ready\n".into()).await.filter(|s| valid_revision(s));
+    let ready = exchange(&app, "ready", "ready\n".into()).await;
     UpdateStatus { ready, building: building(&app), source }
 }
 
@@ -217,7 +259,7 @@ pub async fn restart_for_update(app: AppHandle, revision: String) -> Result<(), 
         log::warn!("restart for an update refused: not a revision");
         return Err("Invalid update revision.".into());
     }
-    match exchange(&app, format!("restart {revision}\n")).await.as_deref() {
+    match exchange(&app, "restart", format!("restart {revision}\n")).await.as_deref() {
         Some("accepted") => {}
         answer => {
             log::warn!("restart to install {revision} refused: the updater answered {answer:?}");

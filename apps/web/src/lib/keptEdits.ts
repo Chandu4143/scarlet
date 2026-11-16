@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { EditRef } from "@scarlet/shared";
+import { appLog, errorName } from "./appLog";
 
 /**
  * Applied edits the editor has reviewed and kept, per thread. Keep only records the review: the edit is
@@ -25,12 +26,19 @@ export const reviewKey = (ref: EditRef & { recheck?: string; reviewRef?: EditRef
 };
 const storageKey = (projectId: string, threadId: string) => `${PREFIX}/${projectId}/${threadId}`;
 
-function stored(key: string) {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
+let lastReadFailure: string | undefined;
 
-function read(key: string): ReadonlySet<string> {
-  const raw = stored(key);
+function read(projectId: string, threadId: string): ReadonlySet<string> {
+  const key = storageKey(projectId, threadId);
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(key);
+    lastReadFailure = undefined;
+  } catch (error) {
+    const name = errorName(error);
+    if (name !== lastReadFailure) appLog("review", "keep-read-failed", { project: projectId, thread: threadId, name }, { level: "warn" });
+    lastReadFailure = name;
+  }
   const known = cache.get(key);
   // A record storage refused stands for the session, whatever storage still holds.
   if (known && (known.raw === raw || known.sessionOnly)) return known.value;
@@ -38,22 +46,27 @@ function read(key: string): ReadonlySet<string> {
   try {
     const saved = JSON.parse(raw ?? "null");
     if (Array.isArray(saved)) value = new Set(saved.filter((k): k is string => typeof k === "string"));
-  } catch { /* An unreadable record must not block review. */ }
+  } catch (error) {
+    appLog("review", "keep-read-failed", { project: projectId, thread: threadId, name: errorName(error) }, { level: "warn" });
+  }
   cache.set(key, { raw, value });
   return value;
 }
 
 export function keepEdits(projectId: string, threadId: string, refs: Array<EditRef & { recheck?: string; reviewRef?: EditRef }>) {
   const key = storageKey(projectId, threadId);
-  const before = read(key);
+  const before = read(projectId, threadId);
   const next = new Set(before);
   for (const ref of refs) next.add(reviewKey(ref));
   if (next.size === before.size) return false;
   const raw = JSON.stringify([...next]);
+  const fields = { project: projectId, thread: threadId, count: next.size - before.size };
   try {
     localStorage.setItem(key, raw);
     cache.set(key, { raw, value: next });
-  } catch {
+    appLog("review", "kept", fields);
+  } catch (error) {
+    appLog("review", "keep-persist-failed", { ...fields, name: errorName(error) }, { level: "warn" });
     cache.set(key, { raw: null, value: next, sessionOnly: true });
   }
   for (const listener of listeners) listener();
@@ -61,7 +74,7 @@ export function keepEdits(projectId: string, threadId: string, refs: Array<EditR
 }
 
 export function useKeptEdits(projectId: string, threadId: string | undefined): ReadonlySet<string> {
-  return useSyncExternalStore(subscribe, () => threadId ? read(storageKey(projectId, threadId)) : empty);
+  return useSyncExternalStore(subscribe, () => threadId ? read(projectId, threadId) : empty);
 }
 const empty: ReadonlySet<string> = new Set();
 function subscribe(listener: () => void) {

@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 import type { AgentAvailability, AgentId, AgentUsage, Task, TaskEvent } from "@scarlet/shared";
-import { ScarletClient } from "@scarlet/shared";
+import { ScarletClient, TaskState } from "@scarlet/shared";
 import { privateDirectory } from "./private-files.js";
 import type { AgentConfig } from "./config.js";
 import { CLI_AGENTS, detect as detectAgents, runnerEnv } from "./detect.js";
@@ -294,7 +294,8 @@ export class AgentHost {
 
   async runTask(task: Task, signal: AbortSignal): Promise<void> {
     this.log(`task ${task.id} (${task.kind}, ${task.agent}${task.model ? `/${task.model}` : ""})`);
-    const started = Date.now();
+    const started = performance.now();
+    const identity = `task=${task.id} attempt=${task.startedAt ?? "unknown"}`;
     // One request at a time, so the engine gets the events in the order the CLI wrote them.
     let posting: Promise<void> = Promise.resolve();
     const post = (ev: TaskEvent): Promise<void> => {
@@ -332,22 +333,27 @@ export class AgentHost {
         // the completion of an attempt it has already ended.
         landed = false;
         // The engine answers with the changes it holds for the task, for the line below.
-        let changeIds: string[] = [];
+        let savedState: TaskState | undefined;
+        let superseded = false;
+        let changes = 0;
         for (let attempt = 0; attempt < 3 && !landed; attempt++) {
           // One try while the host stops: stopping doesn't wait on an engine that may already be gone. No further
           // try either once the engine cancels the task or hands it out again: it has ended this attempt itself.
           if (attempt && signal.aborted) break;
           try {
-            changeIds = (await this.client.completeTask(task.id, body))?.task?.changeIds ?? [];
+            const saved = (await this.client.completeTask(task.id, body))?.task;
+            const parsed = TaskState.safeParse(saved?.state);
+            if (parsed.success) savedState = parsed.data;
+            superseded = !!task.startedAt && !!saved?.startedAt && saved.startedAt !== task.startedAt;
+            changes = saved?.changeIds?.length ?? 0;
             landed = true;
           } catch (err) {
             this.log(`complete failed for task ${task.id}: ${errMsg(err)}`);
             if (attempt < 2) await delay(250 * (attempt + 1), undefined, { signal }).catch(() => undefined);
           }
         }
-        const changes = changeIds.length ? ` (${changeIds.length} changes: ${changeIds.join(", ")})` : "";
-        const reason = error ?? (state === "failed" ? "no reason given" : undefined);
-        this.log(`task ${task.id} ${state} after ${humanDuration(Date.now() - started)}${reason ? `: ${reason}` : ""}${changes}`);
+        const outcome = !landed ? "undelivered" : superseded ? "superseded" : !savedState ? "unconfirmed" : savedState === state ? "accepted" : "changed";
+        this.log(`[host] completion ${identity} requested=${state} state=${savedState ?? "unknown"} outcome=${outcome} elapsedMs=${Math.round(performance.now() - started)} changes=${changes}`);
       }
       if (cwd) {
         // An attempt the editor stopped can still be winding down when the attempt that resumes it is at work in
@@ -434,6 +440,7 @@ export class AgentHost {
         pendingUsage = addUsage(priorUsage, snapshot);
         flushUsage();
       },
+      onCodexFallback: reason => this.log(`[host] codex-fallback ${identity} reason=${reason}`),
       onEvent: (ev: RunnerEvent) => {
         if (ev.type === "question") {
           questionSeen = ev.text;
@@ -477,13 +484,15 @@ export class AgentHost {
       // The CLI can stop before MCP posts, or lose the reply after the engine commits.
       for (let attempt = 0; attempt < 3 && !signal.aborted; attempt++) {
         try {
-          await this.client.postTaskQuestion(task.id, task.startedAt, question, signal, { sessionId: result.sessionId ?? null });
+          const { waiting } = await this.client.postTaskQuestion(task.id, task.startedAt, question, signal, { sessionId: result.sessionId ?? null });
+          this.log(`[host] question ${identity} outcome=${waiting ? "waiting" : "not_waiting"}`);
           return;
         } catch (err) {
           if (signal.aborted) break;
           if (attempt === 2) {
             const error = `Could not deliver the editor question: ${errMsg(err)}`;
-            this.log(error);
+            this.log(`[host] question ${identity} outcome=undelivered`);
+            this.log(`task ${task.id}: ${error}`);
             return complete("failed", undefined, error);
           }
           await delay(250 * (attempt + 1), undefined, { signal }).catch(() => undefined);

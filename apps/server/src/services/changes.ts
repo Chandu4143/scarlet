@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isSea } from "node:sea";
 import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
+import { logId } from "../logText.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
 import { agentTarget, beginRevision, buildThreads, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
@@ -101,8 +102,10 @@ export function callSentBack(ctx: Ctx, request: Task): void {
   const named = changeId && cutIndex !== undefined ? ctx.repos.changes.get(changeId) : undefined;
   if (named?.projectId !== request.projectId) return;
   const pass = passToRevise(ctx, named, request.id, cutIndex!)?.change ?? named;
-  if (pass.applyWhenDone && pass.intent === "suggestion" && pass.cutReasons?.length && (pass.state === "ready" || pass.state === "revising"))
+  if (pass.applyWhenDone && pass.intent === "suggestion" && pass.cutReasons?.length && (pass.state === "ready" || pass.state === "revising")) {
     saveChange(ctx, { ...pass, applyWhenDone: undefined });
+    ctx.db.afterCommit(() => ctx.log(`[review] schedule change=${logId(pass.id)} project=${logId(pass.projectId)} task=${logId(request.id)} outcome=cleared reason=revision`));
+  }
 }
 
 export async function withSpotCapability(ctx: Ctx, change: Change, projectFps?: number): Promise<Change> {
@@ -1676,6 +1679,20 @@ export function saveCutChoices(ctx: Ctx, user: User, change: Change, body: {
   const applyWhenDone = body.applyWhenDone === undefined ? change.applyWhenDone
     : body.applyWhenDone ? change.applyWhenDone ?? { userId: user.id, at: now() } : undefined;
   const saved = saveChange(ctx, { ...change, cutChoices: [...byIndex.values()].sort((a, b) => a.index - b.index), applyWhenDone, error: undefined });
+  const previous = new Map(change.cutChoices?.map(c => [c.index, c.choice]));
+  const approved: number[] = [], skipped: number[] = [], cleared: number[] = [];
+  for (const [index, { choice }] of byIndex) {
+    if (previous.get(index) === choice) continue;
+    (choice === "cut" ? approved : skipped).push(index);
+  }
+  for (const index of previous.keys()) if (!byIndex.has(index)) cleared.push(index);
+  const target = `change=${logId(change.id)} project=${logId(change.projectId)}${change.taskId ? ` task=${logId(change.taskId)}` : ""}`;
+  if (approved.length || skipped.length || cleared.length) ctx.db.afterCommit(() => {
+    const slots = (cuts: number[]) => JSON.stringify(cuts.sort((a, b) => a - b).slice(0, 20));
+    ctx.log(`[review] choices ${target} approved=${approved.length} approvedCuts=${slots(approved)} skipped=${skipped.length}` +
+      ` skippedCuts=${slots(skipped)} cleared=${cleared.length} clearedCuts=${slots(cleared)}`);
+  });
+  if (!!applyWhenDone !== !!change.applyWhenDone) ctx.db.afterCommit(() => ctx.log(`[review] schedule ${target} outcome=${applyWhenDone ? "set" : "cleared"} reason=editor`));
   return recheckMovedCalls(ctx, saved, change, review) ?? applyChoicesWhenDone(ctx, saved) ?? saved;
 }
 
@@ -1777,7 +1794,10 @@ export function applyChoicesWhenDone(ctx: Ctx, change: Change): Change | null {
   // Only a run that finished applies it. One still going isn't done, and one that stopped early left staged cuts
   // unchecked: those are the editor's calls now, and applying on their next call would skip the rest unasked.
   if (task && task.state !== "done") return null;
-  if (task?.context.branch && task.context.branch !== ctx.repos.projects.header(change.projectId)?.branch) return null;
+  if (task?.context.branch && task.context.branch !== ctx.repos.projects.header(change.projectId)?.branch) {
+    ctx.db.afterCommit(() => ctx.log(`[review] apply_deferred change=${logId(change.id)} project=${logId(change.projectId)} task=${logId(task.id)} reason=branch_changed`));
+    return null;
+  }
   const asked = change.applyWhenDone?.userId;
   const user = (asked && ctx.repos.users.get(asked)) || ctx.repos.users.primary() || { id: asked ?? "editor", name: "Editor" };
   // Never let this stop the run from finishing: on any problem the calls stay saved for the editor to apply.
@@ -1788,7 +1808,11 @@ export function applyChoicesWhenDone(ctx: Ctx, change: Change): Change | null {
     // now ("Not checked yet."), as a cut Scarlet asked about is, and applying would settle them unseen (2026-11-10).
     // The schedule stands: the editor's call on the last of them applies the pass.
     const settled = new Set([...change.cutChoices ?? [], ...(change.cutAssessments ?? []).filter(a => a.verdict !== "ask")].map(c => c.index));
-    if (review.cuts.some((_, i) => !settled.has(i))) return null;
+    const remaining = review.cuts.reduce((count, _, index) => count + Number(!settled.has(index)), 0);
+    if (remaining) {
+      if (!task || task.id === change.taskId) ctx.db.afterCommit(() => ctx.log(`[review] apply_deferred change=${logId(change.id)} project=${logId(change.projectId)} reason=unsettled remaining=${remaining}`));
+      return null;
+    }
     return approveChange(ctx, user, { ...change, applyWhenDone: undefined }, { restoredCuts: keptCuts(change, review) }).change;
   } catch (error) {
     ctx.log(`[review] Could not apply ${change.id} when its pass finished: ${error}`);

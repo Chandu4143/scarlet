@@ -110,12 +110,25 @@ export interface ClientOptions {
   baseUrl: string; // e.g. http://localhost:4000
   token?: string | (() => string | undefined);
   fetch?: typeof fetch;
+  /** Let a client trace failures after the response headers arrive. */
+  readResponse?: (response: Response) => Promise<string>;
   /** Allow editor thumbnails to sample a source's prepared preview. */
   previewFrames?: boolean;
 }
 
 /** A host snapshots this identity when it claims the task. Reconnecting must retain the original start. */
 export interface TaskAttempt { taskId: string; startedAt?: string }
+export const REQUEST_ID_HEADER = "X-Scarlet-Request-Id";
+
+/** The native webview can use an origin where randomUUID is unavailable. */
+export function newRequestId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join("-");
+}
 export const TASK_HEADER = "X-Scarlet-Task";
 export const ATTEMPT_HEADER = "X-Scarlet-Task-Started-At";
 
@@ -123,6 +136,7 @@ export class ScarletClient {
   private readonly baseUrl: string;
   private readonly tokenSource?: string | (() => string | undefined);
   private readonly fetchImpl: typeof fetch;
+  private readonly readResponse: (response: Response) => Promise<string>;
   private readonly previewFrames: boolean;
 
   private readonly projectScope?: string;
@@ -133,12 +147,13 @@ export class ScarletClient {
     if (opts.token) requireSecureEngineUrl(this.baseUrl);
     this.tokenSource = opts.token;
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    this.readResponse = opts.readResponse ?? (response => response.text());
     this.previewFrames = opts.previewFrames ?? false;
   }
 
   /** Bind individual MCP resource lookups and mutations to their owning project. */
   forProject(projectId: string, attempt = this.attempt): ScarletClient {
-    return new ScarletClient({ baseUrl: this.baseUrl, token: this.tokenSource, fetch: this.fetchImpl, previewFrames: this.previewFrames }, projectId, attempt);
+    return new ScarletClient({ baseUrl: this.baseUrl, token: this.tokenSource, fetch: this.fetchImpl, readResponse: this.readResponse, previewFrames: this.previewFrames }, projectId, attempt);
   }
 
   async withResource<T>(collection: "notes" | "media" | "changes" | "renders" | "tasks", id: string, request: (path: string) => Promise<T>): Promise<T> {
@@ -205,7 +220,7 @@ export class ScarletClient {
     const res = await this.fetchImpl(this.url(path), { ...init, method, headers, body: payload,
       ...((t || callerAuthorization) && { redirect: "error" }) });
     if (res.status === 204) return undefined as T;
-    const text = await res.text();
+    const text = await this.readResponse(res);
     let json: unknown = undefined;
     try {
       json = text ? JSON.parse(text) : undefined;

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { importLinkFilename, type ProjectSummary } from "@scarlet/shared";
 import type { MediaAsset } from "@scarlet/timeline";
+import { appLog } from "../../lib/appLog";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { api, engineUnavailable, errorMessage, IS_DESKTOP } from "../../lib/client";
 import { canResumeFirstClip, matchAddedClip, resumeFirstClip } from "../../lib/firstClipFormat";
@@ -96,6 +97,8 @@ export function enqueueImports(projectId: string, sources: ImportSource[], match
   // Files by path are remembered until each is in the project, so a quit picks up where it stopped.
   const paths = sources.filter((source): source is string => typeof source === "string");
   addPendingImports(projectId, paths, !!matchFormat);
+  appLog("import", "queued", { project: projectId, count: sources.length, uploads: sources.length - paths.length,
+    links: paths.filter(isLink).length, first: !!matchFormat });
   update(projectId, state => ({ pending: state.pending + sources.length }));
   const job = (queues.get(projectId) ?? Promise.resolve()).then(async () => {
     for (const source of sources) {
@@ -181,8 +184,10 @@ export function resumeImports(projectId: string, media: readonly MediaAsset[]) {
   const matchFormat = waiting.some(i => i.setsFormat) ? resumeFirstClip(projectId) : undefined;
   const jobs: Promise<void>[] = [];
   const first: string[] = [], later: string[] = [];
+  let legacy = 0;
   for (const entry of waiting) {
     const asset = added(entry);
+    if (asset && !entry.importId) legacy++;
     if (!asset) {
       (entry.setsFormat ? first : later).push(entry.source);
     } else if (entry.setsFormat && matchFormat) {
@@ -198,6 +203,8 @@ export function resumeImports(projectId: string, media: readonly MediaAsset[]) {
     }
   }
   // Only a project's first files set its format. They were chosen before anything added later, so the saved order holds.
+  if (waiting.length) appLog("import", "resume", { project: projectId, count: waiting.length, first: first.length,
+    replay: first.length + later.length, matched: waiting.length - first.length - later.length, legacy });
   jobs.push(enqueueImports(projectId, first, matchFormat), enqueueImports(projectId, later));
   return Promise.all(jobs).then(() => undefined);
 }
