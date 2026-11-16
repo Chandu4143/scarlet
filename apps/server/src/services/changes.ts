@@ -3,7 +3,7 @@ import { isSea } from "node:sea";
 import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
-import { agentTarget, beginRevision, buildThreads, threadTimeline, type ApproveResponse, type FlagEditRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
+import { agentTarget, beginRevision, buildThreads, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
@@ -998,7 +998,7 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     const was = change.cutAssessments?.find(a => a.index === index);
     const autonomous = !scoped && (!!task || body.author?.type === "agent");
     if (autonomous && (was && (isPublishedCall(was) || was.askOrder !== undefined) || change.cutChoices?.some(c => c.index === index)))
-      throw conflict("cut_with_editor", `Cut ${index} at ${old.start}–${old.end} s is with the editor. Only a revision they request can change this cut.`);
+      throw conflict("cut_with_editor", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s is with the editor. Only a revision they request can change this cut. ${CALL_WITH_EDITOR}`);
     const placement = placeRevision(ctx, project, change, review, index, body, range, task, scoped, named.fromVersion);
     if ("conflict" in placement) {
       const { reason, range } = placement.conflict;
@@ -1188,6 +1188,25 @@ function footageOf(timeline: Timeline, base: Timeline): Timeline {
   return { ...timeline, tracks: timeline.tracks.filter(t => kept.has(`${t.kind}:${t.id}`)) };
 }
 
+/**
+ * A staged cut as the engine's tools number it (its index, from 0) and, once it is a call, as the editor knows it
+ * ("Cut 4"). A pass told only "cut 4 … is with the editor" asked the editor about "edit 5", while the window called it
+ * Cut 4 (2026-11-16).
+ */
+function editorsCut(change: Change, index: number): string {
+  const n = callNumbers(change, 0, false).get(index);
+  return n ? `cut ${index} (the editor’s “Cut ${n}”)` : `cut ${index}`;
+}
+
+const capitalized = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
+
+/**
+ * What to do with a finding about a call the editor holds. The same pass asked "Scarlet has locked edit 5 for your
+ * review. May I revise it…?" about a call that already waited on the editor's Approve, Skip and Revise (2026-11-16).
+ */
+const CALL_WITH_EDITOR = "The editor decides this call with Approve, Skip or Revise, so don’t ask them about it with task_question. "
+  + "If they should know something before deciding, add it to the call’s note with dialogue_review_save and amend:true on that cut.";
+
 /** Later saves by the producing run can move a published call on the timeline but must preserve its footage and edges. */
 function assertStagedCallsStand(ctx: Ctx, project: Project, task: Task, base: Timeline, next: Timeline): void {
   const parts = dialogueParts(project.id, runRoot(task));
@@ -1214,11 +1233,11 @@ function assertStagedCallsStand(ctx: Ctx, project: Project, task: Task, base: Ti
         continue;
       }
       if (moved.kind !== "exact" && published.has(index))
-        throw conflict("cut_with_editor", `This edit would change cut ${index} in ${change.id}, which is with the editor. Leave its footage in place.`);
+        throw conflict("cut_with_editor", `This edit would change ${editorsCut(change, index)} in ${change.id}, which is with the editor. Leave its footage in place. ${CALL_WITH_EDITOR}`);
       located.push({ index, range: moved.range });
     }
     if (taken.length) {
-      const named = taken.slice(0, 12).map(c => `cut ${c.index} at ${c.start.toFixed(2)}–${c.end.toFixed(2)} s`).join(", ");
+      const named = taken.slice(0, 12).map(c => `${editorsCut(change, c.index)} at ${c.start.toFixed(2)}–${c.end.toFixed(2)} s`).join(", ");
       throw conflict("staged_cuts_changed", `This edit takes away the footage of ${taken.length === 1 ? "a staged cut" : `${taken.length} staged cuts`} that `
         + `${taken.length === 1 ? "waits" : "wait"} for the editor’s call in ${change.id} (${named}${taken.length > 12 ? ", …" : ""}; times on version ${base.version}). `
         + "Nothing was saved. Leave that footage in this edit. Use dialogue_apply_cuts to update a staged cut Scarlet hasn't asked the editor about.");
@@ -1227,7 +1246,7 @@ function assertStagedCallsStand(ctx: Ctx, project: Project, task: Task, base: Ti
     for (let i = 1; i < located.length; i++) {
       const a = located[i - 1]!, b = located[i]!;
       if (b.range.start < a.range.end + 1e-6 && (published.has(a.index) || published.has(b.index)))
-        throw conflict("cut_with_editor", `This edit would join cuts ${a.index} and ${b.index} in ${change.id}. Leave footage between them to preserve the editor’s call.`);
+        throw conflict("cut_with_editor", `This edit would join ${editorsCut(change, a.index)} and ${editorsCut(change, b.index)} in ${change.id}. Leave footage between them to preserve the editor’s call. ${CALL_WITH_EDITOR}`);
     }
   }
 }
