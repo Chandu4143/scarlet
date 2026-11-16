@@ -83,12 +83,6 @@ function span(input: object, from = "start", to = "end") {
   return end !== undefined && end - start >= 1 ? ` ${clock(start)}–${clock(end)}` : ` at ${clock(start)}`;
 }
 
-/** " of 2 recordings" for a read of the same range on several. */
-function recordings(input: object) {
-  const n = count(field(input, "mediaIds"));
-  return n && n > 1 ? ` of ${n} recordings` : "";
-}
-
 /** A call on the project, said as the work it is. Undefined for a call with no words of its own here. */
 function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string | undefined {
   const input = raw && typeof raw === "object" ? raw : {};
@@ -103,7 +97,7 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
       const from = num(field(input, "from"));
       return !from ? "Reading the dialogue from the start" : `Reading the dialogue at ${clock(from)}`;
     }
-    case "transcript_get": return `Reading the transcript${recordings(input)}${span(input, "from", "to")}`;
+    case "transcript_get": return `Reading the transcript${span(input, "from", "to")}`;
     case "transcript_search": {
       const query = field(input, "query");
       return typeof query === "string" && query.trim() ? `Searching the transcript for “${query.trim().slice(0, 40)}”` : "Searching the transcript";
@@ -119,7 +113,7 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
       const n = count(field(input, "windows"));
       return n && n > 1 ? `Looking at the picture in ${n} passages` : "Looking at the picture";
     }
-    case "waveform_get": case "sound_picture": return `Looking at the waveform${recordings(input)}${span(input, "from", "to") || span(input)}`;
+    case "waveform_get": case "sound_picture": return `Looking at the waveform${span(input)}`;
     case "dialogue_check_join": {
       const n = count(field(input, "cuts"));
       return n && n > 1 ? `Checking how ${n} joins sound` : "Checking how the join sounds";
