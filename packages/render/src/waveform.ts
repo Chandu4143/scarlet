@@ -10,9 +10,9 @@
 import { LOCAL_MEDIA_INPUT, SOURCE_AUDIO_CLOCK, ffSeconds, resolveFfmpeg, runCapture } from "./exec.js";
 
 const DECODE_RATE = 16000;
-export const WAVEFORM_CACHE_VERSION = 4;
-// 24 hours at the engine's 50 points/second. The binary file holds two float32s per point.
-export const MAX_WAVEFORM_POINTS = 24 * 60 * 60 * 50;
+export const WAVEFORM_CACHE_VERSION = 5;
+// 24 hours at the engine's 100 points/second. The binary file holds two float32s per point.
+export const MAX_WAVEFORM_POINTS = 24 * 60 * 60 * 100;
 export const MAX_WAVEFORM_CACHE_BYTES = 16 + MAX_WAVEFORM_POINTS * 8;
 
 export interface WaveformOptions {

@@ -28,7 +28,11 @@ import { emissionStore, emissionStorePaths } from "./recordingAudio.js";
 import { prepareSourceProxies, sourcePreviews } from "./sourcePreviews.js";
 import { cloneOrSteadyCopy } from "./steadyCopy.js";
 
-const WAVEFORM_POINTS_PER_SECOND = 50;
+/**
+ * 10 ms a point. The dip between two words said in one breath is often 20-40 ms wide: at 20 ms it averaged into the
+ * sound either side, and edges an editor puts on the trough a waveform shows went to review as having no quiet point.
+ */
+const WAVEFORM_POINTS_PER_SECOND = 100;
 const GiB = 1024 ** 3;
 const URL_IMPORT_BYTES = 64 * GiB;
 const DOWNLOAD_RESERVE = GiB;
@@ -927,7 +931,7 @@ async function buildWaveform(ctx: Ctx, media: MediaWithStatus & { projectId: str
 
 function olderWaveforms(ctx: Ctx, projectId: string, mediaId: string) {
   const base = join(ctx.paths.waveforms(projectId), mediaId);
-  return [".v3", ".v2", ""].flatMap(version => [base + version + ".waveform", base + version + ".json"]);
+  return [".v4", ".v3", ".v2", ""].flatMap(version => [base + version + ".waveform", base + version + ".json"]);
 }
 
 function waveformBase(ctx: Ctx, projectId: string, mediaId: string) {
