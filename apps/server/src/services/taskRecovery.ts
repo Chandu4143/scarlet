@@ -77,8 +77,9 @@ export function holdProjectEditing(ctx: Ctx, projectId: string) {
     const project = ctx.repos.projects.get(projectId)!;
     if (!previous.editingPaused) ctx.bus.publish({ type: "project.updated", projectId, project });
 
-    const active = ctx.repos.tasks.select(`project_id = ? AND kind IN ${PROJECT_EDIT_KINDS} AND (
-      state IN ('claimed','running','waiting_for_user') OR (state = 'queued' AND json_extract(json, '$.startedAt') IS NOT NULL))`,
+    // Only a run at work is retired. One waiting on the editor's answer, or back in line after it, holds no worker:
+    // it keeps its question, its answer and its CLI session, and the paused queue keeps it from starting.
+    const active = ctx.repos.tasks.select(`project_id = ? AND kind IN ${PROJECT_EDIT_KINDS} AND state IN ('claimed','running')`,
       [projectId], "created_at, rowid");
     const tasks = active.flatMap(task => {
       const next = resumeTask(ctx, task, {}, true);
@@ -88,7 +89,7 @@ export function holdProjectEditing(ctx: Ctx, projectId: string) {
   }), "immediate")();
 }
 
-/** Release the queue under the same lock as claims, restoring unanswered questions before any worker can start. */
+/** Release the queue under the same lock as claims. */
 export function resumeProjectEditing(ctx: Ctx, projectId: string) {
   return ctx.db.transaction(() => {
     const previous = ctx.repos.projects.header(projectId);
@@ -101,15 +102,10 @@ export function resumeProjectEditing(ctx: Ctx, projectId: string) {
     const held = waiting.filter(task => task.resumesAfterProjectStop && !task.startedAt);
     const tasks = held.map(task => {
       const [previousAttempt] = ctx.repos.tasks.select("project_id = ? AND json_extract(json, '$.retryTaskId') = ?", [projectId, task.id]);
-      return saveTask(ctx, {
-        ...task,
-        // The editor may have made decisions while editing was stopped.
-        instruction: recoveryInstruction(ctx, previousAttempt ?? task, task.resumeRootId),
-        state: task.question ? "waiting_for_user" : "queued",
-      });
+      // The editor may have made decisions while editing was stopped.
+      return saveTask(ctx, { ...task, instruction: recoveryInstruction(ctx, previousAttempt ?? task, task.resumeRootId) });
     });
-    const ready = waiting.find(task => !task.question);
-    if (ready) ctx.bus.taskQueued({ taskId: ready.id, projectId });
+    if (waiting[0]) ctx.bus.taskQueued({ taskId: waiting[0].id, projectId });
     return { project, tasks };
   }, "immediate")();
 }
@@ -374,7 +370,7 @@ function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}, afterProjectSt
   const run = choice.agent ? { agent: choice.agent, model: choice.model, effort: choice.effort, fast: choice.fast, serviceTier: choice.serviceTier } : {};
   let retry = createTask(ctx, {
     ...task, ...run, state: "queued", instruction: recoveryInstruction(ctx, task, resumeRootId), resumeRootId,
-    resumesAfterProjectStop: afterProjectStop || undefined, question: afterProjectStop ? task.question : null,
+    resumesAfterProjectStop: afterProjectStop || undefined,
     context: { ...task.context, threadId: task.context.threadId ?? id, message: task.context.message ?? task.instruction },
   });
   // A request the editor started ahead of their calls was at work: it isn't put behind those calls again.
@@ -397,9 +393,8 @@ function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}, afterProjectSt
   // A run its host cut short kept its CLI session, so the next attempt on the same model carries on in it instead of
   // starting cold. On another model it starts a session of its own.
   const sameModel = retry.agent === task.agent && retry.model === task.model;
-  // Server Stop ends active sessions. A session waiting on the editor has already yielded and can still take its answer.
-  const canKeepSession = afterProjectStop ? task.state === "waiting_for_user" : task.interrupted;
-  if (action === "resume" && canKeepSession && task.session && RESUMABLE.has(task.agent) && sameModel) {
+  // Project Stop ends the run's session with it: it isn't one Scarlet closed on.
+  if (action === "resume" && !afterProjectStop && task.interrupted && task.session && RESUMABLE.has(task.agent) && sameModel) {
     const resumed = saveTask(ctx, { ...retry, session: task.session });
     // The session still holds the plan it was working to, and reports it again only when a step changes. Until then
     // the plan stands as it was left, so the editor sees it where it stopped (2026-11-09: a plan of four steps was

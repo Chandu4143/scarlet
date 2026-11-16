@@ -211,13 +211,14 @@ export class MockClient implements ScarletApi {
   async stopEditing(id: string): Promise<{ project: Project; tasks: Task[] }> {
     this.requireAuth();
     const project = this.setEditingPaused(id, true);
+    // Only a run at work is stopped. A question, and an answered run back in line, hold no worker and wait for Continue.
     const active = this.db.tasks.filter(task => task.projectId === id && isProjectEditTask(task)
-      && ["claimed", "running", "waiting_for_user"].includes(task.state));
+      && ["claimed", "running"].includes(task.state));
     const tasks = active.flatMap(task => {
       const retry = this.retryAttempt(task, {}, "resume");
       this.stopTask(task, retry.id);
-      this.updateTask(retry, { resumesAfterProjectStop: true, question: task.question, cutConflict: task.cutConflict, session: task.session });
-      if (!retry.question) this.runRetry(retry);
+      this.updateTask(retry, { resumesAfterProjectStop: true, cutConflict: task.cutConflict });
+      this.runRetry(retry);
       return [{ ...task }, { ...retry }];
     });
     return this.latency({ project, tasks });
@@ -227,7 +228,6 @@ export class MockClient implements ScarletApi {
     const wasPaused = this.projectById(id).editingPaused;
     const project = this.setEditingPaused(id, false);
     const tasks = wasPaused ? this.db.tasks.filter(task => task.projectId === id && task.state === "queued" && task.resumesAfterProjectStop) : [];
-    for (const task of tasks) if (task.question) this.updateTask(task, { state: "waiting_for_user" });
     return this.latency({ project, tasks: tasks.map(task => ({ ...task })) });
   }
   private setEditingPaused(id: string, editingPaused: boolean): Project {
@@ -1281,13 +1281,17 @@ export class MockClient implements ScarletApi {
       task.repeatAudit = undefined;
     }
     this.pushEvent(task, "answer", text);
-    this.updateTask(task, { state: "running", question: null, ...(task.resumesAfterProjectStop && { startedAt: now() }) });
+    // An answer given while editing is stopped waits in line for Continue.
+    this.updateTask(task, { state: "queued", question: null });
     void (async () => {
+      while (task.state === "queued" && this.projectById(task.projectId).editingPaused) await sleep(300);
+      if (task.state !== "queued") return;
+      this.updateTask(task, { state: "running" });
       await sleep(1500);
-      if (task.state !== "running") return;
+      if ((task.state as Task["state"]) !== "running") return;
       this.pushEvent(task, "log", `Applying your answer: “${text}”`);
       await sleep(1500);
-      if (task.state !== "running") return;
+      if ((task.state as Task["state"]) !== "running") return;
       const attempts = this.db.tasks.filter(attempt => sameRun(task, attempt));
       const change = this.db.changes.find(c => attempts.some(attempt => attempt.changeIds.includes(c.id)));
       if (change && change.state === "rendering") {

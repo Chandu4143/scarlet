@@ -708,9 +708,8 @@ button.queue-head:hover { color: var(--color-fg); }
 .queue-editing-action:is(:hover, :focus-visible) { color: var(--color-fg); }
 .queue-editing-action[aria-disabled="true"] { opacity: .55; cursor: default; }
 .queue-next { flex: none; width: 30px; color: var(--color-dim); }
-.queue-next.has-stopped { width: 50px; }
 .queue-next.is-waiting { width: auto; white-space: nowrap; }
-.queue-next.is-waiting, .queue-waits { color: var(--color-warn); }
+.queue-next.is-waiting, .queue-waits, .queue-paused { color: var(--color-warn); }
 /* On a line too tight for all of it, the tag and the words give way together, each cut short with an ellipsis, so the
    words keep a share beside a long tag. Next, or what the request waits for, stays whole, and nothing pushes the count,
    the chevron, the pencil or the × out of the tray. */

@@ -64,6 +64,12 @@ it("stops editing across the project and continues interrupted requests ahead of
     ...appendTaskEvent(ctx, make("note", "running"), { type: "question", text: "Which take?" }).task,
     session: { agent: "claude", id: "existing-session" },
   });
+  // Answered and back in line, its CLI session yielded: no worker has it.
+  const answered = saveTask(ctx, {
+    ...appendTaskEvent(ctx, appendTaskEvent(ctx, make("note", "running"), { type: "question", text: "Which side?" }).task,
+      { type: "answer", text: "Left." }).task,
+    session: { agent: "claude", id: "answered-session" },
+  });
   // A call can work ahead of an older queued edit. Previously active work still comes first after Continue.
   const first = saveTask(ctx, { ...make("edit"), createdAt: "2026-01-01T00:00:00.000Z" });
   const second = make("revise");
@@ -82,20 +88,22 @@ it("stops editing across the project and continues interrupted requests ahead of
   const stopped = await stop.json() as { project: Project; tasks: Task[] };
   expect(stopped.project).toMatchObject({ editingPaused: true, head: beforeStop.head, updatedAt: beforeStop.updatedAt,
     rowRevision: beforeStop.rowRevision! + 1 });
-  expect(stopped.tasks.filter(task => task.state === "cancelled").map(task => task.id)).toEqual([running.id, claimed.id, question.id]);
+  expect(stopped.tasks.filter(task => task.state === "cancelled").map(task => task.id)).toEqual([running.id, claimed.id]);
   const nextFor = (id: string) => stopped.tasks.find(task => task.resumeRootId === id)!;
-  for (const original of [running, claimed, question]) {
+  for (const original of [running, claimed]) {
     const next = nextFor(original.id);
     expect(next).toMatchObject({ kind: original.kind, agent: original.agent, state: "queued", resumesAfterProjectStop: true });
     expect(next.startedAt).toBeUndefined();
     expect(ctx.repos.tasks.get(original.id)?.retryTaskId).toBe(next.id);
   }
-  const [continuing, removed, asking] = [running, claimed, question].map(task => nextFor(task.id));
-  expect(asking!.question).toBe("Which take?");
+  const [continuing, removed] = [running, claimed].map(task => nextFor(task.id));
+  // Neither the question nor the answered run held a worker, so Stop leaves them, their words and their sessions.
+  expect(ctx.repos.tasks.get(question.id)).toEqual(question);
+  expect(ctx.repos.tasks.get(answered.id)).toEqual(answered);
   expect(continuing!.instruction).toContain(`Saved change ${change.id} [approved]`);
-  expect(stopped.tasks).toHaveLength(6);
+  expect(stopped.tasks).toHaveLength(4);
   expect(announcements[0]).toBe("paused");
-  expect(announcements).toHaveLength(4);
+  expect(announcements).toHaveLength(3);
   expect(ctx.repos.changes.get(change.id)?.state).toBe("approved");
   expect((await api("POST", `${path}/changes`, proposal, attempt)).status).toBe(409);
   expect(ctx.repos.tasks.get(transcription.id)?.state).toBe("running");
@@ -112,6 +120,9 @@ it("stops editing across the project and continues interrupted requests ahead of
   const addedWhilePaused = make("note");
   expect(await claim()).toBeNull();
   expect((await (await api("POST", `${path}/stop-editing`)).json()).tasks).toEqual([]);
+  // The editor can answer while editing is stopped. The run waits for Continue.
+  expect((await api("POST", `/tasks/${question.id}/answer`, { text: "Use the second take." })).status).toBe(200);
+  expect(await claim()).toBeNull();
   expect((await api("POST", `/tasks/${removed!.id}/cancel?queuedOnly=1`)).status).toBe(200);
   expect(ctx.repos.tasks.get(removed!.id)?.state).toBe("cancelled");
   for (const task of [first, second, addedWhilePaused]) expect(ctx.repos.tasks.get(task.id)).toEqual(task);
@@ -127,30 +138,26 @@ it("stops editing across the project and continues interrupted requests ahead of
   await vi.waitFor(() => expect(workspace.ctx.bus.listenerCount("task.queued")).toBeGreaterThan(0));
   const resumed = await api("POST", `${path}/resume-editing`);
   expect(resumed.status).toBe(200);
-  expect(await resumed.json()).toMatchObject({ project: { editingPaused: false, rowRevision: beforeStop.rowRevision! + 2 },
-    tasks: expect.arrayContaining([expect.objectContaining({ id: asking!.id, state: "waiting_for_user", question: "Which take?" })]) });
-  // The restored question must be answered before conflicting work can start.
-  expect(await claim()).toBeNull();
-  const stoppedAgain = await api("POST", `${path}/stop-editing`);
-  expect(stoppedAgain.status).toBe(200);
-  const { tasks: stoppedTasks } = await stoppedAgain.json() as { tasks: Task[] };
-  const restoredQuestion = stoppedTasks.find(task => task.state === "queued")!;
-  expect(restoredQuestion).toMatchObject({ resumeRootId: question.id, question: "Which take?", session: question.session });
-  expect((await api("POST", `${path}/resume-editing`)).status).toBe(200);
-  expect((await api("POST", `/tasks/${restoredQuestion.id}/answer`, { text: "Use the second take." })).status).toBe(200);
+  expect(await resumed.json()).toMatchObject({ project: { editingPaused: false, rowRevision: beforeStop.rowRevision! + 2 } });
+  // Interrupted work goes first, then the runs that were waiting on the editor, each in its own CLI session.
   const next = await waiting;
   expect(next?.id).toBe(continuing!.id);
   expect((await api("POST", `/tasks/${next!.id}/cancel?queuedOnly=1`)).status).toBe(409);
   expect((await api("POST", `/tasks/${next!.id}/complete`, { state: "done", ifStartedAt: next!.startedAt })).status).toBe(200);
-  const answer = await claim();
-  expect(answer?.id).toBe(restoredQuestion.id);
-  expect(taskPrompt(workspace.ctx, answer!).resumeSession).toBe("existing-session");
-  // A prior worker may have cleaned up that session before its successor could use it.
-  const prompt = taskPrompt(workspace.ctx, answer!, { fresh: true });
-  expect(prompt.systemPrompt).toContain("Which take?");
-  expect(prompt.systemPrompt).toContain("Use the second take.");
-  expect((await api("POST", `/tasks/${answer!.id}/complete`, { state: "done", ifStartedAt: answer!.startedAt })).status).toBe(200);
-  expect((await claim())?.id).toBe(first.id);
+  // The runs that were waiting on the editor carry on in their own CLI sessions, in their places in the queue.
+  const sessions = new Map([[question.id, ["existing-session", "Use the second take."]], [answered.id, ["answered-session", "Left."]]]);
+  const order: string[] = [];
+  for (let claimed = await claim(); claimed; claimed = await claim()) {
+    order.push(claimed.id);
+    const [session, text] = sessions.get(claimed.id) ?? [];
+    if (session) {
+      expect(taskPrompt(workspace.ctx, claimed)).toMatchObject({ resumeSession: session });
+      expect(taskPrompt(workspace.ctx, claimed).instruction).toContain(text);
+    }
+    expect((await api("POST", `/tasks/${claimed.id}/complete`, { state: "done", ifStartedAt: claimed.startedAt })).status).toBe(200);
+  }
+  expect(order[0]).toBe(first.id);
+  expect(order).toEqual(expect.arrayContaining([question.id, answered.id, second.id, addedWhilePaused.id]));
 });
 
 it("stops just one edit and lets the next queued request start", async () => {

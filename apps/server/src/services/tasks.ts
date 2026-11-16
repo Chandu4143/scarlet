@@ -15,7 +15,7 @@ import { restoreUnreplacedProposal } from "./revisionState.js";
 import { assistantSkills } from "./skills.js";
 import { applyChoicesWhenDone, changeDiff, cutRevisionReference, passToRevise, retireStaleSaves } from "./changes.js";
 import { resolveTimeline } from "./timeline.js";
-import { runAttemptIds, runAttempts } from "./runAttempts.js";
+import { runAttemptIds } from "./runAttempts.js";
 import { learningCheckContext, skillEditEnded, startLearningCheck } from "./learnings.js";
 
 /** States a task never leaves. */
@@ -115,7 +115,6 @@ export function createTask(
     state?: Task["state"];
     resumeRootId?: string;
     resumesAfterProjectStop?: boolean;
-    question?: Task["question"];
     stagedCutRevision?: boolean;
     cutConflict?: Task["cutConflict"];
   },
@@ -147,7 +146,7 @@ export function createTask(
     createdBy: input.createdBy,
     hostId: null,
     changeIds: [],
-    question: input.question ?? null,
+    question: null,
     summary: null,
     createdAt: now(),
   });
@@ -478,12 +477,6 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   const events = ctx.repos.taskEvents.list(task.id, "questionsAndAnswers");
   const last = events.at(-1);
   const answered = last?.type === "answer";
-  // A question interrupted by project Stop is answered on the new attempt, with the question on the older attempt.
-  const run = task.resumesAfterProjectStop && task.resumeRootId && runAttempts(task.projectId, task.resumeRootId);
-  const questionHistory = run && events[0]?.type === "answer"
-    ? ctx.repos.tasks.select(run.where, run.params, "created_at, rowid").filter(t => t.id !== task.id)
-      .flatMap(t => ctx.repos.taskEvents.list(t.id, "questionsAndAnswers"))
-    : [];
   // A run interrupted before it finished carries on in the CLI session it was working in, when its host still has it.
   const interrupted = !last && !!task.resumeRootId;
   const resumeSession = !opts.fresh && (answered || interrupted) && task.session?.agent === task.agent && RESUMABLE.has(task.agent) ? task.session.id : undefined;
@@ -499,7 +492,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     change,
     replacedPass: now && named?.id,
     // A resumed session already holds the earlier questions and answers.
-    qa: resumeSession ? undefined : pairQuestionsAndAnswers([...questionHistory, ...events]),
+    qa: resumeSession ? undefined : pairQuestionsAndAnswers(events),
     skills: assistantSkills(ctx.repos.skills.select("1=1", [], "name ASC"), c.skillIds, true),
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,

@@ -8,9 +8,7 @@ export interface QueuedRequest {
   text: string;
   /** What it revises, when it's about one edit or cut: "Revising the cut at 2:05". */
   target?: string;
-  /** This request was running when editing stopped. */
-  stopped?: boolean;
-  /** Scarlet made this request itself, or will continue it with the words already given. */
+  /** Scarlet made this request itself, so its words aren't the editor's to change. */
   fixed?: boolean;
 }
 
@@ -27,12 +25,18 @@ export interface QueuedRequest {
  *
  * A request's pencil, or a click on its words, hands them to the message box to change (`onReword`). While they're
  * there (`rewording`) its row is lit and stays in view, and its pencil, lit too, puts them back as they were.
+ *
+ * The tray's last line says whether Scarlet is editing the project and holds the one control for all of it: Pause while
+ * it edits (`onPause`), and Continue once it is paused (`onContinue`), with "Editing paused" beside it. Pause stops
+ * the work under way and starts nothing new; Continue picks the paused work up first, where it left off.
  */
-export function QueueTray({ items, hint, waits, rewording, onRemove, onReword, onStart, onStop, onContinue, opened }: {
+export function QueueTray({ items, hint, waits, rewording, onRemove, onReword, onStart, onPause, onContinue, opened }: {
   items: readonly QueuedRequest[]; hint?: string; waits?: string; rewording?: string; onRemove(id: string): void; onReword?(id: string): void;
   /** Start the next request without what it waits for. Given only while that is the editor's calls. */
   onStart?(id: string): void;
-  onStop?(): Promise<void>;
+  /** Pause all editing in the project. */
+  onPause?(): Promise<void>;
+  /** Continue editing the paused project. */
   onContinue?(): Promise<void>;
   /** Whether the tray is open, held by the page: the message box the tray sits on is built again each time it is aimed
    *  somewhere else, and a tray the editor opened must not shut by itself then. */
@@ -41,7 +45,7 @@ export function QueueTray({ items, hint, waits, rewording, onRemove, onReword, o
   const own = useState(false);
   const [open, setOpen] = opened ?? own;
   const [pending, setPending] = useState(false);
-  const action = onContinue ?? onStop;
+  const action = onContinue ?? onPause;
   // With one request there's nothing to open: its line is already shown.
   const many = items.length > 1;
   useEffect(() => { if (!many) setOpen(false); }, [many]);
@@ -51,17 +55,16 @@ export function QueueTray({ items, hint, waits, rewording, onRemove, onReword, o
   if (!items.length && !action) return null;
   // The row whose words are in the box says which request the box is changing, so the list stays open around it.
   const listed = many && (open || !!rewording);
-  const hasStopped = !!onContinue && items.some(item => item.stopped);
-  const marker = (item: QueuedRequest, first: boolean, expanded: boolean) => {
+  const marker = (first: boolean, expanded: boolean) => {
     if (first && !expanded && waits) return <span className="queue-next is-waiting">{waits}</span>;
-    return <span className={`queue-next${hasStopped ? " has-stopped" : ""}`}>{onContinue && item.stopped ? "Stopped" : first ? "Next" : ""}</span>;
+    return <span className="queue-next">{first ? "Next" : ""}</span>;
   };
   // Every row in the open list starts in the same place, and the heading says what the next request waits for.
   const row = (item: QueuedRequest, first: boolean, expanded = false) => {
     const editing = rewording === item.id;
     const reword = onReword && !item.fixed ? () => onReword(item.id) : undefined;
     return <div key={item.id} className={editing ? "queue-row is-rewording" : "queue-row"} title={item.text}>
-      {marker(item, first, expanded)}
+      {marker(first, expanded)}
       {item.target && <span className="queue-target">{item.target}</span>}
       <span className={reword && !editing ? "queue-text is-rewordable" : "queue-text"} onClick={editing ? undefined : reword}>{item.text}</span>
       {first && onStart && !editing && <button type="button" className="queue-start" aria-label={`Start now: ${item.text}`}
@@ -72,15 +75,15 @@ export function QueueTray({ items, hint, waits, rewording, onRemove, onReword, o
         onClick={() => onRemove(item.id)}><Icon name="x" size={11} /></button>
     </div>;
   };
-  const stopped = <span className="queue-waits">Editing stopped</span>;
-  const count = onContinue ? <span>{stopped}{items.length ? ` · ${items.length} queued` : ""}</span>
+  const paused = <span className="queue-paused">Editing paused</span>;
+  const count = onContinue ? <span>{paused}{items.length ? ` · ${items.length} queued` : ""}</span>
     : <span>{items.length} queued{waits && <span className="queue-waits"> · {waits}</span>}</span>;
   const first = items[0];
-  const heading = !first ? <div className="queue-editing-status">{onContinue ? stopped : "Editing"}</div>
+  const heading = !first ? <div className="queue-editing-status">{onContinue ? paused : "Scarlet is editing"}</div>
     : (listed && rewording) || (onContinue && !many) ? <div className="queue-head">{count}</div>
     : many ? <button type="button" className="queue-head" aria-expanded={listed} onClick={() => setOpen(!listed)}>
       {listed || onContinue ? count : <>
-        {marker(first, true, false)}
+        {marker(true, false)}
         {first.target && <span className="queue-target">{first.target}</span>}
         <span className="queue-text" title={first.text}>{first.text}</span>
         <span className="queue-count">{items.length} queued</span>
@@ -91,11 +94,13 @@ export function QueueTray({ items, hint, waits, rewording, onRemove, onReword, o
     {(listed || (onContinue && first && !many)) && <div className="queue-list">{items.map((item, i) => row(item, i === 0, true))}</div>}
     {action ? <div className="queue-footer">
       {heading}<button type="button" className="queue-editing-action" aria-disabled={pending || undefined}
-        title={onContinue ? "Continue editing this project" : "Stop editing this project"} onClick={async () => {
+        title={onContinue ? "Continue editing. Paused work picks up first, where it left off."
+          : "Pause all editing in this project. Work under way stops, nothing new starts, and edits already made stay. Continue picks it up again."}
+        onClick={async () => {
           if (pending) return;
           setPending(true);
           try { await action(); } finally { setPending(false); }
-        }}><Icon name={onContinue ? "play" : "stop"} />{onContinue ? "Continue" : "Stop"}</button>
+        }}><Icon name={onContinue ? "play" : "pause"} />{onContinue ? "Continue" : "Pause"}</button>
     </div> : heading}
   </div>;
 }

@@ -52,29 +52,29 @@ it("stops all demo edits, preserves saved work, and continues interrupted reques
   const { project, tasks } = await finish(api.stopEditing(PRJ));
   expect(project.editingPaused).toBe(true);
   const stopped = tasks.find(task => task.id === "task_running")!;
-  const question = tasks.find(task => task.id === "task_waiting")!;
   const resumed = tasks.find(task => task.id === stopped.retryTaskId)!;
   expect(stopped.state).toBe("cancelled");
-  expect(question.state).toBe("cancelled");
   expect(resumed).toMatchObject({ state: "queued", resumeRootId: stopped.id, resumesAfterProjectStop: true });
+  // A question holds no worker: it stays, and the editor can answer it while editing is paused.
+  expect(tasks.some(task => task.id === "task_waiting")).toBe(false);
+  expect((await finish(api.task("task_waiting"))).task.state).toBe("waiting_for_user");
   expect((await finish(api.stopEditing(PRJ))).tasks).toEqual([]);
+  await finish(api.answerTask("task_waiting", "Use the show’s purple"));
   await vi.advanceTimersByTimeAsync(10_000);
   expect((await finish(api.projects())).projects.find(p => p.id === PRJ)?.activity).toBeUndefined();
   expect(working?.activity).toEqual([{ kind: "editing", count: 1 }]);
   expect((await finish(api.workspace(PRJ))).project.head).toBe(before.project.head);
   expect((await finish(api.task(resumed.id))).task.state).toBe("queued");
+  expect((await finish(api.task("task_waiting"))).task.state).toBe("queued");
   expect((await finish(api.task(waiting.id))).task.state).toBe("queued");
 
   const continued = await finish(api.resumeEditing(PRJ));
   expect(continued.project.editingPaused).toBe(false);
-  expect(continued.tasks).toHaveLength(2);
-  expect(continued.tasks).toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: resumed.id, state: "queued" }),
-    expect.objectContaining({ id: question.retryTaskId, state: "waiting_for_user", question: question.question }),
-  ]));
+  expect(continued.tasks).toEqual([expect.objectContaining({ id: resumed.id, state: "queued" })]);
   expect((await finish(api.resumeEditing(PRJ))).tasks).toEqual([]);
-  await finish(api.answerTask(question.retryTaskId!, "Use the show’s purple"), 4_200);
+  await vi.advanceTimersByTimeAsync(600);
   expect((await finish(api.task(resumed.id))).task.state).toBe("running");
+  expect((await finish(api.task("task_waiting"))).task.state).toBe("running");
   expect((await finish(api.task(waiting.id))).task.state).toBe("queued");
 });
 
