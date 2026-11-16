@@ -15,6 +15,10 @@ it("says the latest call on the project as the work it is, with where in the rec
   expect(said(tool("frame_contact_sheet_batch", { windows: [{}, {}, {}] }))).toBe("Looking at the picture in 3 passages");
   expect(said(tool("frame_contact_sheet_batch", { batchId: "b", cursor: 2 }))).toBe("Looking at the picture");
   expect(said(tool("waveform_get", { mediaId: "cam", start: 62, end: 70 }))).toBe("Looking at the waveform 1:02–1:10");
+  // A read of the same range on several recordings says how many.
+  expect(said(tool("waveform_get", { mediaIds: ["mic1", "mic2"], from: 1501, to: 1513 }))).toBe("Looking at the waveform of 2 recordings 25:01–25:13");
+  expect(said(tool("sound_picture", { mediaId: "mic1", from: 1501, to: 1513 }))).toBe("Looking at the waveform 25:01–25:13");
+  expect(said(tool("transcript_get", { mediaIds: ["mic1", "mic2"], from: 1501, to: 1513 }))).toBe("Reading the transcript of 2 recordings 25:01–25:13");
   expect(said(tool("dialogue_check_join", { cuts: [{}] }))).toBe("Checking how the join sounds");
   expect(said(tool("dialogue_check_join", { cuts: [{}, {}, {}] }))).toBe("Checking how 3 joins sound");
   expect(said(tool("dialogue_apply_cuts", { range: { start: 0, end: 155 }, cuts: [{}, {}, {}, {}] }))).toBe("Saving 4 cuts in 0:00–2:35");
