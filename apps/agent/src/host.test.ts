@@ -252,6 +252,44 @@ describe("AgentHost", { timeout: 30_000 }, () => {
     expect(run.mcp.env).toMatchObject({ SCARLET_SERVER: srv.server.url, SCARLET_TOKEN: "agent-token", SCARLET_PROJECT: "prj_test", SCARLET_TASK: "task_1", SCARLET_AGENT: "claude", SCARLET_MODEL: "opus" });
   });
 
+  it("posts usage during a claim and waits for that report before persisting the final total", async ({ signal }) => {
+    const srv = await startServer();
+    const startedAt = "2026-04-01T12:00:00.000Z";
+    srv.queue[0]!.startedAt = startedAt;
+    const usage = { inputTokens: 12, outputTokens: 34, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+    const finishReport = Promise.withResolvers<void>();
+    const runnerFinished = Promise.withResolvers<void>();
+    const send = srv.server.state.extra;
+    srv.server.state.extra = (req, res) => {
+      if (req.path === "/tasks/task_1/usage" && (req.body as { inputTokens: number }).inputTokens === 12) {
+        return finishReport.promise.then(() => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end("{}");
+          return true;
+        });
+      }
+      return send?.(req, res) ?? false;
+    };
+    const runner: RunAgentFn = async (opts) => {
+      opts.onUsage?.(usage);
+      await vi.waitFor(() => expect(srv.server.requests.filter(r => r.path.endsWith("/usage"))).toHaveLength(1));
+      opts.onUsage?.({ ...usage, inputTokens: 24 });
+      runnerFinished.resolve();
+      return { ok: true, summary: "Done.", usage: { ...usage, inputTokens: 36 } };
+    };
+    const { host } = makeHost(srv, runner);
+    const complete = once(srv.events, "complete", { signal });
+    await startHostAndWait(host, runnerFinished.promise);
+    try {
+      expect(srv.completes).toHaveLength(0);
+    } finally {
+      finishReport.resolve();
+    }
+    await complete;
+    const reports = srv.server.requests.filter(r => r.path.endsWith("/usage")).map(r => r.body);
+    expect(reports).toEqual([{ ...usage, startedAt }, { ...usage, startedAt, inputTokens: 36 }]);
+  });
+
   it("confirms a provider-reported question after a transient failure, and resumes with the answer", async ({ signal }) => {
     const srv = await startServer(1);
     const runs: RunAgentOptions[] = [];

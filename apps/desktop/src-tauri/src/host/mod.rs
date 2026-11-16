@@ -10,6 +10,7 @@
 //! The engine builds the prompt (`GET /tasks/:id/prompt`); this host only runs it.
 
 pub mod api;
+mod codex_app_server;
 pub mod detect;
 pub mod install;
 pub mod login;

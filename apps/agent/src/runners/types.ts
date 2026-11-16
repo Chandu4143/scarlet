@@ -31,6 +31,8 @@ export interface RunAgentOptions {
   cwd: string;
   mcp: McpSpec;
   onEvent: (ev: RunnerEvent) => void;
+  /** Cumulative tokens observed so far in this CLI invocation. */
+  onUsage?: (usage: AgentUsage) => void;
   signal?: AbortSignal;
   /** Optional cap on the whole run. None by default: a working agent takes as long as it needs. */
   timeoutMs?: number;
