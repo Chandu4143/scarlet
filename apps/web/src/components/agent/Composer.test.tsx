@@ -248,6 +248,14 @@ it.each(["click", "keyboard"])("creates a skill from the picker by %s and return
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(instructions, "Keep the quiet after a difficult question.");
       instructions.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    const modelPicker = editor.querySelector<HTMLButtonElement>('.skill-editor-toolbar button[aria-label="Choose model"]')!;
+    await act(() => modelPicker.click());
+    expect(editor.querySelector('[aria-label="Model selector"]')).not.toBeNull();
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(() => document.activeElement!.dispatchEvent(esc));
+    expect(esc.defaultPrevented).toBe(true);
+    expect(editor.open).toBe(true);
+    expect(editor.querySelector('[aria-label="Model selector"]')).toBeNull();
     if (method === "click") {
       await act(() => editor.querySelector<HTMLButtonElement>("[data-close]")!.click());
       expect(container.textContent).toContain("Save your skill changes?");

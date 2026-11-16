@@ -103,15 +103,18 @@ it("says unsaved only while the page differs from what was loaded, and keeps no 
   }
 });
 
-it("sends the editor's words to Scarlet and shows the revision it saved", async () => {
+it("sends the editor's words to the chosen model and shows the revision it saved", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
+  const previousHosts = useHostsStore.getState().hosts;
+  const previousAgent = useUiStore.getState().agent;
+  const savedAgent = localStorage.getItem("scarlet.agent");
   const db = buildDb();
   let skill = db.skills[0]!;
   let versions = db.skillVersions[skill.id] ?? [];
   const host = db.hosts.find(h => h.online)!;
   useHostsStore.setState({ hosts: [host] });
-  const agent = host.agents.find(a => a.installed && a.loggedIn !== false)!.id;
+  useUiStore.setState({ agent: { agent: "codex", model: "gpt-6.1-sol" } });
   let task = { ...db.tasks[0]!, id: "task_skill", kind: "skill_edit" as const, state: "queued" as const, instruction: "Never cut laughter.", context: { skillId: skill.id }, summary: null, question: null };
   // An earlier request is already in the conversation.
   const earlier = { ...task, id: "task_earlier", state: "done" as const, instruction: "Keep the cold open.", summary: "Added a rule for the cold open." };
@@ -124,6 +127,21 @@ it("sends the editor's words to Scarlet and shows the revision it saved", async 
   const router = createMemoryRouter([{ path: "/settings/skills/:skillId", element: <SkillEditorPage /> }], { initialEntries: [`/settings/skills/${skill.id}`] });
   try {
     await act(async () => root.render(<RouterProvider router={router} />));
+    const picker = el.querySelector<HTMLButtonElement>('.skill-editor-toolbar button[aria-label="Choose model"]')!;
+    expect(picker.textContent?.trim()).toBe("");
+    expect(picker.querySelector("svg")).not.toBeNull();
+    expect(picker.title).toContain("gpt-6.1-sol");
+    await act(() => picker.click());
+    const model = "gpt-6-astra";
+    const option = el.querySelector<HTMLButtonElement>(`[role="radio"][aria-label="Codex · ${model}"]`)!;
+    await act(() => option.click());
+    expect(picker.title).toContain(model);
+    option.focus();
+    await act(() => option.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(router.state.location.pathname).toBe(`/settings/skills/${skill.id}`);
+    expect(el.querySelector('[aria-label="Model selector"]')).toBeNull();
+    expect(document.activeElement).toBe(picker);
+
     const box = el.querySelector<HTMLTextAreaElement>(".skill-chat textarea")!;
     const body = el.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
     expect(box.placeholder).toBe("Tell Scarlet what to change…");
@@ -132,7 +150,7 @@ it("sends the editor's words to Scarlet and shows the revision it saved", async 
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    expect(editSkill).toHaveBeenCalledWith(skill.id, expect.objectContaining({ prompt: "Never cut laughter.", agent }));
+    expect(editSkill).toHaveBeenCalledWith(skill.id, expect.objectContaining({ prompt: "Never cut laughter.", agent: "codex", model }));
     // While Scarlet works the request is over the box, and the skill can't be changed under it.
     // The conversation is the left column, with the name and description over the instructions.
     expect(el.querySelector(".skill-chat")!.compareDocumentPosition(el.querySelector(".skill-details")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -174,7 +192,10 @@ it("sends the editor's words to Scarlet and shows the revision it saved", async 
     el.remove();
     router.dispose();
     useSkillsStore.setState(useSkillsStore.getInitialState());
-    useHostsStore.setState(useHostsStore.getInitialState());
+    useHostsStore.setState({ hosts: previousHosts });
+    useUiStore.setState({ agent: previousAgent });
+    if (savedAgent === null) localStorage.removeItem("scarlet.agent");
+    else localStorage.setItem("scarlet.agent", savedAgent);
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
