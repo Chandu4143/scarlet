@@ -1,6 +1,6 @@
 import { badRequest, conflict, notFound } from "../errors.js";
 import { cancelTask } from "../services/tasks.js";
-import { holdTranscriptions, recoverIngestInBackground } from "../services/ingest.js";
+import { holdTranscriptions, recoverImportTranscriptionsInBackground, recoverIngestInBackground } from "../services/ingest.js";
 import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
 import { recoverTasks } from "../services/taskRecovery.js";
@@ -95,7 +95,7 @@ export function projectRoutes(ctx: Ctx) {
 
   r.post("/projects/:id/threads/:threadId/disposition", async c => {
     const { done, revision } = await jsonBody(c, ThreadDisposition);
-    const completedThreads = ctx.db.transaction(() => {
+    const result = ctx.db.transaction(() => {
       const project = requireProjectHeader(ctx, c.req.param("id"));
       const thread = projectThread(project.id, c.req.param("threadId"));
       if (threadRevision(thread) !== revision || (done && (thread.active || thread.question || thread.status === "working")))
@@ -104,10 +104,11 @@ export function projectRoutes(ctx: Ctx) {
       if (done) completed[thread.id] = revision;
       else delete completed[thread.id];
       ctx.repos.projects.saveCompletedThreads(project.id, completed);
-      ctx.bus.publish({ type: "project.updated", projectId: project.id, project: requireProject(ctx, project.id) });
-      return completed;
+      const saved = requireProject(ctx, project.id);
+      ctx.bus.publish({ type: "project.updated", projectId: project.id, project: saved });
+      return { completedThreads: completed, project: saved };
     }, "immediate")();
-    return c.json({ completedThreads });
+    return c.json(result);
   });
 
   r.patch("/projects/:id", async (c) => {
@@ -128,6 +129,7 @@ export function projectRoutes(ctx: Ctx) {
           holdTranscriptions(ctx, updated.id);
         } else {
           recoverIngestInBackground(ctx, updated.id);
+          recoverImportTranscriptionsInBackground(ctx, updated.id);
           recoverSourcePreviews(ctx, updated.id);
           // The pause cut this project's transcriptions off. They start again now, not at the next 30 s sweep.
           recoverTasks(ctx);

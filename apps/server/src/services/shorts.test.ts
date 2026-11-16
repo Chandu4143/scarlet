@@ -1,8 +1,8 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { createProject, type Project } from "@scarlet/timeline";
+import { createProject, sha256, type Project, type Task } from "@scarlet/timeline";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { storeVersion } from "./timeline.js";
@@ -96,6 +96,34 @@ it("names the shorts for the moments the first run chose, starts the others with
   expect((await api("POST", `/tasks/${task.id}/shorts-plan`, { moments: [{ start: 5, end: 40, title: "Again" }] })).status).toBe(409);
   // Only the first short's run chooses.
   expect((await api("POST", `/tasks/${second.id}/shorts-plan`, { moments: [{ start: 5, end: 40, title: "Mine" }] })).status).toBe(400);
+});
+
+it("keeps the first short's selected moment when its request resumes", async () => {
+  const { task } = await (await api("POST", `/projects/${long.id}/shorts`, { ...form, count: 2 })).json() as { task: Task };
+  const moments = [{ start: 5, end: 40, title: "First moment" }, { start: 50, end: 80, title: "Second moment" }];
+  expect((await api("POST", `/tasks/${task.id}/shorts-plan`, { moments })).status).toBe(200);
+  expect((await api("POST", `/tasks/${task.id}/cancel`, {})).status).toBe(200);
+  const resumed = await api("POST", `/tasks/${task.id}/retry`, {});
+  expect(resumed.status).toBe(200);
+  const { task: retry } = await resumed.json() as { task: Task };
+  expect(retry.context.short?.moment).toEqual(moments[0]);
+  expect(taskPrompt(workspace.ctx, retry).systemPrompt).toContain("5.00–40.00 s on the copied timeline");
+  expect((await api("POST", `/tasks/${retry.id}/shorts-plan`, { moments })).status).toBe(409);
+});
+
+it.each(["recorded stamp", "legacy hash"] as const)("refuses to make shorts from a file replaced after its cache and transcript were made (%s)", async fingerprint => {
+  const { ctx } = workspace;
+  const media = ctx.repos.projects.getMedia("cam")!;
+  const original = join(ctx.paths.media(long.id), media.path);
+  const { size, mtimeMs, ctimeMs } = statSync(original);
+  ctx.repos.projects.putMedia(long.id, { ...media, hash: sha256(readFileSync(original, "utf8")),
+    fingerprintStamp: fingerprint === "recorded stamp" ? { size, mtimeMs, ctimeMs } : undefined }, "ready");
+  writeFileSync(original, "a different recording");
+  const response = await api("POST", `/projects/${long.id}/shorts`, { ...form, count: 2 });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: { code: "media_changed" } });
+  expect(ctx.repos.projects.summaries().map(project => project.id)).toEqual([long.id]);
+  expect(readdirSync(join(directory, "projects"))).toEqual([long.id]);
 });
 
 it("keeps the line about where a short came from until the editor dismisses it, and says when that video is gone", async () => {

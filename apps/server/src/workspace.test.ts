@@ -192,6 +192,35 @@ it.each(["unchanged", "revoked", "legacy"])("recovers a paused import with %s tr
   } finally { cloud.mockRestore(); }
 });
 
+it.each(["revoked", "paused"] as const)("recovers a ready import after restart with %s transcription", async condition => {
+  const { ctx } = workspace;
+  ctx.repos.settings.update({ transcription: { provider: "openai" } });
+  const { revision } = ctx.repos.settings.transcriptionPolicy();
+  ctx.paths.ensureProject(project.id);
+  writeFileSync(join(ctx.paths.media(project.id), "clip.wav"), "fixture");
+  ctx.repos.projects.putMedia(project.id, { id: "ready-clip", kind: "audio", path: "clip.wav", name: "Recording", duration: 1, hasAudio: true,
+    transcriptionOnImport: "openai", transcriptionRevisionOnImport: revision }, "ready");
+  if (condition === "revoked") {
+    ctx.repos.settings.update({ transcription: { provider: "none" } });
+    ctx.repos.settings.update({ transcription: { provider: "openai" } });
+  } else {
+    ctx.repos.projects.update(project.id, { mediaPaused: true });
+  }
+  const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe").mockResolvedValue({ segments: [] });
+  try {
+    await ctx.close();
+    workspace = openWorkspace({}, { OPENAI_API_KEY: "fixture" });
+    while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
+    expect(cloud).not.toHaveBeenCalled();
+    if (condition === "paused") {
+      expect((await api("PATCH", projectsPath(), { mediaPaused: false })).status).toBe(200);
+      while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
+      expect(cloud).toHaveBeenCalledTimes(1);
+      expect(workspace.ctx.repos.projects.getMedia("ready-clip")?.transcriptId).toBeDefined();
+    }
+  } finally { cloud.mockRestore(); }
+});
+
 it.each(["missing", "removed"] as const)("imports audio without a transcription job when the custom model is %s", async state => {
   const { ctx } = workspace;
   const model = join(directory, "weights.bin");
@@ -809,6 +838,33 @@ it("places an older transcript's words again with the current aligner, keeping i
     expect(t.reader).not.toHaveBeenCalled();
     expect(await (await realign()).json()).toEqual({ state: "current" });
     expect(t.linked()!.id).toBe(now.id);
+  } finally { t.restore(); }
+});
+
+it("keeps an older transcript eligible for realignment when its recording cannot be decoded", async () => {
+  const { ctx } = workspace;
+  ctx.paths.ensureProject(project.id);
+  writeFileSync(join(ctx.paths.media(project.id), "unreadable.wav"), "invalid audio");
+  ctx.repos.transcripts.put({ id: "old-times", projectId: project.id, mediaId: "recording", language: "en", alignment: alignmentVersion - 1,
+    segments: [{ id: "s", start: 0, end: 1, text: "Hello.", words: [{ text: "Hello.", start: 0, end: 1 }] }] });
+  ctx.repos.projects.putMedia(project.id, { id: "recording", kind: "audio", path: "unreadable.wav", name: "Recording", duration: 1, hasAudio: true,
+    transcriptId: "old-times" }, "ready");
+  const realign = () => api("POST", `${projectsPath()}/media/recording/realign`, {});
+  for (let attempt = 0; attempt < 2; attempt++) {
+    expect(await (await realign()).json()).toMatchObject({ state: "unavailable" });
+    expect(ctx.repos.projects.getMedia("recording")?.transcriptId).toBe("old-times");
+  }
+  expect(ctx.repos.transcripts.count()).toBe(1);
+});
+
+it("saves the readable transcript without marking an unfinished alignment current", async () => {
+  await api("PATCH", "/settings", { transcription: { provider: "whispercpp", localModel: "custom", whisperCppPath: process.execPath } });
+  const t = twoTurnTranscription(turn => { if (turn === 2) throw new Error("aligner stopped"); });
+  try {
+    const transcript = await transcribeMedia(t.ctx, project.id, t.media);
+    expect(transcript?.segments.map(segment => segment.words[0]!.start)).toEqual([10.1, 400]);
+    expect(transcript?.alignment).toBeUndefined();
+    expect(t.task().state).toBe("done");
   } finally { t.restore(); }
 });
 
@@ -6289,11 +6345,14 @@ it("files a completed thread separately from its applied edits and rejects stale
   const revision = threadRevision(snapshot());
   const edits = await (await api("GET", target + "/edits")).json();
   expect(edits.edits.map((e: { range: unknown }) => e.range)).toEqual(named.map(e => e.range));
-  expect((await post(true, revision)).status).toBe(200);
-  const filed = (await (await api("GET", projectsPath() + "?view=workspace")).json()).project;
-  expect(filed.head).toBe(edits.version);
+  const filing = await post(true, revision);
+  expect(filing.status).toBe(200);
+  const { project: filed, completedThreads } = await filing.json();
+  expect(filed).toMatchObject({ head: edits.version, completedThreads, rowRevision: expect.any(Number) });
   expect(isThreadDone(snapshot(), filed.completedThreads)).toBe(true);
-  expect((await post(false, revision)).status).toBe(200);
+  const unfiling = await post(false, revision);
+  expect(unfiling.status).toBe(200);
+  expect((await unfiling.json()).project.rowRevision).toBeGreaterThan(filed.rowRevision);
   expect(isThreadDone(snapshot(), ctx.repos.projects.header(project.id)?.completedThreads)).toBe(false);
   await post(true, revision);
   createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "Hold the caption longer", createdBy: editor,

@@ -9,6 +9,7 @@ type MediaStatus = "ingesting" | "ready" | "failed";
 export type MediaWithStatus = MediaAsset & { status: MediaStatus; error?: string };
 
 interface ProjectRow {
+  row_revision?: number;
   completed_threads: string;
   style_guide?: string | null;
   media_paused: number;
@@ -264,5 +265,5 @@ function projectHeader(row: ProjectRow, styleGuide = true): Omit<Project, "media
   const source = made && { projectId: made.projectId, name: row.source_name ?? made.name,
     ...(row.source_notice ? { notice: true } : {}), ...(!row.source_name || row.source_deleted ? { gone: true } : {}) };
   return Header.parse({ ...(styleGuide && row.style_guide && { styleGuide: JSON.parse(row.style_guide) }), ...(source && { source }), id: row.id, completedThreads: JSON.parse(row.completed_threads), name: row.name, mediaPaused: !!row.media_paused, archived: Boolean(row.archived), branch: row.branch, settings: JSON.parse(row.settings), head: row.head,
-    createdAt: row.created_at, updatedAt: row.updated_at });
+    createdAt: row.created_at, updatedAt: row.updated_at, rowRevision: row.row_revision });
 }

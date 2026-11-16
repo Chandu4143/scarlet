@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi, onTestFinished } from "vitest";
-import { DELIVERY_AUDIO_REVISION, FfmpegError } from "@scarlet/render";
+import { DELIVERY_AUDIO_REVISION, FfmpegError, runCapture, segmentKey } from "@scarlet/render";
 import { createProject, makeMediaClip, sha256, stableStringify, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
 import { createApp, type ScarletApp } from "../app.js";
 import { scarletRenderAdapter } from "../render/scarletRender.js";
@@ -135,6 +135,72 @@ it("loads only overlapping clips and their sources for playback, in compositing 
   const [inputs, part] = render.mock.calls[0]!;
   expect(inputs.media.map(m => m.id).sort()).toEqual(["camera", "overlay"]);
   expect(part.tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[2]!.id]);
+});
+
+it("renders a dissolve in a playback window whose outgoing clip has already ended", async () => {
+  const { ctx } = workspace;
+  const root = ctx.paths.media(project.id);
+  mkdirSync(root, { recursive: true });
+  ctx.repos.settings.update({ render: { hwaccel: "none" } });
+  ctx.repos.projects.update(project.id, { settings: { ...project.settings, width: 64, height: 64, fps: 30 } });
+  await Promise.all(["red", "blue"].map(async color => {
+    await runCapture("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `color=${color}:s=64x64:r=30:d=4`, "-c:v", "libx264", join(root, `${color}.mp4`)]);
+    ctx.repos.projects.putMedia(project.id, { id: color, kind: "video", name: color, path: `${color}.mp4`, duration: 4,
+      hasAudio: false, hasAlpha: false, width: 64, height: 64, fps: 30 }, "ready");
+  }));
+  const timeline = timelineFromKeepRanges(project.id, "red", [{ start: 1, end: 3 }]);
+  timeline.tracks[0]!.clips.push(makeMediaClip("blue", 1, 3, 2, { transitionIn: { type: "dissolve", duration: 1, direction: "left" } }));
+  const v = storeVersion(ctx, project.id, timeline, { parent: version }).version;
+  vi.spyOn(ctx.render, "renderPlaybackSegment").mockImplementation(scarletRenderAdapter.renderPlaybackSegment);
+  const render = ctx.renders.request({ ...section(), version: v, kind: "playback", quality: "preview", range: { start: 2, end: 4 } });
+  await settle();
+  const done = ctx.repos.renders.get(render.id)!;
+  expect(done.state).toBe("done");
+  const output = join(ctx.paths.renders(project.id), done.path!);
+  const { stdout } = await runCapture("ffmpeg", ["-v", "error", "-i", output, "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]);
+  expect([stdout[0], stdout[2]]).toEqual([expect.closeTo(125, -1), expect.closeTo(125, -1)]);
+});
+
+it.each(["queued", "done", "done with changed sources"] as const)("recovers the old transition fingerprint for a %s export", async state => {
+  const { ctx } = workspace;
+  ctx.repos.settings.update({ render: { hwaccel: "none" } });
+  const timeline = timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 30 }]);
+  const clip = timeline.tracks[0]!.clips[0]!;
+  if (clip.kind !== "media") throw new Error("Expected camera footage");
+  clip.transitionIn = { type: "dip", duration: 1, direction: "left" };
+  const saved = storeVersion(ctx, project.id, timeline, { parent: version });
+  const stored = ctx.repos.projects.get(project.id)!;
+  const originals = { ...stored, media: stored.media.map(asset => ({ ...asset, hash: asset.id })) };
+  const format = { quality: "delivery", height: stored.settings.height, encoder: "none" } as const;
+  const savedTimeline = ctx.repos.versions.get(project.id, saved.version)!.timeline;
+  const content = segmentKey(originals, savedTimeline, { start: 0, end: 30 }, format, undefined, true);
+  const asset = stored.media[0]!;
+  const oldFingerprint = "local-v1-" + sha256(stableStringify([
+    "full-program-v1", project.id, format.quality, content, [[asset.id, asset.path, undefined, undefined, undefined]],
+    savedTimeline.tracks, [[asset.width, asset.height, asset.fps, asset.hasAlpha, asset.previewClock, asset.originalPlaybackType]], saved.version, [],
+  ])) + `-mix${DELIVERY_AUDIO_REVISION}`;
+  const encode = vi.spyOn(ctx.render, "renderFullCached").mockImplementation(async (_p, _t, _c, file) => { writeFileSync(file, "fresh"); });
+  const input = { ...section(), version: saved.version, kind: "full" as const, quality: "delivery" as const, range: null };
+  const owner = crypto.randomUUID();
+  const save = { ticket: 38, name: "Saved.mp4" };
+  const render = ctx.renders.request(input, owner, save);
+  await settle();
+  expect(render.previewContentKey).not.toBe(oldFingerprint);
+  const done = ctx.repos.renders.get(render.id)!;
+  expect(ctx.renders.exports()).toMatchObject([{ id: render.id, state: "done", export: { owner, ...save } }]);
+  ctx.repos.renders.put({ ...done, ...(state === "queued" && { state: "queued", path: null }), previewContentKey: oldFingerprint });
+  if (state === "done with changed sources") {
+    ctx.paths.ensureProject(project.id);
+    writeFileSync(join(ctx.paths.media(project.id), "camera.mp4"), "new footage");
+    expect(ctx.renders.exports()).toMatchObject([{ id: render.id, state: "done", previewContentKey: oldFingerprint }]);
+    expect(encode).toHaveBeenCalledTimes(1);
+    return;
+  }
+  if (state === "queued") ctx.renders.recover();
+  else expect(ctx.renders.exports()).toMatchObject([{ id: render.id, path: null, export: { owner, ...save } }]);
+  await settle();
+  expect(ctx.repos.renders.get(render.id)).toMatchObject({ state: "done", previewContentKey: render.previewContentKey, export: { owner, ...save } });
+  expect(encode).toHaveBeenCalledTimes(2);
 });
 
 it.each([

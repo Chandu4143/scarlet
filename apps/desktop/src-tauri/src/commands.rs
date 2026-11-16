@@ -1,5 +1,10 @@
 //! Tauri commands exposed to the web UI (apps/web/src/lib/desktop.ts).
 
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+
 use serde::Serialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
@@ -103,16 +108,16 @@ fn engine_file(base: &str, url: &str) -> Result<url::Url, String> {
 /// A ticket an export has taken is also saved to disk, so the export can finish after a restart.
 #[derive(Default)]
 pub struct ExportDestinations {
-    file: std::sync::OnceLock<std::path::PathBuf>,
-    paths: std::sync::Mutex<std::collections::HashMap<u64, ExportDestination>>,
+    file: std::sync::OnceLock<PathBuf>,
+    paths: std::sync::Mutex<HashMap<u64, ExportDestination>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ExportDestination {
-    path: std::path::PathBuf,
+    path: PathBuf,
     /// The partial file a save in progress is writing beside the destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    temp: Option<std::path::PathBuf>,
+    temp: Option<PathBuf>,
     /// The Scarlet writing that file: its process id, then its program and start time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saver: Option<(u32, String)>,
@@ -120,60 +125,127 @@ struct ExportDestination {
     kept: bool,
 }
 
+const EXPORT_ALREADY_SAVING: &str = "Export is already saving in another Scarlet window.";
+
+impl ExportDestination {
+    fn saving(&self) -> bool {
+        self.saver.as_ref().is_some_and(|(pid, scarlet)| crate::host::spawn::still_runs(*pid, scarlet))
+    }
+
+    fn clear_partial(&mut self) {
+        self.saver = None;
+        if let Some(temp) = self.temp.take() {
+            // Only ever a temporary file this app created next to the chosen destination.
+            let ours = temp.parent() == self.path.parent()
+                && temp.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".tmp"));
+            if ours && fs::remove_file(&temp).is_ok() { log::info!("removed a partial export at {}", temp.display()); }
+        }
+    }
+}
+
 impl ExportDestinations {
     /// Restore the destinations of exports that were in progress at the last quit, and remove what a killed save left behind.
-    pub fn load(&self, file: std::path::PathBuf) {
-        let saved = match std::fs::read(&file) {
-            Ok(raw) => serde_json::from_slice::<std::collections::HashMap<u64, ExportDestination>>(&raw).unwrap_or_else(|e| {
-                log::warn!("export destinations in {} unreadable ({e}); an export under way at the last quit is forgotten", file.display());
-                Default::default()
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
-            Err(e) => {
-                log::warn!("export destinations in {} could not be read ({e})", file.display());
-                Default::default()
-            }
-        };
-        let _ = self.file.set(file);
-        let Ok(mut paths) = self.paths.lock() else { return };
-        for (ticket, mut destination) in saved {
-            // The installed app and a development preview share this record. A save whose Scarlet is still open is
-            // that Scarlet's work: its partial file stays, and so does the record of who is writing it.
-            let saving = destination.saver.as_ref().is_some_and(|(pid, scarlet)| crate::host::spawn::still_runs(*pid, scarlet));
-            if !saving {
-                destination.saver = None;
-                if let Some(temp) = destination.temp.take() {
-                    // Only ever a temporary file this app created next to the chosen destination.
-                    let ours = temp.parent() == destination.path.parent()
-                        && temp.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".tmp"));
-                    if ours && std::fs::remove_file(&temp).is_ok() { log::info!("removed a partial export at {}", temp.display()); }
+    pub fn load(&self, file: PathBuf) {
+        let stored = self.file.get_or_init(|| file);
+        let loaded = (|| -> io::Result<()> {
+            let mut paths = self.paths.lock().map_err(|_| io::Error::other("export destinations unavailable"))?;
+            let _lock = Self::lock(stored)?;
+            let mut saved = match Self::read(stored) {
+                Ok(saved) => saved,
+                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                    log::warn!("export destinations in {} unreadable ({e}); an export under way at the last quit is forgotten", stored.display());
+                    HashMap::new()
+                }
+                Err(e) => return Err(e),
+            };
+            for destination in saved.values_mut() {
+                if !destination.saving() {
+                    destination.clear_partial();
                 }
             }
-            destination.kept = true;
-            paths.insert(ticket, destination);
-        }
-        Self::persist(self.file.get(), &paths);
-    }
-
-    fn persist(file: Option<&std::path::PathBuf>, paths: &std::collections::HashMap<u64, ExportDestination>) {
-        let Some(file) = file else { return };
-        let kept: std::collections::HashMap<&u64, &ExportDestination> = paths.iter().filter(|(_, d)| d.kept).collect();
-        let written = (|| -> Result<(), String> {
-            let dir = file.parent().ok_or("no folder")?;
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
-            serde_json::to_writer(&mut temp, &kept).map_err(|e| e.to_string())?;
-            temp.persist(file).map_err(|e| e.to_string())?;
+            Self::persist(stored, &saved)?;
+            *paths = saved;
             Ok(())
         })();
-        if let Err(e) = written { log::warn!("could not record export destinations: {e}"); }
+        if let Err(e) = loaded {
+            log::warn!("export destinations in {} could not be read or recovered ({e})", stored.display());
+        }
     }
 
-    fn change<T>(&self, change: impl FnOnce(&mut std::collections::HashMap<u64, ExportDestination>) -> (T, bool)) -> Result<T, String> {
+    fn start_save(&self, ticket: u64, temp: &Path, saver: (u32, String)) -> Result<bool, String> {
+        self.change(|paths| match paths.get_mut(&ticket) {
+            Some(destination) if !destination.kept => (Ok(false), false),
+            Some(destination) if destination.saving() => (Err(EXPORT_ALREADY_SAVING.to_owned()), false),
+            Some(destination) => {
+                destination.clear_partial();
+                (destination.temp, destination.saver) = (Some(temp.to_path_buf()), Some(saver));
+                (Ok(true), true)
+            }
+            None => (Err("Export destination expired".to_owned()), false),
+        })?
+    }
+
+    fn finish_save(&self, ticket: u64, temp: &Path, kept: bool, saved: bool) -> Result<(), String> {
+        self.change(|paths| {
+            let Some(destination) = paths.get_mut(&ticket) else { return ((), false) };
+            if kept && destination.temp.as_deref() != Some(temp) { return ((), false) }
+            if kept && !saved {
+                (destination.temp, destination.saver) = (None, None);
+                return ((), true);
+            }
+            paths.remove(&ticket);
+            ((), kept)
+        })
+    }
+
+    // Lock a separate file that stays put while the destinations record is atomically replaced.
+    fn lock(file: &Path) -> io::Result<File> {
+        let dir = file.parent().ok_or_else(|| io::Error::other("no folder"))?;
+        fs::create_dir_all(dir)?;
+        let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(file.with_extension("lock"))?;
+        lock.lock()?;
+        Ok(lock)
+    }
+
+    fn read(file: &Path) -> io::Result<HashMap<u64, ExportDestination>> {
+        let raw = match fs::read(file) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(e) => return Err(e),
+        };
+        let mut saved: HashMap<u64, ExportDestination> = serde_json::from_slice(&raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        for destination in saved.values_mut() { destination.kept = true; }
+        Ok(saved)
+    }
+
+    fn persist(file: &Path, paths: &HashMap<u64, ExportDestination>) -> io::Result<()> {
+        let kept: HashMap<_, _> = paths.iter().filter(|(_, d)| d.kept).collect();
+        let dir = file.parent().ok_or_else(|| io::Error::other("no folder"))?;
+        let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        serde_json::to_writer(&mut temp, &kept)?;
+        temp.as_file().sync_all()?;
+        temp.persist(file)?;
+        Ok(())
+    }
+
+    fn change<T>(&self, change: impl FnOnce(&mut HashMap<u64, ExportDestination>) -> (T, bool)) -> Result<T, String> {
         let mut paths = self.paths.lock().map_err(|_| "Export unavailable")?;
-        let (value, durable) = change(&mut paths);
-        if durable { Self::persist(self.file.get(), &paths); }
-        Ok(value)
+        let Some(file) = self.file.get() else { return Ok(change(&mut paths).0) };
+        let changed = (|| -> io::Result<T> {
+            let _lock = Self::lock(file)?;
+            let mut current = Self::read(file)?;
+            // Only uncommitted picker selections belong exclusively to this instance.
+            current.extend(paths.iter().filter(|(_, d)| !d.kept).map(|(ticket, d)| (*ticket, d.clone())));
+            let (value, durable) = change(&mut current);
+            if durable { Self::persist(file, &current)?; }
+            *paths = current;
+            Ok(value)
+        })();
+        changed.map_err(|e| {
+            log::warn!("could not access export destinations: {e}");
+            "Export destinations could not be saved or read.".to_string()
+        })
     }
 }
 
@@ -219,13 +291,9 @@ pub fn discard_video_export(destinations: State<'_, ExportDestinations>, ticket:
     destinations.change(|paths| { let kept = paths.remove(&ticket).is_some_and(|d| d.kept); ((), kept) })
 }
 
-async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &std::path::Path, started: impl FnOnce(&std::path::Path)) -> Result<String, String> {
+async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &Path, temp: tempfile::NamedTempFile) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
-    let parent = path.parent().ok_or("Unsupported save destination")?;
-    // The error names the folder it could not write in. The editor chose it, so only the kind of failure is kept.
-    let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Could not write to the chosen folder ({})", e.kind()))?;
     let (file, temp_path) = temp.into_parts();
-    started(&temp_path);
     let mut file = tokio::io::BufWriter::with_capacity(1024 * 1024, tokio::fs::File::from_std(file));
 
     // The isolated native demo has no engine. Its only downloadable assets are the sample video and OTIO JSON.
@@ -264,28 +332,21 @@ async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &s
 #[tauri::command]
 pub async fn finish_video_export(app: AppHandle, state: State<'_, AppState>, destinations: State<'_, ExportDestinations>, ticket: u64, url: String) -> Result<String, String> {
     let path = destinations.change(|paths| (paths.get(&ticket).map(|d| d.path.clone()), false))?.ok_or("Export destination expired")?;
-    // Recorded with the partial file, so another Scarlet that opens on this library leaves it alone while this one
-    // is still open. Read off the async threads: on Windows it starts PowerShell.
-    let saver = tauri::async_runtime::spawn_blocking(crate::host::spawn::this_scarlet).await.ok();
-    // A quit during the save leaves the destination on record, with the partial file to remove at the next launch.
-    let saved = save_engine_file(&app, &state, &url, &path, |temp| {
-        let _ = destinations.change(|paths| match paths.get_mut(&ticket) {
-            Some(destination) if destination.kept => { (destination.temp, destination.saver) = (Some(temp.to_path_buf()), saver); ((), true) }
-            _ => ((), false),
-        });
-    }).await;
+    let parent = path.parent().ok_or("Unsupported save destination")?;
+    let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Could not write to the chosen folder ({})", e.kind()))?;
+    let partial = temp.path().to_path_buf();
+    // Process inspection can start PowerShell on Windows. Claim the ticket before writing any bytes.
+    let saver = tauri::async_runtime::spawn_blocking(crate::host::spawn::this_scarlet).await.map_err(|e| e.to_string())?;
+    let kept = destinations.start_save(ticket, &partial, saver)?;
+    let saved = save_engine_file(&app, &state, &url, &path, temp).await;
     // Never where it went: the editor typed the file's name.
     match &saved {
         Ok(_) => log::info!("export saved"),
         Err(e) => log::warn!("export could not be saved: {}", e.replace(&*path.to_string_lossy(), "…")),
     }
-    // A save cut short by quitting is retried at the next launch. Otherwise the renderer discards the ticket.
-    let retry = saved.is_err();
-    destinations.change(|paths| {
-        if retry && paths.get(&ticket).is_some_and(|d| d.kept) { return ((), false) }
-        let kept = paths.remove(&ticket).is_some_and(|d| d.kept);
-        ((), kept)
-    })?;
+    // A save cut short by quitting is retried at the next launch. A returned failure leaves the ticket available for retry.
+    // The chosen file is already complete on success. A ledger error is logged separately from that outcome.
+    let _ = destinations.finish_save(ticket, &partial, kept, saved.is_ok());
     saved
 }
 
@@ -490,6 +551,72 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn two_instances_keep_both_exports_and_do_not_restore_a_discarded_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("export-destinations.json");
+        let first = ExportDestinations::default();
+        let second = ExportDestinations::default();
+        first.load(record.clone());
+        second.load(record.clone());
+
+        let keep = |app: &ExportDestinations, ticket| {
+            app.change(|paths| {
+                paths.insert(ticket, ExportDestination {
+                    path: dir.path().join(format!("Cut{ticket}.mp4")),
+                    temp: None, saver: None, kept: true,
+                });
+                ((), true)
+            }).unwrap();
+        };
+        let together = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| { together.wait(); keep(&first, 1); });
+            together.wait();
+            keep(&second, 2);
+        });
+        let reopened = ExportDestinations::default();
+        reopened.load(record.clone());
+        for ticket in [1, 2] {
+            assert!(reopened.paths.lock().unwrap().contains_key(&ticket));
+        }
+        reopened.change(|paths| { paths.remove(&1); ((), true) }).unwrap();
+        keep(&first, 3);
+        let reopened_again = ExportDestinations::default();
+        reopened_again.load(record);
+        let kept = reopened_again.paths.lock().unwrap();
+        assert!(!kept.contains_key(&1));
+        assert!(kept.contains_key(&2) && kept.contains_key(&3));
+    }
+
+    #[test]
+    fn a_second_instance_cannot_take_over_an_active_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("export-destinations.json");
+        let first = ExportDestinations::default();
+        let second = ExportDestinations::default();
+        first.load(record.clone());
+        second.load(record);
+        first.change(|paths| {
+            paths.insert(1, ExportDestination {
+                path: dir.path().join("Cut.mp4"), temp: None, saver: None, kept: true,
+            });
+            ((), true)
+        }).unwrap();
+
+        let a = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let b = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let saver = crate::host::spawn::this_scarlet();
+        assert!(first.start_save(1, a.path(), saver.clone()).unwrap());
+        assert_eq!(second.start_save(1, b.path(), saver.clone()).unwrap_err(), EXPORT_ALREADY_SAVING);
+        second.finish_save(1, b.path(), true, true).unwrap();
+        assert!(a.path().exists());
+        first.finish_save(1, a.path(), true, false).unwrap();
+        assert!(second.start_save(1, b.path(), saver).unwrap());
+        second.finish_save(1, b.path(), true, true).unwrap();
+        assert_eq!(first.change(|paths| (paths.contains_key(&1), false)), Ok(false));
+    }
 
     #[test]
     fn keeps_an_exports_destination_across_a_restart_and_removes_a_killed_saves_partial_file() {

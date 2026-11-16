@@ -304,6 +304,18 @@ it("treats a left-over export whose destination is gone as already settled, with
   expect(lines).toEqual([]);
 });
 
+it("leaves settlement to the other Scarlet window when it already has the resumed export", async () => {
+  const kept: Render = { ...render, state: "done", export: { owner: "11111111-1111-4111-8111-111111111111", name: NAME, ...DESTINATION } };
+  vi.spyOn(api, "exports").mockResolvedValue({ renders: [kept] });
+  asked.save.mockRejectedValue("Export is already saving in another Scarlet window.");
+  await resumeExports();
+  await vi.waitFor(() => expect(job()).toBeUndefined());
+  expect(asked.save).toHaveBeenCalledTimes(1);
+  expect(asked.release).not.toHaveBeenCalled();
+  expect(asked.discard).not.toHaveBeenCalled();
+  expect(lines).toEqual([]);
+});
+
 it("counts an export's percent only while it moves", () => {
   const job: ExportJob = { file: video, context: "c", version: "v", phase: "rendering", progress: 0.42, cancel: () => {} };
   expect(exportCounting(job)).toBe(true);

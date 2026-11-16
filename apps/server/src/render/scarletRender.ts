@@ -9,7 +9,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import * as R from "@scarlet/render";
 import { originalPlaybackType } from "../files.js";
-import { clipRange, rangesOverlap, sha256, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { sha256, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import type { ProbeResult, RenderAdapter, RenderOptions, WaveformCache, WaveformData } from "./adapter.js";
 
 function hwaccel(opts: RenderOptions): R.HwAccel {
@@ -19,10 +19,10 @@ function hwaccel(opts: RenderOptions): R.HwAccel {
 
 /** A stored hash identifies the current bytes only while its filesystem stamp matches.
  * Give unverified originals a file-local cache identity so they cannot reuse a different source’s picture. */
-async function cacheInputs(project: Project, timeline: Timeline, root: string, range?: TimeRange): Promise<Project> {
+async function cacheInputs(project: Project, timeline: Timeline, root: string): Promise<Project> {
   const used = new Set<string>();
   for (const track of timeline.tracks) for (const clip of track.clips) {
-    if (clip.kind === "media" && clip.enabled !== false && (!range || rangesOverlap(clipRange(clip), range))) used.add(clip.mediaId);
+    if (clip.kind === "media" && clip.enabled !== false) used.add(clip.mediaId);
   }
   const media = await Promise.all(project.media.filter(asset => used.has(asset.id)).map(async asset => {
     const file = join(root, asset.path);
@@ -90,7 +90,8 @@ export const scarletRenderAdapter: RenderAdapter = {
   },
 
   async renderPlaybackSegment(project, timeline, range, cacheDir, output, opts) {
-    const inputs = await cacheInputs(project, timeline, opts.mediaRoot, range);
+    // The playback window includes footage outside the range when a transition needs its handles.
+    const inputs = await cacheInputs(project, timeline, opts.mediaRoot);
     // A renderer that reports nothing for a playback section resolves with nothing.
     const result = (await R.renderPlaybackSegment(inputs, timeline, range, cacheDir, output, {
       ...opts, pictureSource: previewPictures(opts.mediaRoot),

@@ -16,6 +16,18 @@ afterEach(() => {
   db.close();
 });
 
+it("orders project snapshots even for writes by an older engine that leave Last edited alone", () => {
+  const project = repos.projects.insert(createProject("Interview"));
+  db.prepare("UPDATE projects SET media_paused = 1 WHERE id = ?").run(project.id);
+  const paused = repos.projects.get(project.id)!;
+  expect(paused).toMatchObject({ rowRevision: 1, mediaPaused: true, updatedAt: project.updatedAt });
+
+  const renamed = repos.projects.update(project.id, { name: "Renamed interview" });
+  expect(renamed).toMatchObject({ rowRevision: 2, updatedAt: project.updatedAt });
+  repos.projects.saveCompletedThreads(project.id, { thread_a: "filed" });
+  expect(repos.projects.header(project.id)).toMatchObject({ rowRevision: 3, completedThreads: { thread_a: "filed" } });
+});
+
 it("moves Last edited only when the video changes, and lists a renamed, archived, paused or restored project where it was", () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2030-01-07T09:00:00Z"));

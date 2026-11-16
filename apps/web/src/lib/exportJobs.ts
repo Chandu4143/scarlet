@@ -97,6 +97,7 @@ async function run(projectId: string, file: ExportFile, context: string, version
   let ticket: number | null = resumed?.export?.ticket ?? null;
   const wait = new AbortController();
   let cancelled = false;
+  let savingElsewhere = false;
   const owner = resumed?.export?.owner ?? crypto.randomUUID();
   let ownedId = resumed?.id;
   let job: ExportJob = { file, context, version, projectSettings: resumed?.projectSettings ?? project?.project.settings,
@@ -214,6 +215,8 @@ async function run(projectId: string, file: ExportFile, context: string, version
     ticket = null;
     result = { phase: "done", path: saved, context: job.context };
   } catch (err) {
+    savingElsewhere = !!resumed && errorMessage(err) === "Export is already saving in another Scarlet window.";
+    if (savingElsewhere) return;
     // A resumed export whose destination is gone was already saved or discarded before the restart.
     const settled = resumed && errorMessage(err) === "Export destination expired";
     if (!cancelled && !settled) {
@@ -231,7 +234,9 @@ async function run(projectId: string, file: ExportFile, context: string, version
     finish(result);
     if (result?.phase === "done" && file.format === "mp4") useUiStore.getState().offerExportStar();
     // Tell the engine the export is settled. If it can't hear, leave the destination for the next launch to finish.
-    const released = !ownedId || cancelled || await api.releaseRender(ownedId, owner).then(() => true, () => false);
-    if (released) await discard();
+    if (!savingElsewhere) {
+      const released = !ownedId || cancelled || await api.releaseRender(ownedId, owner).then(() => true, () => false);
+      if (released) await discard();
+    }
   }
 }

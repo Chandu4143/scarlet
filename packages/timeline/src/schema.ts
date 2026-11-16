@@ -377,6 +377,8 @@ export const StyleGuide = z.object({
 export type StyleGuide = z.infer<typeof StyleGuide>;
 
 export const Project = z.object({
+  /** Orders saved project metadata independently of the timeline head and the displayed Last edited time. */
+  rowRevision: z.number().int().nonnegative().optional(),
   /** Last conversation revision filed by the editor, independently of the timeline head. */
   completedThreads: z.record(z.string()).optional(),
   mediaPaused: z.boolean().optional(),

@@ -2,8 +2,8 @@ import { join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { extractFrame, extractFilmstrip, fileInDirectory, fileInDirectoryAsync, probeMedia, renderTimelineFrame } from "@scarlet/render";
-import { clipEnd, FILMSTRIP_SEEK_BATCH, MAX_CUT_PLAYBACK_SECONDS, planPlaybackSegments, planSegments, snapToFrame, timelineDuration, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { TRANSITION_RENDER_REVISION, extractFrame, extractFilmstrip, fileInDirectory, fileInDirectoryAsync, probeMedia, renderTimelineFrame } from "@scarlet/render";
+import { clipEnd, FILMSTRIP_SEEK_BATCH, MAX_CUT_PLAYBACK_SECONDS, planPlaybackSegments, planSegments, planTransitions, snapToFrame, timelineDuration, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import { Hono } from "hono";
 import { z } from "zod/v3";
 import { fullRenderContext, RenderKind, RenderRequest, type Render } from "@scarlet/shared";
@@ -89,7 +89,7 @@ export function renderRoutes(ctx: Ctx) {
   }
   // The strip requests several samples from the same immutable cut. Parse it once.
   let sampledTimeline: Timeline | undefined;
-  let sourcesAt: ReturnType<typeof frameSources> | undefined;
+  let sourcesAt: { projectInputs: string; read: ReturnType<typeof frameSources> } | undefined;
   let sampledDuration = 0;
   let sampledProject: { revision: string; project: Project; inputs: string; paths: Map<string, string> } | undefined;
   function frameProject(id: string) {
@@ -125,10 +125,14 @@ export function renderRoutes(ctx: Ctx) {
     if (sampledTimeline?.projectId !== project.id || sampledTimeline.version !== version) {
       sampledTimeline = ctx.repos.versions.get(project.id, version)?.timeline;
       sampledDuration = sampledTimeline ? timelineDuration(sampledTimeline) : 0;
-      sourcesAt = sampledTimeline && frameSources(sampledTimeline);
+      sourcesAt = undefined;
     }
     const timeline = sampledTimeline;
     if (!timeline) throw notFound("timeline version");
+    if (sourcesAt?.projectInputs !== inputs) {
+      const { timeline: picture } = planTransitions(timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
+      sourcesAt = { projectInputs: inputs, read: frameSources(picture) };
+    }
     const frame = numberParam(c.req.query("frame"), "frame");
     const { fps, width, height } = project.settings;
     if (!Number.isSafeInteger(frame) || frame < 0 || frame >= Math.ceil(sampledDuration * fps - 1e-6))
@@ -136,7 +140,9 @@ export function renderRoutes(ctx: Ctx) {
     const range = { start: frame / fps, end: (frame + 1) / fps };
     const monitor = c.req.query("view") === "monitor";
     const size = monitor ? 960 : c.req.query("w") === "640" ? 640 : 160;
-    const key = createHash("sha256").update(JSON.stringify([project.id, version, frame, size, inputs, sourcesAt!(range, paths, ctx.paths.media(project.id))])).digest("hex");
+    // A still can have the same source files after a compositor fix. Give its updated pixels a new ETag too.
+    const key = createHash("sha256").update(JSON.stringify([project.id, version, frame, size, inputs,
+      sourcesAt.read(range, paths, ctx.paths.media(project.id)), TRANSITION_RENDER_REVISION])).digest("hex");
     const sameFormat = c.req.query("format") === `${width}x${height}@${fps}`;
     return requestFrame(c.req.raw, project.id, key, monitor || c.req.query("priority") === "interactive", sameFormat ? "private, no-cache" : "no-store", async signal => {
       const time = frame / fps;
@@ -352,7 +358,9 @@ export function renderRoutes(ctx: Ctx) {
       return playbackFile(c.req.raw, render);
     }
     if (render.state !== "done" || !render.path) throw notFound("render file (not finished)");
-    return serveFile(c.req.raw, join(ctx.paths.renders(render.projectId), render.path), { cacheControl: "private, max-age=31536000, immutable" });
+    // An export still owed can be rebuilt under the same id after an upgrade.
+    const cacheControl = render.export ? "private, no-store" : "private, max-age=31536000, immutable";
+    return serveFile(c.req.raw, join(ctx.paths.renders(render.projectId), render.path), { cacheControl });
   });
 
   r.get("/projects/:id/renders", (c) => {

@@ -7,7 +7,7 @@ import type { MakeShortsRequest, ShortsPlanRequest, Task, User } from "@scarlet/
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { actorFor, logActivity, quote } from "./activity.js";
-import { createTask } from "./tasks.js";
+import { createTask, FINISHED_TASK, saveTask } from "./tasks.js";
 import { resolveTimeline, storeVersion } from "./timeline.js";
 import { recoverSourcePreviews } from "./sourcePreviews.js";
 import { cloneOrSteadyCopy } from "./steadyCopy.js";
@@ -53,11 +53,19 @@ function shortsSkillIds(ctx: Ctx): string[] | undefined {
 async function copyMedia(ctx: Ctx, from: Project, to: string, asset: MediaAsset, signal?: AbortSignal): Promise<MediaAsset> {
   const id = newId("med");
   const path = id + extname(asset.path);
-  await cloneOrSteadyCopy(join(ctx.paths.media(from.id), asset.path), join(ctx.paths.media(to), path), signal);
-  // The clone is byte for byte the file that was fingerprinted, so the fingerprint holds for it: its previews can be
-  // shared under the recording's hash.
-  const info = await stat(join(ctx.paths.media(to), path));
-  const fingerprintStamp = asset.fingerprintStamp && asset.hash ? { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs } : undefined;
+  const source = join(ctx.paths.media(from.id), asset.path);
+  const destination = join(ctx.paths.media(to), path);
+  const changed = () => conflict("media_changed", `“${asset.name}” changed after it was imported. Reimport the recording before making shorts.`);
+  const sameStamp = (a: NonNullable<MediaAsset["fingerprintStamp"]>, b: NonNullable<MediaAsset["fingerprintStamp"]>) =>
+    a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+  const before = await stat(source);
+  if (asset.fingerprintStamp && !sameStamp(before, asset.fingerprintStamp)) throw changed();
+  await cloneOrSteadyCopy(source, destination, signal);
+  if (!sameStamp(before, await stat(source))) throw changed();
+  // Older imports have a hash without a stat stamp. Verify the copy before inheriting its transcript and previews.
+  if (asset.hash && !asset.fingerprintStamp && await ctx.render.hashFile(destination, undefined, signal) !== asset.hash) throw changed();
+  const { size, mtimeMs, ctimeMs } = await stat(destination);
+  const fingerprintStamp = asset.hash ? { size, mtimeMs, ctimeMs } : undefined;
   let transcriptId: string | undefined;
   const transcript = asset.transcriptId ? ctx.repos.transcripts.get(asset.transcriptId) : null;
   if (transcript) {
@@ -175,10 +183,15 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
  * than the editor allowed, go to the trash: the editor asked for up to that many.
  */
 export function planShorts(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRequest) {
+  return ctx.db.transaction(() => saveShortsPlan(ctx, user, taskId, plan), "immediate")();
+}
+
+function saveShortsPlan(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRequest) {
   const task = ctx.repos.tasks.get(taskId);
   if (!task) throw notFound("task");
   const short = task.context.short;
   if (!short || short.index !== 1) throw badRequest("not_first_short", "Only the first short’s run chooses the moments, in a request Make shorts started.");
+  if (FINISHED_TASK.has(task.state)) throw conflict("task_finished", "This short’s request has already ended.");
   if (plan.moments.length > short.count) throw badRequest("too_many_moments", `The editor asked for up to ${short.count}.`);
   if (!ctx.repos.projects.header(task.projectId)) throw notFound("project");
   // Every short starts as a copy of the same version of the long video, so the moments are times on it.
@@ -191,29 +204,28 @@ export function planShorts(ctx: Ctx, user: User, taskId: string, plan: ShortsPla
   }
   const already = ctx.repos.tasks.select("json_extract(json, '$.context.short.sourceProjectId') = ? AND json_extract(json, '$.context.short.index') > 1 AND project_id IN (SELECT value FROM json_each(?))",
     [short.sourceProjectId, JSON.stringify(short.projectIds)]);
-  if (already.length) throw conflict("moments_chosen", "The moments are already chosen and the other shorts have started.");
-  return ctx.db.transaction(() => {
-    const started: Array<{ projectId: string; name: string; moment: { start: number; end: number; title: string }; taskId?: string }> = [];
-    plan.moments.forEach((moment, i) => {
-      const projectId = short.projectIds[i]!;
-      const sibling = ctx.repos.projects.header(projectId);
-      if (!sibling) return;
-      const named = ctx.repos.projects.update(projectId, { name: moment.title });
-      ctx.bus.publish({ type: "project.updated", projectId, project: named });
-      const entry: (typeof started)[number] = { projectId, name: moment.title, moment };
-      if (i > 0) {
-        entry.taskId = createTask(ctx, {
-          projectId, kind: "edit", agent: task.agent, model: task.model, effort: task.effort, fast: task.fast, serviceTier: task.serviceTier,
-          instruction: task.instruction, context: { short: { ...short, index: i + 1, moment }, skillIds: task.context.skillIds }, createdBy: task.createdBy,
-        }).id;
-      }
-      started.push(entry);
-    });
-    for (const projectId of short.projectIds.slice(plan.moments.length)) {
-      if (!ctx.repos.projects.header(projectId)) continue;
-      ctx.repos.projects.softDelete(projectId);
-      logActivity(ctx, { projectId, actor: actorFor(user), type: "project.deleted", summary: "Scarlet found fewer moments than the editor allowed, so this short wasn’t needed" });
+  if (short.moment || already.length) throw conflict("moments_chosen", "The moments are already chosen.");
+  const started: Array<{ projectId: string; name: string; moment: { start: number; end: number; title: string }; taskId?: string }> = [];
+  plan.moments.forEach((moment, i) => {
+    const projectId = short.projectIds[i]!;
+    const sibling = ctx.repos.projects.header(projectId);
+    if (!sibling) return;
+    const named = ctx.repos.projects.update(projectId, { name: moment.title });
+    ctx.bus.publish({ type: "project.updated", projectId, project: named });
+    const entry: (typeof started)[number] = { projectId, name: moment.title, moment };
+    if (i === 0) saveTask(ctx, { ...task, context: { ...task.context, short: { ...short, moment } } });
+    else {
+      entry.taskId = createTask(ctx, {
+        projectId, kind: "edit", agent: task.agent, model: task.model, effort: task.effort, fast: task.fast, serviceTier: task.serviceTier,
+        instruction: task.instruction, context: { short: { ...short, index: i + 1, moment }, skillIds: task.context.skillIds }, createdBy: task.createdBy,
+      }).id;
     }
-    return { shorts: started, removed: short.projectIds.slice(plan.moments.length) };
-  }, "immediate")();
+    started.push(entry);
+  });
+  for (const projectId of short.projectIds.slice(plan.moments.length)) {
+    if (!ctx.repos.projects.header(projectId)) continue;
+    ctx.repos.projects.softDelete(projectId);
+    logActivity(ctx, { projectId, actor: actorFor(user), type: "project.deleted", summary: "Scarlet found fewer moments than the editor allowed, so this short wasn’t needed" });
+  }
+  return { shorts: started, removed: short.projectIds.slice(plan.moments.length) };
 }

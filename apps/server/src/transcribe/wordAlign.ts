@@ -272,7 +272,7 @@ export async function alignTranscript(ctx: { paths: { root: string; tmp: string 
     emissions?: string; resume?: AlignmentCheckpoint;
     /** Asked before each turn: something this alignment should let finish first, or nothing. */
     hold?: () => Promise<unknown> | undefined;
-    onProgress?: (fraction: number) => void; onTurn?: AlignmentTurn }) {
+    onProgress?: (fraction: number) => void; onTurn?: AlignmentTurn; onFailure?: () => void }) {
   const { source, language, segments, signal, work, onProgress, hold } = input;
   if (!alignsLanguage(language) || !segments.some(s => s.words.length)) return segments;
   let placed = segments;
@@ -291,6 +291,7 @@ export async function alignTranscript(ctx: { paths: { root: string; tmp: string 
   } catch (error) {
     signal.throwIfAborted();
     ctx.log(`[align] ${basename(source)}: ${(error as Error).message}`);
+    input.onFailure?.();
     return placed;
   } finally {
     if (!input.wav) await rm(wav, { force: true });
