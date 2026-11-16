@@ -87,29 +87,25 @@
 /* What the message revises, as a tag inside the box before the text. Its × makes the message a new edit. */
 .composer-tag { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 3px; max-width: 55%; margin-right: 4px; padding: 0 2px 0 7px;
   border: 1px solid var(--color-line); border-radius: 4px; font-size: 11.5px; line-height: 20px; color: var(--color-muted); white-space: nowrap; }
-/* The edit point stays in the composer alongside the controls that clear its aim. */
-.composer-aim { flex: none; align-self: center; display: inline-flex; align-items: center; }
-.composer-aim-icon { position: relative; display: inline-grid; place-items: center; width: 26px; height: 28px; padding: 0; border: 0; border-radius: 6px;
-  background: none; color: var(--color-muted); cursor: pointer; }
-.composer-aim-icon:hover, .composer-row:has(textarea:focus) .composer-aim-icon { color: var(--color-fg); }
-.composer-aim-icon:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 1px; }
-.composer-aim-clear { display: inline-grid; place-items: center; width: 16px; height: 20px; padding: 0; border: 0; border-radius: 4px;
-  background: none; color: var(--color-muted); opacity: 0; cursor: pointer; }
-.composer-aim:is(:hover, :focus-within) .composer-aim-clear { opacity: 1; }
+.composer-aim { flex: 0 1 auto; align-self: flex-start; min-width: 0; max-width: 48%; margin-top: 3px; }
+.composer-aim-button { display: flex; align-items: center; gap: 4px; max-width: 100%; min-height: 26px; padding: 0 5px 0 7px;
+  border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); color: var(--color-fg);
+  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer; }
+.composer-aim-button:is(:hover, [aria-expanded="true"]) { background: var(--color-raised); }
+.composer-aim-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.composer-aim-more, .composer-aim-button > svg { flex: none; color: var(--color-muted); }
+.composer-aim-button > svg { transform: rotate(90deg); }
+.composer-aim-button[aria-expanded="true"] > svg { transform: rotate(-90deg); }
+.composer-aim-card { position: absolute; z-index: 6; bottom: calc(100% + 8px); left: 0; min-width: min(176px, 100%); width: max-content;
+  max-width: 100%; padding: 4px; border: 1px solid var(--color-line); border-radius: 8px; background: var(--color-panel);
+  box-shadow: 0 6px 20px #0005; }
+.composer-aim-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 7px;
+  color: var(--color-fg); font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.composer-aim-clear { flex: none; display: inline-grid; place-items: center; width: 26px; height: 28px; padding: 0; border: 0;
+  border-radius: 5px; background: none; color: var(--color-muted); cursor: pointer; }
 .composer-aim-clear:hover:not(:disabled) { background: var(--color-raised); color: var(--color-fg); }
-.composer-aim-clear:disabled { visibility: hidden; }
-.composer-aim-sheen { display: none; }
-@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-  .composer-aim-sheen { display: block; position: absolute; inset: 0; margin: auto; pointer-events: none;
-    color: #fff; filter: drop-shadow(0 0 3px var(--color-accent-soft)); animation: composer-aim-shimmer .65s ease-out both; }
-  @keyframes composer-aim-shimmer {
-    from { clip-path: inset(-4px 100% -4px -4px); opacity: 0; }
-    30% { opacity: 1; }
-    70% { opacity: 1; }
-    to { clip-path: inset(-4px -4px -4px 100%); opacity: 0; }
-  }
-}
-/* Hover or focus on the edit point lights what the message is about on the timeline. */
+.composer-aim-clear:disabled { color: var(--color-dim); cursor: default; }
+/* Hover or focus on the target lights what the message is about on the timeline. */
 .timeline-range.is-lit { box-shadow: 0 0 0 2px rgba(244, 241, 233, .4); }
 .simple-timeline-band.is-lit { box-shadow: 0 0 0 2px rgba(255, 160, 156, .55); }
 .composer-tag-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -139,9 +135,10 @@
 .composer-model [role="dialog"] { left: auto; right: 0; max-width: 100%; }
 .composer-model [aria-haspopup="dialog"] { min-width: 0; min-height: 30px; padding: 2px 6px; border-color: transparent; }
 .composer-model [aria-haspopup="dialog"]:hover { border-color: var(--color-line); }
-.composer-row { display: flex; align-items: flex-end; gap: 5px; }
+.composer-row { position: relative; display: flex; align-items: flex-end; gap: 5px; }
 /* The hidden text sizes the field as its value or available width changes. */
 .composer-message { position: relative; flex: 1; min-width: 0; max-height: min(10rem, 26vh); overflow: hidden; }
+.composer-aim:has(+ .composer-tag) ~ .composer-message { min-width: min(64px, 23%); }
 .composer-message > * { display: block; padding: 6px 0; font: 14px/20px var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer-message > span { visibility: hidden; }
 .composer-message > textarea { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: 0; outline: none; background: transparent; overflow-y: auto; }

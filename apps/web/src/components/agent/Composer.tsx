@@ -75,7 +75,6 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const [refused, setRefused] = useState(false);
   const { effective, none, unavailableReason } = useAgentAvailability();
   const [busy, setBusy] = useState(false);
-  const [aimCue, setAimCue] = useState(0);
   const voiceAnchor = useRef<AgentContext | null | undefined>(undefined);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputId = useId();
@@ -329,9 +328,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const tag = rewording ? undefined : targetTag;
   // A stretch marked on the timeline's ruler rides with the message, beside the tag of the cut or edit it is aimed at.
   const marked = rewording ? undefined : markedRangeOf(context);
-  const markedWords = marked && clockRange(marked.start, marked.end);
-  // "Answer" and "Reply" say in words who the message goes to. Anything with a place (a cut, an edit, a moment, a
-  // marked stretch) folds into the edit-point icon, which keeps one size however much it holds.
+  const markedWords = marked ? clockRange(marked.start, marked.end) : "";
+  // "Answer" and "Reply" name who the message goes to. The target label shows the place it is about.
   const wordTag = tag === "Answer" || tag === "Reply" ? tag : undefined;
   const placeTag = wordTag ? undefined : tag;
   const takeOffTarget = () => {
@@ -340,16 +338,18 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   };
   const aimItems: AimItem[] = [
     ...placeTag ? [{ key: `target:${placeTag}`, name: placeTag,
+      displayName: placeTag.startsWith("Cut at ") ? placeTag.slice("Cut at ".length) : undefined,
       clearLabel: targetIsPoint ? `Take “${placeTag}” off: the message is about the whole video` : `Start a new edit instead of ${tagAct!.charAt(0).toLowerCase()}${tagAct!.slice(1)}`,
       onClear: takeOffTarget }] : [],
-    ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: markedWords!,
+    ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: `Range ${markedWords}`,
+      displayName: markedWords.replace(" – ", "–"),
       clearLabel: `Take the marked range ${markedWords} off the message`, onClear: () => {
         const was = context && context !== "whole" ? context : undefined;
         setContext(withMarkedRange(context, undefined), was?.changeId ? was : undefined);
         inputRef.current?.focus();
       } }] : [],
   ];
-  const cueAim = () => setAimCue(cue => cue + 1);
+  const [primaryAim, ...additionalAims] = aimItems;
   const saveLabel = rewording ? "Save the new words" : sendLabel;
   function changeText(text: string) {
     dismissFirstEditHint();
@@ -401,15 +401,9 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           attach(project.id, files);
         }}>
         <label htmlFor={inputId} className="composer-destination sr-only">{rewording ? "Changing the words of a queued request" : <>{mode}{editTitle && ` ${editTitle}`}</>}</label>
-        <div className="composer-row" onClick={e => {
-          if (e.target === inputRef.current && aimItems.length) cueAim();
-        }} onAnimationEnd={e => {
-          if (e.animationName === "composer-aim-shimmer") setAimCue(0);
-        }}>
-          {aimItems.length > 0 && <ComposerAim items={aimItems} cue={aimCue} onClick={() => {
-            inputRef.current?.focus();
-            cueAim();
-          }} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
+        <div className="composer-row">
+          {primaryAim && <ComposerAim items={[primaryAim, ...additionalAims]}
+            disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
           {wordTag && <span className="composer-tag" title={tagAct}>
             <span className="composer-tag-name">{wordTag}</span>
             {/* A spoken message stays where it was said until it is out: aiming the box elsewhere would drop it. */}
