@@ -7163,6 +7163,27 @@ it("leaves the flagged edit open and playing when the last call applies the pass
   expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe(SUMMARY);
 });
 
+it("keeps the flagged edits listed in the chat once the last call applies the pass", async () => {
+  finishedPass();
+  flaggedPart();
+  await show();
+  await act(async () => {});
+  await reviewCalls();
+  await press("a");
+  await press("a");
+  // Listed with the calls, the flagged edit waits after them.
+  expect(passRows().some(r => r.textContent?.includes("wrap"))).toBe(true);
+  await press("s");
+  await act(async () => {});
+  // The pass goes in and its calls' list goes with it. The edit that still waits stays listed, and is the one open.
+  await event(d => ({ ...d, changes: d.changes.map(c => c.id === "chg_ready" ? { ...c, state: "approved" as const, appliedVersion: c.toVersion } : c) }));
+  await act(async () => {});
+  expect(needYou()).toBe("1 needs you");
+  const waiting = [...passCard().querySelectorAll<HTMLButtonElement>('[aria-label="Edits that need you"] > li > button')];
+  expect(waiting.map(r => [r.textContent?.includes("wrap"), r.getAttribute("aria-current")])).toEqual([[true, "true"]]);
+  expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe(SUMMARY);
+});
+
 it("keeps a previously unnumbered call in place when the engine publishes an earlier cut and backfills its order", async () => {
   runningPass();
   const [early, , later] = askAll(STAGED);
