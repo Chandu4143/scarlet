@@ -252,11 +252,21 @@ describe("dialogue plan", () => {
     expect(await plan({ kind: "coaching" }, [cut({ start: .3, end: .7, kind: "coaching" })])).toMatchObject(conflict);
     expect(await plan({ keepRepeat: "it" })).toMatchObject({ outcome: "ready", decisions: [{ review: true }] });
     expect(await plan({ decision: "review" })).toMatchObject({ outcome: "ready" });
-    // The applied cut already plays its fade while the neighboring staged cut waits.
+    // A production aside with no quiet at its edges waits for audition like a retake, so beside a staged neighbor both
+    // wait, and the edge at 2 s is no join.
     expect(await plan({ kind: "coaching" }, [cut({ start: 1.2, end: 2, kind: "coaching", decision: "review" })]))
-      .toMatchObject(conflict);
+      .toMatchObject({ outcome: "ready", decisions: [{ review: true }, { review: true }] });
     sources.crossfadeFrames = 0;
     expect(await plan()).toMatchObject({ outcome: "ready" });
+  });
+
+  it("measures a production aside given in seconds without its quote, and holds one that ends in continuous speech", async () => {
+    const { tl, sources, scan } = partialWordFixture();
+    (await sources.project()).media[0]!.duration = 5;
+    const rms = Array<number>(250).fill(.2);
+    sources.pages = () => [{ ...page, edges: joinEvidence(scan, { from: 0, to: 5, rms, peaks: rms, speechActivity: [{ start: 0, end: 5 }] }) }];
+    const planned = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 2, end: 3.2, kind: "coaching", keepRepeat: "it" })] }, sources);
+    expect(planned).toMatchObject({ outcome: "ready", decisions: [{ review: true }] });
   });
 
   it("keeps an indexed assembly when the repeated fragment is audible only in a centered crossfade", async () => {

@@ -353,8 +353,9 @@ const BLIP_SECONDS = 0.05;
 const VOICE_WARMUP = 0.3, VOICE_WINDOW = 60;
 
 /**
- * Where `wav` sounds inside each gap: its quiet is Scarlet's quiet (QUIET_RMS, QUIET_PEAK, no voice detected), the
- * quiet cut edges go in. Gaps measured before are read from `heard`. A gap that can't be measured, for audio that
+ * Where `wav` sounds at speaking level inside each gap: quiet is QUIET_RMS, QUIET_PEAK and no voice detected. Cut edges
+ * also keep off sound nearer the room's own floor (quietRms); a word doesn't go there, since nobody speaks that softly,
+ * and the faint noise of a room would take the words Whisper invented over a silence. Gaps measured before are read from `heard`. A gap that can't be measured, for audio that
  * can't be read, has no sound reading, and its words keep the aligner's older fallback.
  */
 async function soundIn(wav: string, gaps: readonly TimeRange[], heard: Map<string, TimeRange[]>, signal: AbortSignal): Promise<SoundIn> {
@@ -390,8 +391,8 @@ async function soundRuns(audio: Awaited<ReturnType<typeof openWav>>, gap: TimeRa
       for (let f = Math.max(first, Math.floor(span.start / SOUND_FRAME)); f < Math.min(last, Math.ceil(span.end / SOUND_FRAME)); f++) voiced[f - first] = 1;
     }
   }
-  const runs: TimeRange[] = [];
   const offset = Math.round(origin * SAMPLE_RATE);
+  const rms = new Float64Array(last - first), peaks = new Float64Array(last - first);
   for (let f = first; f < last; f++) {
     let sum = 0, peak = 0;
     for (let i = f * step - offset; i < (f + 1) * step - offset; i++) {
@@ -399,7 +400,12 @@ async function soundRuns(audio: Awaited<ReturnType<typeof openWav>>, gap: TimeRa
       sum += v * v;
       peak = Math.max(peak, Math.abs(v));
     }
-    if (!voiced[f - first] && Math.sqrt(sum / step) <= QUIET_RMS && peak <= QUIET_PEAK) continue;
+    rms[f - first] = Math.sqrt(sum / step);
+    peaks[f - first] = peak;
+  }
+  const runs: TimeRange[] = [];
+  for (let f = first; f < last; f++) {
+    if (!voiced[f - first] && rms[f - first]! <= QUIET_RMS && peaks[f - first]! <= QUIET_PEAK) continue;
     const start = Math.max(gap.start, f * SOUND_FRAME), end = Math.min(gap.end, (f + 1) * SOUND_FRAME);
     const previous = runs.at(-1);
     if (previous && start - previous.end < CLOSURE_SECONDS) previous.end = end;

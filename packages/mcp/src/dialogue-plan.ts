@@ -437,12 +437,11 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     if (disputedEdges.length) return { outcome: "needsRevision", disputedEdges };
   }
   // The recording decides where each edge sits. Word timings only name the words.
-  const edged = (c: ResolvedCut) => c.kind === "retake" || c.kind === "filler" || c.kind === "pause" || (c.kind === "coaching" && !!c.productionQuote);
   const checkRetakes = !only || only === "retake";
   const project = await sources.project();
-  const toMeasure = removals.filter(c => edged(c) ||
-    (checkRetakes && c.decision === "cut"));
-  if (toMeasure.length) await sources.measure(audibleSourcePoints(tl, toMeasure.flatMap(c => [c.start, c.end])));
+  // Every removal's edges are measured. A production aside given in seconds without its quote used to skip the check
+  // and apply as typed: one ended between "this game" and "let me", in continuous speech (2026-11-15).
+  if (removals.length) await sources.measure(audibleSourcePoints(tl, removals.flatMap(c => [c.start, c.end])));
   // Every change Scarlet makes to the plan goes back to the agent with its evidence.
   const report: GateLine[] = [];
   const decisions = removals.map(c => {
@@ -466,7 +465,6 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const alternatives = c.cleanAlternatives?.map(a => `#${a.fromWord}–#${a.toWord}`).join(", ");
     const base = fallback ? adjust({ ...decided, ...fallback }, [...c.wordEdgeProblems!, ...(alternatives
       ? [`Words ${alternatives} leave the same words playing and have measured quiet at both edges.`] : [])].join(" ")) : decided;
-    if (!edged(c)) return base;
     // Removed words whose two edges Scarlet placed itself, in the measured silence beside them or at the dip between
     // two words that run together, are not checked a second time: that check takes a brief dip for speech and held
     // every cut of a doubled word for the editor. What was measured at a dip goes back to the agent.
