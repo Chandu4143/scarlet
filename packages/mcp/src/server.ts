@@ -1395,6 +1395,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const duration = (await client.media(ctx.projectId)).media.find(m => m.id === mediaId)?.duration;
     const to = duration ? Math.min(asked, duration) : asked;
     if (duration && to <= from) throw new Error(`Choose a range inside 0–${duration.toFixed(2)} s.`);
+    if (suggestCuts && to > from + 60) throw new Error("suggestCuts reads at most 60 source seconds per call. Split the range.");
     const threshold = 10 ** (thresholdDb / 20);
     const resolution = suggestCuts ? Math.max(points, Math.ceil((to - from) * 50)) : points;
     const wf = await readPrepared(mediaId, "waveform", () => client.waveform(mediaId, from, to, resolution, true, suggestCuts));
@@ -1435,7 +1436,6 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     async ({ mediaId, mediaIds, from, to, points, ...opts }) => {
       const several = recordingsAsked(mediaId, mediaIds);
       if (to <= from) throw new Error("`to` must be greater than `from`.");
-      if (opts.suggestCuts && to > from + 60) throw new Error("suggestCuts reads at most 60 source seconds per call. Split the range.");
       if (!several) return json((await readWaveform(mediaId!, from, to, { points, ...opts }))(points));
       const reads = await eachRecording(several, id => readWaveform(id, from, to, { points, ...opts }));
       const budget = caps.resultChars ?? DEFAULT_RESULT_CHARS;
