@@ -50,10 +50,12 @@ describe("the note on an applied edit's card", () => {
       recheck: "2026-11-14T17:52:00.000Z" })).toBe("Kept the quotation into the reaction. Black gap and overlapping lines.");
   });
 
-  it("says what a marker asks of the editor when Scarlet's sentence leaves it out", () => {
+  it("leads a marker's note with what it asks of the editor, said once", () => {
     const marked = "Marked “throw it on the screen now” where the boat comparison belongs.";
     expect(editNote(edit({ label: "Boat comparison footage", check: "Add the other boat renders", summary: marked, marker: true })))
-      .toBe("Marked “throw it on the screen now” where the boat comparison belongs. Add the other boat renders.");
+      .toBe("Add the other boat renders. Marked “throw it on the screen now” where the boat comparison belongs.");
+    expect(editNote(edit({ label: "Boat comparison footage", check: "Add the other boat renders", reason: "You asked for it on screen here.", marker: true })))
+      .toBe("Add the other boat renders. You asked for it on screen here.");
     // Said already, it isn't said twice.
     const asked = "Marked where the boat comparison belongs: add the other boat renders.";
     expect(editNote(edit({ label: "Boat comparison footage", check: "Add the other boat renders", summary: asked, marker: true }))).toBe(asked);

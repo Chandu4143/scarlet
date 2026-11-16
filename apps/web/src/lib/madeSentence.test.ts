@@ -59,3 +59,12 @@ it("counts transitions beside the other edits a request made", () => {
   const swipe = (n: number) => ({ label: `Swipe ${n}`, kind: "transition" as const });
   expect(say([zoom(1), zoom(2), zoom(3), zoom(4), swipe(1), swipe(2), swipe(3), swipe(4)])).toBe("Made 4 zooms and 4 transitions.");
 });
+
+it("counts the spots Scarlet marked for the editor on their own, since they changed nothing in the video", () => {
+  const spot = (label: string) => ({ label, kind: "other" as const, marker: true as const });
+  expect(say([cut(0, 60), cut(100, 171), { label: "Punch in", kind: "zoom" }, spot("Fall Guys comparison footage"), spot("Boat comparison footage")]))
+    .toBe("Took out 2:11 in 2 cuts, and made 1 zoom, and marked 2 spots for you.");
+  expect(say([spot("Fall Guys comparison footage"), spot("Boat comparison footage")])).toBe("Marked 2 spots for you.");
+  expect(say([{ label: "Punch in", kind: "zoom" }, spot("Boat comparison footage")])).toBe("Made 1 edit: Punch in, and marked 1 spot for you.");
+  expect(say([{ ...spot("Boat comparison footage"), summary: "Marked where the boat comparison belongs." }])).toBe("Marked where the boat comparison belongs.");
+});
