@@ -415,4 +415,17 @@ describe("a clip edge in sound", () => {
     expect(edge(2.6, "out")).toMatchObject({ word: "obviously" });
     expect(edge(2.6, "out")).not.toHaveProperty("fragment");
   });
+
+  it("gives the nearest clean second that plays a split word whole, and the one that leaves it out", () => {
+    // A clip ending inside “obviously” is clean once it ends after the word, or before it begins.
+    const out = edge(2.6, "out")!;
+    expect(out.wholeAt).toBeGreaterThanOrEqual(2.9);
+    expect(edge(out.wholeAt!, "out")).toBeUndefined();
+    expect(out.withoutAt).toBeLessThanOrEqual(2.28);
+    expect(edge(out.withoutAt!, "out")).toBeUndefined();
+    // A clip starting inside it plays it whole from before it begins.
+    const start = edge(2.6, "in")!;
+    expect(start.wholeAt).toBeLessThanOrEqual(2.28);
+    expect(edge(start.wholeAt!, "in")).toBeUndefined();
+  });
 });

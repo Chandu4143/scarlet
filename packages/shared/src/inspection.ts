@@ -58,7 +58,7 @@ export const RepeatAuditRequest = z.object({
 
 export const SheetOptions = {
   from: z.number().finite().nonnegative(), to: z.number().finite().positive(),
-  count: z.number().int().min(6).max(12).default(9),
+  count: z.number().int().min(2).max(12).default(9),
   mode: z.enum(["uniform", "scene", "activity"]).default("uniform"),
   focus: z.number().finite().nonnegative().optional().describe("Include frames immediately before and at this time"),
 };

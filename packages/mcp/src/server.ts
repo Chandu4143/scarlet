@@ -790,9 +790,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   /** What an edge cuts through and where the recording is quiet beside it, for the model to move it by. */
   const edgeInSoundText = (e: SoundingEdge, name = `clip ${e.clipId}`) => `${name} ${e.side === "in" ? "starts" : "ends"} at source ${e.source.toFixed(2)} s ` +
     (e.word ? `inside “${e.word}”, which is sounding there` : "inside a sound the transcript has no word for") +
+    (e.wholeAt !== undefined ? ` (clean at ${e.wholeAt.toFixed(2)} s with “${e.word}” whole` + (e.withoutAt !== undefined ? `, or at ${e.withoutAt.toFixed(2)} s without it)` : ")")
+      : e.withoutAt !== undefined ? ` (clean at ${e.withoutAt.toFixed(2)} s without “${e.word}”)` : "") +
     (e.fragment ? `: ${Math.round(e.fragment.seconds * 1000)} ms of it would play at ${e.fragment.db} dBFS, and the recording is quiet at ${e.fragment.quietAt.toFixed(2)} s (${e.fragment.quietDb} dBFS)` : "") +
     (e.levels ? ` [dBFS in 20 ms steps: ${e.levels}]` : "");
-  const EDGES_IN_SOUND = "Nothing was saved. Move each edge onto quiet (the second given, or one dialogue_check_join measures), or remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence.";
+  const EDGES_IN_SOUND = "Nothing was saved. Move each edge to a clean second given (source seconds), or onto quiet dialogue_check_join measures, or remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence.";
   // Checking a hundred joins can request hundreds of speech windows. Share the available connections across joins.
   const keptSpeechReads = new Lanes(8);
   /** Live reads for the dialogue planner (dialogue-plan.ts), which replay feeds from stored evidence instead. */

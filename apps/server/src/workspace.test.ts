@@ -6375,6 +6375,12 @@ it("keeps a pass's own later save from changing footage under a cut that waits f
     description: "Trim the top", ops: [{ op: "rippleDelete", start: 2, end: 4 }] }).change;
   expect(elsewhere.state).toBe("approved");
   expect(ctx.repos.changes.get(staged.id)!.state).toBe("ready");
+  // Reframing the footage under a staged cut leaves it there too: passes that reframed the presenter were refused
+  // for taking away cuts they left in place (2026-11-15).
+  const reframed = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id,
+    description: "Frame the presenter closer", ops: [{ op: "updateClip", clipId: "raw", patch: { transform: { x: 0, y: 0, scale: 1.13 }, opacity: .9 } }] }).change;
+  expect(reframed.state).toBe("approved");
+  expect(ctx.repos.changes.get(staged.id)!.state).toBe("ready");
 });
 
 it("puts away a save the video had moved on from once its run has saved the work again", async () => {

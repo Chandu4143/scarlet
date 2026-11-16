@@ -599,6 +599,9 @@ const FRAGMENT_SOUND_DBFS = -42;
 interface EdgeInSound {
   /** The transcript word the edge falls inside, while that word is sounding. */
   word?: string;
+  /** The nearest source second where this edge is clean and plays the split word whole, and where it leaves the word out. */
+  wholeAt?: number;
+  withoutAt?: number;
   /**
    * A piece of a sound the edge cuts through: how long the piece left playing is, its level in dBFS, and the source
    * second and level of the quiet it ends at, where the edge would leave none of it.
@@ -648,6 +651,27 @@ function edgeFragment(page: NonNullable<JoinPage["edges"]>, t: number, side: "in
  * when no page measured the recording there.
  */
 export function clipEdgeSound(pages: JoinPage[], mediaId: string, stream: number, t: number, side: "in" | "out"): EdgeInSound | undefined {
+  const found = soundUnderEdge(pages, mediaId, stream, t, side);
+  if (!found) return;
+  const { page, split, fragment } = found;
+  // Where the edge would be clean either side of the word, by this same check. Given only the levels, a pass guessed:
+  // eight edges took two or three saves each to land (2026-11-15).
+  const clean = (s: number) => !!page.levels && pageReaches(page, s) && !soundUnderEdge(pages, mediaId, stream, s, side);
+  const nearest = (from: number, toward: 1 | -1) => {
+    for (let k = 0; k <= Math.round(WHOLE_WORD_REACH / WHOLE_WORD_STEP); k++) {
+      const s = round3(from + toward * k * WHOLE_WORD_STEP);
+      if (clean(s)) return s;
+    }
+  };
+  // A clip that ends (out) plays the word before its edge: later takes it in whole. One that starts (in) plays it after.
+  const whole = split && nearest(side === "out" ? split.end : split.start, side === "out" ? 1 : -1);
+  const without = split && nearest(side === "out" ? split.start : split.end, side === "out" ? -1 : 1);
+  return { ...(split && { word: plain(split) }), ...(whole !== undefined && { wholeAt: whole }), ...(without !== undefined && { withoutAt: without }),
+    ...(fragment && { fragment }), ...(page.levels && { levels: levelStrip(page.levels, t) }) };
+}
+
+/** What an edge at `t` cuts through, without where it would be clean. */
+function soundUnderEdge(pages: JoinPage[], mediaId: string, stream: number, t: number, side: "in" | "out") {
   const page = pageAt(pages, mediaId, stream, t);
   if (!page || soundAt(page, t) !== "sound") return;
   // Room tone under the edge, too brief to be a run of silence: the instant between two words said in one breath.
@@ -656,8 +680,11 @@ export function clipEdgeSound(pages: JoinPage[], mediaId: string, stream: number
   const split = page.words.find(w => inWord(w, t));
   const fragment = edgeFragment(page, t, side);
   if (!split && !fragment) return;
-  return { ...(split && { word: plain(split) }), ...(fragment && { fragment }), ...(page.levels && { levels: levelStrip(page.levels, t) }) };
+  return { page, split, fragment };
 }
+
+/** How far from a split word's edge a clean edge is looked for, and in what steps. */
+const WHOLE_WORD_REACH = .6, WHOLE_WORD_STEP = .01;
 
 function levelStrip(levels: AudioLevels, t: number) {
   const value = (s: number) => {
