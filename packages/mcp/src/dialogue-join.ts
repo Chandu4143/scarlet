@@ -44,7 +44,8 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
       appendInterval(quiet, start, end);
     // A speech detector can stay active through a real inter-word gap. Offer a deep
     // level trough there for audition, but keep that disagreement explicit.
-    if (wf.rms[i]! <= .002 && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
+    // Deep against this recording's floor too: a breath 10 dB over a very quiet room is under any fixed level.
+    if (wf.rms[i]! <= Math.min(.002, quietBelow) && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
   }
   const db = wf.rms.map(dbfs);
   return { voice: wf.speechActivity, valleys, words: words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text)),
@@ -907,13 +908,21 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
       page ? "" : " (no level reading)"}. The ${side} uses the word timing.`);
     return lo <= hi ? (lo + hi) / 2 : side === "start" ? removed.start : removed.end;
   };
-  let start = edge(before, first, "start"), end = edge(after, last, "end");
+  // A removed word the recording has no sound for takes no time, right after the word before it (the aligner puts a
+  // word Whisper invented over a silence there). The removal's sound starts at its first word that has some: measured
+  // from the soundless one, "period." and a "Thank" nobody said had no pause between them, and the edge went to a dip
+  // in the kept word's tail with half a second of silence just after it (2026-11-15).
+  const sounds = (w: Word) => w.end > w.start;
+  const removed = words.slice(from, to + 1);
+  const firstHeard = removed.find(sounds) ?? (after ? { ...first, start: after.start, end: after.start } : first);
+  const lastHeard = removed.findLast(sounds) ?? (before ? { ...last, start: before.end, end: before.end } : last);
+  let start = edge(before, firstHeard, "start"), end = edge(after, lastHeard, "end");
   // A short word with a gap on one side only: both edges found that one gap, and the range came out empty
   // ("Words #1424–#1424 do not form one forward range", on three passes). The gap belongs to the edge on its side of
   // the words; the other edge has no silence of its own and uses the word timing, which says so.
   if (used.start && used.end && used.start.start === used.end.start && used.start.end === used.end.end) {
-    if ((used.start.start + used.start.end) / 2 < (first.start + last.end) / 2) end = edge(after, last, "end", true);
-    else start = edge(before, first, "start", true);
+    if ((used.start.start + used.start.end) / 2 < (firstHeard.start + lastHeard.end) / 2) end = edge(after, lastHeard, "end", true);
+    else start = edge(before, firstHeard, "start", true);
   }
   const text = words.slice(from, to + 1).map(w => w.text.trim()).join(" ");
   // One edge between words that run together leaves the other in silence, where the ear resets. With both there, a

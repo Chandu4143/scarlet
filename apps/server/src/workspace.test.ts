@@ -27,6 +27,7 @@ import { OpenAIProvider } from "./transcribe/openai.js";
 import { importTranscriptionPolicy } from "./transcribe/index.js";
 import { WhisperCppProvider } from "./transcribe/whispercpp.js";
 import { speakerAnalysisVersion } from "./transcribe/speakerLabels.js";
+import { alignmentVersion } from "./transcribe/wordAlign.js";
 import { LocalWhisperModel } from "./transcribe/localModel.js";
 import { audioWorker } from "./transcribe/audioWorker.js";
 import { recoverIngest, transcribeMedia } from "./services/ingest.js";
@@ -786,6 +787,28 @@ it("finishes a legacy transcript left part-aligned without recognizing its audio
     expect(t.reader).not.toHaveBeenCalled();
     expect(t.linked()).toMatchObject({ segments: [{ id: "first", words: [{ start: 10.1 }] }, { id: "second", words: [{ start: 400.1 }] }] });
     expect(t.linked()?.aligning).toBeUndefined();
+  } finally { t.restore(); }
+});
+
+it("places an older transcript's words again with the current aligner, keeping its words and speakers, and leaves a current one alone", async () => {
+  const t = twoTurnTranscription();
+  const old = t.ctx.repos.transcripts.put({ id: "older", projectId: project.id, mediaId: t.media.id, language: "en", provider: "whispercpp",
+    localModel: "whispercpp", createdAt: "2020-01-01T00:00:00.000Z", speakerAnalysis: { version: speakerAnalysisVersion, count: 1 }, segments: [
+      { id: "first", text: "hello again", start: 10, end: 12, words: [{ text: "hello", start: 10.1, end: 10.5, detectedSpeaker: 1 }, { text: "again", start: 11, end: 11.4, detectedSpeaker: 1 }] },
+    ] });
+  t.ctx.repos.projects.putMedia(project.id, { ...t.media, transcriptId: old.id }, "ready");
+  try {
+    const realign = () => api("POST", `${projectsPath()}/media/${t.media.id}/realign`, {});
+    const first = await realign();
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ state: "realigned", words: 2, moved: 2 });
+    const now = t.linked()!;
+    expect(now.id).not.toBe(old.id);
+    expect(now).toMatchObject({ alignment: alignmentVersion, speakerAnalysis: old.speakerAnalysis,
+      segments: [{ id: "first", words: [{ text: "hello", start: 10.2, detectedSpeaker: 1 }, { text: "again", start: 11.1, detectedSpeaker: 1 }] }] });
+    expect(t.reader).not.toHaveBeenCalled();
+    expect(await (await realign()).json()).toEqual({ state: "current" });
+    expect(t.linked()!.id).toBe(now.id);
   } finally { t.restore(); }
 });
 
@@ -3969,6 +3992,35 @@ it("keeps the editor's calls through the pass's next part and applies them as so
   const head = ctx.repos.projects.get(project.id)!.head!;
   expect(head).toBe(applied.appliedVersion);
   expect(timelineDuration(ctx.repos.versions.get(project.id, head)!.timeline)).toBeCloseTo(17);
+});
+
+it("applies a pass when its run finishes with every staged cut settled by Scarlet, and leaves one with a call for the editor", async () => {
+  const { ctx } = workspace;
+  vi.spyOn(ctx.render, "renderRange").mockImplementation(async (_project, _timeline, _range, file) => { writeFileSync(file, "preview"); });
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "mic", path: "mic.wav", kind: "audio", duration: 20, hasAudio: true }, "ready");
+  const pass = async (verdicts: Array<"cut" | "keep" | "ask">) => {
+    const task = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+    const head = ctx.repos.projects.get(project.id)!.head;
+    const base = head ?? proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: task.id, description: "Assemble",
+      ops: [{ op: "addClip", trackId: "a1", clip: { id: "raw", kind: "media", mediaId: "mic", timelineIn: 0, sourceIn: 0, sourceOut: 20 } }] }).change.toVersion;
+    const res = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: base, description: "Part",
+      cuts: [{ start: 2, end: 3, review: true, reason: "a held restart" }, { start: 5, end: 6, review: true, reason: "a held aside" }] });
+    expect(res.status).toBe(201);
+    const [staged] = (await res.json() as { changes: Change[] }).changes;
+    expect((await api("POST", `/changes/${staged!.id}/cut-assessments`, { fromVersion: staged!.fromVersion, toVersion: staged!.toVersion,
+      assessments: verdicts.map((verdict, index) => ({ index, start: 2 + 3 * index, end: 3 + 3 * index, verdict, reason: `Cut ${index}: ${verdict}.` })) })).status).toBe(200);
+    expect((await api("POST", `/tasks/${task.id}/complete`, { state: "done", summary: "Done." })).status).toBe(200);
+    return ctx.repos.changes.get(staged!.id)!;
+  };
+  // Scarlet asked about one: the pass waits for the editor.
+  const waiting = await pass(["cut", "ask"]);
+  expect(waiting.state).toBe("ready");
+  expect((await api("POST", `/changes/${waiting.id}/reject`, {})).status).toBe(200);
+  // Scarlet cut one and kept the other, and asked nothing: the pass goes in with its verdicts.
+  const applied = await pass(["cut", "keep"]);
+  expect(applied).toMatchObject({ state: "approved", restoredCuts: [1] });
+  expect(ctx.repos.projects.get(project.id)!.head).toBe(applied.appliedVersion);
+  expect(timelineDuration(ctx.repos.versions.get(project.id, applied.appliedVersion!)!.timeline)).toBeCloseTo(19);
 });
 
 /** A dialogue pass on a 20 s recording (or one of another length) that saves its cuts in parts, with the cut list, calls and notes of each part's review. */

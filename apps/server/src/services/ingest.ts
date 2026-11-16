@@ -15,7 +15,7 @@ import { cancelTask, createTask, hasTranscript, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { availableTranscriptionProvider, getTranscriptionProvider, effectiveProviderName, type importTranscriptionPolicy, type TranscriptionProvider } from "../transcribe/index.js";
 import { claimTranscriptionWork, openTranscriptionWork, transcriptionIdentity, type TranscriptionResume } from "./transcriptionWork.js";
-import { alignsLanguage, alignTranscript, type AlignmentCheckpoint } from "../transcribe/wordAlign.js";
+import { alignmentVersion, alignsLanguage, alignTranscript, type AlignmentCheckpoint } from "../transcribe/wordAlign.js";
 import { fillTranscriptHoles } from "../transcribe/transcriptHoles.js";
 import { extractWav } from "../render/ffmpeg.js";
 import { audioLane, whisperLane, type AudioWork } from "./audioWork.js";
@@ -677,7 +677,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
       }
       const savedAt = now();
       const transcript: Transcript = { id, mediaId: asset.id, language, provider: provider.name, localModel: provider.localModel, modelLabel: model, segments,
-        createdAt: savedAt, ...(aligning && { aligning: { through: aligning.through } }) };
+        createdAt: savedAt, ...(aligning ? { aligning: { through: aligning.through } } : alignsLanguage(language) && { alignment: alignmentVersion }) };
       ctx.repos.transcripts.put({ ...transcript, projectId });
       const current = ctx.repos.projects.getMedia(asset.id);
       let speakerSource: MediaAsset | undefined;

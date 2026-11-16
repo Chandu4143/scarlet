@@ -1726,15 +1726,24 @@ export function retireStaleSaves(ctx: Ctx, task: Task): void {
  * Apply a dialogue pass with the editor's calls once its run has finished, when the editor asked for that.
  * Cuts the editor didn't call follow Scarlet's verdict. Null while the run is still going, nothing was asked, or a cut
  * still waits on the editor.
+ *
+ * A pass whose staged cuts Scarlet settled itself, every one, asking the editor nothing, goes in the same way when its
+ * run finishes. The window used to be what applied it, once it saw the finished run: with the window closed, or a run
+ * no window watches, the cuts Scarlet had held and then decided stayed out of the video, waits of ten seconds among
+ * them (2026-11-15).
  */
 export function applyChoicesWhenDone(ctx: Ctx, change: Change): Change | null {
-  if (!change.applyWhenDone || change.state !== "ready") return null;
+  if (change.state !== "ready") return null;
+  const unasked = !change.applyWhenDone && change.intent === "suggestion" && !!change.cutReasons?.length && !!change.cutAssessments?.length
+    && change.cutAssessments.every(a => a.verdict !== "ask" && !a.provisional) && !change.error;
+  if (!change.applyWhenDone && !unasked) return null;
   const task = latestAttempt(ctx, change.taskId);
   // Only a run that finished applies it. One still going isn't done, and one that stopped early left staged cuts
   // unchecked: those are the editor's calls now, and applying on their next call would skip the rest unasked.
   if (task && task.state !== "done") return null;
   if (task?.context.branch && task.context.branch !== ctx.repos.projects.header(change.projectId)?.branch) return null;
-  const user = ctx.repos.users.get(change.applyWhenDone.userId) ?? ctx.repos.users.primary() ?? { id: change.applyWhenDone.userId, name: "Editor" };
+  const asked = change.applyWhenDone?.userId;
+  const user = (asked && ctx.repos.users.get(asked)) || ctx.repos.users.primary() || { id: asked ?? "editor", name: "Editor" };
   // Never let this stop the run from finishing: on any problem the calls stay saved for the editor to apply.
   try {
     const review = prepareCutReview(ctx, change).review;
@@ -1747,6 +1756,8 @@ export function applyChoicesWhenDone(ctx: Ctx, change: Change): Change | null {
     return approveChange(ctx, user, { ...change, applyWhenDone: undefined }, { restoredCuts: keptCuts(change, review) }).change;
   } catch (error) {
     ctx.log(`[review] Could not apply ${change.id} when its pass finished: ${error}`);
+    // Nobody asked for this one: it stays as it was, for the window to apply or to say why it can't.
+    if (unasked) return null;
     // A video that moved under the pass names the cut it moved under. Anything else is in the log.
     const moved = error instanceof HttpError && error.code === "cut_review_stale";
     return saveChange(ctx, { ...change, applyWhenDone: undefined,

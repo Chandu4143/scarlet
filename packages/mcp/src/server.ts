@@ -93,6 +93,8 @@ import { keptSilences, pictureReading, pictureWindows, silences, type Silence } 
 import { levelProfile } from "./media-profile.js";
 
 const SKILL_FROM_CHANGE_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "change_get", "timeline_get", "skill_save_from_change"]);
+/** Cuts dialogue_review_inspect returns in one result: each brings its words, levels and pictures. */
+const INSPECT_AT_ONCE = 4;
 const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_contact_sheet_batch", "media_frame", "sound_picture"]);
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
@@ -2091,11 +2093,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   tool("dialogue_review_inspect",
-    "Inspect a staged dialogue cut in its original passage and preview. For each cut returns the words around it as [start, end, text, speaker or isolated input], original microphone levels (dBFS), voice activity, and timeline_join_audit's reading of the join or why the cut has none. The surviving speech is checked for a doubled word across the join or at the start or end of its kept take. partialWordRepeat identifies a cut-off word beside a whole occurrence in the saved audio, including faded handles. Inspect up to four consecutive cuts in one call with count. Scarlet prepares the next ones while you read." +
+    "Inspect a staged dialogue cut in its original passage and preview. For each cut returns the words around it as [start, end, text, speaker or isolated input], original microphone levels (dBFS), voice activity, and timeline_join_audit's reading of the join or why the cut has none. The surviving speech is checked for a doubled word across the join or at the start or end of its kept take. partialWordRepeat identifies a cut-off word beside a whole occurrence in the saved audio, including faded handles. One call returns up to four consecutive cuts (count). Scarlet prepares the next ones while you read." +
     (reviewPictures ? " Includes synchronized screen and camera sheets and before/after frames for narrowed cuts. A longer removal shows an overview and windows for closer inspection. wholePicture returns activity sheets across all of them." : "") +
     " nearbyWords gives the words at both edges in TIMELINE seconds on the inspected original. Use those times in dialogue_revise_cut to move a splice, or save a recommendation for the current range with dialogue_review_save. If later edits conflict with the cut being revised, inspecting it returns its current passage and words for dialogue_revise_cut.",
     { changeId: z.string(), index: z.number().int().nonnegative(),
-      count: z.number().int().min(1).max(4).default(1).describe("Inspect this many consecutive suggestions, starting at index."),
+      // A larger count is not refused: a pass asked for all 14 of its cuts and lost a turn to the limit (2026-11-15).
+      count: z.number().int().min(1).max(500).default(1).describe(`Inspect this many consecutive suggestions, starting at index. One call returns ${INSPECT_AT_ONCE} at most and names the index to continue from.`),
       ...(reviewPictures && { wholePicture: z.boolean().default(false).describe("For one longer removal: activity sheets across its whole removed picture in one result.") }),
       ...audioOption("Attach WAV of the original passage and of the join") },
     async ({ changeId, index, count, wholePicture: requestedPicture, includeAudio }) => {
@@ -2119,7 +2122,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (!review?.cuts.length) throw new Error(`Change ${changeId} has no individual cuts to inspect; it replaces the whole timeline.`);
       if (index >= review.cuts.length) throw new Error(`Change ${changeId} has ${review.cuts.length} cuts (index 0–${review.cuts.length - 1}).`);
       const audio = hearing && includeAudio === true;
-      const end = wholePicture ? index + 1 : Math.min(review.cuts.length, index + count);
+      const end = wholePicture ? index + 1 : Math.min(review.cuts.length, index + Math.min(count, INSPECT_AT_ONCE));
       reviews.ahead(change, end, review.cuts.length);
       const indexes = Array.from({ length: end - index }, (_, k) => index + k);
       const results = await Promise.all(indexes.map(i => reviews.take(change, { index: i, audio, wholePicture })));
@@ -2148,10 +2151,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // Cuts with a carried recommendation count too, so the figure never drops below what is saved.
       const assessed = change.cutAssessments?.filter(a => !a.provisional).map(a => a.index) ?? [];
       await cutProgress(changeId, assessed.length, review.cuts.length, new Set([...assessed, ...seen]).size);
+      const asked = Math.min(review.cuts.length, index + count);
+      if (!wholePicture && end < asked) content.push({ type: "text", text: JSON.stringify({ returned: [index, end - 1],
+        next: `Continue with index ${end} (count ${asked - end}) for cuts ${end}–${asked - 1}.` }) });
       return { content };
     });
 
-  tool("dialogue_review_save", "Record your cut, keep or ask recommendation and reason on a pending suggestion. An ask's reason is the one line the editor reads on that call, so it names what this cut takes out and what to check; cuts that would wait under the same reason are refused. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
+  tool("dialogue_review_save", "Record your cut, keep or ask recommendation and reason on a pending suggestion. An ask's reason is the one line the editor reads on that call, so it names what this cut takes out and what to check; cuts that would wait under the same reason are refused. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A cut goes into the video when the request finishes, or with the editor's last call when some wait for them, so it is not removed again with another tool. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
     { changeId: z.string(), fromVersion: z.string(), toVersion: z.string(), assessments: z.array(CutAssessment.omit({ inspected: true, revised: true, askOrder: true, provisional: true })).min(1).max(500) },
     async ({ changeId, fromVersion, toVersion, assessments }) => {
       const { change } = await client.changeRecord(changeId);
@@ -2171,7 +2177,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (stageWithoutAppliedCuts === changeId && result.assessed > assessedCuts(change)) stageWithoutAppliedCuts = undefined;
       if ((await stagedReview)?.changeId === changeId)
         stagedReview = Promise.resolve({ changeId, total: result.total, unchecked: Math.max(0, result.total - result.assessed) });
-      return json(result);
+      // What happens to a cut recorded as cut is not in its name: passes went on to remove such cuts a second time with
+      // timeline_propose, three refused calls a pass, and one resubmitted held cuts in seconds to get them in (2026-11-15).
+      const settled = result.assessed >= result.total && !result.needsDecision;
+      return json({ ...result, ...(settled && { next: "Every staged cut has your recommendation and none waits for the editor. "
+        + "The ones recorded as cut go into the video when this request finishes, and the keeps stay. Leave their footage as it is: removing it with another tool is refused." }) });
     });
 
   type MeasuredPause = Exclude<ReturnType<typeof resolveOutgoingPause>, { status: "unavailable" }>;
@@ -2471,6 +2481,8 @@ ${OPS_DOC}`,
         if (before) {
           const { project } = await getProject();
           let on = before;
+          // Every refused edge is named at once: named one at a time, a pass made six calls to learn of six edges (2026-11-15).
+          const split: string[] = [];
           for (const [i, op] of v.ops.entries()) {
             if (op.op === "rippleDelete" && !op.trackIds && op.end > op.start) {
               // Only a measured word split refuses the edit. A recording with nothing to measure goes ahead as asked; one
@@ -2478,11 +2490,12 @@ ${OPS_DOC}`,
               const inside = await measureTimeline(on, [op.start, op.end])
                 .then(() => joinAudio(on, project, op, joinPages()).filter(e => e.sound === "sound" && e.transcriptSplitsWord))
                 .catch(withoutUnlessPreparing(`failed to measure the edges of ripple ${i}`, []));
-              if (inside.length) throw new Error(inside.map(e => `ops[${i}] ${e.edge} at ${(e.edge === "start" ? op.start : op.end).toFixed(2)} s falls inside “${e.transcriptSplitsWord}”, which is sounding there`).join("; ") +
-                ". Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
+              split.push(...inside.map(e => `ops[${i}] ${e.edge} at ${(e.edge === "start" ? op.start : op.end).toFixed(2)} s falls inside “${e.transcriptSplitsWord}”, which is sounding there`));
             }
             on = applyOps(on, [op]);
           }
+          if (split.length) throw new Error(split.join("; ") +
+            ". Nothing was saved. Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
         }
         // Dry-run against the pinned base before deriving the picture from the synchronized clips.
         const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);

@@ -29,7 +29,8 @@ const LOWEST_FLOOR_RMS = 1e-4;
 export function quietRms(rms: ArrayLike<number>): number {
   if (!rms.length) return QUIET_RMS;
   const sorted = Float64Array.from(rms).sort();
-  const floor = Math.max(LOWEST_FLOOR_RMS, sorted[Math.floor(sorted.length * 0.1)]!);
+  // The quietest fiftieth: a minute of dense speech still has a second of pauses, and a tenth of it is already words' tails.
+  const floor = Math.max(LOWEST_FLOOR_RMS, sorted[Math.floor(sorted.length * 0.02)]!);
   return Math.min(QUIET_RMS, floor * 10 ** (QUIET_ABOVE_FLOOR_DB / 20));
 }
 
