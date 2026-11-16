@@ -9324,9 +9324,10 @@ it("leaves a clip the editor started from Media playing when a suggestion's appl
 it("heads each request with a band that says where it stands: Stop at work, a dot and Stop for a question, a word once it stopped or left a suggestion", async () => {
   await show();
   const state = (id: string) => container.querySelector<HTMLElement>(`.unit[data-run="${id}"] > .unit-msg > .unit-state`)!;
-  // At work: Stop, and no ring or word before it. Asking: a dot, which isn't read out, then Stop.
-  expect([state("task_running").innerHTML, state("task_running").nextElementSibling?.textContent]).toEqual(["", "Stop"]);
-  expect([state("task_waiting").querySelector(".unit-dot")?.getAttribute("aria-hidden"), state("task_waiting").textContent, state("task_waiting").nextElementSibling?.textContent]).toEqual(["true", "", "Stop"]);
+  const stop = (id: string) => state(id).parentElement?.lastElementChild?.textContent;
+  // At work: Stop, and no standing word. Asking: a dot, which isn't read out, before the metrics and Stop.
+  expect([state("task_running").innerHTML, stop("task_running")]).toEqual(["", "Stop"]);
+  expect([state("task_waiting").querySelector(".unit-dot")?.getAttribute("aria-hidden"), state("task_waiting").textContent, stop("task_waiting")]).toEqual(["true", "", "Stop"]);
   // A question is that dot, the question and Answer: no row under the heading says "Needs your answer" over it.
   const asking = container.querySelector<HTMLElement>('.unit[data-run="task_waiting"] .req')!;
   expect(asking.querySelector(".req-status")).toBeNull();
@@ -9340,7 +9341,7 @@ it("heads each request with a band that says where it stands: Stop at work, a do
   expect(state("task_running").textContent).toBe("Stopped");
   expect(stopped.querySelector(".req-state, .unit-stop")).toBeNull();
   expect(stopped.querySelector(".req")!.getAttribute("data-state")).toBe("stopped");
-  // A finished request that left nothing to play has nothing there: no tick and no menu.
+  // A finished request that left nothing to play has its metrics without a standing word or menu.
   await event(d => ({ ...d, changes: d.changes.map(c => c.id === "chg_ready" ? { ...c, state: "approved" as const } : c) }));
   expect(state("task_done").innerHTML).toBe("");
   expect(container.querySelector('.unit[data-run="task_done"] .simple-action-more')).toBeNull();

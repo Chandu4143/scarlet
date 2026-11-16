@@ -113,10 +113,10 @@ it("adds the request's tokens to its finished run line, and updates live", () =>
   expect(tokens?.getAttribute("aria-label")).toContain("cache read");
   // Hovering or focusing the count opens every part of it under the count; it closes again when the pointer leaves.
   act(() => (tokens as HTMLElement).focus());
-  expect([...view.host.querySelectorAll(".tokens-tip > span")].map(row => row.textContent)).toEqual([
+  expect([...document.querySelectorAll(".tokens-tip > span")].map(row => row.textContent)).toEqual([
     `Input${(1200).toLocaleString()}`, `Output${(3000).toLocaleString()}`, `Cache read${(44_000).toLocaleString()}`, `Total${(48_200).toLocaleString()}`]);
   act(() => (tokens as HTMLElement).blur());
-  expect(view.host.querySelector(".tokens-tip")).toBeNull();
+  expect(document.querySelector(".tokens-tip")).toBeNull();
   expect(view.host.textContent).not.toMatch(/\$|cost/i);
 
   // Another project's report never lands here.
@@ -466,9 +466,9 @@ it("ticks active time, updates reported tokens, and carries both metrics across 
   report(task.id, more);
   expect([tokens()?.textContent, tokens()?.dataset.breakdown]).toEqual(["6s · 1.3M tokens", tokenBreakdown(more)]);
   act(() => tokens()!.click());
-  expect(view.host.querySelector(".tokens-tip > span")?.textContent).toBe("Active time6s");
+  expect(document.querySelector(".tokens-tip > span")?.textContent).toBe("Active time6s");
   act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-  expect(view.host.querySelector(".tokens-tip")).toBeNull();
+  expect(document.querySelector(".tokens-tip")).toBeNull();
 
   for (const state of ["waiting_for_user", "queued"] as const) {
     view.rerender(<RequestMetrics attempts={[{ ...working, state, workedMs: 6000 }]} events={{}} />);

@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { callNumbers, taskNeedsTranscripts, type SpeakerProgress, type Task, type TaskEvent, type UsageTotals } from "@scarlet/shared";
 import type { Change } from "@scarlet/timeline";
 import { useShallow } from "zustand/react/shallow";
@@ -20,19 +21,23 @@ type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt">;
 
 function Tokens({ usage, className, time }: { usage?: RunUsage; className?: string; time?: string }) {
   const ref = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLSpanElement>(null);
+  const id = useId();
   const [mode, setMode] = useState<"preview" | "pinned" | null>(null);
   const open = mode !== null && !!usage?.totalTokens;
-  const [tip, setTip] = useState<{ right: number; bottom: number } | null>(null);
   // While the note is open it follows the count, which moves when the pinned request grows or the chat scrolls.
   useLayoutEffect(() => {
-    if (!open) { setTip(null); return; }
+    if (!open) return;
+    const anchor = ref.current!;
+    const details = panel.current!;
     let frame = 0;
     const place = () => {
-      const box = ref.current?.getBoundingClientRect();
-      if (box) setTip(was => {
-        const right = window.innerWidth - box.right, bottom = window.innerHeight - box.top + 6;
-        return was?.right === right && was.bottom === bottom ? was : { right, bottom };
-      });
+      const box = anchor.getBoundingClientRect();
+      const { offsetHeight: height, offsetWidth: width } = details;
+      const above = box.top - 6 - height;
+      const top = above >= 8 ? above : Math.min(box.bottom + 6, window.innerHeight - height - 8);
+      details.style.top = `${Math.max(8, top)}px`;
+      details.style.left = `${Math.max(8, Math.min(box.right - width, window.innerWidth - width - 8))}px`;
       frame = requestAnimationFrame(place);
     };
     place();
@@ -41,7 +46,8 @@ function Tokens({ usage, className, time }: { usage?: RunUsage; className?: stri
   useEffect(() => {
     if (!open) { setMode(null); return; }
     const closeOutside = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setMode(null);
+      const target = event.target as Node;
+      if (!ref.current?.contains(target) && !panel.current?.contains(target)) setMode(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -65,22 +71,22 @@ function Tokens({ usage, className, time }: { usage?: RunUsage; className?: stri
   const label = tokenLabel(usage.totalTokens);
   const [count, unit] = label.split(" ");
   const breakdown = tokenBreakdown(usage);
-  return <button ref={ref} type="button" className={`run-dim run-tokens${className ? ` ${className}` : ""}`} title=""
-    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}`} data-breakdown={breakdown} aria-expanded={open}
+  return <><button ref={ref} type="button" className={`run-dim run-tokens${className ? ` ${className}` : ""}`} title=""
+    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}`} data-breakdown={breakdown}
+    aria-expanded={open} aria-controls={open ? id : undefined}
     onPointerEnter={e => { if (e.pointerType !== "touch") setMode(value => value ?? "preview"); }}
     onPointerLeave={() => { if (!ref.current?.matches(":focus-visible")) setMode(value => value === "preview" ? null : value); }}
     onFocus={() => setMode(value => value ?? "preview")} onBlur={() => setMode(null)}
     onClick={() => setMode(value => value === "pinned" ? null : "pinned")}>
     {time && <><span className="run-work-time">{time}</span> <span className="unit-metrics-dot" aria-hidden>·</span>{" "}</>}
     {count}<span className="unit-token-word"> {unit}</span>
-    {open && tip && <span className="tokens-tip" aria-hidden data-escape-owner style={tip}>
+  </button>{open && createPortal(<span ref={panel} id={id} className="tokens-tip" aria-hidden data-escape-owner>
       {time && <span><span>Active time</span><b>{time}</b></span>}
       {parts.filter(([label, n]) => n || label === "Input" || label === "Output").map(([label, n]) =>
         <span key={label}><span>{label}</span><b>{n.toLocaleString()}</b></span>)}
       {usage.runs > 1 && <span><span>Runs</span><b>{usage.runs}</b></span>}
       <span className="tokens-tip-total"><span>Total</span><b>{usage.totalTokens.toLocaleString()}</b></span>
-    </span>}
-  </button>;
+    </span>, document.body)}</>;
 }
 
 const voicePhase: Record<SpeakerProgress["phase"], string> = {
