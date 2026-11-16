@@ -1,4 +1,5 @@
 import { logId } from "../logText.js";
+import { editorFirst } from "./editorFirst.js";
 
 /**
  * Local audio models (Whisper, word alignment and speaker analysis) each use most of the CPU. Run side by
@@ -137,7 +138,9 @@ export class AudioLane {
     let failed = false;
     try {
       signal?.throwIfAborted();
-      return await job();
+      // A recording no pass is reading is nobody's to wait for, unless work a pass needs waits behind it: it yields to
+      // the editor's playback meanwhile. A scan page is always a pass's.
+      return await (work.kind === "page" ? job() : editorFirst.run(() => this.rank(work) === 2 && !this.urgentWaiting(), job));
     } catch (error) {
       failed = true;
       throw error;
@@ -162,6 +165,11 @@ export class AudioLane {
     this.unhold();
     this.begun.delete(workKey(work));
     this.next();
+  }
+
+  /** Whether work a pass needs is waiting for the lane. */
+  urgentWaiting(): boolean {
+    return this.waiting.some(entry => this.rank(entry.work) < 2);
   }
 
   /** Work waiting for the lane, in the order it would run. */

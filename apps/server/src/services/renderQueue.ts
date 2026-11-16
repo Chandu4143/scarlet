@@ -13,6 +13,7 @@ import type { RenderEncoding } from "../render/adapter.js";
 import { recordRenderFinished } from "../telemetry/events.js";
 import { prepareSourceProxies } from "./sourcePreviews.js";
 import { resolveTimeline } from "./timeline.js";
+import { editorFirst } from "./editorFirst.js";
 
 export interface RenderInput {
   projectId: string;
@@ -519,7 +520,9 @@ export class RenderQueue {
     this.ctx.db.afterCommit(() => {
       if (owner) this.owners.set(render.id, new Map([[owner, input.speculative ? "preparation" : "viewer"]]));
       if (owner && input.kind === "full" && input.quality === "preview") this.backgroundCaches.add(render.id);
-      this.queue.push({ id: render.id, projectId: render.projectId, key: render.previewContentKey ?? render.key, playback: !!owner && input.kind === "playback" && !input.speculative });
+      const playback = !!owner && input.kind === "playback" && !input.speculative;
+      if (playback) editorFirst.touch();
+      this.queue.push({ id: render.id, projectId: render.projectId, key: render.previewContentKey ?? render.key, playback });
       this.pump();
     });
     return render;
@@ -619,10 +622,15 @@ export class RenderQueue {
       this.activeKeys.add(key);
       const ac = new AbortController();
       this.running.set(id, ac);
+      // The editor is waiting for a playback section however long it takes. A full preview cache is nobody's to
+      // wait for, so its encoders yield to them (editorFirst.ts). Either way the render doesn't inherit the priority
+      // of whatever work called pump.
+      const editorWaits = priority === Priority.Playback ? editorFirst.hold() : undefined;
       this.ctx.track(
-        this.run(id, AbortSignal.any([ac.signal, this.ctx.shutdown]))
+        editorFirst.run(() => this.backgroundCaches.has(id), () => this.run(id, AbortSignal.any([ac.signal, this.ctx.shutdown])))
           .catch((e) => this.ctx.log(`[render] ${id} crashed: ${(e as Error).message}`))
           .finally(() => {
+            editorWaits?.();
             // Release durable work only after the cancelled encoder has closed its file.
             if (this.ctx.shutdown.aborted) this.releaseWorker(id);
             else if (ac.signal.reason === yieldCacheWorker) {
