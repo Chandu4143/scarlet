@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- A photo or a title card that doesn’t move is ready in seconds, where Scarlet used to draw every frame of it.
 - Scarlet hears when you keep an edit it flagged, so a request still working doesn't ask you about it again.
 - Scarlet stays connected when you pause media processing while it’s caching a video.
 - The message box shows an edit’s time on its own and widens its tag to show the × on hover. Open +1 to see and clear an additional marked range.
