@@ -200,7 +200,11 @@ export async function ingestMedia(
   source: IngestSource,
   opts: { name?: string; kind?: MediaKind; deferFormat?: boolean; by?: MediaAsset["provenance"]; uploadedBy?: string; transcription: Awaited<ReturnType<typeof importTranscriptionPolicy>>; checkAttempt?: () => void },
 ): Promise<MediaWithStatus> {
-  const signal = ctx.projectSignal(project.id);
+  const projectSignal = ctx.projectSignal(project.id);
+  const clientSignal = source.type === "url" ? source.signal : undefined;
+  const cancelled = () => new HttpError(408, "download_cancelled", "The URL import was cancelled.");
+  if (clientSignal?.aborted) throw cancelled();
+  const signal = clientSignal ? AbortSignal.any([projectSignal, clientSignal]) : projectSignal;
   signal.throwIfAborted();
   ctx.paths.ensureProject(project.id);
   const mediaId = newId("med");
@@ -212,12 +216,11 @@ export async function ingestMedia(
   if (source.type === "url") {
     const url = normalizeImportUrl(source.url);
     const deadline = AbortSignal.timeout(URL_IMPORT_TIMEOUT_MS);
-    const downloadSignal = AbortSignal.any(source.signal ? [signal, source.signal, deadline] : [signal, deadline]);
+    const downloadSignal = AbortSignal.any([signal, deadline]);
     const timeout = () => new HttpError(408, "download_timed_out", "This URL import exceeded six hours. Download the recording locally and add the file.");
-    const cancelled = () => new HttpError(408, "download_cancelled", "The URL import was cancelled.");
     const res = await downloadImport(new URL(url), downloadSignal).catch(error => {
       if (deadline.aborted) throw timeout();
-      if (source.signal?.aborted) throw cancelled();
+      if (clientSignal?.aborted) throw cancelled();
       // A lookup, connection, certificate or timeout failure is about the address, not a fault in the engine.
       if (error instanceof HttpError || signal.aborted) throw error;
       throw badRequest("download_failed", `Couldn’t download that URL: ${(error as Error).message}`);
@@ -230,7 +233,7 @@ export async function ingestMedia(
       await rename(partial, join(mediaDir, mediaId + safeExt(name)));
     } catch (error) {
       if (deadline.aborted) throw timeout();
-      if (source.signal?.aborted) throw cancelled();
+      if (clientSignal?.aborted) throw cancelled();
       throw error;
     } finally {
       res.destroy();
@@ -266,6 +269,7 @@ export async function ingestMedia(
 
   let asset: MediaAsset;
   try {
+    signal.throwIfAborted();
     const probe = await ctx.render.probeMedia(dest, signal);
     const kind = opts.kind ?? probe.kind;
     // Native playable media is already in project-owned storage. Its identifier
@@ -300,6 +304,7 @@ export async function ingestMedia(
   } catch (e) {
     await rm(dest, { force: true });
     ctx.shutdown.throwIfAborted();
+    if (clientSignal?.aborted) throw cancelled();
     // An import stopped, by its project going to the trash, says so rather than blaming the file.
     signal.throwIfAborted();
     throw badRequest("probe_failed", `ffprobe could not read the file: ${(e as Error).message}`);
@@ -308,6 +313,7 @@ export async function ingestMedia(
   try {
     stored = ctx.db.transaction(() => {
       opts.checkAttempt?.();
+      if (clientSignal?.aborted) throw cancelled();
       // Another instance may have trashed the project while the original was being copied.
       const current = ctx.repos.projects.header(project.id);
       if (!current) throw notFound(`project ${project.id}`);

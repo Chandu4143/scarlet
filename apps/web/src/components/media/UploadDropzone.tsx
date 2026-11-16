@@ -32,6 +32,7 @@ export interface LocalImport {
   position: number;
   total: number;
   checked?: number;
+  cancelDownload?: () => void;
 }
 
 export type ImportSource = File | string;
@@ -107,6 +108,7 @@ export function enqueueImports(projectId: string, sources: ImportSource[], match
       const patch = (changes: Partial<UploadItem>) => update(projectId, state => ({
         items: state.items.map(item => item.id === id ? { ...item, ...changes } : item),
       }));
+      const download = typeof source === "string" && isLink(source) ? new AbortController() : undefined;
       let keepPending = typeof source === "string" && disconnected.has(projectId);
       try {
         if (keepPending) continue;
@@ -114,10 +116,17 @@ export function enqueueImports(projectId: string, sources: ImportSource[], match
         // Check when this file gets its turn: earlier files may have finished without yielding any video.
         const deferFormat = !matchFormat && pendingImports(projectId).some(i => i.setsFormat);
         if (typeof source === "string") {
-          const current = { projectId, name, path: source, position: 1, total: 1 };
+          const current: LocalImport = { projectId, name, path: source, position: 1, total: 1 };
+          if (download) current.cancelDownload = () => {
+            removePendingImport(projectId, source);
+            download.abort();
+          };
           update(projectId, () => ({ localImport: current }));
           const importId = markImportStarted(projectId, source);
-          media = await importLocalFile(projectId, source, checked => update(projectId, () => ({ localImport: { ...current, checked } })), importId, deferFormat);
+          media = await importLocalFile(projectId, source, checked => update(projectId, () => ({ localImport: { ...current, checked } })), importId, deferFormat, download?.signal);
+          if (download) update(projectId, state => ({ localImport: state.localImport && {
+            ...state.localImport, checked: 1, cancelDownload: undefined,
+          } }));
         } else {
           const upload = uploadMedia(projectId, source, progress => patch({ progress, state: progress === 1 ? "preparing" : "uploading" }), deferFormat);
           update(projectId, state => ({ items: [...state.items, { id, name, size: source.size, progress: 0, state: "uploading", abort: upload.abort }] }));
@@ -130,6 +139,7 @@ export function enqueueImports(projectId: string, sources: ImportSource[], match
           window.setTimeout(() => dismiss(projectId, id), 6000);
         }
       } catch (error) {
+        if (download?.signal.aborted) continue;
         if (typeof source === "string" && engineUnavailable(error)) {
           disconnected.set(projectId, id);
           keepPending = retryInterruptedImport(projectId, source);

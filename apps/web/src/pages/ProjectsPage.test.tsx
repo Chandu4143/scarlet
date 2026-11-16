@@ -637,7 +637,7 @@ it("queues a link on Enter and closes its dialog at once, while the link still d
     await enter();
     // The link joined the project's queue, remembered like a file until it is in. The dialog didn't wait for it:
     // it closed with the field empty, and nothing in it spins or is switched off.
-    expect(imports).toHaveBeenCalledExactlyOnceWith(PRJ, { url: link, importId: pendingImports(PRJ)[0]?.importId });
+    expect(imports).toHaveBeenCalledExactlyOnceWith(PRJ, { url: link, importId: pendingImports(PRJ)[0]?.importId }, expect.any(AbortSignal));
     expect(pendingImports(PRJ).map(i => i.source)).toEqual([link]);
     expect(onClose).toHaveBeenCalledOnce();
     expect(field.value).toBe("");

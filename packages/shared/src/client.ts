@@ -334,8 +334,8 @@ export class ScarletClient {
     if (provenance) fd.append("provenance", JSON.stringify(provenance));
     return this.post<{ media: MediaAsset }>(`/projects/${projectId}/media`, fd);
   }
-  importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string; deferFormat?: boolean }) {
-    return this.post<{ media: MediaAsset }>(`/projects/${projectId}/media/import`, body);
+  importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string; deferFormat?: boolean }, signal?: AbortSignal) {
+    return this.request<{ media: MediaAsset }>("POST", `/projects/${projectId}/media/import`, body, { signal });
   }
   /** Take a file Scarlet couldn't read out of the project. The engine refuses one the video or its history uses. */
   removeMedia(projectId: string, mediaId: string) {

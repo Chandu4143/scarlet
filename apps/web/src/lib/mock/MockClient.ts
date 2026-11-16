@@ -353,8 +353,12 @@ export class MockClient implements ScarletApi {
     void this.simulateIngest(projectId, media, file.size);
     return this.latency({ media }, 200);
   }
-  async importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string }): Promise<{ media: MediaAsset }> {
+  async importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string }, signal?: AbortSignal): Promise<{ media: MediaAsset }> {
     this.requireAuth();
+    if (signal) {
+      await sleep(400);
+      signal.throwIfAborted();
+    }
     const saved = body.importId && this.db.media[projectId]?.find(asset => asset.importId === body.importId);
     if (saved) return { media: saved };
     const src = body.url ?? body.path ?? "import";
@@ -366,7 +370,7 @@ export class MockClient implements ScarletApi {
     this.projectById(projectId).media = this.db.media[projectId] ?? [];
     this.refreshCounts(projectId);
     void this.simulateIngest(projectId, media, 50_000_000);
-    return this.latency({ media }, 400);
+    return signal ? { media } : this.latency({ media }, 400);
   }
   async removeMedia(projectId: string, mediaId: string): Promise<Record<string, never>> {
     this.requireAuth();
