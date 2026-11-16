@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { checkAttachments } from "../services/graphics.js";
 import { z } from "zod/v3";
-import { CompleteTaskRequest, CreateTaskRequest, queueWait, RecordTaskUsageRequest, RepeatAuditRequest, RewordTaskRequest, RunChoice, TaskEvent, TaskState, UsageGroupBy, type Task } from "@scarlet/shared";
+import { CompleteTaskRequest, CreateTaskRequest, queueWaits, RecordTaskUsageRequest, RepeatAuditRequest, RewordTaskRequest, RunChoice, TaskEvent, TaskState, UsageGroupBy, type Task } from "@scarlet/shared";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
@@ -226,7 +226,8 @@ export function taskRoutes(ctx: Ctx) {
     for (const projectId of new Set(queued.map(t => t.projectId))) {
       const tasks = ctx.repos.tasks.select("project_id = ?", [projectId], "created_at, rowid");
       const changes = ctx.repos.changes.select("project_id = ?", [projectId]);
-      waiting += queued.filter(t => t.projectId === projectId && !["question", "review"].includes(queueWait(t, tasks, changes)?.kind ?? "")).length;
+      const wait = queueWaits(tasks, changes);
+      waiting += queued.filter(t => t.projectId === projectId && !["question", "review"].includes(wait(t)?.kind ?? "")).length;
     }
     // An export that has rendered and is still being saved to its file is one too: its owner lets go once it is saved.
     return c.json({

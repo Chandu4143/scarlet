@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, queueAdmission, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -677,64 +677,58 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   const agents = host.agents.filter(a => a.installed && a.loggedIn !== false && (!freeAgents || freeAgents.includes(a.id)));
   if (!taskId && !agents.length) return null;
   const filter = taskId ? "q.id = ?" : "q.kind != 'transcribe' AND q.agent IN (SELECT value FROM json_each(?))";
-  // A skill edit and a learning check don't touch the video: neither waits for the project's requests nor holds them up.
-  // One request at a time per project, in the order they were asked, so two agents never edit the same footage at
-  // once. The exception is two requests that are each about one cut or edit, and about different ones: neither waits
-  // for the other, running or ahead in line (runsBeside in @scarlet/shared, which this repeats). A dialogue pass whose staged cuts still need the editor holds back requests that aren't about it. So does one
-  // with a cut sent back, while that revision is queued or running; the version a finished revision replaced holds nothing.
-  // queueWait in @scarlet/shared explains the same rule in the app; keep the two in step.
-  // A request the editor started anyway (startsBeforeCalls) doesn't wait for a pass's calls; it still takes its turn.
-  // A request whose words the editor is changing isn't started until they're saved, and still holds its place.
-  // IS, not =: a missing thread or change id must compare false, not NULL, or NOT would let the request through.
-  const about = (t: string) => `(coalesce(json_extract(${t}.json, '$.context.threadId'), ${t}.id) IS json_extract(o.json, '$.threadId')
-    OR json_extract(${t}.json, '$.context.changeId') IS o.id)`;
-  const open = (t: string) => `SELECT 1 FROM changes o JOIN tasks ot ON ot.id = json_extract(o.json, '$.taskId')
-    WHERE o.project_id = ${t}.project_id AND json_extract(o.json, '$.intent') = 'suggestion'
-      AND (o.state = 'ready' OR (o.state = 'revising' AND EXISTS (SELECT 1 FROM tasks rv WHERE rv.project_id = o.project_id
-        AND rv.state IN ('queued','claimed','running','waiting_for_user') AND json_extract(rv.json, '$.context.changeId') = o.id)))
-      AND json_array_length(coalesce(json_extract(o.json, '$.cutReasons'), '[]')) > 0
-      AND json_extract(ot.json, '$.context.branch') IS json_extract(${t}.json, '$.context.branch')`;
-  const thread = (t: string) => `coalesce(json_extract(${t}.json, '$.context.threadId'), ${t}.id)`;
-  const aboutOne = (t: string) => `(json_extract(${t}.json, '$.context.changeId') IS NOT NULL
-    AND (json_extract(${t}.json, '$.context.cutIndex') IS NOT NULL OR json_extract(${t}.json, '$.context.editIndex') IS NOT NULL))`;
-  // The cut or edit a request is about, as requestTargetKey in @scarlet/shared keys it: a call by its pass's thread and
-  // index, an applied edit by the change and spot it was first made at, followed back through each revision's `replaces`.
-  const edited = (t: string) => `(WITH RECURSIVE up(id, spot, n) AS (
-      SELECT json_extract(${t}.json, '$.context.changeId'), json_extract(${t}.json, '$.context.editIndex'), 0
-      UNION ALL SELECT json_extract(c.json, '$.timelineEdits[' || up.spot || '].replaces.changeId'),
-        json_extract(c.json, '$.timelineEdits[' || up.spot || '].replaces.spot'), up.n + 1
-      FROM up JOIN changes c ON c.id = up.id
-      WHERE up.n < 50 AND json_extract(c.json, '$.timelineEdits[' || up.spot || '].replaces.changeId') IS NOT NULL)
-    SELECT json_array('edit', id, spot) FROM up ORDER BY n DESC LIMIT 1)`;
-  const target = (t: string) => `CASE WHEN json_extract(${t}.json, '$.context.cutIndex') IS NOT NULL
-    THEN json_array('call', ${thread(t)}, json_extract(${t}.json, '$.context.cutIndex')) ELSE ${edited(t)} END`;
-  const beside = (a: string, b: string) => `(${aboutOne(a)} AND ${aboutOne(b)} AND (${target(a)}) IS NOT (${target(b)}))`;
-  // A resumed run keeps the place in line of the run it continues: requests asked while that run worked still wait for it.
-  // It takes that run's row number as well as its time, so a request asked in the same millisecond as that run doesn't pass it.
-  const place = (t: string) => {
-    const root = (column: string) => `coalesce((SELECT r.${column} FROM tasks r WHERE r.id = json_extract(${t}.json, '$.resumeRootId')), ${t}.${column})`;
-    return `${root("created_at")}, ${root("rowid")}, ${t}.rowid`;
-  };
-  const rows = ctx.db.prepare(`SELECT q.json FROM tasks q JOIN projects p ON p.id=q.project_id
+  // Include only tasks this host can claim in the candidate scan. The shared queue still sees
+  // requests for other hosts and requests being reworded, since they can hold up later work.
+  const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at FROM tasks q JOIN projects p ON p.id = q.project_id
+    LEFT JOIN tasks root ON root.id = json_extract(q.json, '$.resumeRootId')
     WHERE p.deleted_at IS NULL AND q.state = 'queued' AND ${filter}
     AND (json_extract(q.json, '$.rewordingUntil') IS NULL OR json_extract(q.json, '$.rewordingUntil') <= ?)
-    AND (q.kind IN ('skill_edit', 'learning_check') OR (NOT EXISTS (SELECT 1 FROM tasks prior
-      WHERE prior.project_id = q.project_id AND prior.id != q.id AND prior.kind NOT IN ('transcribe', 'skill_edit', 'learning_check')
-        AND NOT ${beside("q", "prior")}
-        AND (prior.state IN ('claimed','running','waiting_for_user')
-          OR (prior.state = 'queued' AND (${place("prior")}) < (${place("q")})
-            AND NOT EXISTS (${open("q")} AND ${about("q")} AND NOT ${about("prior")}))))
-    AND (json_extract(q.json, '$.startsBeforeCalls') IS 1 OR NOT EXISTS (${open("q")} AND NOT ${about("q")}))))
-    ORDER BY ${place("q")}`).iterate(taskId ?? JSON.stringify(agents.map(a => a.id)), now());
+    ORDER BY coalesce(root.created_at, q.created_at), coalesce(root.rowid, q.rowid), q.rowid`)
+    .iterate(taskId ?? JSON.stringify(agents.map(a => a.id)), now()) as Iterable<{
+      id: string; project_id: string; kind: TaskKind; json: string; created_at: string;
+    }>;
+  // Only the columns the queue reads: an open pass's cut reasons are counted in SQL, never parsed, and an edit's
+  // lineage is read only for a request about an applied edit.
+  const lineage = ctx.db.prepare("SELECT json_extract(json, '$.timelineEdits') AS edits FROM changes WHERE id = ?");
+  function readQueue(projectId: string) {
+    const changes = (ctx.db.prepare(`SELECT id, project_id AS projectId, state, json_extract(json, '$.intent') AS intent,
+        json_extract(json, '$.taskId') AS taskId, json_extract(json, '$.threadId') AS threadId,
+        json_array_length(json_extract(json, '$.cutReasons')) AS cuts
+      FROM changes WHERE project_id = ? AND state IN ('ready', 'revising')
+        AND json_extract(json, '$.intent') = 'suggestion' AND json_array_length(json_extract(json, '$.cutReasons')) > 0`)
+      .all(projectId) as (Omit<QueueChange, "cutReasons" | "taskId" | "threadId"> & { taskId: string | null; threadId: string | null; cuts: number })[])
+      .map(({ cuts, taskId, threadId, ...change }): QueueChange =>
+        ({ ...change, taskId: taskId ?? undefined, threadId: threadId ?? undefined, cutReasons: { length: cuts } }));
+    const tasks = ctx.repos.tasks.queue(projectId, changes.flatMap(change => change.taskId ? [change.taskId] : []));
+    const edits = new Map<string, Pick<Change, "id" | "timelineEdits"> | undefined>();
+    const lookup = (id: string) => {
+      if (!edits.has(id)) {
+        const row = lineage.get(id) as { edits: string | null } | undefined;
+        edits.set(id, row?.edits ? { id, timelineEdits: JSON.parse(row.edits) } : undefined);
+      }
+      return edits.get(id);
+    };
+    return { canClaim: queueAdmission(tasks, changes, lookup),
+      byId: new Map(tasks.map(task => [task.id, task])) };
+  }
+  const queues = new Map<string, ReturnType<typeof readQueue>>();
   for (const row of rows) {
-    const task = ctx.repos.tasks.parse(row.json as string);
+    // A host that can't run the request never reads the project's queue for it.
+    const task = ctx.repos.tasks.parse(row.json);
     if (!hostCanRun(host, task)) continue;
+    if (!isAsideTask({ kind: row.kind })) {
+      const queue = queues.get(row.project_id) ?? readQueue(row.project_id);
+      queues.set(row.project_id, queue);
+      const candidate = queue.byId.get(row.id)!;
+      if (!queue.canClaim(candidate)) continue;
+    }
+    const createdAt = task.createdAt ?? row.created_at;
     const seenAt = now();
     const startedAt = task.startedAt && task.startedAt >= seenAt ? new Date(Date.parse(task.startedAt) + 1).toISOString() : seenAt;
     ctx.db.prepare("UPDATE tasks SET worker_pid = ?, worker_seen_at = ? WHERE id = ?").run(desktopPid, seenAt, task.id);
-    const waited = since(task.createdAt, Date.parse(seenAt));
+    const waited = since(createdAt, Date.parse(seenAt));
     ctx.log(`[task] ${task.id} claimed by ${host.name} (${host.id})${waited ? ` after ${waited} in the queue` : ""}`);
-    return saveTask(ctx, { ...task, state: "claimed", hostId: host.id, startedAt, workedMs: pausedWork(ctx, task) ?? 0 });
+    return saveTask(ctx, { ...task, createdAt, state: "claimed", hostId: host.id, startedAt, workedMs: pausedWork(ctx, task) ?? 0 });
   }
   return null;
 }

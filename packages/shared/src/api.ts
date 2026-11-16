@@ -807,6 +807,8 @@ export const Task = z.object({
   retryTaskId: Id.optional(),
   /** Server-assigned original attempt whose workspace and progress this run continues. */
   resumeRootId: Id.optional(),
+  /** Insertion order from the engine, used to break ties between requests saved in the same millisecond. */
+  queueSequence: z.number().int().optional(),
   /** Whether the selected cut was still staged when the request was made. Editing an applied cut uses the timeline. */
   stagedCutRevision: z.boolean().optional(),
   /**

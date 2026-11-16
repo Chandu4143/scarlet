@@ -7,7 +7,7 @@ import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it as vitestIt, vi, onTestFinished } from "vitest";
 import { partedIt } from "../../../test/parts";
 import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, sha256, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
-import { buildThreads, isThreadDone, taskPlan, threadRevision, type Render, type Task } from "@scarlet/shared";
+import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
 import { seedSkillList } from "./services/skills.js";
@@ -96,6 +96,22 @@ function api(method: string, path: string, body?: unknown) {
   });
 }
 const projectsPath = () => `/projects/${project.id}`;
+
+async function readQueue() {
+  const [taskRows, changeRows] = await Promise.all([api("GET", projectsPath() + "/tasks"), api("GET", projectsPath() + "/changes")]);
+  expect(taskRows.status).toBe(200);
+  expect(changeRows.status).toBe(200);
+  const { tasks } = await taskRows.json() as { tasks: Task[] };
+  const { changes } = await changeRows.json() as { changes: Change[] };
+  return {
+    order: queueOrder(tasks, changes).map(task => task.id),
+    wait(taskId: string) {
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) throw new Error(`Task ${taskId} missing from the project snapshot`);
+      return queueWait(task, tasks, changes);
+    },
+  };
+}
 
 /** Controlled local recognizer output for a synthetic 20 s microphone recording. */
 async function micSpeech(speech: Record<number, string> = {}) {
@@ -1746,10 +1762,15 @@ it("resumes an interrupted run ahead of a follow-up asked in the millisecond the
     expect(follow.createdAt).toBe(run.createdAt);
     // Scarlet quits mid-run. The run carries on under a new task, a later row than the follow-up.
     expect((await api("POST", `/tasks/${run.id}/complete`, { state: "cancelled", interrupted: true })).status).toBe(200);
+    const retryId = ctx.repos.tasks.get(run.id)!.retryTaskId;
+    const queue = await readQueue();
+    expect(queue.order).toEqual([retryId, follow.id]);
+    expect(queue.wait(follow.id)).toEqual({ kind: "ahead", count: 1 });
     const resumed = await claim();
-    expect(resumed).toMatchObject({ id: ctx.repos.tasks.get(run.id)!.retryTaskId, resumeRootId: run.id });
+    expect(resumed).toMatchObject({ id: retryId, resumeRootId: run.id });
     expect(ctx.repos.tasks.get(follow.id)?.state).toBe("queued");
     expect((await api("POST", `/tasks/${resumed!.id}/complete`, { state: "done" })).status).toBe(200);
+    expect((await readQueue()).order).toEqual([follow.id]);
     expect((await claim())?.id).toBe(follow.id);
   } finally {
     vi.useRealTimers();
@@ -3412,6 +3433,42 @@ it("runs one request at a time per project, in the order asked, across agent typ
   expect((await claim({ agents: ["codex"] })).id).toBe(independent.id);
 });
 
+it("lets competing hosts on two engines claim one request at a time for the same project", async () => {
+  const make = (model: string) => createTask(workspace.ctx, { projectId: project.id, kind: "edit", agent: "codex", model,
+    instruction: "Edit", createdBy: { type: "human", name: "Editor" } });
+  const first = make("full");
+  const second = make("small");
+  const agents = (models: string[]) => [{ id: "codex", installed: true, models }];
+  const register = async (name: string, models: string[]) => {
+    const response = await api("POST", "/hosts/register", { name, platform: "test", agents: agents(models) });
+    expect(response.status).toBe(201);
+    return (await response.json() as { host: { id: string } }).host.id;
+  };
+  const localHost = await register("Local", ["full", "small"]);
+  const peerHost = await register("Peer", ["small"]);
+  const peer = openWorkspace();
+  try {
+    const claim = async (engine: ScarletApp, hostId: string) => {
+      const response = await engine.app.request(`/api/hosts/${hostId}/claim`, { method: "POST", body: "{}",
+        headers: { Authorization: `Bearer ${accessToken(engine.ctx)}`, "Content-Type": "application/json" } });
+      expect(response.status).toBe(200);
+      return (await response.json() as { task: Task | null }).task;
+    };
+    expect(await claim(peer, peerHost)).toBeNull();
+    const promoted = await api("POST", `/hosts/${peerHost}/heartbeat`, { agents: agents(["full", "small"]) });
+    expect(promoted.status).toBe(200);
+
+    const [local, remote] = await Promise.all([claim(workspace, localHost), claim(peer, peerHost)]);
+    expect([local, remote].filter(task => task !== null).map(task => task.id)).toEqual([first.id]);
+    const claimAgain = () => local ? claim(peer, peerHost) : claim(workspace, localHost);
+    expect(await claimAgain()).toBeNull();
+    expect((await api("POST", `/tasks/${first.id}/complete`, { state: "done" })).status).toBe(200);
+    expect((await claimAgain())?.id).toBe(second.id);
+  } finally {
+    await peer.ctx.close();
+  }
+});
+
 it("leaves a request queued when its host hangs up during a claim's long poll", async () => {
   const { ctx } = workspace;
   const { host } = await (await api("POST", "/hosts/register", { name: "Gone", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
@@ -3574,7 +3631,7 @@ it("holds new requests while a dialogue pass's staged cuts wait for the editor, 
   const { host } = await (await api("POST", "/hosts/register", { name: "Editor", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
   const submit = async (instruction: string, context = {}) => (await (await api("POST", projectsPath() + "/tasks",
     { agent: "codex", instruction, context })).json()).task as Task;
-  const claim = async (taskId: string) => (await (await api("POST", `/hosts/${host.id}/claim`, { taskId })).json()).task as Task | null;
+  const claim = async (taskId?: string) => (await (await api("POST", `/hosts/${host.id}/claim`, { taskId })).json()).task as Task | null;
   ctx.repos.projects.putMedia(project.id, { id: "mic", name: "mic", path: "mic.wav", kind: "audio", duration: 20, hasAudio: true }, "ready");
   const pass = await submit("/first-cut-dialogue");
   expect((await claim(pass.id))?.id).toBe(pass.id);
@@ -3584,23 +3641,30 @@ it("holds new requests while a dialogue pass's staged cuts wait for the editor, 
     cuts: [{ start: 12, end: 13, review: true, reason: "may be the better take" }] })).json()).changes[0] as Change;
   // A request typed while the pass runs waits for it.
   const zoom = await submit("Zoom into the browser window during the demo.");
+  expect((await readQueue()).wait(zoom.id)).toMatchObject({ kind: "run", task: { id: pass.id } });
   expect(await claim(zoom.id)).toBeNull();
   await checkPassAudio(pass.id);
   await api("POST", `/tasks/${pass.id}/complete`, { state: "done" });
   // The pass finished, but its staged cut still needs the editor, so the zoom keeps waiting.
   expect(ctx.repos.changes.get(staged.id)?.state).toBe("ready");
-  expect(await claim(zoom.id)).toBeNull();
+  expect((await readQueue()).wait(zoom.id)).toMatchObject({ kind: "review", change: { id: staged.id } });
+  expect(await claim()).toBeNull();
   // A reply in the pass's thread works on the pass itself, so it goes ahead of the zoom.
   const reply = await submit("Keep the second take instead.", { threadId: pass.id });
-  expect((await claim(reply.id))?.id).toBe(reply.id);
+  expect((await readQueue()).order).toEqual([reply.id, zoom.id]);
+  expect((await claim())?.id).toBe(reply.id);
   await api("POST", `/tasks/${reply.id}/complete`, { state: "done" });
   expect(await claim(zoom.id)).toBeNull();
   // The editor sends the pass back for another look. It is still theirs to decide, so the zoom keeps waiting and
   // the revision goes first: let through, the zoom would move the edit on and leave the revision out of date.
   const { task: revision } = await (await api("POST", `/changes/${staged.id}/revise`, { text: "Start that cut a beat later.", assignTo: "codex" })).json() as { task: Task };
   expect(ctx.repos.changes.get(staged.id)?.state).toBe("revising");
+  const revising = await readQueue();
+  expect(revising.order).toEqual([revision.id, zoom.id]);
+  expect(revising.wait(zoom.id)).toMatchObject({ kind: "review", change: { id: staged.id } });
+  expect(revising.wait(revision.id)).toBeUndefined();
   expect(await claim(zoom.id)).toBeNull();
-  expect((await claim(revision.id))?.id).toBe(revision.id);
+  expect((await claim())?.id).toBe(revision.id);
   // It ends without a new version, which puts the pass back as it was.
   await api("POST", `/tasks/${revision.id}/complete`, { state: "done" });
   expect(ctx.repos.changes.get(staged.id)?.state).toBe("ready");
@@ -3615,10 +3679,12 @@ it("holds new requests while a dialogue pass's staged cuts wait for the editor, 
   await api("POST", `/tasks/${again.id}/complete`, { state: "done" });
   expect(ctx.repos.changes.get(staged.id)?.state).toBe("revising");
   expect(ctx.repos.changes.get(revised.id)?.state).toBe("ready");
+  expect((await readQueue()).wait(zoom.id)).toMatchObject({ kind: "review", change: { id: revised.id } });
   expect(await claim(zoom.id)).toBeNull();
   // Once the editor applies the pass, the zoom starts on the decided cut.
   expect((await api("POST", `/changes/${revised.id}/approve`, { restoredCuts: [0] })).status).toBe(200);
-  expect((await claim(zoom.id))?.id).toBe(zoom.id);
+  expect((await readQueue()).wait(zoom.id)).toBeUndefined();
+  expect((await claim())?.id).toBe(zoom.id);
 });
 
 it("starts a request the calls hold back once the editor says to, and still applies the pass after it", async () => {
@@ -3639,14 +3705,19 @@ it("starts a request the calls hold back once the editor says to, and still appl
   const captions = await submit("Add captions.");
   // Told to start while the pass still runs, the zoom waits its turn behind that run: only the calls are waived.
   expect((await (await startNow(zoom.id)).json()).task.startsBeforeCalls).toBe(true);
+  expect((await readQueue()).wait(zoom.id)).toMatchObject({ kind: "run", task: { id: pass.id } });
   expect(await claim(zoom.id)).toBeNull();
   await checkPassAudio(pass.id);
   await api("POST", `/tasks/${pass.id}/complete`, { state: "done" });
   // The pass waits on its call. The zoom starts anyway, and the request behind it is held as before.
   expect(ctx.repos.changes.get(staged.id)?.state).toBe("ready");
+  const ready = await readQueue();
+  expect(ready.order).toEqual([zoom.id, captions.id]);
+  expect(ready.wait(zoom.id)).toBeUndefined();
   expect((await claim(zoom.id))?.id).toBe(zoom.id);
   expect((await startNow(zoom.id)).status).toBe(409);
   await api("POST", `/tasks/${zoom.id}/complete`, { state: "done" });
+  expect((await readQueue()).wait(captions.id)).toMatchObject({ kind: "review", change: { id: staged.id } });
   expect(await claim(captions.id)).toBeNull();
   // The editor's call still applies the pass, and then the captions start.
   expect((await api("POST", `/changes/${staged.id}/approve`, { restoredCuts: [0] })).status).toBe(200);
