@@ -348,10 +348,13 @@ const retiredGuideRevisions = new Set([
 ]);
 
 // Workflows Scarlet no longer ships. An unedited copy leaves the library; one the editor changed stays theirs.
-const RETIRED_WORKFLOWS = ["render-verify", "screen-recording", "clean-dialogue", "edit-interview", "smooth-audio-cuts", "visual-pass"];
+const RETIRED_WORKFLOWS = ["render-verify", "screen-recording", "clean-dialogue", "edit-interview", "smooth-audio-cuts", "visual-pass", "cold-open"];
 
 // A seed directory can also supply personal workflows under these names. Only retire texts Scarlet shipped.
 const retiredWorkflowRevisions = new Set([
+  // cold-open
+  "ccd698f427e25c0a1687659f88f27e151957dea7abf039ba6d226f633757b2a1",
+  "c0361e706086cdd42cf18e8d29a45500757ede34f56c95af1961382a8d5a17aa",
   // render-verify
   "8b9a9f13923420a900d766cc030b1502aa0ef387e1f363a0b59ed5dde5a5beea",
   "cf10bf2800acf4483e230aa24c3245f4b344de387c9de0a8698dd914e6dd63d2",
