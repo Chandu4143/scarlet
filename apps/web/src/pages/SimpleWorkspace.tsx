@@ -10,6 +10,7 @@ import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timeli
 import { isAsideTask, fullRenderContext, isProjectEditTask, matchesEdit, queueOrder, queueWaits, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
+import { useNearView } from "../lib/useNearView";
 import { needNumbers } from "../lib/needNumbers";
 import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/chat/QueueTray";
 import { recordEditReview } from "../lib/editReviews";
@@ -38,6 +39,7 @@ import { ExportButton, ExportMenuItem, useExportWarning } from "../components/re
 import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Drawer, Icon, Loading } from "../components/ui/primitives";
 import { api, errorMessage } from "../lib/client";
+import { readTimeline } from "../lib/timelineCache";
 import { appLog } from "../lib/appLog";
 import { clock as clockLabel, clockRange, lengthLabel, plural, removedSeconds } from "../lib/format";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
@@ -166,7 +168,7 @@ function useCarryingFootage(projectId: string, working: Timeline | null | undefi
     const missing = wanted.filter(v => !store.timelines.has(v) && !store.asked.has(v));
     for (const version of missing) {
       store.asked.add(version);
-      api.timeline(projectId, version).then(({ timeline }) => {
+      readTimeline(projectId, version).then(timeline => {
         if (kept.current !== store) return;
         remember(timeline);
         setFetched(n => n + 1);
@@ -804,7 +806,15 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
     }
   }, [historyKey, loadTaskEvents]); // eslint-disable-line react-hooks/exhaustive-deps
   const firstCuts = useMemo(() => firstCutDeliveries(thread), [thread]);
-  const { listed, located, head } = useThreadEdits(projectId, thread);
+  // A request's list is read again for each new working cut only while it is used: in the chat's view, above the
+  // message box, open, on the timeline, or carrying an edit that asks for a look, which the timeline marks from this
+  // list. Out of view it keeps its last list until it comes back.
+  const section = useRef<HTMLElement>(null);
+  const inView = useNearView(section, ".simple-chat");
+  const asksForALook = useRef(false);
+  const { listed, located, head } = useThreadEdits(projectId, thread, inView || !!passList[0] || actions.marked === thread.id
+    || (!!pinned && thread.tasks.some(t => t.id === pinned)) || (!!reportReviewMarkers && asksForALook.current));
+  asksForALook.current = listed.some(edit => !!edit.check);
   const reviewed = useReviewed(projectId, thread);
   const revising = useRevising(thread);
   useEffect(() => {
@@ -1130,7 +1140,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
   if (!owner && hasRows) nodes.push(<div key="edits" className="req">{summed
     ? <PassSummary projectId={projectId} thread={thread} edits={listed} actions={actions} list={passList} listedNeed={passListed} />
     : <ThreadResult projectId={projectId} thread={thread} edits={listed} actions={actions} list={passList} listedNeed={passListed} />}</div>);
-  return <section className="simple-turn" data-log-label="Edit thread" aria-label={thread.title} data-thread={thread.id}>
+  return <section ref={section} className="simple-turn" data-log-label="Edit thread" aria-label={thread.title} data-thread={thread.id}>
     {nodes}
   </section>;
 }
@@ -1629,8 +1639,8 @@ export function SimpleWorkspace() {
     if (!draftVersion) return;
     let live = true;
     setDraftState(state => state?.version === draftVersion && state.timeline ? state : { version: draftVersion });
-    api.timeline(current.id, draftVersion).then(
-      ({ timeline }) => { if (live) setDraftState({ version: draftVersion, timeline }); },
+    readTimeline(current.id, draftVersion).then(
+      timeline => { if (live) setDraftState({ version: draftVersion, timeline }); },
       () => { if (live) setDraftState({ version: draftVersion, failed: true }); });
     return () => { live = false; };
   }, [current.id, draftVersion, draftAttempt]);
@@ -2551,7 +2561,7 @@ export function SimpleWorkspace() {
   const passFlagged = !pass || !passThread ? [] : passThread.id === focusThread?.id ? flaggedEdits
     : passEdits.filter(e => !!e.check && !passReviewed(e) && !passRevising(e));
   const closeEdit = () => { player.pause(); threadTimeline.clear(); };
-  function stepEdit(delta: number) {
+  function editBeside(delta: number) {
     // From an edit that leads with its place among the ones still to check ("1 of 3"), ↑ and ↓ step to the others of
     // those: the next of every edit would be one of a pass's hundreds of settled cuts, and the count would go. One of
     // them sent back for revision has no card to say so and steps the same way, to the ones that still wait. While
@@ -2563,7 +2573,10 @@ export function SimpleWorkspace() {
     // A row stands for its first place that waits, else its first, as in the list.
     const beside = delta > 0 ? editsByRow.slice(shownRow + 1) : editsByRow.slice(0, Math.max(0, shownRow)).reverse();
     const row = among ? beside.find(other => other.some(waitingEdit)) : editsByRow[shownRow + delta];
-    const next = row && (row.find(waitingEdit) ?? row[0]);
+    return row && (row.find(waitingEdit) ?? row[0]);
+  }
+  function stepEdit(delta: number) {
+    const next = editBeside(delta);
     if (!next) return;
     // ↑ and ↓ reach the log as a bare key: this says which edit they went to.
     appLog("action", "step", { to: "edit", edit: threadEdits.indexOf(next) + 1, of: threadEdits.length, change: next.changeId });
@@ -2603,6 +2616,9 @@ export function SimpleWorkspace() {
   }, [hoveredRow]);
   const waitingOrder = waitingCalls.map(c => c.index).join(",");
   const flaggedOrder = passFlagged.map(editKey).join(",");
+  // Where ↑ goes from the open edit or call, so going back isn't cold either.
+  const previousEdit = reviewingEdit ? editBeside(-1) : undefined;
+  const previousCall = onCall ? allCalls[allCalls.indexOf(openCall!) - 1] : undefined;
   const reviewQueue = useMemo(() => {
     if (!activeReview || !timeline || head !== timeline.version) return [];
     const queue = new Map<string, CutToPrepare>();
@@ -2651,6 +2667,9 @@ export function SimpleWorkspace() {
     }
     addCall(upcomingCall);
     if (upcomingEdit) addEdit(upcomingEdit, onCall ? passThread : focusThread, onCall ? passEdits : threadEdits);
+    // After the next one, the one before: the editor steps back less often than on.
+    if (previousCall && !sentBack(previousCall.index)) addCall(previousCall);
+    if (previousEdit && !revisingEdit(previousEdit)) addEdit(previousEdit, focusThread, threadEdits);
     waitingCalls.forEach(addCall);
     if (passThread?.id !== focusThread?.id) passFlagged.forEach(edit => addEdit(edit, passThread, passEdits));
     flaggedEdits.forEach(edit => addEdit(edit, focusThread, threadEdits));
@@ -2659,7 +2678,7 @@ export function SimpleWorkspace() {
     if (visible) addEdit(visible, focusThread, threadEdits);
     return [...queue.values()];
   }, [activeReview, timeline, head, pass, review, liveReview, returningCall, placed, waitingOrder, flaggedOrder, openCall?.index, openCallBack, conflict, onCall, reviewingEdit, upcomingCall, upcomingEdit,
-    flaggedEdits, threadEdits, passEdits, passThread, focusThread, toWorkingCut, placing, priorityRow, listShown, onLatest, nextEditAfterKeep,
+    flaggedEdits, threadEdits, passEdits, passThread, focusThread, toWorkingCut, placing, priorityRow, listShown, onLatest, nextEditAfterKeep, previousEdit, previousCall,
     beforeTimeline, afterTimeline, appliedSide, madeBy, callTimeline, needsSingleCut, single.preview, listening?.side, versionAfter, savedAfter.timeline, !!preparedCall]); // eslint-disable-line react-hooks/exhaustive-deps
   const openVersion = versionBefore ?? head;
   const openCut = !activeReview ? undefined : beforeCut ?? (openCall && openVersion && heard ? { version: openVersion, removed: heard } : undefined);

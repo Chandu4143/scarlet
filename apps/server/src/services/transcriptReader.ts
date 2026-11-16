@@ -46,7 +46,8 @@ export function transcriptLanguage(ctx: Ctx, projectId: string, media: { id: str
 export function transcriptReader(ctx: Ctx) {
   const documents = new Map<string, { id: string; revision: string | null; doc: TranscriptDocument }>();
   let bytes = 0;
-  const budget = 32 * 1024 * 1024;
+  // Room for two transcripts of a three-hour recording, as estimated below: each is read whole on every page of a pass.
+  const budget = 96 * 1024 * 1024;
   const searches = new WeakMap<Transcript, { words: number; find: ReturnType<typeof indexTranscriptWords> }>();
   return {
     read(media: MediaWithStatus & { projectId: string }, from: number | null, to: number | null, omitWords: boolean) {

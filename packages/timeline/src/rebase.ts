@@ -15,11 +15,11 @@
  */
 import { CaptionWord } from "./schema.js";
 import type { Clip, Marker, MediaClip, Timeline, TimeRange, Track } from "./schema.js";
-import { OpError, applyOp, replayOnCopy, shiftClip, type TimelineOp } from "./ops.js";
+import { OpError, applyOp, applyOpInPlace, replayOnCopy, shiftClip, type TimelineOp } from "./ops.js";
 import { ZodError } from "zod/v3";
 import { clipEnd, JOIN_SLACK, meets, mergeRanges, sourceToTimeline, subtractRanges, timelineDuration } from "./time.js";
 import { firstIndex, intervalCandidates } from "./intervals.js";
-import { stableStringify } from "./ids.js";
+import { sameJson, stableStringify } from "./ids.js";
 
 const EPS = 1e-6;
 
@@ -50,7 +50,7 @@ function mediaOn(tl: Timeline, kind: Kind): Placed[] {
 export function sameContent(a: Timeline, b: Timeline): boolean {
   if (a === b) return true;
   const content = ({ version, parent, createdAt, name, ...rest }: Timeline) => rest;
-  return stableStringify(content(a)) === stableStringify(content(b));
+  return sameJson(content(a), content(b));
 }
 
 export type TimeMap = (t: number, side?: "left" | "right") => number | null;
@@ -92,7 +92,7 @@ export function removedJoins(before: Timeline, after: Timeline, fps = 30): Array
 function sameTracks(a: Timeline, b: Timeline): boolean {
   if (a.tracks === b.tracks) return true;
   if (a.tracks.length !== b.tracks.length || a.tracks.some((track, i) => track.clips.length !== b.tracks[i]!.clips.length)) return false;
-  return stableStringify(a.tracks) === stableStringify(b.tracks);
+  return sameJson(a.tracks, b.tracks);
 }
 
 function sourceTimeMap(a: Timeline, b: Timeline, fps: number): TimeMap {
@@ -658,6 +658,15 @@ function assertFootageUnchanged(clipId: string, from: Timeline, cur: Timeline, f
  * sequence was" to "where we actually are".
  */
 export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, include: (i: number) => boolean = () => true, fps = 30, translatedOps?: TimelineOp[]): Timeline {
+  // Each lineage below (the original sequence, the replay and the replay on `base`) is copied once, on its first op,
+  // and then changed in place: a copy and two serializations per op made 300 cuts on an hour-long cut take seconds.
+  // `base` and `onto` are never changed, and a lineage no op went into is still the caller's object.
+  const owned = new WeakSet<Timeline>();
+  const step = (tl: Timeline, op: TimelineOp) => {
+    const draft = applyOpInPlace(owned.has(tl) ? tl : structuredClone(tl), op);
+    owned.add(draft);
+    return draft;
+  };
   let orig = base;
   let cur = onto;
   // The last included footage patch, and the included ops replayed onto `base` too, kept only to check them.
@@ -667,29 +676,42 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
   let selectedOnBase = lastFootagePatch >= 0 ? base : undefined;
   // Map `op` from where the original sequence was to `at`, and apply it there.
   const replay = (at: Timeline, op: TimelineOp, i: number): [Timeline, TimelineOp] => {
-    // makeTimeMap would serialize both track lists again to decide the same thing.
-    const tracksSame = stableStringify(orig.tracks) === stableStringify(at.tracks);
-    const same = tracksSame && stableStringify(orig.markers) === stableStringify(at.markers);
-    const translated = same ? op : rebaseOp(op, tracksSame ? (t => t) : sourceTimeMap(orig, at, fps), at, i, fps, orig);
+    // makeTimeMap would compare both track lists again to decide the same thing.
+    const tracksSame = sameJson(orig.tracks, at.tracks);
+    const same = tracksSame && sameJson(orig.markers, at.markers);
+    let translated = same ? op : rebaseOp(op, tracksSame ? (t => t) : sourceTimeMap(orig, at, fps), at, i, fps, orig);
+    // A translated op can hold parts of `at`, which the next op changes in place.
+    if (translated !== op) translated = structuredClone(translated);
     try {
-      return [applyOp(at, translated), translated];
+      return [step(at, translated), translated];
     } catch (e) {
       throw new RebaseConflict(`edit ${i + 1} no longer applies: ${(e as Error).message}`, i);
     }
   };
   ops.forEach((op, i) => {
-    const nextOrig = applyOp(orig, op);
     if (include(i)) {
-      // A footage patch is written for the footage the clip held. The clip is compared as the edits that go in
-      // left it on the version the change was made on and on the current one, since those edits can split or make it.
-      if (selectedOnBase && isFootagePatch(op)) assertFootageUnchanged(op.clipId, selectedOnBase, cur, fps, i);
       let translated: TimelineOp;
-      [cur, translated] = replay(cur, op, i);
+      try {
+        // A footage patch is written for the footage the clip held. The clip is compared as the edits that go in
+        // left it on the version the change was made on and on the current one, since those edits can split or make it.
+        if (selectedOnBase && isFootagePatch(op)) assertFootageUnchanged(op.clipId, selectedOnBase, cur, fps, i);
+        [cur, translated] = replay(cur, op, i);
+        // While every edit so far went in, the replay on `base` is the original sequence, and follows it below.
+        if (selectedOnBase && selectedOnBase !== orig) selectedOnBase = replay(selectedOnBase, op, i)[0];
+      } catch (e) {
+        // An op that doesn't apply where it was written fails as itself, before anything is replayed.
+        applyOp(orig, op);
+        throw e;
+      }
+      const following = selectedOnBase === orig;
+      orig = step(orig, op);
+      if (following) selectedOnBase = orig;
       translatedOps?.push(translated);
-      // While every edit so far went in, the replay on `base` is the original sequence.
-      if (selectedOnBase) selectedOnBase = selectedOnBase === orig ? nextOrig : replay(selectedOnBase, op, i)[0];
+    } else {
+      // Left out, the original sequence goes on without the replay on `base`, which keeps the version it had.
+      orig = selectedOnBase === orig ? applyOp(orig, op) : step(orig, op);
+      owned.add(orig);
     }
-    orig = nextOrig;
   });
   if (lastAddition >= 0) assertCutFootageStaysOut(base, onto, cur, fps, lastAddition);
   if (selectedOnBase) assertOverlapsAllowed(selectedOnBase, onto, cur, fps, lastFootagePatch);
