@@ -13,6 +13,8 @@ My style on top of the dialogue pass. A bare `/matt-talking-head` covers the cur
 
 Keep the delivery meant for the viewer. If the wording of two takes is the same but the splice changes which performance survives, keep the take I meant. Keep my genuine reactions.
 
+Keep adjacent identical words when both belong in the sentence, as in “She checked in in Boston.” If the delivery makes it unclear whether one is a stumble, bring it to me for review with the full phrase and the word you would remove.
+
 ## Notes to my editor
 
 I leave notes for my editor while I record. I often say them low, well under my speaking voice, right after the thing they are about: “You can get a screenshot of that. Here.” Others are at full voice: “Use the second take.” “Let me show you the second result” is for the viewer. Look for these notes through the whole recording, and treat a line said much quieter than the speech around it as a likely note.
