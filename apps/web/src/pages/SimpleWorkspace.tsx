@@ -505,7 +505,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   actions: ChatActions; aside?: ReactNode; list: PassList; listedNeed: RefObject<Set<string>>; working?: boolean; nests?: readonly Nest[] }) {
   const reviewed = useReviewed(projectId, thread);
   const revising = useRevising(thread);
-  const kept = useKeptEdits(projectId, thread.id);
+  const kept = useKeptEdits(projectId, thread);
   const [open, setOpen] = listState;
   const [host, reveal] = useReveal(open);
   // The list follows the cut or edit that's open, so stepping with the arrows never leaves its row out of sight.
@@ -2613,7 +2613,7 @@ export function SimpleWorkspace() {
     appLog("action", "keep-edit", { edit: shownIndex + 1, of: threadEdits.length, change: reviewingEdit.changeId, flagged: !!reviewingEdit.check || undefined });
     // An edit made in several places is kept in all of them: it is one edit, on one row.
     const row = editsByRow[shownRow] ?? [reviewingEdit];
-    if (keepEdits(current.id, focusThread.id, row)) recordEditReview(current.id, threadTimeline.selectedTarget, "keep");
+    if (keepEdits(current.id, focusThread.id, row, head ?? undefined)) recordEditReview(current.id, threadTimeline.selectedTarget, "keep");
     if (nextEditAfterKeep) actions.playEdit(nextEditAfterKeep);
     else if (nextCallAfterKeep) actions.listen(pass!, nextCallAfterKeep);
     else closeEdit();

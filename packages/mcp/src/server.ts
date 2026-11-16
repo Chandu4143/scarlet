@@ -85,6 +85,7 @@ import {
 import { toolAnnotations } from "./annotations.js";
 import { transitionOps } from "./transition.js";
 import { MediaPreparing, describeError, errorResult, errorText, formatZodError, json, noteEvidenceMiss, notePreparing, noteUnmeasured, text, toolDiagnostics, toolRefusal, unavailable, unmeasured, unmeasuredLine, type ToolResult } from "./tool-result.js";
+import { keptEditsNote } from "./editor-kept.js";
 import { registerPerception } from "./perception-tools.js";
 import { registerGraphics } from "./graphics-tools.js";
 import { sourceRangeToTimeline, sourceToTimeline, timelineWords } from "./timeline-perception.js";
@@ -937,6 +938,20 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return json(result);
   }
 
+  // The editor's Keeps of edits this request flagged, which the run hears of on its next tool call, a few seconds apart at most.
+  const heardKept = new Set<string>();
+  const keptThread = ctx.task && ["edit", "note", "revise"].includes(ctx.task.kind) ? ctx.task.context.threadId ?? ctx.task.id : undefined;
+  let keptAskedAt = 0;
+  async function keptLine() {
+    if (!keptThread || Date.now() - keptAskedAt < 5000) return undefined;
+    keptAskedAt = Date.now();
+    try {
+      return keptEditsNote((await client.keptEdits(ctx.projectId, keptThread)).kept, heardKept);
+    } catch {
+      return undefined;
+    }
+  }
+
   // The calls of each tool under way. A harness can send several calls at once, as a save and the next read.
   const running = new Map<ScarletToolName, Set<Promise<unknown>>>();
   function tool<Shape extends z.ZodRawShape>(
@@ -988,6 +1003,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         if (outcome === "ok" && misses) outcome = "degraded";
         const line = unmeasuredLine(missed);
         if (line) result = { ...result, content: [...result.content, { type: "text", text: line }] };
+        const kept = await keptLine();
+        if (kept) result = { ...result, content: [...result.content, { type: "text", text: kept }] };
         // Preserve the project's existing refusal receipt separately from the operational log.
         const refusal = toolRefusal(result);
         if (refusal && !result.isError) outcome = "refused";

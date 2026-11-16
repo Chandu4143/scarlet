@@ -772,6 +772,23 @@ describe("transcript tools", () => {
       expect(reads.map(e => e.data)).toEqual([{ kind: "eval_transcript", mediaId: "m1", count: 10, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
     } finally { await editor.close(); }
   });
+  it("tells a request's run, on its next tool call, which edits it flagged the editor kept", async () => {
+    const task = Task.parse({ id: "tsk_pass", projectId: "prj_test", kind: "edit", state: "running", agent: "codex",
+      instruction: "Cut dialogue", context: {}, createdBy: { type: "human", name: "Editor" } });
+    const before = mock.state.extra;
+    mock.state.extra = (req, res) => {
+      if (!req.path.endsWith("/kept-edits") || req.query.get("thread") !== "tsk_pass") return before?.(req, res) ?? false;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ kept: [{ changeId: "chg_round4", spot: 2,
+        label: "Kept the cube solve animation", check: "The cube animates before Matt speaks.", at: "2026-11-16T22:25:32Z" }] }));
+      return true;
+    };
+    const editor = await connect(task.id, undefined, task);
+    try {
+      const first = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 0, toWord: 1 } }) as CallToolResult);
+      expect(first).toContain("The editor kept this flagged edit");
+      expect(first).toContain("“Kept the cube solve animation” (chg_round4, edit 2)");
+    } finally { await editor.close(); mock.state.extra = before; }
+  });
   it("transcript_search finds phrases with context", async () => {
     const r = (await client.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "WELCOME back" } })) as CallToolResult;
     const t = textOf(r);

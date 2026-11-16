@@ -423,6 +423,20 @@ export const FlagEditRequest = z.object({
   .refine(b => b.version === undefined || b.range !== undefined, "Give range with version");
 export type FlagEditRequest = z.infer<typeof FlagEditRequest>;
 
+/**
+ * Edits the editor kept, by the identity their Keep is recorded under (`reviewRef` when the edit carries a later save's
+ * reason to look), with what they read on it. The engine fills the name and reason from the change when not given.
+ */
+export const KeepEditsRequest = z.object({
+  threadId: Id,
+  version: Id.optional(),
+  edits: z.array(z.object({ changeId: Id, spot: z.number().int().nonnegative(), recheck: z.string().max(64).optional(),
+    label: z.string().trim().min(1).max(180).optional(), check: z.string().trim().min(1).max(120).optional(), range: TimeRange.optional() })).min(1).max(500),
+});
+export type KeepEditsRequest = z.infer<typeof KeepEditsRequest>;
+/** An edit the editor kept, as a run of its request hears of it. */
+export interface KeptEdit { changeId: string; spot: number; label: string; check?: string; at: string; place?: { version: string; range: TimeRange } }
+
 // ---------------------------------------------------------------------------
 // Notes
 // ---------------------------------------------------------------------------
