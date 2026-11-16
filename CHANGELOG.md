@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 16, 2026
+
+- The token count in an edit’s heading updates as Codex works.
+
 ## November 15, 2026
 
 - Renaming your first-cut dialogue skill keeps its new command working as a dialogue pass.
