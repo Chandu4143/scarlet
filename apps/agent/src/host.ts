@@ -386,8 +386,34 @@ export class AgentHost {
     const runner = this.opts.runner ?? defaultRunAgent;
     const timeoutMs = this.runTimeoutMs;
     const stallMs = this.opts.stallMs ?? (this.config.stallMinutes ?? DEFAULT_STALL_MS / 60_000) * 60_000;
+    // The engine replaces repeated usage reports for the same claim. Serialize writes and wait for the
+    // in-flight report before persisting the final total so slower requests cannot overwrite it.
+    const startedAt = task.startedAt;
+    let usageClosed = false;
+    let pendingUsage: AgentUsage | undefined;
+    let postedUsage: Promise<void> | undefined;
+    let nextUsageAt = 0;
+    let usageTimer: NodeJS.Timeout | undefined;
+    const flushUsage = () => {
+      clearTimeout(usageTimer);
+      if (usageClosed || signal.aborted || !pendingUsage || postedUsage) return;
+      const wait = nextUsageAt - Date.now();
+      if (wait > 0) {
+        usageTimer = setTimeout(flushUsage, wait).unref();
+        return;
+      }
+      const body = { ...pendingUsage, startedAt };
+      pendingUsage = undefined;
+      postedUsage = this.client.withResource("tasks", task.id, path => this.client.request<void>(
+        "POST", path + "/usage", body, { signal: AbortSignal.timeout(5000) },
+      )).catch(err => this.log(`task ${task.id}: live usage report failed: ${errMsg(err)}`)).finally(() => {
+        postedUsage = undefined;
+        nextUsageAt = Date.now() + 2000;
+        flushUsage();
+      });
+    };
     let questionSeen: string | undefined;
-    const run = (p: Prepared) => runner({
+    const run = (p: Prepared, priorUsage?: AgentUsage) => runner({
       agent: task.agent,
       model: task.model ?? this.config.models?.[task.agent],
       effort: task.effort,
@@ -403,6 +429,11 @@ export class AgentHost {
       timeoutMs,
       stallMs,
       env: runnerEnv(task.agent, this.agents, this.opts.env ?? process.env),
+      onUsage: snapshot => {
+        if (!startedAt || usageClosed) return;
+        pendingUsage = addUsage(priorUsage, snapshot);
+        flushUsage();
+      },
       onEvent: (ev: RunnerEvent) => {
         if (ev.type === "question") {
           questionSeen = ev.text;
@@ -415,6 +446,9 @@ export class AgentHost {
 
     // Record tokens for every outcome, including a cancel or a pause for a question.
     const recordUsage = async (usage: AgentUsage | undefined) => {
+      usageClosed = true;
+      clearTimeout(usageTimer);
+      await postedUsage;
       if (usage) await this.client.recordTaskUsage(task.id, { ...usage, startedAt: task.startedAt }).catch(err => this.log(`usage report failed: ${errMsg(err)}`));
     };
     let result = await run(prepared);
@@ -424,7 +458,7 @@ export class AgentHost {
       // The CLI no longer has the session. Start over with the answers in the prompt.
       this.log(`task ${task.id}: could not resume the CLI session (${result.error ?? "unknown"}); starting a fresh run`);
       try {
-        result = await run(await this.prepare(task, true));
+        result = await run(await this.prepare(task, true), usage);
       } catch (err) {
         await flushEvents();
         await recordUsage(usage);
