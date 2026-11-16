@@ -3,7 +3,7 @@ import { PreferenceSelect } from "../components/ui/PreferenceSelect";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
 import type { Skill, SkillVersion, Task } from "@scarlet/shared";
-import { useAgentAvailability } from "../components/agent/AgentChip";
+import { AgentChip, useAgentAvailability } from "../components/agent/AgentChip";
 import { api, errorMessage } from "../lib/client";
 import { isComposing } from "../lib/hotkeys";
 import { clockTime, dayName } from "../lib/format";
@@ -180,7 +180,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
   useEffect(() => {
     const leave = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-      if (useUiStore.getState().shortcutsOpen || document.querySelector('dialog[open], [role="menu"]')) return;
+      if (useUiStore.getState().shortcutsOpen || document.querySelector('dialog[open], [role="menu"], [data-shortcut-overlay]')) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (target?.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])")) {
         target.blur();
@@ -415,6 +415,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
         {nameErr && <span role="alert" className="text-bad text-[12px]">{nameErr}</span>}
         {unsaved && <span className="chip bg-warn/15 text-warn">Unsaved</span>}
         <div className="flex-1" />
+        <AgentChip direction="down" variant="icon" />
         {versionChoices.length > 1 && (
           <PreferenceSelect compact label="Version history" value={viewVersion} onChange={setViewVersion} options={shownChoices} valueLabel="History"
             more={older > 0 ? { label: `Show ${older} older ${older === 1 ? "version" : "versions"}`, onPick: () => setAllVersions(true) } : undefined} />
