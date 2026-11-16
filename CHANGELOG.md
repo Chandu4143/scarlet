@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- Pause and resume background caching and transcription from the Projects menu, the Media panel, or by hovering over Media.
 - Make shorts works on recordings in a library you moved or restored from a backup, instead of asking you to reimport them.
 - When Scarlet opens, a recording that was ready to transcribe starts at once, without waiting for another import to finish preparing.
 - The message box shows the time of the cut or marked range beside your draft. Click the time to see and clear the targets.

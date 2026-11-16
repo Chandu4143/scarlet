@@ -338,7 +338,7 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
     async createProject(body) {
       const { project } = await api.createProject(body);
       listRevision++;
-      const summary: ProjectSummary = { id: project.id, name: project.name, settings: project.settings, head: project.head,
+      const summary: ProjectSummary = { id: project.id, name: project.name, settings: project.settings, head: project.head, mediaPaused: project.mediaPaused,
         createdAt: project.createdAt, updatedAt: project.updatedAt, mediaCount: 0, poster: null, pendingChanges: 0, openNotes: 0 };
       set({ list: [summary, ...get().list.filter(p => p.id !== project.id)], listStatus: "ready" });
       return project;
@@ -628,7 +628,8 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
         // next read. One that was renamed, archived or paused wasn't edited: its time and its place stay.
         const list = get().list, was = list.find(p => p.id === projectId);
         if (was) {
-          const saved = { ...was, name: savedProject.name, archived: savedProject.archived, updatedAt: savedProject.updatedAt, settings: savedProject.settings };
+          const saved = { ...was, name: savedProject.name, archived: savedProject.archived, mediaPaused: savedProject.mediaPaused,
+            updatedAt: savedProject.updatedAt, settings: savedProject.settings };
           set({ list: saved.updatedAt === was.updatedAt ? list.map(p => p === was ? saved : p) : [saved, ...list.filter(p => p !== was)] });
         }
       } catch (err) {

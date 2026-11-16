@@ -94,10 +94,11 @@ export function cacheLabel(cache: (PlaybackCacheStatus & { queued?: boolean }) |
   if (!cache) return undefined;
   if (cache.state === "ready") return { text: "Cached", tone: "ok" };
   if (cache.state === "failed") return { text: "Couldn’t cache", tone: "bad" };
+  if (paused && (cache.state === "caching" || cache.queued)) return { text: "Caching paused", tone: "idle" };
   if (cache.state === "caching") {
     const percent = cachePercent(cache);
     return { text: percent ? `Caching · ${percent}` : "Caching…", tone: "busy" };
   }
-  if (cache.queued) return paused ? { text: "Caching paused", tone: "idle" } : { text: "Waiting to cache", tone: "busy" };
+  if (cache.queued) return { text: "Waiting to cache", tone: "busy" };
   return { text: "Not cached", tone: "idle" };
 }
