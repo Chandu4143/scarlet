@@ -138,8 +138,8 @@ export function renderRoutes(ctx: Ctx) {
     const timeline = sampledTimeline;
     if (!timeline) throw notFound("timeline version");
     if (sourcesAt?.projectInputs !== inputs) {
-      const { timeline: picture } = planTransitions(timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
-      sourcesAt = { projectInputs: inputs, read: frameSources(picture), transitions: picture.tracks.some(track => track.clips.some(clip => clip.motion)) };
+      const { timeline: picture, motions } = planTransitions(timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps);
+      sourcesAt = { projectInputs: inputs, read: frameSources(picture), transitions: motions.size > 0 };
     }
     const frame = numberParam(c.req.query("frame"), "frame");
     const { fps, width, height } = project.settings;

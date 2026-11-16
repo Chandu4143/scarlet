@@ -285,6 +285,42 @@ it.each(["rename fails before refresh", "refresh finishes before rename fails"])
   expect(store().project).toEqual(engine);
 });
 
+it.each(["an undo", "an approval"] as const)("keeps a rename still being saved over the project %s brings, and lets it go if refused", async action => {
+  const { db, project } = open();
+  const prior = { ...db.changes.find(c => c.state === "ready")!, projectId: PRJ };
+  useProjectStore.setState({ current: { ...store(), changes: [prior] } });
+  const moved = { ...project, head: "v_moved" };
+  vi.spyOn(api, "workspace").mockImplementation(async () => ({ project: moved, timeline: null }));
+  vi.spyOn(api, "historyEdit").mockResolvedValue({ project: moved, change: { ...prior, toVersion: "v_moved" } });
+  vi.spyOn(api, "approveChange").mockResolvedValue({ change: { ...prior, state: "approved" }, project: moved, outcome: "applied" });
+  let refuse!: (err: Error) => void;
+  vi.spyOn(api, "updateProject").mockImplementation(() => new Promise((_resolve, fail) => { refuse = fail; }));
+  const renaming = initial.updateProject({ name: "Pending name" });
+  if (action === "an undo") await initial.historyEdit("v_old", "revert");
+  else await initial.approve(prior.id);
+  expect(store().project).toEqual({ ...moved, name: "Pending name" });
+  // Refused, the name the engine has comes back, on the project as it is now.
+  refuse(new Error("Rename failed"));
+  await expect(renaming).rejects.toThrow("Rename failed");
+  expect(store().project).toEqual(moved);
+});
+
+it("keeps a filing an older engine confirmed over the project an undo read before it", async () => {
+  const { db, project } = open();
+  const change = { ...db.changes[0]!, projectId: PRJ, toVersion: "v_moved" };
+  const moved = { ...project, head: "v_moved", completedThreads: {} };
+  let read!: (detail: Pick<ProjectDetail, "project" | "timeline">) => void;
+  vi.spyOn(api, "historyEdit").mockResolvedValue({ project: moved, change });
+  vi.spyOn(api, "workspace").mockImplementation(() => new Promise(resolve => { read = resolve; }));
+  vi.spyOn(api, "setThreadDone").mockResolvedValue({ completedThreads: { thread_a: "filed revision" } });
+  const undoing = initial.historyEdit("v_old", "revert");
+  await vi.waitFor(() => expect(api.workspace).toHaveBeenCalled());
+  await initial.setThreadDone("thread_a", true, "filed revision");
+  read({ project: moved, timeline: null });
+  await undoing;
+  expect(store().project).toEqual({ ...moved, completedThreads: { thread_a: "filed revision" } });
+});
+
 it("preserves a ready media event that beats the import response", () => {
   const db = buildDb();
   const project = db.projects.find(p => p.id === PRJ)!;
