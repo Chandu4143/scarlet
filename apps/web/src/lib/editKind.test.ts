@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ThreadEdit } from "@scarlet/shared";
+import { REVISED_CHECK, type ThreadEdit } from "@scarlet/shared";
 import { editFocus, editKindWord, editNote } from "./editKind";
 
 const edit = (extra: Partial<ThreadEdit>): ThreadEdit => ({ changeId: "c", spot: 0, label: "An edit", range: { start: 27, end: 200 }, previous: [], ...extra });
@@ -59,6 +59,15 @@ describe("the note on an applied edit's card", () => {
     // Said already, it isn't said twice.
     const asked = "Marked where the boat comparison belongs: add the other boat renders.";
     expect(editNote(edit({ label: "Boat comparison footage", check: "Add the other boat renders", summary: asked, marker: true }))).toBe(asked);
+  });
+
+  it("keeps leading a revised marker's note with what it asks, not with the word for the revision", () => {
+    const why = "Moved to where you say the boat line.";
+    expect(editNote(edit({ label: "Boat comparison footage", check: REVISED_CHECK, todo: "Add the other boat renders", summary: why, marker: true })))
+      .toBe("Add the other boat renders. Moved to where you say the boat line.");
+    // A marker the model gave no reason to look asks what the marker itself says.
+    expect(editNote(edit({ label: "Boat comparison footage", check: "Comparison footage needed", todo: "Comparison footage needed", marker: true })))
+      .toBe("Comparison footage needed");
   });
 
   it("draws a marker at a point as a plain line, not a red cut", () => {

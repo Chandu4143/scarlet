@@ -408,4 +408,32 @@ describe("a doubt a later request raises about an edit already in the video", ()
       timelineEdits: [marks.timelineEdits[0]!] };
     expect(threadTimeline(thread([zoomed]), head, links, () => earlier, 30)[0]?.marker).toBeUndefined();
   });
+
+  it("keeps what a marker asks of the editor through a revision, and keeps it waiting on them", () => {
+    const boat = { op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Comparison footage needed", resolved: false } };
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2", ops: [boat],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 144.21, end: 144.21 }, check: "Add the other boat renders" }] };
+    expect(threadEditList(thread([marks]))[0]).toMatchObject({ marker: true, todo: "Add the other boat renders", check: "Add the other boat renders" });
+    // Moved by updateMarker, the revision is still a marker, still asks what it asked, and waits on the editor as revised.
+    const moved = { ...change, id: "moved", fromVersion: "v2", toVersion: "v3", createdAt: "2026-01-02T00:00:00Z",
+      ops: [{ op: "updateMarker", markerId: "boat", patch: { time: 146 } }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 146, end: 146 }, replaces: { changeId: "marks", spot: 0 } }] };
+    expect(threadEditList(thread([marks, moved]))).toMatchObject([{ changeId: "moved", marker: true,
+      todo: "Add the other boat renders", check: REVISED_CHECK, previous: [{ changeId: "marks", spot: 0 }] }]);
+    // Replaced by a new marker, it asks what the new one says.
+    const replaced = { ...moved, id: "replaced", ops: [{ op: "removeMarker", markerId: "boat" },
+      { op: "addMarker", marker: { id: "boat2", time: 146, kind: "todo", text: "Add the Sol boat render", resolved: false } }] };
+    expect(threadEditList(thread([marks, replaced]))).toMatchObject([{ marker: true, todo: "Add the Sol boat render", check: REVISED_CHECK }]);
+  });
+
+  it("holds a to-do marker Scarlet gave no reason to look among what needs the editor, asking what the marker says", () => {
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2",
+      ops: [{ op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Add the other boat renders", resolved: false } }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 144.21, end: 144.21 } }] };
+    expect(threadTimeline(thread([marks]), head, links, () => earlier, 30)[0]).toMatchObject({ marker: true,
+      todo: "Add the other boat renders", check: "Add the other boat renders" });
+    // A note that isn't a to-do asks nothing of them.
+    const note = { ...marks, ops: [{ op: "addMarker", marker: { id: "n", time: 144.21, kind: "chapter", text: "Boats", resolved: false } }] };
+    expect(threadTimeline(thread([note]), head, links, () => earlier, 30)[0]?.check).toBeUndefined();
+  });
 });

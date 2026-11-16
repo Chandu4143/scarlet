@@ -68,3 +68,11 @@ it("counts the spots Scarlet marked for the editor on their own, since they chan
   expect(say([{ label: "Punch in", kind: "zoom" }, spot("Boat comparison footage")])).toBe("Made 1 edit: Punch in, and marked 1 spot for you.");
   expect(say([{ ...spot("Boat comparison footage"), summary: "Marked where the boat comparison belongs." }])).toBe("Marked where the boat comparison belongs.");
 });
+
+it("counts a marker listed in several places as the one edit it is", () => {
+  const spot = (label: string) => ({ label, kind: "other" as const, marker: true as const });
+  const boat = spot("Boat comparison footage");
+  expect(say([cut(0, 60), boat, boat])).toBe("Took out 1:00 in 1 cut, and marked 1 spot for you.");
+  expect(say([boat, boat])).toBe("Boat comparison footage, in 2 places.");
+  expect(say([boat, boat, spot("Fall Guys comparison footage")])).toBe("Marked 2 spots for you.");
+});

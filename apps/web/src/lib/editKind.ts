@@ -1,4 +1,4 @@
-import type { EditKind, ThreadEdit } from "@scarlet/shared";
+import { REVISED_CHECK, type EditKind, type ThreadEdit } from "@scarlet/shared";
 import { focusAround, type ProgressFocus } from "../components/player/SimpleProgress";
 import { lengthLabel } from "./format";
 
@@ -12,12 +12,14 @@ export function editKindWord(edit: Pick<ThreadEdit, "kind">): string | undefined
 }
 
 /** The card shows why Scarlet made the edit, followed by any cue for the editor to check. */
-export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker">): string {
-  // A marker changed nothing the editor sees or hears: what it asks of them is the point, so it comes first.
-  if (edit.marker && edit.check) {
+export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker" | "todo">): string {
+  // A marker changed nothing the editor sees or hears: what it asks of them is the point, so it comes first. A revision
+  // only says it was revised, so what the marker asks is kept apart from it.
+  const todo = edit.marker ? edit.todo ?? (edit.check !== REVISED_CHECK ? edit.check : undefined) : undefined;
+  if (todo) {
     const why = edit.reason || edit.summary;
-    if (!why) return edit.check;
-    return said(why, edit.check) ? why : `${edit.check.replace(/[.!?]*$/, ".")} ${why.replace(/[.!?]*$/, ".")}`;
+    if (!why) return todo;
+    return said(why, todo) ? why : `${todo.replace(/[.!?]*$/, ".")} ${why.replace(/[.!?]*$/, ".")}`;
   }
   if (edit.reason) {
     if (!edit.check || edit.reason.includes(edit.check)) return edit.reason;

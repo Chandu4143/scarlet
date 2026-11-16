@@ -485,7 +485,9 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const passage = simple.holdPassage ? undefined : reached?.range ?? selectedPassage;
   useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
   const originalChange = threadView?.originalChange;
-  const original = useEditBefore(current.id, displayedTimeline, selectedEdit, originalChange, fps, !!framing, selectedPassage);
+  // A marker left for the editor changed nothing in the video, so it has no Before to read.
+  const compared = selectedEdit?.marker ? undefined : selectedEdit;
+  const original = useEditBefore(current.id, displayedTimeline, compared, compared && originalChange, fps, !!framing, selectedPassage);
   const cutIndex = cutReview && selectedEdit ? cutReview.cuts.indexOf(selectedEdit) : -1;
   // Before belongs to the edit that's open: it holds while that edit is played again from its top, and the next edit
   // opens on After.

@@ -1,6 +1,6 @@
 import { appliedReviewChange, clipRange, historyLineage, intervalCandidates, makeTimeMap, removedJoins, reviewCutSummaries, reviewReasons, timelineDuration, withHandles, type Change, type CutAssessment, type MediaAsset, type Timeline, type TimeRange } from "@scarlet/timeline";
 import type { Thread } from "./threads.js";
-import { editKinds, markerEdits, type EditKind } from "./editKind.js";
+import { classifyEdits, type EditKind } from "./editKind.js";
 
 export interface EditRef { changeId: string; spot: number }
 export interface ThreadEdit extends EditRef {
@@ -39,6 +39,11 @@ export interface ThreadEdit extends EditRef {
    * video changed, so what it asks of them is its note.
    */
   marker?: true;
+  /**
+   * What a marker edit asks of the editor: Scarlet's reason to look when it gave one, or else what its to-do marker
+   * says. It outlives a revision, whose `check` then only says it was revised.
+   */
+  todo?: string;
 }
 
 /** Why a revision of a flagged edit asks for a look when Scarlet gave it no reason of its own. */
@@ -281,6 +286,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       edit.previous = [...replaced.previous, { changeId: replaced.changeId, spot: replaced.spot }];
       // As with a revision made here: the editor was asked to check the edit, so its new version is theirs to check.
       if (replaced.check && !edit.check) edit.check = REVISED_CHECK;
+      if (edit.marker && !edit.todo && replaced.todo) edit.todo = replaced.todo;
       edits[prior] = edit;
     }
   }
@@ -326,13 +332,15 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
     // A pure pass already computed the joins on its finished clock. Skipped calls are absent from that list.
     const rippleJoins = dialogue && !change.restoredCuts?.length ? dialogue : undefined;
     const clocks = !rippleJoins && read ? { before: read(change.appliedOnto ?? change.fromVersion), after: read(appliedVersion), media } : { media };
-    const fromSteps = editKinds(change, ranges, clocks, rippleJoins ?? (taken && returned && [...taken,
+    const classified = classifyEdits(change, ranges, clocks, rippleJoins ?? (taken && returned && [...taken,
       ...returned.map(range => ({ range, facet: "restore" as const }))]));
+    const fromSteps = classified.kinds;
     // What a built change's steps say is that footage was placed. An edit named on a join where footage was left out is a cut.
     const kinds = built && taken ? fromSteps.map((kind, spot) => taken.some(cut => cut.range.start >= ranges[spot]!.start - NAMED_SLACK &&
       cut.range.start <= ranges[spot]!.end + NAMED_SLACK) ? "cut" : kind) : fromSteps;
     const joins = named && cuts ? rangedJoins(ranges, kinds, cuts) : undefined;
-    const marked = named ? markerEdits(change, ranges, kinds) : [];
+    // A spot read as a cut took footage out there, whatever markers it also left.
+    const marked = named ? classified.markers.map((marker, spot) => marker && kinds[spot] === "other") : [];
     // A cut named at a point is the join nearest it: an agent names times to the hundredth, and the join its removals
     // made can fall between ("271.28" for 271.2833), which read the cut as some other edit.
     const atJoin = taken?.length ? namedJoins(ranges, taken) : named && rippled?.length ? namedJoins(ranges, rippled) : undefined;
@@ -367,7 +375,11 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       if (removed && range.start === range.end) edit.beforeCut = { version: beforeVersion, removed };
       const kind = edit.beforeCut ? "cut" : kinds[spot];
       if (kind) edit.kind = kind;
-      if (marked[spot] && !edit.beforeCut) edit.marker = true;
+      if (marked[spot] && !edit.beforeCut) {
+        edit.marker = true;
+        const todo = edit.check ?? classified.asks[spot];
+        if (todo) edit.todo = todo;
+      }
       if (found && edit.named && kind === "other" && range.start === range.end) edit.still = true;
       // Only a save that took footage out at the point can have moved a cut's join there. A punch-in or a title named on a
       // join changed no footage, and is an edit of its own.
@@ -381,8 +393,12 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
         // The editor sent back an edit that was theirs to check, so its new version is theirs to check too, whether
         // or not Scarlet flagged it again. The old reason was about the old version.
         if (replaced.check && !edit.check) edit.check = REVISED_CHECK;
+        // A revised marker that doesn't say again what to do still asks what it asked.
+        if (edit.marker && !edit.todo && replaced.todo) edit.todo = replaced.todo;
         edits[prior] = edit;
       } else edits.push(edit);
+      // A marker left for the editor asks them to do something, so it waits on them until they say it's done.
+      if (edit.marker && !edit.check && edit.todo) edit.check = edit.todo;
     }
     // The stretches it left out that Scarlet named no edit for are cuts all the same, listed after the ones it named.
     if (built && taken) {
@@ -455,6 +471,7 @@ export function threadTimeline(thread: Thread, head: Timeline, links: Parameters
     if (later.check || later.summary || later.reason) first.reviewChangeId = later.changeId;
     if (later.check && later.check !== first.check) first.reviewRef = { changeId: later.changeId, spot: later.spot };
     if (later.check) first.check = later.check;
+    if (later.todo) first.todo = later.todo;
     if (later.summary) first.summary = sameSave && first.summary && first.summary !== later.summary ? `${first.summary} ${later.summary}` : later.summary;
     if (later.reason) first.reason = sameSave && first.reason && first.reason !== later.reason ? `${first.reason} ${later.reason}` : later.reason;
   };
