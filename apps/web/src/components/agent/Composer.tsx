@@ -7,7 +7,7 @@ import { messageTimestamps, type MessageClock } from "../../lib/messageTimestamp
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachments";
 import { isComposing } from "../../lib/hotkeys";
-import { clock, clockRange, lengthLabel, playbackClock } from "../../lib/format";
+import { clock, clockRange, playbackClock } from "../../lib/format";
 import type { RecorderResult } from "../../lib/recorder";
 import { useSpeech } from "../../lib/speech";
 import type { Thread } from "../../lib/threads";
@@ -75,6 +75,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const [refused, setRefused] = useState(false);
   const { effective, none, unavailableReason } = useAgentAvailability();
   const [busy, setBusy] = useState(false);
+  const [aimCue, setAimCue] = useState(0);
   const voiceAnchor = useRef<AgentContext | null | undefined>(undefined);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputId = useId();
@@ -338,17 +339,17 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     inputRef.current?.focus();
   };
   const aimItems: AimItem[] = [
-    ...placeTag ? [{ key: `target:${placeTag}`, kind: "target" as const, name: placeTag,
-      detail: targetIsPoint ? "the moment you picked" : /^cut\b/i.test(placeTag) ? "the cut that’s open" : /^edit\b/i.test(placeTag) ? "the edit that’s open" : "what you’re revising",
+    ...placeTag ? [{ key: `target:${placeTag}`, name: placeTag,
       clearLabel: targetIsPoint ? `Take “${placeTag}” off: the message is about the whole video` : `Start a new edit instead of ${tagAct!.charAt(0).toLowerCase()}${tagAct!.slice(1)}`,
       onClear: takeOffTarget }] : [],
-    ...marked ? [{ key: `range:${marked.start}/${marked.end}`, kind: "range" as const, name: markedWords!, detail: `${lengthLabel(marked.end - marked.start)} you marked`,
+    ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: markedWords!,
       clearLabel: `Take the marked range ${markedWords} off the message`, onClear: () => {
         const was = context && context !== "whole" ? context : undefined;
         setContext(withMarkedRange(context, undefined), was?.changeId ? was : undefined);
         inputRef.current?.focus();
       } }] : [],
   ];
+  const cueAim = () => setAimCue(cue => cue + 1);
   const saveLabel = rewording ? "Save the new words" : sendLabel;
   function changeText(text: string) {
     dismissFirstEditHint();
@@ -400,9 +401,15 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           attach(project.id, files);
         }}>
         <label htmlFor={inputId} className="composer-destination sr-only">{rewording ? "Changing the words of a queued request" : <>{mode}{editTitle && ` ${editTitle}`}</>}</label>
-        <div className="composer-row">
-          {/* Mounted with nothing aimed too, so the first thing added to an empty box arrives: it draws nothing until then. */}
-          {!rewording && <ComposerAim items={aimItems}disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
+        <div className="composer-row" onClick={e => {
+          if (e.target === inputRef.current && aimItems.length) cueAim();
+        }} onAnimationEnd={e => {
+          if (e.animationName === "composer-aim-shimmer") setAimCue(0);
+        }}>
+          {aimItems.length > 0 && <ComposerAim items={aimItems} cue={aimCue} onClick={() => {
+            inputRef.current?.focus();
+            cueAim();
+          }} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
           {wordTag && <span className="composer-tag" title={tagAct}>
             <span className="composer-tag-name">{wordTag}</span>
             {/* A spoken message stays where it was said until it is out: aiming the box elsewhere would drop it. */}
