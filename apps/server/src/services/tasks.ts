@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, queueAdmission, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, queueAdmission, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -686,38 +686,48 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
     .iterate(taskId ?? JSON.stringify(agents.map(a => a.id)), now()) as Iterable<{
       id: string; project_id: string; kind: TaskKind; json: string; created_at: string;
     }>;
+  // Only the columns the queue reads: an open pass's cut reasons are counted in SQL, never parsed, and an edit's
+  // lineage is read only for a request about an applied edit.
+  const lineage = ctx.db.prepare("SELECT json_extract(json, '$.timelineEdits') AS edits FROM changes WHERE id = ?");
   function readQueue(projectId: string) {
-    const changes = ctx.repos.changes.select(`project_id = ? AND state IN ('ready', 'revising')
-      AND json_extract(json, '$.intent') = 'suggestion' AND json_array_length(json_extract(json, '$.cutReasons')) > 0`, [projectId]);
+    const changes = (ctx.db.prepare(`SELECT id, project_id AS projectId, state, json_extract(json, '$.intent') AS intent,
+        json_extract(json, '$.taskId') AS taskId, json_extract(json, '$.threadId') AS threadId,
+        json_array_length(json_extract(json, '$.cutReasons')) AS cuts
+      FROM changes WHERE project_id = ? AND state IN ('ready', 'revising')
+        AND json_extract(json, '$.intent') = 'suggestion' AND json_array_length(json_extract(json, '$.cutReasons')) > 0`)
+      .all(projectId) as (Omit<QueueChange, "cutReasons" | "taskId" | "threadId"> & { taskId: string | null; threadId: string | null; cuts: number })[])
+      .map(({ cuts, taskId, threadId, ...change }): QueueChange =>
+        ({ ...change, taskId: taskId ?? undefined, threadId: threadId ?? undefined, cutReasons: { length: cuts } }));
     const tasks = ctx.repos.tasks.queue(projectId, changes.flatMap(change => change.taskId ? [change.taskId] : []));
-    const lineage = new Map<string, Pick<Change, "id" | "timelineEdits"> | undefined>();
+    const edits = new Map<string, Pick<Change, "id" | "timelineEdits"> | undefined>();
     const lookup = (id: string) => {
-      if (!lineage.has(id)) {
-        const row = ctx.db.prepare("SELECT json_extract(json, '$.timelineEdits') AS edits FROM changes WHERE id = ?")
-          .get(id) as { edits: string | null } | undefined;
-        lineage.set(id, row?.edits ? { id, timelineEdits: JSON.parse(row.edits) } : undefined);
+      if (!edits.has(id)) {
+        const row = lineage.get(id) as { edits: string | null } | undefined;
+        edits.set(id, row?.edits ? { id, timelineEdits: JSON.parse(row.edits) } : undefined);
       }
-      return lineage.get(id);
+      return edits.get(id);
     };
     return { canClaim: queueAdmission(tasks, changes, lookup),
       byId: new Map(tasks.map(task => [task.id, task])) };
   }
   const queues = new Map<string, ReturnType<typeof readQueue>>();
   for (const row of rows) {
+    // A host that can't run the request never reads the project's queue for it.
+    const task = ctx.repos.tasks.parse(row.json);
+    if (!hostCanRun(host, task)) continue;
     if (!isAsideTask({ kind: row.kind })) {
       const queue = queues.get(row.project_id) ?? readQueue(row.project_id);
       queues.set(row.project_id, queue);
       const candidate = queue.byId.get(row.id)!;
       if (!queue.canClaim(candidate)) continue;
     }
-    const task = ctx.repos.tasks.parse(row.json);
-    if (!hostCanRun(host, task)) continue;
+    const createdAt = task.createdAt ?? row.created_at;
     const seenAt = now();
     const startedAt = task.startedAt && task.startedAt >= seenAt ? new Date(Date.parse(task.startedAt) + 1).toISOString() : seenAt;
     ctx.db.prepare("UPDATE tasks SET worker_pid = ?, worker_seen_at = ? WHERE id = ?").run(desktopPid, seenAt, task.id);
-    const waited = since(task.createdAt, Date.parse(seenAt));
+    const waited = since(createdAt, Date.parse(seenAt));
     ctx.log(`[task] ${task.id} claimed by ${host.name} (${host.id})${waited ? ` after ${waited} in the queue` : ""}`);
-    return saveTask(ctx, { ...task, createdAt: task.createdAt ?? row.created_at, state: "claimed", hostId: host.id, startedAt, workedMs: pausedWork(ctx, task) ?? 0 });
+    return saveTask(ctx, { ...task, createdAt, state: "claimed", hostId: host.id, startedAt, workedMs: pausedWork(ctx, task) ?? 0 });
   }
   return null;
 }

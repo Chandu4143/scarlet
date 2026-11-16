@@ -306,6 +306,13 @@ export type QueueTask = Pick<Task, "id" | "projectId" | "kind" | "state" | "crea
   context: Pick<Task["context"], "branch" | "changeId" | "threadId" | "cutIndex" | "editIndex">;
 };
 type EditLineage = Pick<Change, "id" | "timelineEdits">;
+/**
+ * What the queue reads of a change: whether it is a pass waiting on the editor, and which run and thread made it.
+ * Only how many cut reasons a pass has matters, so the engine can read the count instead of every reason.
+ */
+export type QueueChange = Pick<Change, "id" | "projectId" | "taskId" | "threadId" | "state" | "intent"> & {
+  cutReasons?: { readonly length: number };
+};
 
 /**
  * A dialogue pass whose staged cuts still need the editor. A request built on the edit before those cuts are
@@ -314,14 +321,14 @@ type EditLineage = Pick<Change, "id" | "timelineEdits">;
  * then would move the edit on, and the revision would be refused as out of date. Once the revision has run, its new
  * version is the pass that waits. The version it replaced stays marked as revising, and holds nothing.
  */
-export function openDialogueReview(change: Change, tasks: readonly QueueTask[]): boolean {
+export function openDialogueReview(change: QueueChange, tasks: readonly QueueTask[]): boolean {
   if (change.intent !== "suggestion" || !change.cutReasons?.length) return false;
   return change.state === "ready"
     || (change.state === "revising" && tasks.some(t => t.projectId === change.projectId && PENDING_STATES.has(t.state) && t.context.changeId === change.id));
 }
 
 /** A reply in the pass's thread or a revision of it works on the pass, so the pass doesn't hold it back. */
-export function aboutChange(task: QueueTask, change: Change): boolean {
+export function aboutChange(task: QueueTask, change: Pick<QueueChange, "id" | "threadId">): boolean {
   return (task.context.threadId ?? task.id) === change.threadId || task.context.changeId === change.id;
 }
 
@@ -334,9 +341,9 @@ export type QueueWait =
 const editsVideo = (task: QueueTask) => task.kind !== "transcribe" && !isAsideTask(task);
 
 /** The dialogue passes waiting on the editor on a request's branch. */
-function reviewIndex(tasks: readonly QueueTask[], changes: readonly Change[]) {
+function reviewIndex<C extends QueueChange>(tasks: readonly QueueTask[], changes: readonly C[]) {
   const makers = new Map(tasks.map(task => [task.id, task]));
-  const byBranch = new Map<string, Change[]>();
+  const byBranch = new Map<string, C[]>();
   const key = (projectId: string, branch?: string) => JSON.stringify([projectId, branch]);
   for (const change of changes) {
     const maker = change.taskId ? makers.get(change.taskId) : undefined;
@@ -346,7 +353,7 @@ function reviewIndex(tasks: readonly QueueTask[], changes: readonly Change[]) {
     if (reviews) reviews.push(change);
     else byBranch.set(branch, [change]);
   }
-  return (task: QueueTask): readonly Change[] => byBranch.get(key(task.projectId, task.context.branch)) ?? [];
+  return (task: QueueTask): readonly C[] => byBranch.get(key(task.projectId, task.context.branch)) ?? [];
 }
 
 /**
@@ -373,7 +380,7 @@ function stillMaking(pass: Change, run: Task, tasks: readonly Task[], changes: r
  * The engine and tray both use this lineage to decide which edits can run together.
  */
 export function requestTargetKey(task: QueueTask, changes: readonly EditLineage[] = []): string | undefined {
-  return targetKey(task, id => changes.find(change => change.id === id));
+  return targetKey(task, lineageOf(changes));
 }
 
 function targetKey(task: QueueTask, changeById: (id: string) => EditLineage | undefined): string | undefined {
@@ -390,47 +397,60 @@ function targetKey(task: QueueTask, changeById: (id: string) => EditLineage | un
 }
 
 /**
- * Whether Scarlet can work on two requests at once. It can when each is about one cut or edit and they are about
- * different ones: each agent then works on its own footage. A call's revision is saved into the pass as it stands
- * when it lands, with the other revisions and the editor's calls made meanwhile. An applied edit's revision is put
- * onto the video as it is when it lands, and one that meets footage another request changed is told so, with where,
- * and saves again on the current video. Any other request is about the whole video, or about footage nothing names
- * ahead of time, so it runs alone. Two requests about the same cut or edit keep the order they were asked in.
- * What counts as the same cut or edit comes from requestTargetKey.
+ * Scarlet works on two requests at once when each is about one cut or edit and they are about different ones: each
+ * agent then works on its own footage. A call's revision is saved into the pass as it stands when it lands, with the
+ * other revisions and the editor's calls made meanwhile. An applied edit's revision is put onto the video as it is
+ * when it lands, and one that meets footage another request changed is told so, with where, and saves again on the
+ * current video. Any other request is about the whole video, or about footage nothing names ahead of time, so it runs
+ * alone. Two requests about the same cut or edit keep the order they were asked in. What counts as the same cut or
+ * edit comes from requestTargetKey.
  */
-export function runsBeside(a: Task, b: Task, changes: readonly Pick<Change, "id" | "timelineEdits">[] = []): boolean {
-  const x = requestTargetKey(a, changes), y = requestTargetKey(b, changes);
-  return differentTargets(x, y);
-}
-
 const differentTargets = (a?: string, b?: string): boolean => a !== undefined && b !== undefined && a !== b;
 
-/** A resumed run keeps its original time and insertion order, even within one millisecond. */
+/**
+ * The order requests were asked in. A resumed run keeps the place of the run it continues. Requests saved in the same
+ * millisecond keep the order the engine saved them in (`queueSequence`, its row number). A task the engine didn't
+ * number, as the demo's are, follows the numbered ones of its millisecond, in the order the snapshot lists them: row
+ * numbers and positions in a list are never compared with each other.
+ */
 function inLine(tasks: readonly QueueTask[]) {
-  const positions = new Map(tasks.map(({ id, createdAt, queueSequence }, i) => [id, { createdAt, order: queueSequence ?? i }]));
+  type Place = { createdAt: string; sequence?: number; index: number };
+  const positions = new Map<string, Place>(tasks.map(({ id, createdAt, queueSequence }, index) =>
+    [id, { createdAt: createdAt ?? "", sequence: queueSequence, index }]));
+  const compare = (x: Place, y: Place) => x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1)
+    : (x.sequence === undefined ? 1 : 0) - (y.sequence === undefined ? 1 : 0)
+      || (x.sequence ?? 0) - (y.sequence ?? 0) || x.index - y.index;
   const place = (task: QueueTask) => {
-    const attempt = positions.get(task.id) ?? { createdAt: task.createdAt, order: task.queueSequence ?? -1 };
+    const attempt = positions.get(task.id) ?? { createdAt: task.createdAt ?? "", sequence: task.queueSequence, index: tasks.length };
     const root = task.resumeRootId ? positions.get(task.resumeRootId) : undefined;
-    const original = root ?? attempt;
-    return [original.createdAt ?? "", original.order, attempt.order] as const;
+    return { original: root ?? attempt, attempt };
   };
   return (a: QueueTask, b: QueueTask) => {
     const x = place(a), y = place(b);
-    return x[0] === y[0] ? x[1] - y[1] || x[2] - y[2] : x[0] < y[0] ? -1 : 1;
+    return compare(x.original, y.original) || compare(x.attempt, y.attempt);
   };
 }
 
-function queuePolicy<T extends QueueTask>(tasks: readonly T[], changes: readonly Change[],
-  lookup?: (id: string) => EditLineage | undefined) {
+/** Each change by its id, to follow an edit back through its revisions. */
+function lineageOf(changes: readonly EditLineage[]) {
+  const byId = new Map(changes.map(change => [change.id, change]));
+  return (id: string) => byId.get(id);
+}
+
+function queuePolicy<T extends QueueTask, C extends QueueChange>(tasks: readonly T[], changes: readonly C[],
+  lookup: (id: string) => EditLineage | undefined) {
   const reviews = reviewIndex(tasks, changes);
   const order = inLine(tasks);
   const edits = tasks.filter(editsVideo);
   const active = edits.filter(task => ACTIVE_STATES.has(task.state));
   const queued = edits.filter(task => task.state === "queued").sort(order);
-  const changesById = new Map(changes.map(change => [change.id, change]));
-  const keys = new Map(edits.map(task => [task.id, targetKey(task, lookup ?? (id => changesById.get(id)))]));
+  const keys = new Map<T, string | undefined>();
+  const keyOf = (task: T) => {
+    if (!keys.has(task)) keys.set(task, targetKey(task, lookup));
+    return keys.get(task);
+  };
   const others = (task: T, other: T) => task.id !== other.id && task.projectId === other.projectId
-    && !differentTargets(keys.get(task.id), keys.get(other.id));
+    && !differentTargets(keyOf(task), keyOf(other));
   const holding = (task: T) => task.startsBeforeCalls ? [] : reviews(task).filter(change => !aboutChange(task, change));
   const ahead = (task: T, prior: T) => others(task, prior) && order(prior, task) < 0
     && !reviews(task).some(change => aboutChange(task, change) && !aboutChange(prior, change));
@@ -441,8 +461,12 @@ function queuePolicy<T extends QueueTask>(tasks: readonly T[], changes: readonly
       !active.some(other => others(task, other)) && !holding(task).length && !remaining.some(prior => ahead(task, prior)) };
 }
 
-/** The engine loads only pending tasks, their chronological roots and the makers of open reviews. */
-export function queueAdmission(tasks: readonly QueueTask[], changes: readonly Change[], lookup: (id: string) => EditLineage | undefined) {
+/**
+ * Whether the engine may start a queued request now. The engine loads only pending tasks, their chronological roots
+ * and the makers of open reviews, and the columns of each change the queue reads; `lookup` reads an edit's lineage
+ * only for a request about an applied edit.
+ */
+export function queueAdmission(tasks: readonly QueueTask[], changes: readonly QueueChange[], lookup: (id: string) => EditLineage | undefined) {
   return queuePolicy(tasks, changes, lookup).canClaim;
 }
 
@@ -451,26 +475,41 @@ function heldBy(reviews: readonly Change[], active: readonly Task[], tasks: read
   return reviews.find(change => !active.some(run => stillMaking(change, run, tasks, changes)));
 }
 
-/** Why a queued request hasn't started. */
+/**
+ * Why each queued request hasn't started, for one snapshot of a project's tasks and changes. The rules are worked out
+ * once for the snapshot, so asking about every queued request costs one pass, not one per request.
+ */
+export function queueWaits(tasks: readonly Task[], changes: readonly Change[]): (task: Task) => QueueWait | undefined {
+  const policy = queuePolicy(tasks, changes, lineageOf(changes));
+  const answers = new Map<Task, QueueWait | undefined>();
+  const wait = (task: Task): QueueWait | undefined => {
+    if (task.state !== "queued" || !editsVideo(task)) return undefined;
+    const running = policy.running(task);
+    if (running?.state === "waiting_for_user") return { kind: "question", task: running };
+    const active = policy.active.filter(other => other.projectId === task.projectId);
+    const open = policy.holding(task);
+    const review = heldBy(open, active, tasks, changes);
+    if (running) return review ? { kind: "review", change: review } : { kind: "run", task: running };
+    const ahead = policy.queued.filter(prior => policy.ahead(task, prior)).length;
+    if (ahead) return { kind: "ahead", count: ahead };
+    if (review) return { kind: "review", change: review };
+    const making = active.find(run => open.some(change => stillMaking(change, run, tasks, changes)));
+    return making ? { kind: "run", task: making } : undefined;
+  };
+  return task => {
+    if (!answers.has(task)) answers.set(task, wait(task));
+    return answers.get(task);
+  };
+}
+
+/** Why a queued request hasn't started. To ask about several requests in one snapshot, use queueWaits. */
 export function queueWait(task: Task, tasks: readonly Task[], changes: readonly Change[]): QueueWait | undefined {
-  if (task.state !== "queued" || !editsVideo(task)) return undefined;
-  const policy = queuePolicy(tasks, changes);
-  const running = policy.running(task);
-  if (running?.state === "waiting_for_user") return { kind: "question", task: running };
-  const active = policy.active.filter(other => other.projectId === task.projectId);
-  const open = policy.holding(task);
-  const review = heldBy(open, active, tasks, changes);
-  if (running) return review ? { kind: "review", change: review } : { kind: "run", task: running };
-  const ahead = policy.queued.filter(prior => policy.ahead(task, prior)).length;
-  if (ahead) return { kind: "ahead", count: ahead };
-  if (review) return { kind: "review", change: review };
-  const making = active.find(run => open.some(change => stillMaking(change, run, tasks, changes)));
-  return making ? { kind: "run", task: making } : undefined;
+  return queueWaits(tasks, changes)(task);
 }
 
 /** Work eligible beside an active edit comes first, followed by the order once active work finishes. */
 export function queueOrder(tasks: readonly Task[], changes: readonly Change[]): Task[] {
-  const policy = queuePolicy(tasks, changes);
+  const policy = queuePolicy(tasks, changes, lineageOf(changes));
   let waiting = policy.queued;
   const order: Task[] = [];
   for (;;) {

@@ -652,8 +652,11 @@ it("keeps a legacy queued request's original place after it asks a question", as
   };
 
   expect((await readQueue()).order).toEqual([first.id, second.id]);
+  const log = vi.spyOn(app.ctx, "log");
   const original = await claim();
   expect(original).toMatchObject({ id: first.id, createdAt });
+  // The time it waited is counted from the row's own time, since the saved request has none.
+  expect(log.mock.calls.map(([line]) => line)).toContainEqual(expect.stringMatching(new RegExp(`^\\[task\\] ${first.id} claimed by .* after \\d`)));
   const question = await api<{ waiting: boolean }>("POST", `/tasks/${first.id}/question`, { startedAt: original!.startedAt, text: "Keep the first line?" });
   expect(question.body.waiting).toBe(true);
   expect((await readQueue()).wait(second.id)).toMatchObject({ kind: "question", task: { id: first.id } });
@@ -663,6 +666,45 @@ it("keeps a legacy queued request's original place after it asks a question", as
   expect(answer.body.task).toMatchObject({ id: first.id, state: "queued", createdAt });
   expect((await readQueue()).order).toEqual([first.id, second.id]);
   expect(await claim()).toMatchObject({ id: first.id, createdAt });
+});
+
+it("reads only what the queue needs of a pass waiting on the editor, and only for a host that can run the request", async () => {
+  const send = async (instruction: string, extra: Record<string, unknown> = {}) =>
+    (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { kind: "edit", agent: "codex", instruction, ...extra })).body.task;
+  const register = async (models: string[]) => (await api<{ host: { id: string } }>("POST", "/hosts/register",
+    { name: models.join(), platform: "test", agents: [{ id: "codex", installed: true, models }] })).body.host.id;
+  const full = await register(["full"]), small = await register(["small"]);
+  const claim = async (host: string) => {
+    for (;;) {
+      const { status, body: { task } } = await api<{ task: Task | null }>("POST", `/hosts/${host}/claim`, {});
+      expect(status).toBe(200);
+      if (task?.kind !== "learning_check") return task;
+    }
+  };
+  const pass = await send("/first-cut-dialogue", { model: "full" });
+  expect((await claim(full))?.id).toBe(pass.id);
+  await api("POST", `/tasks/${pass.id}/complete`, { state: "done" });
+  const zoom = await send("Zoom in on the demo", { model: "full" });
+  const reply = await send("Keep the second take", { model: "full", context: { threadId: pass.id } });
+  // The pass's hundreds of staged cuts wait on the editor. The queue counts them in SQL: the document is never read
+  // whole, so even one the schema wouldn't accept holds the queue as it should.
+  const cutReasons = Array.from({ length: 400 }, (_, i) => ({ start: i, end: i + 0.5, reason: "retake" }));
+  app.ctx.db.prepare("INSERT INTO changes (id, project_id, state, json, created_at) VALUES (?, ?, 'ready', ?, ?)").run("chg_pass", project.id,
+    JSON.stringify({ id: "chg_pass", projectId: project.id, state: "ready", intent: "suggestion", taskId: pass.id, threadId: pass.id, cutReasons }),
+    new Date().toISOString());
+  const select = vi.spyOn(app.ctx.repos.changes, "select"), parse = vi.spyOn(app.ctx.repos.changes, "parse");
+  const queue = vi.spyOn(app.ctx.repos.tasks, "queue");
+
+  // A host without the model the requests ask for never reads the project's queue.
+  expect(await claim(small)).toBeNull();
+  expect(queue).not.toHaveBeenCalled();
+  // The pass holds the zoom; the reply about the pass goes ahead of it.
+  expect((await claim(full))?.id).toBe(reply.id);
+  expect(queue).toHaveBeenCalled();
+  expect(await claim(full)).toBeNull();
+  expect(app.ctx.repos.tasks.get(zoom.id)?.state).toBe("queued");
+  expect(select).not.toHaveBeenCalled();
+  expect(parse).not.toHaveBeenCalled();
 });
 
 it("knows an applied edit by where it was made, from whichever thread or version a request names it", async () => {

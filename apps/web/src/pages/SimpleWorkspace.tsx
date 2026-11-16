@@ -7,7 +7,7 @@ import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
-import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWait, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
+import { isAsideTask, fullRenderContext, matchesEdit, queueOrder, queueWaits, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, UndoEdit, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { needNumbers } from "../lib/needNumbers";
@@ -3019,8 +3019,9 @@ export function SimpleWorkspace() {
    * What a queued request is waiting for. Held by the pass whose calls are all made, it waits on Scarlet and not the
    * editor: the pass goes in once Scarlet's revisions or rechecks of its cuts are done.
    */
+  const waitOf = useMemo(() => queueWaits(tasks, changes), [tasks, changes]);
   const waitFor = (task: Task) => {
-    const wait = queueWait(task, tasks, changes);
+    const wait = waitOf(task);
     const called = wait?.kind === "review" && actions.pass?.change.id === wait.change.id && !actions.pass.calls.some(c => c.state === "open");
     return called ? { kind: "run" as const } : wait;
   };

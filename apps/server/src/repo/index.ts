@@ -91,9 +91,8 @@ class TasksRepo extends JsonStore<Task> {
   }
 
   override put(task: Task): Task {
-    const saved = super.put({ ...task, createdAt: task.createdAt ?? now(), queueSequence: undefined });
-    const row = this.database.prepare("SELECT rowid FROM tasks WHERE id = ?").get(task.id) as { rowid: number };
-    return { ...saved, queueSequence: row.rowid };
+    const { doc, rowid } = this.write({ ...task, createdAt: task.createdAt ?? now(), queueSequence: undefined });
+    return { ...doc, queueSequence: rowid };
   }
 
   override get(id: string): Task | null {
