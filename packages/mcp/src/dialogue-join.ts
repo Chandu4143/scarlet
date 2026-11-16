@@ -272,6 +272,11 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
         if (best === undefined || Math.abs(f / fps - target) < Math.abs(best - target)) best = f / fps;
       if (best === undefined || crossesClip(at, best)) continue;
       if (namedEdge !== undefined && (best - namedEdge) * direction > 1e-6) continue;
+      // The trough says where the sound parts, not which words part there. A move past the middle of a word would
+      // take that word out, or leave it in, against the range asked for: an edge at “it, | now” went to the trough
+      // between “asked” and “it”, a fifth of a second earlier, and would have left “it” playing twice (2026-11-16).
+      const landed = timelineToSource(s.clip, best), from = Math.min(s.at, landed), to = Math.max(s.at, landed);
+      if (s.page.words.some(w => { const middle = (w.start + w.end) / 2; return from < middle && middle < to; })) continue;
       const move = Math.abs(best - at), side = direction === 1 ? "start" : "end";
       return { at: best, dip: true, snapped: move <= snapLimit + 1e-7,
         note: side + (move < 1e-6 ? " stays" : " moved " + move.toFixed(2) + " s " + (best > at ? "later" : "earlier")) +
