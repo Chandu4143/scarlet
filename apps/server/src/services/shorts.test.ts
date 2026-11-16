@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -125,6 +125,19 @@ it.each(["recorded stamp", "legacy hash"] as const)("refuses to make shorts from
   expect(await response.json()).toMatchObject({ error: { code: "media_changed" } });
   expect(ctx.repos.projects.summaries().map(project => project.id)).toEqual([long.id]);
   expect(readdirSync(join(directory, "projects"))).toEqual([long.id]);
+});
+
+it("makes shorts from a file whose times changed but whose content didn't, as after moving the library", async () => {
+  const { ctx } = workspace;
+  const media = ctx.repos.projects.getMedia("cam")!;
+  const original = join(ctx.paths.media(long.id), media.path);
+  const { size, mtimeMs, ctimeMs } = statSync(original);
+  ctx.repos.projects.putMedia(long.id, { ...media, hash: sha256(readFileSync(original, "utf8")), fingerprintStamp: { size, mtimeMs, ctimeMs } }, "ready");
+  utimesSync(original, new Date(mtimeMs + 60_000), new Date(mtimeMs + 60_000));
+  const hash = vi.spyOn(ctx.render, "hashFile");
+  const response = await api("POST", `/projects/${long.id}/shorts`, { ...form, count: 2 });
+  expect(response.status).toBe(201);
+  expect(hash).toHaveBeenCalledTimes(1);
 });
 
 it("reads an older import's file once for all its shorts, to check it against its hash", async () => {

@@ -142,7 +142,10 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
   const stop = signal ? AbortSignal.any([signal, ctx.shutdown]) : ctx.shutdown;
   const copied: MediaAsset[] = [];
   for (const { status: _s, error: _e, ...asset } of media.filter(m => used.has(m.id))) {
-    const stamp = asset.fingerprintStamp ?? (asset.hash ? await verifiedStamp(ctx, source, { ...asset, hash: asset.hash }, stop) : undefined);
+    // A stamp that no longer matches isn't yet a change: moving or restoring a library gives every file new times. The
+    // hash decides, once, for all the shorts.
+    const unchanged = asset.fingerprintStamp && sameStamp(await stat(join(ctx.paths.media(source.id), asset.path)), asset.fingerprintStamp);
+    const stamp = unchanged || !asset.hash ? asset.fingerprintStamp : await verifiedStamp(ctx, source, { ...asset, hash: asset.hash }, stop);
     copied.push({ ...asset, fingerprintStamp: stamp });
   }
 
