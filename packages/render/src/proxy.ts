@@ -154,8 +154,10 @@ async function encodeProxy(input: string, output: string, opts: ProxyOptions, ha
           });
           await rename(temp, path);
         } catch (error) {
+          // A cancelled encode can reject immediately on retry. Clean up before creating that promise.
+          await rm(temp, { force: true });
           return retry(error);
-        } finally { await rm(temp, { force: true }); }
+        }
       }
       // A VFR screen capture may hold a picture for this entire part. An empty MP4 stops concat at that point.
       if (probe.previewClock || (await probeMedia(path, { ffprobePath: opts.ffprobePath, signal: opts.signal })).hasVideo) {
