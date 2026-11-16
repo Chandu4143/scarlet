@@ -55,15 +55,10 @@ async function copyMedia(ctx: Ctx, from: Project, to: string, asset: MediaAsset,
   const path = id + extname(asset.path);
   const source = join(ctx.paths.media(from.id), asset.path);
   const destination = join(ctx.paths.media(to), path);
-  const changed = () => conflict("media_changed", `“${asset.name}” changed after it was imported. Reimport the recording before making shorts.`);
-  const sameStamp = (a: NonNullable<MediaAsset["fingerprintStamp"]>, b: NonNullable<MediaAsset["fingerprintStamp"]>) =>
-    a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
   const before = await stat(source);
-  if (asset.fingerprintStamp && !sameStamp(before, asset.fingerprintStamp)) throw changed();
+  if (asset.fingerprintStamp && !sameStamp(before, asset.fingerprintStamp)) throw changed(asset);
   await cloneOrSteadyCopy(source, destination, signal);
-  if (!sameStamp(before, await stat(source))) throw changed();
-  // Older imports have a hash without a stat stamp. Verify the copy before inheriting its transcript and previews.
-  if (asset.hash && !asset.fingerprintStamp && await ctx.render.hashFile(destination, undefined, signal) !== asset.hash) throw changed();
+  if (!sameStamp(before, await stat(source))) throw changed(asset);
   const { size, mtimeMs, ctimeMs } = await stat(destination);
   const fingerprintStamp = asset.hash ? { size, mtimeMs, ctimeMs } : undefined;
   let transcriptId: string | undefined;
@@ -83,6 +78,25 @@ async function copyMedia(ctx: Ctx, from: Project, to: string, asset: MediaAsset,
     copyCaches(ctx.paths.proxies(from.id), ctx.paths.proxies(to), asset.id, id, signal),
   ]).catch(error => ctx.log(`[shorts] caches for ${asset.id} weren't copied: ${(error as Error).message}`));
   return copy;
+}
+
+type Stamp = NonNullable<MediaAsset["fingerprintStamp"]>;
+const sameStamp = (a: Stamp, b: Stamp) => a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+const changed = (asset: Pick<MediaAsset, "name">) =>
+  conflict("media_changed", `“${asset.name}” changed after it was imported. Reimport the recording before making shorts.`);
+
+/**
+ * The stat stamp of an older import's file, which has a hash but no stamp, once its bytes are checked against that
+ * hash. Read once for all the shorts: each copy is then checked by the stamp, as a newer import's is, and inherits
+ * the transcript and previews made from those bytes.
+ */
+async function verifiedStamp(ctx: Ctx, from: Project, asset: MediaAsset & { hash: string }, signal: AbortSignal): Promise<Stamp> {
+  const file = join(ctx.paths.media(from.id), asset.path);
+  const { size, mtimeMs, ctimeMs } = await stat(file);
+  if (await ctx.render.hashFile(file, undefined, signal) !== asset.hash) throw changed(asset);
+  const stamp = { size, mtimeMs, ctimeMs };
+  if (!sameStamp(stamp, await stat(file))) throw changed(asset);
+  return stamp;
 }
 
 /** Files named for the recording take the copy's id. Files named for their content are shared as they are. */
@@ -125,6 +139,13 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
   const media = ctx.repos.projects.listMedia(source.id);
   if (media.some(m => used.has(m.id) && m.status !== "ready")) throw conflict("media_not_ready", "Wait until this video’s footage has finished preparing.");
 
+  const stop = signal ? AbortSignal.any([signal, ctx.shutdown]) : ctx.shutdown;
+  const copied: MediaAsset[] = [];
+  for (const { status: _s, error: _e, ...asset } of media.filter(m => used.has(m.id))) {
+    const stamp = asset.fingerprintStamp ?? (asset.hash ? await verifiedStamp(ctx, source, { ...asset, hash: asset.hash }, stop) : undefined);
+    copied.push({ ...asset, fingerprintStamp: stamp });
+  }
+
   const dims = ASPECT_PRESETS[req.aspect]!;
   const instruction = shortsInstruction(req);
   const projects: Project[] = [];
@@ -134,14 +155,12 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
     ctx.paths.ensureProject(project.id);
     projects.push(project);
   }
-  const stop = signal ? AbortSignal.any([signal, ctx.shutdown]) : ctx.shutdown;
   try {
     for (const project of projects) {
       const ids = new Map<string, string>();
-      for (const asset of media.filter(m => used.has(m.id))) {
+      for (const asset of copied) {
         stop.throwIfAborted();
-        const { status: _s, error: _e, ...plain } = asset;
-        ids.set(asset.id, (await copyMedia(ctx, source, project.id, plain, stop)).id);
+        ids.set(asset.id, (await copyMedia(ctx, source, project.id, asset, stop)).id);
       }
       await cloneDirectory(ctx.paths.graphics(source.id), ctx.paths.graphics(project.id));
       if (source.styleGuide) {
