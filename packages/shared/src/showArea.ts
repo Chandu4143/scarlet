@@ -101,7 +101,9 @@ export function assignAreas(frames: number, duration: number, areas: readonly Sh
     else list.push([from, to]);
   };
   for (let i = 0; i < frames; i++) {
-    const second = i * step, from = Math.max(0, second - step / 2), to = Math.min(duration, second + step / 2);
+    // The last frame read stands for the rest of the recording: a clip from its final seconds had no area to be inside
+    // and none it could be given, so every save that framed it was refused (2026-11-17).
+    const second = i * step, from = Math.max(0, second - step / 2), to = i === frames - 1 ? duration : Math.min(duration, second + step / 2);
     if (to <= from) continue;
     let best: { index: number; fit: number; near: number } | undefined, whole: number | undefined;
     areas.forEach((a, index) => {

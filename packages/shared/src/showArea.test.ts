@@ -44,6 +44,11 @@ describe("where each area holds", () => {
     expect(areas[1]!.holds).toEqual([[7.5, 22.5]]);
     expect(unset).toEqual([]);
   });
+  it("holds the last frame's area to the end of a recording that runs past it", () => {
+    const { areas, unset } = assignAreas(6, 31, [area(10, [0, 0, 1, 1])], fitsAt);
+    expect(unset).toEqual([]);
+    expect(areaAt(areas, 30.9)?.at).toBe(10);
+  });
   it("holds a box with no line under any edge on its own frame only", () => {
     const { areas } = assignAreas(6, 27.5, [area(10, [0.3, 0.3, 0.5, 0.5], ["left", "top", "right", "bottom"])], fitsAt);
     expect(areas[0]!.holds).toEqual([[7.5, 12.5]]);
