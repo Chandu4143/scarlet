@@ -215,4 +215,15 @@ class AudioReferenceScoreTests(unittest.TestCase):
         self.assertEqual(split['sharedEdges'], 2)
         self.assertEqual(editor_edges(ref, [Piece(0, 12, 0)], levels)['sharedEdges'], 0)
         self.assertIn('unavailable', editor_edges(ref, [Piece(0, 12, 0)], None))
+        # Scarlet's dialogue audio runs a handle past each picture edge and crossfades across it, so the handle's own
+        # edges are silent. Where each clip is heard, the middle of its fade, is the cut the editor's sound is compared with.
+        tight = dict(frameDuration=.01, joins=[dict(finalTime=3.95, rawOut=3.95, rawIn=6.0, earliestFinal=3.95, latestFinal=3.95)])
+        f = .03
+        clip = lambda a, b, at: dict(kind='media', mediaId='mic', sourceIn=a, sourceOut=b, timelineIn=at, audioFadeIn=2 * f, audioFadeOut=2 * f)
+        tl = {'tracks': [{'kind': 'video', 'clips': [dict(kind='media', mediaId='mic', sourceIn=6, sourceOut=12, timelineIn=3.95, volume=0)]},
+                         {'kind': 'audio', 'clips': [clip(0, 3.95 + f, 0), clip(6 - f, 12, 3.95 - f)]}]}
+        heard = timeline_pieces(tl, 'mic', source_coverage_only=True, audible=True)
+        self.assertEqual([(round(p.start, 3), round(p.end, 3)) for p in heard], [(.03, 3.95), (6.0, 11.97)])
+        self.assertEqual(editor_edges(tight, timeline_pieces(tl, 'mic', source_coverage_only=True), levels)['withinEditorWindow'], 0)
+        self.assertEqual(editor_edges(tight, heard, levels)['withinEditorWindow'], 2)
 

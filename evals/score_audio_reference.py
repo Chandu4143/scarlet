@@ -76,7 +76,7 @@ def reference_pieces(ref, *, mapped_only=False):
     return result
 
 
-def timeline_pieces(tl, media, silent_media=(), *, audio_stream=0, source_coverage_only=False, matched_joins=False):
+def timeline_pieces(tl, media, silent_media=(), *, audio_stream=0, source_coverage_only=False, matched_joins=False, audible=False):
     result = []
     fades = {}
     for track_index, track in enumerate(tl['tracks']):
@@ -98,6 +98,12 @@ def timeline_pieces(tl, media, silent_media=(), *, audio_stream=0, source_covera
             if c['sourceOut'] <= c['sourceIn'] or c.get('speed', 1) <= 0:
                 raise ValueError('Invalid source range or clip speed.')
             piece = Piece(c['sourceIn'], c['sourceOut'], c['timelineIn'], c.get('speed', 1))
+            if audible:
+                # A clip that fades in or out is heard from the middle of its fade: Scarlet's dialogue audio runs a
+                # frame past the picture at each cut and crossfades over two frames, so its own edges are silent.
+                speed = c.get('speed', 1)
+                start, end = c['sourceIn'] + c.get('audioFadeIn', 0) * speed / 2, c['sourceOut'] - c.get('audioFadeOut', 0) * speed / 2
+                piece = Piece(start, max(start, end), c['timelineIn'] + c.get('audioFadeIn', 0) / 2, speed)
             result.append(piece)
             if matched_joins:
                 fades[piece] = (track_index, c.get('audioFadeIn', 0), c.get('audioFadeOut', 0))
@@ -242,7 +248,9 @@ def editor_edges(ref, candidate, levels):
     """Each editor cut has an out edge and an in edge in the recording, each with the window over which moving it
     sounds the same (quiet on both sides, plus one frame). A candidate edge of the same side within reach is scored:
     inside the window it matches; outside, the speech between it and the window is sound the editor kept and the
-    candidate drops, or sound the editor took out and the candidate plays."""
+    candidate drops, or sound the editor took out and the candidate plays. Both sides are where the sound switches: the
+    editor's from the published audio, the candidate's from its pieces, which should be where each is heard
+    (timeline_pieces(audible=True)), not a faded handle's silent edge."""
     threshold = speech_threshold(levels) if levels else None
     if threshold is None:
         return dict(unavailable='The grading evidence has no levels.')
@@ -521,7 +529,8 @@ def main():
     if args.verified_keeps:
         result['cutWordDistance'] = cut_word_distance(evidence['words'], reference, pieces, result)
     if args.verified_keeps:
-        result['editorEdges'] = editor_edges(reference, pieces, evidence.get('levels'))
+        heard = timeline_pieces(candidate, evidence['mediaId'], silent, audio_stream=stream, source_coverage_only=True, audible=True)
+        result['editorEdges'] = editor_edges(reference, heard, evidence.get('levels'))
     if args.matched_joins:
         ref_pieces = reference_pieces(reference, mapped_only=True)
         try:
