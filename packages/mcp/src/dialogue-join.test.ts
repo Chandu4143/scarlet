@@ -1,6 +1,14 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createProject, emptyTimeline, makeMediaClip, type MediaAsset } from "@scarlet/timeline";
 import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, checkDialogueJoin, clipEdgeSound, edgeOnFrame, quietFrameNote, soundBesideEdge, splitLeave, joinAudio, joinEvidence, padEdge, pauseCutRange, wordCutRange, type JoinPage } from "./dialogue-join.js";
+
+// The stock guide states the pace a join leaves, and a pass that reads it sends that pace with its cuts. When the
+// default moved to 0.20 s and 0.05 s the guide still said 0.15 s and 0.1 s, the wait before the voice the change took out.
+it("states the engine's default pace in the stock dialogue guide", () => {
+  const guide = readFileSync(new URL("../../../skills/dialogue-pass/SKILL.md", import.meta.url), "utf8");
+  expect(guide).toContain(`leave about ${AIR_AFTER_SPEECH} s of room tone after the last kept word, for its decay, and ${AIR_BEFORE_SPEECH} s before speech resumes`);
+});
 
 const words = [
   { start: 1, end: 1.38, text: "finish" }, { start: 1.8, end: 2.2, text: "first" },
