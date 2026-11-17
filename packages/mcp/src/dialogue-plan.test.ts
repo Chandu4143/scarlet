@@ -849,3 +849,34 @@ describe("equivalent removals", () => {
     expect(chosen.decisions[0]!.end).toBeGreaterThan(2.3);
   });
 });
+
+describe("restart cuts that run past the restart", () => {
+  function sentence() {
+    const { tl, sources } = fixture();
+    // 0 this, 1 is, 2 absolutely, 3 beautiful., 4 The, 5 detail, 6 the, 7 the, 8 detail, 9 the, 10 spatial, 11 awareness
+    const said = "this is absolutely beautiful. The detail, the, the detail, the spatial awareness".split(" ")
+      .map((text, i) => ({ text, start: .4 * i + .05, end: .4 * i + .3 }));
+    const rms = Array.from({ length: 250 }, (_, i) => said.some(w => w.start <= (i + .5) / 50 && (i + .5) / 50 < w.end) ? .1 : .001);
+    sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, rms, peaks: rms, speechActivity: said }) }];
+    sources.words = async () => said;
+    return (fromWord: number, toWord: number, more: Partial<DialogueCutInput> = {}) =>
+      planDialogueCuts({ tl, localPauses: false, cuts: [cut({ mediaId: "mic", fromWord, toWord, ...more })] }, sources);
+  }
+
+  it("hands back a cut that takes the end of the kept phrase with the restart, with the join as it would play", async () => {
+    const plan = sentence();
+    expect(await plan(3, 7)).toMatchObject({ outcome: "needsRevision", disputedEdges: [{ cuts: [0],
+      takenWords: { side: "out", words: "beautiful." }, joinPlays: "…this is absolutely ‖ detail, the spatial awareness…" }] });
+  });
+
+  it("saves it once the model says the words go on purpose, and saves the restart alone", async () => {
+    const plan = sentence();
+    expect(await plan(3, 7, { dropWords: "beautiful" })).toMatchObject({ outcome: "ready" });
+    expect(await plan(4, 6)).toMatchObject({ outcome: "ready" });
+  });
+
+  it("leaves a cut the editor will review to them", async () => {
+    const plan = sentence();
+    expect(await plan(3, 7, { decision: "review" })).toMatchObject({ outcome: "ready" });
+  });
+});

@@ -8,6 +8,8 @@ import { cutScope, normalizeTranscriptToken, selectedRange, type RepeatOccurrenc
 import { clipDuration, clipsAt, indexClipsAt, frameAlignedRemoval, mergeRanges, timelineDuration, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange, type TranscriptWord } from "@scarlet/timeline";
 import { audibleClipsByTrack, round3 } from "./analysis.js";
 import { quietKeptWords, type QuietKeptWord } from "./quiet-kept-word.js";
+import { edgeOvershoots } from "./edge-overshoot.js";
+import { timelineWords } from "./timeline-perception.js";
 import type { GapSound } from "./gap-sound.js";
 import type { DialogueEvidence } from "./dialogue-decisions.js";
 import { edgeOnFrame, pageAt as scanPageAt, checkKeptWords, type ReadKeptWords, dialogueJoinChecker, checkResumeQuote, dialogueCutPreview, dialogueJoinWords, joinEvidence, pageReaches, pauseCutRange, DEFAULT_PACE, type JoinPace, quietFrameNote, dialogueAudioStream, soundBesideEdge, wordCutRange, type JoinPage } from "./dialogue-join.js";
@@ -32,6 +34,8 @@ export interface DialogueCutInput {
   decision: "cut" | "review" | "keep";
   resumeWith?: string;
   keepRepeat?: string | string[];
+  /** Words at the edge of a speech cut that it takes out on purpose, though the join doesn't say them again. */
+  dropWords?: string | string[];
   productionQuote?: string;
   picture?: "safe" | "uncertain" | "protect";
   reason: string;
@@ -76,6 +80,10 @@ export interface DialoguePlanSources {
 export const SETTLED_MARGIN = 2;
 /** An applied cut's edge this close to the sound it removes is reported to the agent: about two frames at 30 fps. */
 export const SPEECH_BESIDE_EDGE = 0.06;
+/** How far either side of a join its words are read, in timeline seconds: room for the words a restart is judged by. */
+const JOIN_CONTEXT_SECONDS = 12;
+/** Words of each side quoted when a join comes back for taking words out of a sentence. */
+const EDGE_WORDS_SHOWN = 6;
 
 /**
  * How far into each recording a set of cuts reaches: the source time under the end of its furthest cut. A stretch the
@@ -643,6 +651,26 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const pages = sources.pages();
     const selection = selectedRange(req.anchor) ? scope : undefined;
     const read = sources.readKeptWords;
+    // The transcript words each recording plays, in transcript_get order, read once for every join of the plan.
+    let transcriptsRead: Promise<Map<string, TranscriptWord[]>> | undefined;
+    const transcripts = () => transcriptsRead ??= (async () => {
+      const found = new Map<string, TranscriptWord[]>();
+      await Promise.all([...new Set(audibleMediaClips(tl).map(c => c.mediaId))].map(async id => {
+        const words = await sources.words(id, undefined, false).catch(() => null);
+        if (words?.length) found.set(id, words);
+      }));
+      return found;
+    })();
+    const middle = (w: TimeRange) => (w.start + w.end) / 2;
+    // What one applied join plays and takes out, as words: the ones it removes on this version, and the ones the
+    // version with this part's cuts plays up to it and from it on.
+    const wordsAtJoin = async (range: TimeRange, at: number) => {
+      const said = await transcripts();
+      if (!said.size) return undefined;
+      const around = timelineWords(appliedPreview(), said, { start: at - JOIN_CONTEXT_SECONDS, end: at + JOIN_CONTEXT_SECONDS });
+      return { before: around.filter(w => middle(w) < at).map(w => w.text), after: around.filter(w => middle(w) >= at).map(w => w.text),
+        removed: timelineWords(tl, said, range).filter(w => middle(w) >= range.start && middle(w) < range.end).map(w => w.text) };
+    };
     // Existing doubled-word checks apply to the version that will actually be kept. A requested cut that
     // placement sends to review can still leave a partial repeat in its preview; return that to its author too.
     const jobs = [{ joins: applied, preview: appliedPreview, forReview: false }];
@@ -682,8 +710,24 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
             issues.push({ cut: target.c.input, partialWordRepeat, words: word,
               reason: `The ${side === "start" ? "outgoing" : "incoming"} audio plays “${heard}” from a cut-off “${word}” beside another “${word}”.` });
         }
-        return issues.map(({ cut, words, reason, ...evidence }) => ({ ...range, cut, ...evidence, cuts: contributing.map(({ c }) => c.input),
-          reason: reason + " " + (req.repeatHint ?? `Include one occurrence in the removal using word indices or new edges. If both belong, include “${words}” in keepRepeat on cut ${cut}.`) }));
+        // A restart cut that runs past the restart takes words the sentence needs, and nothing at the join says them
+        // again. Only a tool that takes removals can say they go on purpose (dropWords).
+        const said = forReview || req.repeatHint ? undefined : await wordsAtJoin(range, playback.at);
+        const dropped = contributing.flatMap(({ c }) => c.dropWords ?? []).map(phrase);
+        const joinPlays = said && `…${said.before.slice(-EDGE_WORDS_SHOWN).join(" ")} ‖ ${said.after.slice(0, EDGE_WORDS_SHOWN).join(" ")}…`;
+        for (const { side, words } of said ? edgeOvershoots(said.before, said.removed, said.after) : []) {
+          if (dropped.includes(phrase(words))) continue;
+          const target = side === "out" ? contributing[0]! : contributing.at(-1)!;
+          if (side === "out" ? target.d.start !== join.start : target.d.end !== join.end) continue;
+          const them = words.includes(" ") ? "them" : "it";
+          issues.push({ cut: target.c.input, takenWords: { side, words }, words, joinPlays,
+            reason: `The join would play “${joinPlays}”: the cut takes “${words}” ${side === "out"
+              ? "from the end of what plays before it" : "from the start of the take it resumes with"}, and nothing either side of the join says ${them} again.`,
+            hint: `If the restart ${side === "out" ? "starts after" : "ends before"} “${words}”, move that edge of the removal off ${them}. If “${words}” should go, include it in dropWords on cut ${target.c.input}.` });
+        }
+        return issues.map(({ cut, words, reason, hint, ...evidence }: { cut: number; words: string; reason: string; hint?: string } & Record<string, unknown>) =>
+          ({ ...range, cut, ...evidence, cuts: contributing.map(({ c }) => c.input),
+            reason: reason + " " + (hint ?? req.repeatHint ?? `Include one occurrence in the removal using word indices or new edges. If both belong, include “${words}” in keepRepeat on cut ${cut}.`) }));
       });
     }));
     const disputedEdges = issuesByJoin.flat();
