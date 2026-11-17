@@ -313,9 +313,8 @@ function dotLabel(dots: readonly { n?: number }[], numbered: number, first: numb
   return numbered === count && last - first === count - 1 ? `${first}–${last}` : `${first}+`;
 }
 
-/** A numbered marker is a 17 px circle, which holds two digits. A longer label is a pill sized to its text (about
- *  6.6 px a character) with room either side. A plain dot is 8 px. */
-const markWidth = (label?: string) => !label ? 8 : label.length <= 2 ? 17 : Math.round(label.length * 6.6 + 11);
+/** A 12 px monospace label with a little room for the pointer on either side. Unnumbered positions keep their dot. */
+const markWidth = (label?: string) => label ? Math.max(17, Math.ceil(label.length * 7.3) + 4) : 8;
 const MARK_GAP = 3;
 /** A move of the playhead this far, in seconds or as a share of what the timeline shows, is a jump it glides through. */
 const GLIDE_FROM_SECONDS = 0.75;
@@ -348,23 +347,9 @@ function isPill({ dots }: MarkLayout) {
   return dots.some(dot => (dot.n ?? dot.time) !== (first.n ?? first.time));
 }
 
-/** Each edit draws as its numbered circle. Circles that would touch at this zoom share one pill with their run of
- *  numbers, so there are never more markers than fit and none hides another. A run reaches at most RUN_REACH: the next
- *  edit starts a run of its own, moved along just clear of the one before if it would touch it. The open edit keeps its
- *  own circle the same way. Only circles of one
- *  group share: a call's and an edit's each keep their own. Before the track is measured, nothing is shared.
- *  `groupSpan` is the stretch the runs are worked out for, which a zoom on its way gives so its pills don't change on
- *  the way there; positions are always for `span`. */
-export function layoutMarks(marks: TimelineDot[], from: number, span: number, width: number, groupSpan = span) {
-  if (span <= 0) return [];
-  // Dots of different groups at one time are different markers, so they're gathered apart from the start.
-  const byTime = new Map<string, TimelineDot[]>();
-  for (const mark of marks) {
-    if (!(mark.time >= from && mark.time <= from + span)) continue;
-    const key = `${mark.group ?? ""}@${mark.time}`;
-    const dots = byTime.get(key);
-    if (dots) dots.push(mark); else byTime.set(key, [mark]);
-  }
+/** Group nearby edits of one kind at the intended zoom. The open edit keeps its own label and RUN_REACH divides long
+ *  sequences into ranges worth zooming into. Their screen positions still follow the current visible span. */
+function groupMarks(frames: [string, TimelineDot[]][], from: number, span: number, width: number, groupSpan: number) {
   const position = (time: number) => (time - from) / span * 100;
   // How far apart two times are, in pixels, at the zoom the runs are for.
   const px = (a: number, b: number) => groupSpan > 0 ? (b - a) / groupSpan * width : 0;
@@ -375,7 +360,7 @@ export function layoutMarks(marks: TimelineDot[], from: number, span: number, wi
       numbers.add(n); first = Math.min(first, n); last = Math.max(last, n);
     }
     const label = dotLabel(dots, numbers.size, first, last);
-    const layout: MarkLayout = { key, time, times: [time], dots, at: position(time), label, width: markWidth(label) };
+    const layout: MarkLayout = { key, time, times: [time], dots: [...dots], at: position(time), label, width: markWidth(label) };
     return { layout, numbers, first, last };
   };
   // The distance between two markers' centres, in pixels at the zoom the runs are for, counting a run moved along.
@@ -383,7 +368,7 @@ export function layoutMarks(marks: TimelineDot[], from: number, span: number, wi
   const mid = (m: MarkLayout) => (m.times[0]! + m.times.at(-1)!) / 2;
   const shift = new Map<MarkLayout, number>();
   const circles = new Map<string, ReturnType<typeof marker>[]>();
-  for (const [key, dots] of [...byTime].sort((a, b) => a[1][0]!.time - b[1][0]!.time)) {
+  for (const [key, dots] of frames) {
     const time = dots[0]!.time;
     let next = marker(key, time, dots);
     const row = circles.get(dots[0]!.group ?? "") ?? [];
@@ -418,12 +403,66 @@ export function layoutMarks(marks: TimelineDot[], from: number, span: number, wi
     }
     row.push(next);
   }
-  // A marker sits at the middle of its run, moved along if it had to be, and never past the track's ends.
-  const half = (m: MarkLayout) => width > 0 ? m.width / 2 / width * 100 : 0;
+  // Calls and edits have separate numbering, but their labels share the same strip. Position their text together,
+  // keeping the real times in each run for frame previews, opening an edit and zooming into a group.
   return [...circles.values()].flatMap(row => row.map(({ layout }) => {
-    const at = position(mid(layout)) + (width > 0 ? (shift.get(layout) ?? 0) / width * 100 : 0);
-    return { ...layout, at: layout.times.length > 1 || shift.has(layout) ? Math.max(half(layout), Math.min(100 - half(layout), at)) : at };
+    const state = dotState(layout.dots);
+    return { ...layout, state, at: position(mid(layout)), width: layout.width + (layout.label && state === "kept" ? 10 : 0) };
   })).sort((a, b) => a.at - b.at);
+}
+
+export function layoutMarks(marks: TimelineDot[], from: number, span: number, width: number, groupSpan = span) {
+  if (span <= 0) return [];
+  // Edits and calls at the same time must keep their own numbers.
+  const byTime = new Map<string, TimelineDot[]>();
+  for (const mark of marks) {
+    if (!(mark.time >= from && mark.time <= from + span)) continue;
+    const key = `${mark.group ?? ""}@${mark.time}`;
+    const dots = byTime.get(key);
+    if (dots) dots.push(mark); else byTime.set(key, [mark]);
+  }
+  const frames = [...byTime].sort((a, b) => a[1][0]!.time - b[1][0]!.time);
+  let packingSpan = groupSpan;
+  let labels = groupMarks(frames, from, span, width, packingSpan);
+  if (!width || !labels.length) return labels;
+  const labelWidth = () => labels.reduce((sum, mark) => sum + mark.width, 0);
+  let ink = labelWidth();
+  // Several independently numbered sets can fill a narrow strip. Use a coarser grouping until they fit; this
+  // keeps calls, edits and the selected number separate. Stop when even the two ends of the view are one group
+  // apart. During a zoom the destination's grouping remains fixed.
+  while (ink > width && groupSpan === span && width * span / packingSpan >= markWidth("1") + MARK_GAP) {
+    packingSpan *= 2;
+    labels = groupMarks(frames, from, span, width, packingSpan);
+    ink = labelWidth();
+  }
+  const gap = labels.length > 1 ? Math.max(0, Math.min(MARK_GAP, (width - ink) / (labels.length - 1))) : 0;
+  // When the destination labels of a zoom, or even one label per independent group, exceed the available space,
+  // keep them on the track. Hit testing still prioritizes the selected edit.
+  if (ink > width) {
+    for (const mark of labels) {
+      const inset = Math.min(50, mark.width / width * 50);
+      mark.at = Math.max(inset, Math.min(100 - inset, mark.at));
+    }
+    return labels;
+  }
+  // Start at each label's time and give the previous one room. Pack back from the end as well, so the last two
+  // labels don't end up on top of each other. Where space allows, the selected label stays exactly over its band.
+  let left = 0;
+  for (const mark of labels) {
+    mark.at = Math.max(left + mark.width / 2, mark.at / 100 * width);
+    left = mark.at + mark.width / 2 + gap;
+  }
+  let right = width, minimumEnd = ink + gap * (labels.length - 1);
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const mark = labels[i]!;
+    const half = mark.width / 2;
+    const preferred = mark.dots.some(dot => dot.current) ? (mark.time - from) / span * width : mark.at;
+    const center = Math.max(minimumEnd - half, Math.min(right - half, preferred));
+    mark.at = center / width * 100;
+    right = center - half - gap;
+    minimumEnd -= mark.width + gap;
+  }
+  return labels;
 }
 
 /** A hit prefers the visible marker: the open edit, then a pill drawn over another group's circle. */
@@ -655,14 +694,14 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       const landed = !isNew ? undefined : arrived.some(dot => dot.landed === "cut") ? "cut" : "edit";
       const landedAt = Math.max(...arrived.map(dot => dot.landedAt ?? now));
       const delay = isNew ? elapsed(`${key}|${landedAt}`, landedAt) : 0;
-      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
+      const node = <i key={key} aria-hidden="true" data-state={mark.state} data-landed={landed}
         className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
         style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 },
           ...landed && delay > 0 && { animationDelay: `${(landed === "cut" ? 260 : 0) - delay}ms` } }}>
         {label && <span className="simple-timeline-number">{label}</span>}
       </i>;
       // A cut just applied: a sliver of its red closes up where the footage came out, then its marker arrives.
-      if (landed === "cut") return [closing(`${key}-closing`, at, delay), node];
+      if (landed === "cut") return [closing(`${key}-closing`, percent(mark.time), delay), node];
       const cuts = arrived.filter(dot => dot.landed === "cut" && dot.time >= from && dot.time <= from + span);
       return cuts.length ? [...cuts.map(dot => {
         const id = `${key}-closing-${dot.edit ?? dot.time}`;
@@ -731,7 +770,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   };
   const timeline = !waveform?.source && !waveform?.original ? waveform?.timeline : undefined;
   const intendedSpan = target?.span ?? span;
-  const zoom = span ? total / span : 1;
+  const zoomPercent = span ? Math.round(total / span * 100) : 100;
   const handleZoomKey = (e: KeyboardEvent) => {
     if (!total || ignorePageShortcut(e, track.current)) return;
     if (e.key === "]") zoomBy(2);
@@ -791,24 +830,18 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const zoomControls = <div ref={zoomRow} className="timeline-zoom-row" role="group" aria-label="Timeline zoom"
     title="Scroll or pinch over the timeline to zoom">
     <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="[" title="Zoom out ([)" disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
-    <span className="timeline-zoom-level">{Number(zoom.toFixed(1))}×</span>
+    <button type="button" className="timeline-zoom-level" aria-label={`${zoomPercent}% zoom, fit timeline`} aria-keyshortcuts="0" title="Fit timeline (0)"
+      disabled={intendedSpan >= total} onClick={() => fitRange()}>{zoomPercent}%</button>
     <button type="button" className="timeline-zoom-step" aria-label="Zoom in" aria-keyshortcuts="]" title="Zoom in (])" disabled={intendedSpan <= minSpan} onClick={() => zoomBy(2)}>+</button>
-    <button type="button" className="timeline-fit" aria-label="Fit timeline" title="Show full timeline (0)" disabled={intendedSpan >= total} onClick={() => fitRange()}>Fit</button>
   </div>;
   return <div className="timeline-panel" onKeyDown={e => handleZoomKey(e.nativeEvent)}>
-    <div ref={track} className={marking.marking ? "timeline-track is-marking" : "timeline-track"}><ScrubPreview suspended={!!lens} start={from} duration={span} pictureAspect={pictureAspect} frameAt={frameAt} hoverVideo={hoverVideo} note={markNote || undefined} pin={waiting?.time}>
+    <div ref={track} className={marking.marking ? "timeline-track is-marking" : "timeline-track"} data-has-marks={marks?.length ? true : undefined}><ScrubPreview suspended={!!lens} start={from} duration={span} pictureAspect={pictureAspect} frameAt={frameAt} hoverVideo={hoverVideo} note={markNote || undefined} pin={waiting?.time}>
     <TimelineSlider ref={slider} className="timeline-slider" playhead={playhead} start={start} end={end} from={from} span={span}
       width={width} zoomSpace={zoomSpace} drag={drag} skippedRanges={skippedRanges} loupe={!!lens} selectPosition={selectPosition} tabIndex={total ? 0 : -1} aria-disabled={!total}
       aria-label="Position in the video" aria-description="Drag up from the picture or waveform to scrub one frame at a time."
       onPointerDown={e => {
         if (!total || e.button !== 0 || !e.isPrimary || drag.current) return;
-        if (onRange) {
-          // The ruler marks a range. The strip that picks a marker lies over its lower edge, so go by where the press is.
-          const box = e.currentTarget.getBoundingClientRect();
-          const ruler = e.currentTarget.querySelector<HTMLElement>(".timeline-lanes")?.offsetTop ?? 0;
-          const onRuler = !!(e.target as Element).closest(".timeline-range-zone") || (box.height > 0 && e.clientY - box.top < ruler);
-          if (onRuler && marking.begin(e)) return;
-        }
+        if (onRange && (e.target as Element).closest(".timeline-range-zone") && marking.begin(e)) return;
         stopZoom();
         e.currentTarget.setPointerCapture(e.pointerId);
         const lifetime = new AbortController();

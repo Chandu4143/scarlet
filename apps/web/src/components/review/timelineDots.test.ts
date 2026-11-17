@@ -68,6 +68,56 @@ describe("layoutMarks", () => {
     expect(layout.flatMap(m => m.dots.map(d => d.n))).toEqual(pass.map(d => d.n));
   });
 
+  it("keeps long labels and their hit targets separate at both ends of the strip", () => {
+    const marks = [
+      dot(0, 141), dot(1, 142), { ...dot(1.5, 12), group: "call" },
+      { ...dot(98, 143), state: "kept" as const }, { ...dot(99, 144), state: "kept" as const },
+      { ...dot(100, 13), group: "call" },
+    ];
+    const width = 400;
+    const layout = layoutMarks(marks, 0, 100, width);
+    expect(shapes(layout)).toEqual(["141–142", "12", "143–144", "13"]);
+    let previousEnd = -3;
+    for (const mark of layout) {
+      const mid = mark.at / 100 * width;
+      const left = mid - mark.width / 2, right = mid + mark.width / 2;
+      expect(left - previousEnd).toBeGreaterThanOrEqual(3 - 1e-6);
+      expect(right).toBeLessThanOrEqual(width + 1e-6);
+      expect(nearestMark(layout, (left + 1) / width * 100, width)).toBe(mark);
+      expect(nearestMark(layout, (right - 1) / width * 100, width)).toBe(mark);
+      previousEnd = right;
+    }
+    expect(layout.flatMap(mark => mark.times)).toEqual([0, 1, 1.5, 98, 99, 100]);
+  });
+
+  it("keeps a selected number over its cut when a neighboring label can move aside", () => {
+    const layout = layoutMarks([dot(20, 130), dot(20.5, 131), { ...dot(21, 132), current: true }], 0, 100, 800);
+    expect(shapes(layout)).toEqual(["130–131", "132"]);
+    expect(layout[1]!.at).toBeCloseTo(21);
+    const space = (layout[1]!.at - layout[0]!.at) * 8 - (layout[1]!.width + layout[0]!.width) / 2;
+    expect(space).toBeGreaterThanOrEqual(3 - 1e-6);
+  });
+
+  it("fits dense calls, flags and kept edits on a narrow strip without mixing their numbers", () => {
+    const marks = Array.from({ length: 90 }, (_, i) => [
+      { ...dot(i + .1, i + 1), group: "call", state: "check" as const },
+      { ...dot(i + .2, i + 1), group: "flag", state: "check" as const },
+      { ...dot(i + .3, i + 1), state: "kept" as const, current: i === 82 },
+    ]).flat();
+    const width = 320;
+    const layout = layoutMarks(marks, 0, 90, width);
+    expect(layout.flatMap(mark => mark.dots)).toHaveLength(marks.length);
+    expect(layout.find(mark => mark.dots.some(dot => dot.current))?.dots).toEqual([marks[82 * 3 + 2]]);
+    let previousEnd = 0;
+    for (const mark of layout) {
+      expect(new Set(mark.dots.map(dot => dot.group)).size).toBe(1);
+      const center = mark.at / 100 * width;
+      expect(center - mark.width / 2).toBeGreaterThanOrEqual(previousEnd - 1e-6);
+      previousEnd = center + mark.width / 2;
+    }
+    expect(previousEnd).toBeLessThanOrEqual(width + 1e-6);
+  });
+
   it("works out its runs for the zoom on its way, so the pills don't change on the way there", () => {
     const pass = Array.from({ length: 40 }, (_, i) => dot(5 * i + 2, i + 1));
     // Halfway through a zoom from the whole 200 s to 0–40 s, the runs are already the ones at 0–40 s.
