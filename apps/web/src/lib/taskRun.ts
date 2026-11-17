@@ -2,7 +2,7 @@ import { DialogueScanPage, requestText, type Task, type TaskEvent } from "@scarl
 import { cutSummary, mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { appliedEditSummary } from "../components/review/cutReviewDetails";
 import { clock, lengthLabel, plural } from "./format";
-import { editConfirmation, taskChatText, toolName, waitLabels, waitTools } from "./taskActivity";
+import { editConfirmation, inputMediaIds, taskChatText, toolName, waitLabels, waitTools } from "./taskActivity";
 
 /**
  * One agent run, shown the way Codex shows its work: short updates from the agent and one line per
@@ -90,6 +90,7 @@ const toolSteps: Record<string, StepSpec> = {
   audio_sync: { group: "sync", verb: "Lined up", doing: "Lining up", detail: () => "the sound", once: true },
   media_frame: picture, frame_contact_sheet: picture, frame_contact_sheet_batch: picture,
   screen_text: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
+  faces: { group: "faces", verb: "Found", doing: "Finding", detail: () => "where the faces are", once: true },
   dialogue_check_repeats: sound,
   dialogue_check_join: { group: "joins", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} joins` : "a join", once: true },
   dialogue_review_inspect: { group: "inspect", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} suggested cuts` : "a suggested cut", once: true },
@@ -233,9 +234,9 @@ export function runItems(task: Task, events: readonly TaskEvent[], changes: read
     const spec = toolSteps[name];
     if (!spec) continue;
     const args = input(event);
-    const waitKey = waitTools[name] && typeof args.mediaId === "string" ? `${waitTools[name]}/${args.mediaId}` : undefined;
+    const waitKeys = waitTools[name] ? inputMediaIds(args).map(id => `${waitTools[name]}/${id}`) : [];
     // Calls that only collect work still being prepared are covered by the waiting row.
-    if (waitKey && waits.has(waitKey)) continue;
+    if (waitKeys.some(key => waits.has(key))) continue;
     // Collecting a submitted picture batch looks at nothing new.
     if (typeof args.batchId === "string") continue;
     if (spec.once) {
@@ -254,7 +255,7 @@ export function runItems(task: Task, events: readonly TaskEvent[], changes: read
     const item = { kind: "step" as const, at, verb: spec.verb, detail: "" };
     items.push(item);
     group = { count, found: spans(event), first: event, item, spec };
-    if (waitKey) reads.set(waitKey, item);
+    for (const key of waitKeys) reads.set(key, item);
   }
   finishGroup();
   return items;
@@ -319,6 +320,31 @@ function workClock(task: Task, events: readonly TaskEvent[]) {
     for (const wait of waits) waiting += Math.max(0, Math.min(wait.to, end) - wait.from);
     return Math.max(0, end - start - waiting);
   };
+}
+
+/** Active work in this task, including earlier claims when Scarlet recorded them. */
+export function workTime(task: Task, events: readonly TaskEvent[], now: number): number | undefined {
+  const working = task.state === "claimed" || task.state === "running";
+  const start = Date.parse(task.startedAt ?? "");
+  if (task.workedMs !== undefined) {
+    return task.workedMs + (working && Number.isFinite(start) ? Math.max(0, now - start) : 0);
+  }
+  if (!Number.isFinite(start)) return undefined;
+  // Earlier tasks recorded only their last claim. Use the timestamps that survive in their history.
+  if (task.state === "waiting_for_user" && !events.some(event => event.type === "question" && Date.parse(event.at ?? "") >= start)) return undefined;
+  const end = task.state === "queued" ? Date.parse(events.findLast(event => event.type === "answer")?.at ?? "")
+    : runIsActive(task) ? now : Date.parse(task.finishedAt ?? "");
+  return Number.isFinite(end) && end >= start ? workClock(task, events)(end) : undefined;
+}
+
+/** A run's elapsed work time, with units so it can't read as a place on the timeline. */
+export function workTimeLabel(ms: number, working: boolean): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds === 0 && !working) return "<1s";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 /** One line in an opened run: a step and how long it took, or an update from the agent. */

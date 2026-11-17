@@ -107,6 +107,7 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
       const query = field(input, "query");
       return typeof query === "string" && query.trim() ? `Searching the screen for “${query.trim().slice(0, 40)}”` : `Reading the text on screen${span(input, "from", "to")}`;
     }
+    case "faces": return `Finding where the faces are${span(input, "from", "to")}`;
     case "frame_contact_sheet": return `Looking at the picture${span(input)}`;
     case "frame_contact_sheet_batch": {
       const n = count(field(input, "windows"));
@@ -139,6 +140,7 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
     case "timeline_get": case "timeline_summary": case "timeline_at": return "Looking at the timeline";
     case "timeline_transcript": return "Reading the video’s words";
     case "timeline_propose": return "Making the edit";
+    case "timeline_framing": return field(input, "preview") === true ? "Trying a framing" : "Framing the picture";
     case "captions_generate": return "Making captions";
     case "render_request": return "Rendering a preview";
     case "render_status": return "Waiting for the preview";

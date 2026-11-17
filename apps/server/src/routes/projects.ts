@@ -1,17 +1,19 @@
-import { conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { cancelTask } from "../services/tasks.js";
-import { holdTranscriptions, recoverIngestInBackground } from "../services/ingest.js";
+import { holdTranscriptions, resumeImportsInBackground } from "../services/ingest.js";
 import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
-import { recoverTasks } from "../services/taskRecovery.js";
+import { holdProjectEditing, resumeProjectEditing, resumeProjectTranscriptions } from "../services/taskRecovery.js";
 import { Hono } from "hono";
-import { buildThreads, EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
+import { EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
+import { makeShorts, planShorts } from "../services/shorts.js";
 import { createProject, hasInitialTimeline } from "@scarlet/timeline";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { resolveTimeline } from "../services/timeline.js";
 import { jsonBody, requireProject, requireProjectHeader } from "./util.js";
 import { actorFor, logActivity, quote } from "../services/activity.js";
+import { requestAttempt } from "../services/taskAttempt.js";
 
 export function projectRoutes(ctx: Ctx) {
   const r = new Hono<AppEnv>();
@@ -37,6 +39,24 @@ export function projectRoutes(ctx: Ctx) {
     return c.json({ project }, 201);
   });
 
+  // Make shorts: a new project for each short, made from this one's finished edit. The first starts working at once.
+  r.post("/projects/:id/shorts", async (c) => {
+    const body = await jsonBody(c, MakeShortsRequest);
+    const project = requireProjectHeader(ctx, c.req.param("id"));
+    if (body.agent === "api") throw badRequest("agent_unavailable", "Choose Claude, Codex or Gemini to make shorts.");
+    return c.json(await makeShorts(ctx, c.var.user, project.id, body, c.req.raw.signal), 201);
+  });
+
+  // The first short's run saves the moments it chose, and the other shorts start with theirs.
+  r.post("/tasks/:id/shorts-plan", async (c) => {
+    const body = await jsonBody(c, ShortsPlanRequest);
+    return c.json(planShorts(ctx, c.var.user, c.req.param("id"), body, requestAttempt(c.req.raw)));
+  });
+
+  r.post("/projects/:id/stop-editing", c => c.json(holdProjectEditing(ctx, c.req.param("id"))));
+
+  r.post("/projects/:id/resume-editing", c => c.json(resumeProjectEditing(ctx, c.req.param("id"))));
+
   r.get("/projects/:id", (c) => {
     const id = c.req.param("id");
     if (c.req.query("view") === "workspace") {
@@ -57,11 +77,7 @@ export function projectRoutes(ctx: Ctx) {
   });
 
   function projectThread(projectId: string, id: string) {
-    const thread = buildThreads({
-      changes: ctx.repos.changes.select("project_id = ?", [projectId]),
-      tasks: ctx.repos.tasks.select("project_id = ? AND kind != 'transcribe'", [projectId]),
-      notes: ctx.repos.notes.select("project_id = ? AND json_extract(json, '$.changeId') IS NOT NULL", [projectId]),
-    }).find(t => t.id === id);
+    const thread = ctx.repos.projects.threads(projectId).find(t => t.id === id);
     if (!thread) throw notFound("thread");
     return thread;
   }
@@ -80,7 +96,7 @@ export function projectRoutes(ctx: Ctx) {
 
   r.post("/projects/:id/threads/:threadId/disposition", async c => {
     const { done, revision } = await jsonBody(c, ThreadDisposition);
-    const completedThreads = ctx.db.transaction(() => {
+    const result = ctx.db.transaction(() => {
       const project = requireProjectHeader(ctx, c.req.param("id"));
       const thread = projectThread(project.id, c.req.param("threadId"));
       if (threadRevision(thread) !== revision || (done && (thread.active || thread.question || thread.status === "working")))
@@ -89,10 +105,11 @@ export function projectRoutes(ctx: Ctx) {
       if (done) completed[thread.id] = revision;
       else delete completed[thread.id];
       ctx.repos.projects.saveCompletedThreads(project.id, completed);
-      ctx.bus.publish({ type: "project.updated", projectId: project.id, project: requireProject(ctx, project.id) });
-      return completed;
+      const saved = requireProject(ctx, project.id);
+      ctx.bus.publish({ type: "project.updated", projectId: project.id, project: saved });
+      return { completedThreads: completed, project: saved };
     }, "immediate")();
-    return c.json({ completedThreads });
+    return c.json(result);
   });
 
   r.patch("/projects/:id", async (c) => {
@@ -112,12 +129,14 @@ export function projectRoutes(ctx: Ctx) {
           ctx.renders.stopProject(updated.id, true);
           holdTranscriptions(ctx, updated.id);
         } else {
-          recoverIngestInBackground(ctx, updated.id);
           recoverSourcePreviews(ctx, updated.id);
-          // The pause cut this project's transcriptions off. They start again now, not at the next 30 s sweep.
-          recoverTasks(ctx);
+          resumeProjectTranscriptions(ctx, updated.id);
         }
       });
+      // Unpaused or unarchived: its imports go on. Ones still held by a pause stay held.
+      if ((previous.mediaPaused && !updated.mediaPaused) || (previous.archived && !updated.archived)) {
+        ctx.db.afterCommit(() => resumeImportsInBackground(ctx, updated.id));
+      }
       const what = [
         body.name && body.name !== previous.name ? `renamed it to ${quote(body.name)}` : null,
         body.settings ? "changed the video settings" : null,

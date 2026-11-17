@@ -19,8 +19,37 @@ import { pathToFileURL } from "node:url";
 import type { Readable, Writable } from "node:stream";
 import { AbortError, fnum, resolveFfmpeg, runCapture } from "./exec.js";
 
-/** The codec a graphic is written in: ProRes 4444 keeps the alpha, and every ffmpeg Scarlet runs reads it. */
-export const GRAPHIC_CODEC_ARGS = ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-alpha_bits", "16", "-vendor", "apl0"];
+/**
+ * The codec a graphic is written in: ProRes 4444 keeps the alpha, and every ffmpeg Scarlet runs reads it. The page's
+ * RGB becomes video with the BT.709 matrix the footage uses, and says so, so it is laid over the picture unshifted.
+ */
+export const GRAPHIC_CODEC_ARGS = [
+  "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuva444p10le,setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709",
+  "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-alpha_bits", "16", "-vendor", "apl0",
+  "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+];
+
+/** How long Chrome has to start, and a page to load. */
+const CHROME_START_MS = 30_000;
+const PAGE_LOAD_MS = 30_000;
+
+/** `work`, unless `ms` pass first (an error saying `message`) or `signal` aborts. Leaves no timer or listener behind. */
+async function within<T>(work: Promise<T>, ms: number, message: string, signal?: AbortSignal): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+      if (!signal) return;
+      onAbort = () => reject(new AbortError());
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    })]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  }
+}
 
 /** Where Chrome, Chromium, Edge or chrome-headless-shell is usually installed, in the order tried. */
 export function chromeCandidates(platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
@@ -78,7 +107,11 @@ class Browser {
   private readonly listeners = new Set<(m: CdpMessage) => void>();
   private buffer = Buffer.alloc(0);
   private exited: Error | undefined;
+  private rejectGone: (error: Error) => void = () => undefined;
+  /** Rejects once Chrome has exited or been closed, with why. */
+  readonly gone = new Promise<never>((_, reject) => { this.rejectGone = reject; });
   private constructor(private readonly child: ChildProcess, private readonly profile: string, private readonly stderr: string[]) {
+    this.gone.catch(() => undefined);
     const out = child.stdio[4] as Readable;
     out.on("data", (chunk: Buffer) => this.read(chunk));
     out.on("error", error => this.fail(error));
@@ -87,7 +120,8 @@ class Browser {
     child.on("error", error => this.fail(error));
   }
 
-  static async launch(chrome: string, signal?: AbortSignal): Promise<Browser> {
+  /** Start Chrome. One that doesn't answer in time, or a stop meanwhile, leaves no process or profile behind. */
+  static async launch(chrome: string, signal?: AbortSignal, timeoutMs = CHROME_START_MS): Promise<Browser> {
     signal?.throwIfAborted();
     const profile = await mkdtemp(join(tmpdir(), "scarlet-chrome-"));
     const args = [
@@ -99,12 +133,19 @@ class Browser {
       "--allow-file-access-from-files", "--disable-features=Translate,MediaRouter,OptimizationHints,DialMediaRouteProvider",
       "--password-store=basic", "--use-mock-keychain", "about:blank",
     ];
-    const child = spawn(chrome, args, { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], windowsHide: true });
-    const stderr: string[] = [];
-    child.stderr?.on("data", (chunk: Buffer) => { stderr.push(chunk.toString("utf8")); if (stderr.length > 40) stderr.shift(); });
-    const browser = new Browser(child, profile, stderr);
-    await browser.send("Browser.getVersion").catch(async error => { await browser.close(); throw error; });
-    return browser;
+    let browser: Browser | undefined;
+    try {
+      const child = spawn(chrome, args, { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], windowsHide: true });
+      const stderr: string[] = [];
+      child.stderr?.on("data", (chunk: Buffer) => { stderr.push(chunk.toString("utf8")); if (stderr.length > 40) stderr.shift(); });
+      browser = new Browser(child, profile, stderr);
+      await within(browser.send("Browser.getVersion"), timeoutMs, `Chrome didn't start within ${Math.round(timeoutMs / 1000)} s.`, signal);
+      return browser;
+    } catch (error) {
+      if (browser) await browser.close();
+      else await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => undefined);
+      throw error;
+    }
   }
 
   private read(chunk: Buffer) {
@@ -126,6 +167,7 @@ class Browser {
     this.exited = error;
     for (const waiter of this.pending.values()) waiter.reject(error);
     this.pending.clear();
+    this.rejectGone(error);
   }
 
   send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, unknown>> {
@@ -205,11 +247,17 @@ async function openPage(browser: Browser, url: string, size: { width: number; he
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true }) as { sessionId: string };
   const problems: string[] = [];
   const note = (line: string) => { if (problems.length < 10 && !problems.includes(line)) problems.push(line.slice(0, 300)); };
+  // The load of the navigation started below, by its loader: the first page, about:blank, may still report its own.
+  const loads = new Set<string>();
+  let loaderId: string | undefined;
   let loaded: () => void = () => undefined;
   const load = new Promise<void>(resolve => { loaded = resolve; });
   browser.on(m => {
     if (m.sessionId !== sessionId) return;
-    if (m.method === "Page.loadEventFired") loaded();
+    if (m.method === "Page.lifecycleEvent" && m.params?.name === "load" && typeof m.params.loaderId === "string") {
+      loads.add(m.params.loaderId);
+      if (m.params.loaderId === loaderId) loaded();
+    }
     else if (m.method === "Runtime.exceptionThrown") {
       const details = m.params?.exceptionDetails as { text?: string; exception?: { description?: string } } | undefined;
       note(`Script error: ${details?.exception?.description?.split("\n")[0] ?? details?.text ?? "unknown"}`);
@@ -222,14 +270,19 @@ async function openPage(browser: Browser, url: string, size: { width: number; he
     }
   });
   await Promise.all([
-    browser.send("Page.enable", {}, sessionId), browser.send("Runtime.enable", {}, sessionId), browser.send("Log.enable", {}, sessionId),
+    browser.send("Page.enable", {}, sessionId), browser.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
+    browser.send("Runtime.enable", {}, sessionId), browser.send("Log.enable", {}, sessionId),
     browser.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, sessionId),
     browser.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } }, sessionId),
   ]);
   signal?.throwIfAborted();
-  const navigated = await browser.send("Page.navigate", { url }, sessionId) as { errorText?: string };
+  const navigated = await within(browser.send("Page.navigate", { url }, sessionId), PAGE_LOAD_MS,
+    "The graphic's page didn't finish loading within 30 s.", signal) as { errorText?: string; loaderId?: string };
   if (navigated.errorText) throw new Error(`Chrome couldn't open the graphic's page: ${navigated.errorText}`);
-  await Promise.race([load, new Promise((_, reject) => setTimeout(() => reject(new Error("The graphic's page didn't finish loading within 30 s.")), 30_000))]);
+  loaderId = navigated.loaderId;
+  if (!loaderId || loads.has(loaderId)) loaded();
+  // Chrome exiting or a stop ends the wait at once, with its own reason.
+  await within(Promise.race([load, browser.gone]), PAGE_LOAD_MS, "The graphic's page didn't finish loading within 30 s.", signal);
   return { sessionId, problems };
 }
 
@@ -242,6 +295,21 @@ async function evaluate<T>(browser: Browser, page: Page, expression: string): Pr
   }
   return result.result?.value as T;
 }
+
+/**
+ * Whether nothing on the page can change with time: no clock of its own, no animation, transition or SVG animation,
+ * and nothing that plays by itself. Runs after PREPARE, so every animation the page declares already exists.
+ */
+const STILL = String.raw`(() => {
+  if (typeof window.scarletSeek === "function" || document.getAnimations().length) return false;
+  if (document.querySelector("script, video, audio, canvas, iframe, object, embed, marquee, animate, animateTransform, animateMotion, set")) return false;
+  const moving = /\.(gif|apng|webp|avif)\b|image\/(gif|apng|webp|avif)/i;
+  if (moving.test(document.documentElement.outerHTML)) return false;
+  for (const sheet of document.styleSheets) {
+    try { for (const rule of sheet.cssRules) if (moving.test(rule.cssText)) return false; } catch { return false; }
+  }
+  return true;
+})()`;
 
 async function prepare(browser: Browser, page: Page) {
   return evaluate<{ missing: MissingFont[]; installed: string[] }>(browser, page, PREPARE);
@@ -283,6 +351,8 @@ export interface GraphicRenderResult {
   installedFonts: string[];
   /** Script errors and files the page couldn't load, as Chrome reported them. */
   problems: string[];
+  /** Frames Chrome drew. A page that doesn't change is drawn at its first and last frame, and the first is held. */
+  drawn: number;
   /** Milliseconds spent. */
   elapsedMs: number;
 }
@@ -293,6 +363,7 @@ async function withBrowser<T>(opts: GraphicPageOptions, run: (browser: Browser, 
   const abort = () => void browser.close();
   opts.signal?.addEventListener("abort", abort, { once: true });
   try {
+    opts.signal?.throwIfAborted();
     const result = await run(browser, pathToFileURL(opts.htmlFile).href);
     opts.signal?.throwIfAborted();
     return result;
@@ -315,9 +386,24 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
   const workers = Math.max(1, Math.min(opts.pages ?? Math.min(4, Math.max(1, Math.floor(availableParallelism() / 2))), total));
   return withBrowser(opts, async (browser, url) => {
     const size = { width: opts.width, height: opts.height, scale: 1 };
-    const pages = await Promise.all(Array.from({ length: workers }, () => openPage(browser, url, size, opts.signal)));
+    const pages = [await openPage(browser, url, size, opts.signal)];
     const { missing: missingFonts, installed: installedFonts } = await prepare(browser, pages[0]!);
-    await Promise.all(pages.slice(1).map(page => prepare(browser, page)));
+    // A page with nothing that moves is one picture held for its length: a photo or a title card. Drawing each of its
+    // frames in Chrome took five minutes for 6.5 s at 3840x2160 on a busy machine, and the call timed out (2026-11-16).
+    // Its first and last frames are drawn and compared, so a page that does change is drawn in full whatever it is made of.
+    let held: Buffer | undefined;
+    let drawn = 0;
+    if (total > 2 && await evaluate<boolean>(browser, pages[0]!, STILL).catch(() => false)) {
+      const first = await frameAt(browser, pages[0]!, 0);
+      const last = await frameAt(browser, pages[0]!, ((total - 1) / opts.fps) * 1000);
+      drawn = 2;
+      if (first.equals(last)) held = first;
+    }
+    if (!held && workers > 1) {
+      const more = await Promise.all(Array.from({ length: workers - 1 }, () => openPage(browser, url, size, opts.signal)));
+      await Promise.all(more.map(page => prepare(browser, page)));
+      pages.push(...more);
+    }
 
     const ffmpeg = spawn(resolveFfmpeg(opts.ffmpegPath), [
       "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
@@ -355,12 +441,20 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
         while (i >= written + window) await new Promise<void>(resolve => waiting.push(resolve));
         opts.signal?.throwIfAborted();
         ready.set(i, await frameAt(browser, page, (i / opts.fps) * 1000));
+        drawn++;
         writing = writing.then(write);
+      }
+    };
+    const hold = async (png: Buffer) => {
+      for (let i = 0; i < total; i++) {
+        opts.signal?.throwIfAborted();
+        ready.set(i, png);
+        await write();
       }
     };
     try {
       await Promise.race([
-        Promise.all(pages.map((page, w) => draw(page, w))),
+        held ? hold(held) : Promise.all(pages.map((page, w) => draw(page, w))),
         finished.then(() => { throw new Error("ffmpeg stopped before the graphic was drawn."); }),
       ]);
       await writing;
@@ -377,7 +471,7 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
     return {
       output: opts.output, frames: total, missingFonts, installedFonts,
       problems: [...new Set(pages.flatMap(p => p.problems))].slice(0, 10),
-      elapsedMs: Math.round(performance.now() - started),
+      drawn, elapsedMs: Math.round(performance.now() - started),
     };
   });
 }
@@ -427,7 +521,8 @@ export async function graphicOver(movie: string, time: number, background: Buffe
   const base = background ? ["-f", "image2pipe", "-c:v", "mjpeg", "-i", "pipe:0"] : ["-f", "lavfi", "-i", `color=c=0x5a5a5a:s=${w}x${h}:d=1`];
   const { stdout } = await runCapture(resolveFfmpeg(opts.ffmpegPath), [
     "-hide_banner", "-nostdin", "-loglevel", "error", ...base, "-ss", fnum(time), "-i", movie,
-    "-filter_complex", `[0:v]scale=${w}:${h},format=rgba[b];[1:v]scale=${w}:${h},format=rgba[g];[b][g]overlay=format=auto,format=yuvj420p`,
+    // The graphic is BT.709 video, as written: read it back as such, so the check shows its colours as they play.
+    "-filter_complex", `[0:v]scale=${w}:${h},format=rgba[b];[1:v]scale=${w}:${h}:in_color_matrix=bt709:in_range=tv,format=rgba[g];[b][g]overlay=format=auto,format=yuvj420p`,
     "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", "-f", "image2pipe", "pipe:1",
   ], { stdin: background ?? undefined, signal: opts.signal, maxStdout: 8 * 1024 * 1024 });
   if (!stdout.length) throw new Error(`No frame of the graphic at ${time}s`);
@@ -483,6 +578,6 @@ export async function renderPdfDocument(file: string, pageNumbers: number[], opt
 }
 
 /** JPEGs of the requested pages in order, omitting page numbers outside the document. */
-export async function pdfPages(file: string, pages: number[], opts: { width?: number; chromePath?: string; signal?: AbortSignal; settleMs?: number } = {}): Promise<Buffer[]> {
+export async function pdfPages(file: string, pages: number[], opts: { width?: number; signal?: AbortSignal } = {}): Promise<Buffer[]> {
   return (await renderPdfDocument(file, pages, opts)).pages.map(page => page.jpeg);
 }

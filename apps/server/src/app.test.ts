@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Change, MediaAsset, Note, Project, Timeline } from "@scarlet/timeline";
 import type { ActivityEntry, AgentHost, Learning, Render, Skill, SkillVersion, Task, TaskEvent, User } from "@scarlet/shared";
@@ -279,6 +280,9 @@ describe("scarlet server", () => {
     const r = await api<{ change: Change; timeline: Timeline }>("POST", `/projects/${project.id}/changes`, {
       body: {
         description: "Lay the whole clip on V1",
+        reason: "The full clip gives the editor an untrimmed starting point.",
+        timelineEdits: [{ label: "Place the original clip", range: { start: 0, end: 6 },
+          summary: "Placed the whole clip on V1.", reason: "The full clip gives the editor an untrimmed starting point." }],
         ops: [
           {
             op: "addClip",
@@ -290,6 +294,8 @@ describe("scarlet server", () => {
     });
     expect(r.status).toBe(201);
     firstChange = r.json.change;
+    expect(firstChange.reason).toBe("The full clip gives the editor an untrimmed starting point.");
+    expect(firstChange.timelineEdits?.[0]).toMatchObject({ summary: "Placed the whole clip on V1.", reason: firstChange.reason });
     expect(firstChange.state).toBe("ready");
     expect(firstChange.ranges).toEqual([{ start: 0, end: 6 }]);
     expect(firstChange.renders).toHaveLength(1);
@@ -330,6 +336,8 @@ describe("scarlet server", () => {
     expect(await jobs()).toHaveLength(1);
     expect(approved.json.change.state).toBe("approved");
     expect(approved.json.project.head).toBe(firstChange.toVersion);
+    expect(approved.json.change.reason).toBe(firstChange.reason);
+    expect(approved.json.change.timelineEdits).toEqual(firstChange.timelineEdits);
     const versions = await api<{ versions: Array<{ version: string; isHead: boolean; duration: number }> }>("GET", `/projects/${project.id}/versions`);
     expect(versions.json.versions.find((v) => v.isHead)?.version).toBe(firstChange.toVersion);
     expect(versions.json.versions.find((v) => v.isHead)?.duration).toBe(6);
@@ -785,6 +793,8 @@ describe("scarlet server", () => {
     await api("POST", `/tasks/${task.id}/complete`, { body: { state: "done", summary: "Added a rule to keep laughter." } });
     const detail = (await api<{ skill: Skill; versions: SkillVersion[]; edits: Task[] }>("GET", `/skills/${skill.id}`)).json;
     expect(detail.versions.map(v => v.author?.type)).toEqual(["human", "agent"]);
+    // The history says what each version changed: Scarlet's carries the words that asked for it.
+    expect(detail.versions.map(v => [v.note, v.from])).toEqual([["First version", undefined], ["Never cut laughter.", "request"]]);
     expect(detail.edits).toMatchObject([{ id: task.id, state: "done", resultSkillId: skill.id, summary: "Added a rule to keep laughter." }]);
     expect((await api("POST", endpoint, { body: draft })).status).toBe(403);
     // One that ends without a revision says so in its own words. It is not a failure.
@@ -1267,7 +1277,9 @@ describe("scarlet server", () => {
   });
 
   it("lists the folder for finishing the edit in another app, linked where it will be saved", async () => {
-    const r = await api<import("@scarlet/shared").HandoffResponse>("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder: "/Users/me/Exports/Test Cut" } });
+    const folder = join(fixtureDir, "Exports", "Test Cut");
+    const mediaUrl = pathToFileURL(join(folder, "Media", "test.mp4")).href;
+    const r = await api<import("@scarlet/shared").HandoffResponse>("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder } });
     expect(r.status).toBe(200);
     const paths = r.json.files.map((f) => f.path);
     expect(paths).toEqual(expect.arrayContaining(["Test Cut.fcpxml", "Test Cut.otio", "Read me.txt", "Media/test.mp4"]));
@@ -1276,9 +1288,9 @@ describe("scarlet server", () => {
     expect(copy.size).toBe(testMp4.length);
     expect(r.json.mediaBytes).toBe(testMp4.length);
     const fcpxml = (r.json.files.find((f) => f.path === "Test Cut.fcpxml") as { text: string }).text;
-    expect(fcpxml).toContain('src="file:///Users/me/Exports/Test%20Cut/Media/test.mp4"');
+    expect(fcpxml).toContain(`src="${mediaUrl}"`);
     const otio = (r.json.files.find((f) => f.path === "Test Cut.otio") as { text: string }).text;
-    expect(otio).toContain("file:///Users/me/Exports/Test%20Cut/Media/test.mp4");
+    expect(otio).toContain(mediaUrl);
     expect((await api("POST", `/projects/${project.id}/versions/head/handoff`, { body: { folder: "relative/folder" } })).status).toBe(400);
   });
 

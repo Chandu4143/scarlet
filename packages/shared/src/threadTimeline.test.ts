@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Change, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
+import { Change, emptyTimeline, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
 import { buildThreads } from "./threads.js";
 import { Task } from "./api.js";
 import { changeRemovals, matchesEdit, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
@@ -34,6 +34,23 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(restored.find(e => e.spot === 3)?.range).toEqual(named[3]!.range);
   });
 
+  it("reads each cut an agent named to the second as the cut it made, wherever its join falls between hundredths", () => {
+    // A fit-length request named its five cuts to the hundredth of a second, and the joins its removals made fell between
+    // those: three of them listed as edits that weren't cuts, and the request said it made edits, not what it took out (2026-11-15).
+    const removals = [{ start: 60.1234, end: 70.4567 }, { start: 120.3333, end: 135.6789 }, { start: 300.1111, end: 318.2222 }];
+    const cuts = { ...change, toVersion: head.version, ops: removals.map(({ start, end }) => ({ op: "rippleDelete", start, end })).reverse(),
+      timelineEdits: [{ label: "Cut the aside", range: { start: 60.12, end: 60.12 } }, { label: "Cut the walkthrough", range: { start: 110, end: 110 } },
+        { label: "Cut the side note", range: { start: 274.43, end: 274.43 } }] };
+    const edits = threadTimeline(thread([cuts]), head, links, () => earlier, 30);
+    expect(edits.map(e => [e.label, e.kind, e.beforeCut?.removed])).toEqual([
+      ["Cut the aside", "cut", removals[0]], ["Cut the walkthrough", "cut", removals[1]], ["Cut the side note", "cut", removals[2]]]);
+    // A cut named by the seconds around the join a point named a hair off it already took doesn't take it too: the
+    // footage is counted once.
+    const both = { ...cuts, timelineEdits: [...cuts.timelineEdits, { label: "Tighten the opening", range: { start: 59, end: 61.5 } }] };
+    const once = threadTimeline(thread([both]), head, links, () => earlier, 30).filter(e => e.beforeCut?.removed.start === removals[0]!.start);
+    expect(once.map(e => e.label)).toEqual(["Cut the aside"]);
+  });
+
   it("lists an edit once when a later save of the same request names it again", () => {
     // A pass that saves the video a second time lists every edit it has made so far, not only what that save changed.
     const first = { ...change, timelineEdits: [
@@ -57,6 +74,25 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(threadTimeline(thread([first, elsewhere]), head, links, () => earlier, 30)).toHaveLength(4);
     const close = { ...change, timelineEdits: [{ label: "Shorten the wait", range: { start: 103, end: 103 } }, { label: "Shorten the wait", range: { start: 103.5, end: 103.5 } }] };
     expect(threadTimeline(thread([close]), head, links, () => earlier, 30)).toHaveLength(2);
+  });
+
+  it("lists a flagged edit once when its own run names it again on the same footage in other words", () => {
+    // Matt's pass named the cube solve it held three times, each save in new words, and keeping it brought up the next (2026-11-16).
+    const save = (id: string, at: string, label: string, check: string, taskId = "run") => ({ ...change, id, taskId, createdAt: at,
+      fromVersion: "v1", toVersion: "v1", timelineEdits: [{ label, range: { start: 830.77, end: 832.83 }, check }] });
+    const first = save("round4", "2026-01-02T00:00:00Z", "Kept the cube solve animation", "The cube animates for 2.1 seconds before Matt speaks.");
+    const again = save("round5", "2026-01-03T00:00:00Z", "Held the cube solve animation", "The cube animates for 2.1 seconds before Matt speaks.");
+    const reworded = save("round6", "2026-01-04T00:00:00Z", "Held the cube solve", "The solve animation plays for 2.1 seconds before Matt speaks.");
+    const edits = threadTimeline(thread([first, again, reworded]), head, links, () => earlier, 30);
+    // One edit, under the identity the editor kept, with the latest words for why to look.
+    expect(edits.map(e => [e.changeId, e.spot, e.reviewRef, e.check])).toEqual([
+      ["round4", 0, undefined, "The solve animation plays for 2.1 seconds before Matt speaks."]]);
+    // A later request's doubt about it is new, and so is one about different footage.
+    const later = save("revise", "2026-01-05T00:00:00Z", "Kept the cube solve animation", "Matt starts talking over the solve.", "another");
+    expect(threadTimeline(thread([first, later]), head, links, () => earlier, 30).map(e => e.reviewRef))
+      .toEqual([{ changeId: "revise", spot: 0 }]);
+    const longer = { ...reworded, timelineEdits: [{ ...reworded.timelineEdits[0]!, range: { start: 830.77, end: 834 } }] };
+    expect(threadTimeline(thread([first, longer]), head, links, () => earlier, 30)).toHaveLength(2);
   });
 
   it("translates surviving footage after an earlier ripple and keeps close dialogue joins distinct on older projects", () => {
@@ -195,6 +231,14 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(alone[0]!.at).toBeUndefined();
     expect(alone[0]!.range.start).toBeCloseTo(99);
     expect(alone[0]!.range.end).toBeCloseTo(99.2);
+
+    // A save of the whole video that took footage out somewhere else, with a punch-in named on the cut's join, didn't
+    // move that join: the punch-in is an edit of its own, and the cut keeps its own sentence.
+    const elsewhere = keep("v2", [0, 99], [101, 200], [210, 3468]);
+    const punch = save("punch", "v1", "v2", [{ label: "Punch in", range: { start: 99, end: 99 }, summary: "Punched in on the answer." }]);
+    const named = { ...pass, timelineEdits: [{ label: "Remove the delivery aside", range: { start: 99, end: 99 }, summary: "Took out the aside." }] };
+    const both = threadTimeline(thread([named, punch]), elsewhere, all.slice(0, 3), v => v === "v2" ? elsewhere : read(v), 30);
+    expect(both.map(e => [e.changeId, e.summary])).toEqual([["batch", "Took out the aside."], ["punch", "Punched in on the answer."]]);
   });
 
   it("shows the footage a change left out as it built the video from the pieces to keep, each stretch a cut", () => {
@@ -261,6 +305,25 @@ describe("reviewing one thread on the working interview timeline", () => {
 });
 
 describe("listing a thread's edits in the chat", () => {
+  it("keeps sibling reasons and replaces the revised edit's reason", () => {
+    const sibling = "Viewers need time to read both scores.";
+    const original = "The false start interrupts the score.";
+    const revised = "The fade preserves the last syllable of the score.";
+    const batch = Change.parse({ ...change, timelineEdits: [
+      { label: "Hold the scorecard", range: { start: 9, end: 13 }, summary: "Held the scorecard.", reason: sibling },
+      { label: "Mute the false start", range: { start: 10, end: 10.1 }, summary: "Muted the false start.", reason: original },
+    ] });
+    const revision = Change.parse({ ...change, id: "revision", fromVersion: "v1", toVersion: "v2", createdAt: "2026-01-02T00:00:00Z",
+      timelineEdits: [{ label: "Fade the false start", range: { start: 10, end: 10.1 }, summary: "Faded the false start.", reason: revised,
+        replaces: { changeId: batch.id, spot: 1 } }] });
+    expect(threadEditList(thread([batch])).map(edit => edit.reason)).toEqual([sibling, original]);
+    const edits = threadTimeline(thread([batch, revision]), head, links, () => earlier, 30);
+    expect(edits.map(edit => [edit.summary, edit.reason, edit.check])).toEqual([
+      ["Held the scorecard.", sibling, undefined], ["Faded the false start.", revised, undefined],
+    ]);
+    expect(matchesEdit(edits[1]!, { changeId: batch.id, spot: 1 })).toBe(true);
+  });
+
   it("numbers edits in timeline order, folds a revision into the edit it replaces, and keeps the reason to check", () => {
     const batch = { ...change, timelineEdits: [
       { label: "Raise narration volume", range: { start: 14, end: 18 }, check: "Room tone comes up with it",
@@ -321,6 +384,59 @@ describe("a doubt a later request raises about an edit already in the video", ()
       [0, undefined, undefined, undefined], [1, "Black gap and overlapping lines", flags[0]!.at, undefined]]);
   });
 
+  it("opens a broad edit at the flagged footage after later cuts move it", () => {
+    const working = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 80 }, { start: 100, end: 3468 }]), version: "v3" };
+    const history = [
+      { ...links[0]!, createdAt: "2026-01-01T00:00:00Z" },
+      { ...links[1]!, createdAt: "2026-01-02T00:00:00Z" },
+      { version: "v3", parent: "v2", createdAt: "2026-01-03T00:00:00Z" },
+    ];
+    const blank = { ...emptyTimeline("project"), version: "base" };
+    const versions = { base: blank, v1: earlier, v2: head };
+    const at = "2026-01-02T00:05:00Z";
+    const edit = { ...pass, timelineEdits: [{ label: "Assemble the video", range: { start: 0, end: 3468 } }] };
+    const project = (check: string, location?: NonNullable<Change["flags"]>[number]["location"]) => {
+      const [review] = buildThreads({
+        changes: [{ ...edit, flags: [{ spot: 0, taskId: "cutting", at, check, location }] }],
+        notes: [], tasks: [run("cutting", "dialogue")],
+      });
+      return threadTimeline(review!, working, history, version => versions[version as keyof typeof versions], 30)[0]!;
+    };
+    expect(project("Check the phone comparison.", { version: "v2", range: { start: 518.4, end: 524.5 } })).toMatchObject({
+      changeId: "pass", spot: 0, range: { start: 0, end: 3448 }, reviewRange: { start: 498.4, end: 504.5 },
+    });
+    expect(project("The comparison at 8:38.4 needs different footage.").reviewRange).toEqual({ start: 498.4, end: 498.4 });
+    expect(project("Compare the moments at 8:38.4 and 8:42.").reviewRange).toBeUndefined();
+    expect(project("The source recording at 8:38.4 needs a look.").reviewRange).toBeUndefined();
+    expect(project("Look at 8:38.4 in the source recording.").reviewRange).toBeUndefined();
+    expect(project("Check the removed footage.", { version: "v2", range: { start: 85, end: 90 } }).reviewRange).toBeUndefined();
+  });
+
+  it("opens a flag at the span its words name inside its passage, where that span is now", () => {
+    const working = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 80 }, { start: 100, end: 3468 }]), version: "v3" };
+    const history = [{ ...links[0]!, createdAt: "2026-01-01T00:00:00Z" }, { ...links[1]!, createdAt: "2026-01-02T00:00:00Z" },
+      { version: "v3", parent: "v2", createdAt: "2026-01-03T00:00:00Z" }];
+    const versions = { base: { ...emptyTimeline("project"), version: "base" }, v1: earlier, v2: head };
+    const edit = { ...pass, timelineEdits: [{ label: "Pricing and model names", range: { start: 0, end: 3468 } }] };
+    const project = (check: string) => {
+      const [review] = buildThreads({
+        changes: [{ ...edit, flags: [{ spot: 0, taskId: "cutting", at: "2026-01-02T00:05:00Z", check, location: { version: "v2", range: { start: 460, end: 523 } } }] }],
+        notes: [], tasks: [run("cutting", "dialogue")],
+      });
+      return threadTimeline(review!, working, history, version => versions[version as keyof typeof versions], 30)[0]!;
+    };
+    // Matt's flag gave 56 seconds and named the three it meant, in the clock of the version it flagged.
+    expect(project("Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices at 8:38.5–8:41.6.")).toMatchObject({
+      reviewRange: { start: 498.5, end: 501.6 }, reviewSays: "Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices.",
+      check: "Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices at 8:38.5–8:41.6." });
+    expect(project("Listen around 8:39 for a doubled pickup.")).toMatchObject({ reviewRange: { start: 499, end: 499 }, reviewSays: "Listen for a doubled pickup." });
+    // Words with no time, or a time outside the passage, leave the passage as flagged.
+    expect(project("Check the price pickup.")).toMatchObject({ reviewRange: { start: 440, end: 503 } });
+    expect(project("Check the price pickup.").reviewSays).toBeUndefined();
+    expect(project("Same pickup as at 2:10.").reviewRange).toEqual({ start: 440, end: 503 });
+    expect(project("The source take at 8:39 is cleaner.").reviewRange).toEqual({ start: 440, end: 503 });
+  });
+
   it("puts a revision the raising request made of it in its place", () => {
     const revision = { ...zooms, id: "fix", timelineEdits: [{ label: "Close the gap", range: { start: 724, end: 726 }, replaces: { changeId: "pass", spot: 1 } }] };
     const [framing] = buildThreads({ changes: [{ ...pass, flags }, revision], notes: [], tasks: [run("framing-run", "framing")] })
@@ -330,5 +446,86 @@ describe("a doubt a later request raises about an edit already in the video", ()
     const revise = Task.parse({ ...run("revise-run", "framing"), kind: "revise", context: { threadId: "framing", changeId: "pass", editIndex: 1 } });
     const threads = buildThreads({ changes: [{ ...pass, flags }, revision], notes: [], tasks: [run("cutting", "dialogue"), run("framing-run", "framing"), revise] });
     expect(threads.map(t => [t.id, t.tasks.map(x => x.id)])).toEqual(expect.arrayContaining([["dialogue", ["cutting"]], ["framing", ["framing-run", "revise-run"]]]));
+  });
+
+  it("lists the edit as it is now once the request that made it revised it, and not the version it replaced", () => {
+    // The dialogue request revised its own edit after the framing request raised the doubt.
+    const own = { ...change, id: "own-fix", threadId: "dialogue", taskId: "cutting-fix", fromVersion: "v1", toVersion: "v2", createdAt: "2026-01-03T00:00:00Z",
+      timelineEdits: [{ label: "Close the gap", range: { start: 724, end: 726 }, replaces: { changeId: "pass", spot: 1 } }] };
+    const threads = buildThreads({ changes: [{ ...pass, flags }, zooms, own], notes: [], tasks: [run("cutting", "dialogue"), run("framing-run", "framing"), run("cutting-fix", "dialogue")] });
+    const framing = threads.find(t => t.id === "framing")!, dialogue = threads.find(t => t.id === "dialogue")!;
+    expect(framing.flagged?.map(c => c.id)).toEqual(["pass", "own-fix"]);
+    expect(dialogue.changes.map(c => c.id)).toEqual(["pass", "own-fix"]);
+    expect(threadEditList(framing).map(e => [e.changeId, e.label, e.check, e.elsewhere, e.previous])).toEqual([
+      ["zooms", "Frame the spreadsheet", undefined, undefined, []],
+      ["own-fix", "Close the gap", REVISED_CHECK, true, [{ changeId: "pass", spot: 1 }]]]);
+    // Undoing the revision puts the version with the doubt back in the video, and back in the list.
+    const undone = threadTimeline(framing, { ...head, version: "undo" }, [...links, { version: "undo", parent: "v2", revertsVersion: "v2" }], () => earlier, 30);
+    expect(undone.filter(e => e.elsewhere).map(e => [e.changeId, e.check])).toEqual([["pass", flags[0]!.check]]);
+  });
+
+  it("tells an edit that only left a marker for the editor from one that changed the video", () => {
+    // Asked on camera to put comparison footage on screen, Scarlet had none and marked the spots instead (Nov 16 2026).
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2", ops: [
+      { op: "addMarker", marker: { id: "fall", time: 118.28, kind: "todo", text: "Comparison footage needed", resolved: false } },
+      { op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Comparison footage needed", resolved: false } }],
+      timelineEdits: [
+        { label: "Fall Guys comparison footage", range: { start: 118.28, end: 120.07 }, check: "Add the Opus and Sol gameplay captures" },
+        { label: "Boat comparison footage", range: { start: 144.21, end: 144.21 }, check: "Add the other boat renders" }] };
+    const edits = threadTimeline(thread([marks]), head, links, () => earlier, 30);
+    expect(edits.map(e => [e.label, e.marker])).toEqual([["Fall Guys comparison footage", true], ["Boat comparison footage", true]]);
+
+    // A zoom named where a marker also sits changed the picture there: it is a zoom, not a marker.
+    const zoomed = { ...marks, id: "zoomed", ops: [marks.ops[0]!, { op: "updateClip", clipId: "missing", patch: { transform: { scale: 1.2 } } }],
+      timelineEdits: [marks.timelineEdits[0]!] };
+    expect(threadTimeline(thread([zoomed]), head, links, () => earlier, 30)[0]?.marker).toBeUndefined();
+  });
+
+  it("keeps what a marker asks of the editor through a revision, and keeps it waiting on them", () => {
+    const boat = { op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Comparison footage needed", resolved: false } };
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2", ops: [boat],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 144.21, end: 144.21 }, check: "Add the other boat renders" }] };
+    expect(threadEditList(thread([marks]))[0]).toMatchObject({ marker: true, todo: "Add the other boat renders", check: "Add the other boat renders" });
+    // Moved by updateMarker, the revision is still a marker, still asks what it asked, and waits on the editor as revised.
+    const moved = { ...change, id: "moved", fromVersion: "v2", toVersion: "v3", createdAt: "2026-01-02T00:00:00Z",
+      ops: [{ op: "updateMarker", markerId: "boat", patch: { time: 146 } }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 146, end: 146 }, replaces: { changeId: "marks", spot: 0 } }] };
+    expect(threadEditList(thread([marks, moved]))).toMatchObject([{ changeId: "moved", marker: true,
+      todo: "Add the other boat renders", check: REVISED_CHECK, previous: [{ changeId: "marks", spot: 0 }] }]);
+    // Replaced by a new marker, it asks what the new one says.
+    const replaced = { ...moved, id: "replaced", ops: [{ op: "removeMarker", markerId: "boat" },
+      { op: "addMarker", marker: { id: "boat2", time: 146, kind: "todo", text: "Add the Sol boat render", resolved: false } }] };
+    expect(threadEditList(thread([marks, replaced]))).toMatchObject([{ marker: true, todo: "Add the Sol boat render", check: REVISED_CHECK }]);
+  });
+
+  it("keeps Scarlet's to-do through a move when the saved timeline only says what the marker still says", () => {
+    const boat = { id: "boat", time: 144.21, kind: "todo" as const, text: "Comparison footage needed", resolved: false };
+    const v2 = { ...head, version: "v2", markers: [boat] }, v3 = { ...head, version: "v3", markers: [{ ...boat, time: 146 }] };
+    const versions: Record<string, typeof head> = { v1: earlier, v2, v3 };
+    const read = (version: string) => versions[version];
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2", ops: [{ op: "addMarker", marker: boat }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 144.21, end: 144.21 }, check: "Add the other boat renders" }] };
+    const moved = { ...change, id: "moved", fromVersion: "v2", toVersion: "v3", createdAt: "2026-01-02T00:00:00Z",
+      ops: [{ op: "updateMarker", markerId: "boat", patch: { time: 146 } }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 146, end: 146 }, replaces: { changeId: "marks", spot: 0 } }] };
+    const tree = [...links, { version: "v3", parent: "v2" }];
+    expect(threadTimeline(thread([marks, moved]), v3, tree, read, 30)).toMatchObject([{ changeId: "moved", marker: true,
+      todo: "Add the other boat renders", check: REVISED_CHECK }]);
+    // Rewritten by the revision, it asks what the marker now says.
+    const reworded = { ...moved, ops: [{ op: "updateMarker", markerId: "boat", patch: { time: 146, text: "Add the Sol boat render" } }] };
+    const v3b = { ...v3, markers: [{ ...boat, time: 146, text: "Add the Sol boat render" }] };
+    expect(threadTimeline(thread([marks, reworded]), v3b, tree, (v: string) => v === "v3" ? v3b : read(v), 30))
+      .toMatchObject([{ marker: true, todo: "Add the Sol boat render" }]);
+  });
+
+  it("holds a to-do marker Scarlet gave no reason to look among what needs the editor, asking what the marker says", () => {
+    const marks = { ...change, id: "marks", fromVersion: "v1", toVersion: "v2",
+      ops: [{ op: "addMarker", marker: { id: "boat", time: 144.21, kind: "todo", text: "Add the other boat renders", resolved: false } }],
+      timelineEdits: [{ label: "Boat comparison footage", range: { start: 144.21, end: 144.21 } }] };
+    expect(threadTimeline(thread([marks]), head, links, () => earlier, 30)[0]).toMatchObject({ marker: true,
+      todo: "Add the other boat renders", check: "Add the other boat renders" });
+    // A note that isn't a to-do asks nothing of them.
+    const note = { ...marks, ops: [{ op: "addMarker", marker: { id: "n", time: 144.21, kind: "chapter", text: "Boats", resolved: false } }] };
+    expect(threadTimeline(thread([note]), head, links, () => earlier, 30)[0]?.check).toBeUndefined();
   });
 });

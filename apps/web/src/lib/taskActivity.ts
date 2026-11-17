@@ -29,8 +29,10 @@ const toolActivity: Record<string, string> = {
   dialogue_check_repeats: "Checking the finished dialogue for repeats",
   media_profile: "Measuring the sound",
   screen_text: "Reading the text on screen",
+  faces: "Finding where the faces are",
   timeline_propose: "Proposing edit",
   timeline_crossfade_audio: "Smoothing dialogue",
+  timeline_framing: "Framing the picture",
   timeline_first_cut: "Building first edit",
   captions_generate: "Generating captions",
   change_get: "Reviewing change",
@@ -55,6 +57,7 @@ const toolActivity: Record<string, string> = {
   skill_save_edit: "Saving skill",
   skills_list: "Reading skills",
   learning_suggest: "Noting a rule",
+  shorts_plan: "Starting the other shorts",
 };
 
 // New progress messages start with a short action. Older hosts also send
@@ -98,14 +101,22 @@ export function pendingMediaWaits(events: readonly TaskEvent[] = []): Set<string
   return waits;
 }
 
+/** The recordings a call reads: its mediaId, or the mediaIds of a read of the same range on several. */
+export function inputMediaIds(input: unknown): string[] {
+  if (!input || typeof input !== "object") return [];
+  const { mediaId, mediaIds } = input as { mediaId?: unknown; mediaIds?: unknown };
+  const ids = Array.isArray(mediaIds) ? mediaIds : [mediaId];
+  return ids.filter((id): id is string => typeof id === "string");
+}
+
 /** The media work this tool call is collecting, when that work is still being prepared. */
 export function waitingFor(event: TaskEvent, waits: ReadonlySet<string>): string | undefined {
   if (event.type !== "tool" || !waits.size) return;
   const wait = waitTools[toolName(event)];
-  const input = event.data?.input;
-  const mediaId = input && typeof input === "object" && "mediaId" in input ? input.mediaId : undefined;
-  const key = waitKey(wait, mediaId);
-  return key && waits.has(key) ? wait : undefined;
+  return inputMediaIds(event.data?.input).some(mediaId => {
+    const key = waitKey(wait, mediaId);
+    return key && waits.has(key);
+  }) ? wait : undefined;
 }
 
 function toolLabel(name: string, event: TaskEvent): string | undefined {

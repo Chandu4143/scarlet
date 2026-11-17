@@ -17,7 +17,10 @@ it("installs read indexes on a populated library and keeps cached words current 
   migrate(db);
   const version = db.pragma("user_version", { simple: true });
   const repos = createRepos(db);
-  repos.projects.insert({ ...createProject("Legacy transcript"), id: "p" });
+  // Populate this older library using the columns it had before the current engine opens it.
+  const project = createProject("Legacy transcript");
+  db.prepare("INSERT INTO projects (id, name, settings, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .run("p", project.name, JSON.stringify(project.settings), project.createdAt, project.updatedAt);
   repos.tasks.put({ id: "task", projectId: "p", kind: "edit", agent: "codex", state: "done", context: {}, changeIds: [],
     instruction: "First cut", createdBy: { type: "human", name: "Editor" }, question: null, summary: null, hostId: null });
   const document = (text: string) => ({ id: "t", mediaId: "mic", projectId: "p", segments: [{ id: "s", start: 0, end: 1, text, words: [] }] });
@@ -99,5 +102,22 @@ it("releases an event-based status wait on cancellation and reads peer-owned wor
     saveTask(ctx, { ...task, state: "cancelled" });
     expect(await waiting).toMatchObject({ task: { state: "cancelled" }, waited: true });
     expect(ctx.bus.listenerCount("ws")).toBe(before);
+  } finally { await ctx.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+it("keeps a long recording's transcript read, rather than reading it whole again for every page", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scarlet-long-transcript-"));
+  const { ctx } = createApp({ dataDir: dir, env: {}, log() {} });
+  try {
+    const project = ctx.repos.projects.insert(createProject("Long"));
+    const media = ctx.repos.projects.putMedia(project.id, { id: "mic", path: "mic.wav", kind: "audio", name: "Mic", transcriptId: "t" }, "ready");
+    // About as long, saved, as the words of two and a half hours of talk.
+    const segments = Array.from({ length: 2000 }, (_, i) => ({ id: `s${i}`, start: i, end: i + 1, text: "word ".repeat(800), words: [] }));
+    ctx.repos.transcripts.put({ id: "t", mediaId: media.id, projectId: project.id, segments });
+    const reader = transcriptReader(ctx);
+    const read = () => reader.read({ ...media, projectId: project.id }, null, null, false);
+    const first = read();
+    expect(first?.segments).toHaveLength(2000);
+    expect(read()).toBe(first);
   } finally { await ctx.close(); await rm(dir, { recursive: true, force: true }); }
 });

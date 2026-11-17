@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { QUIET_PEAK, QUIET_RMS } from "@scarlet/mcp/gap-sound";
+import { speechActivityOf } from "@scarlet/render";
 import type { TimeRange, TranscriptSegment } from "@scarlet/timeline";
 import { humanDuration } from "../logText.js";
 import { extractWav } from "../render/ffmpeg.js";
@@ -8,9 +10,9 @@ import { AnalysisCache } from "../services/analysisCache.js";
 import { audioLane, type AudioLane, type AudioWork } from "../services/audioWork.js";
 import {
   alignGroup, applyTimings, alignmentGroups, CTC_LETTERS, SPANISH_CTC_LETTERS, FRAME_SAMPLES, framesFor, groupLabels, logSoftmax, MIN_SCORE,
-  planChunks, round, SAMPLE_RATE, stitchChunks, type AlignWord, type Emissions, type WordTiming,
+  planChunks, round, SAMPLE_RATE, stitchChunks, unplacedGaps, type AlignWord, type Emissions, type SoundIn, type WordTiming,
 } from "./ctcAlign.js";
-import { audioWorker } from "./audioWorker.js";
+import { audioWorker, type AudioRequest } from "./audioWorker.js";
 import { EmissionFile } from "./emissions.js";
 import { LocalWhisperModel } from "./localModel.js";
 import { loadRuntime, webgpuAvailable, withInference, type Sessions } from "./uhm.js";
@@ -28,6 +30,14 @@ const spanishWeights = {
   url: "https://huggingface.co/parseh/aligner-es/resolve/d2b70028033dac453897da0cafaa98ce3a6121b9/model.int8.onnx",
   size: 356293089, sha256: "6531e09eb1646c7789e90f7d606c23e533e8570c3e6983ae99c0c4a5dfaee775",
 };
+/** What aligning one language takes: its model's letters, its output classes (five special ones first), and what its
+ * emission store adds to the name of the recording's store. */
+interface AlignLanguage { letters: string; classes: number; storeSuffix: string }
+const ENGLISH: AlignLanguage = { letters: CTC_LETTERS, classes: 5 + CTC_LETTERS.length, storeSuffix: "" };
+const SPANISH: AlignLanguage = { letters: SPANISH_CTC_LETTERS, classes: 5 + SPANISH_CTC_LETTERS.length,
+  storeSuffix: `.es-${spanishWeights.sha256.slice(0, 8)}.bin` };
+/** A recording's emission store for each language it can be aligned in is the store's own path with one of these added. */
+export const EMISSION_STORE_SUFFIXES: readonly string[] = [ENGLISH, SPANISH].map(language => language.storeSuffix);
 /**
  * The feature encoder's strided convolutions, which ONNX Runtime 1.22's WebGPU path computes wrongly (any one of
  * them on the GPU changed the top letter in 2,379 of 5,996 frames). With these six on the CPU and the rest of the
@@ -39,15 +49,20 @@ const WEBGPU_CPU_NODES = [1, 2, 3, 4, 5, 6].map(layer => `/wav2vec2/feature_extr
 const GPU_LOGIT_TOLERANCE = 0.05, GPU_FLIP_TOLERANCE = 0.001;
 
 /** Bump with the model or the algorithm so cached word-timed results are rebuilt. */
-export const alignmentVersion = 4;
+export const alignmentVersion = 5;
 /** Audio searched on each side of a run's Whisper times. */
 const MARGIN = 0.5;
+/** Words of the next run read after a run's own, enough to cover the margin's half second of speech. */
+const CONTEXT_WORDS = 4;
 /** Seconds of audio one worker aligns before yielding its turn. */
 const BATCH_SECONDS = 300;
 /**
- * The same for a recording a dialogue pass is reading. A scan page advances 58 s and runs between two turns, so a
- * turn covers more than a page (runs are at most 30 s, so 90 to 120 s): alignment stays ahead of the pages the
- * pass reads, the first turn included, and no page waits longer than one short turn.
+ * The same while a dialogue pass reads any recording. A scan page advances 58 s and runs between two turns, so a
+ * turn covers more than a page (runs are at most 30 s, so 90 to 120 s): alignment of the recording read stays ahead
+ * of the pages the pass reads, the first turn included, and no page waits longer than one short turn. Another
+ * recording's alignment takes these turns too: on 2026-11-16 a pass's pages waited 1 to 1¾ minutes each for the
+ * five-minute turn of a transcript under way in the background. Turn boundaries can move a word edge by a frame, in
+ * about 0.3% of edges, so a transcript aligned during a pass can differ that much from one aligned without.
  */
 const SHARED_BATCH_SECONDS = 120;
 
@@ -57,13 +72,17 @@ const SHARED_BATCH_SECONDS = 120;
  * recording and span `duration`, and the worker's audio is then the whole recording, read only for windows the
  * store lacks.
  */
-export interface AlignRequest { language?: "es"; measure?: TimeRange[]; groups: Array<{ start: number; end: number; words: AlignWord[] }>; after?: number;
+export interface AlignRequest { language?: "es"; measure?: TimeRange[];
+  /** `next`: the first words of the run after this one, read only as context (alignGroup). */
+  groups: Array<{ start: number; end: number; words: AlignWord[]; next?: AlignWord[] }>; after?: number;
   store?: { file: string; offset: number; duration?: number } }
 /** Where a recording's emissions are kept, for audio that starts `offset` seconds into it and lasts `duration`
  * (by default, the whole recording). `wav` decodes the whole recording (16 kHz mono, as extractWav writes it) when
  * a window has to be inferred. */
 export interface EmissionSource { file: string; offset?: number; duration?: number; wav: () => Promise<string> }
 export type AlignResponse = Array<Array<WordTiming | null>>;
+type DispatchAlignment = (message: Extract<AudioRequest, { kind: "align" }>,
+  options: { signal: AbortSignal; onProgress?: (fraction: number) => void }) => Promise<AlignResponse>;
 
 export interface AlignmentCheckpoint {
   /** End of the last confidently placed word in source seconds. */
@@ -102,7 +121,8 @@ export class WordAligner {
   private readonly spanishModel: LocalWhisperModel;
   private readonly turns = new AnalysisCache<AlignResponse>(() => 0, 0, 1);
 
-  constructor(directory: string) {
+  constructor(directory: string, private readonly dispatch: DispatchAlignment = (message, opts) =>
+    audioWorker.request<AlignResponse>(message, opts)) {
     this.model = new LocalWhisperModel(directory, weights);
     this.spanishModel = new LocalWhisperModel(directory, spanishWeights);
   }
@@ -114,7 +134,7 @@ export class WordAligner {
     const request = `${source.file}.${randomUUID()}.part`;
     try {
       await writeFile(request, JSON.stringify({ groups: [], measure: ranges, store: { file: source.file, offset: 0 } } satisfies AlignRequest));
-      await audioWorker.request({ kind: "align", wav, model, request }, { signal });
+      await this.dispatch({ kind: "align", wav, model, request }, { signal });
     } finally { await rm(request, { force: true }); }
   }
 
@@ -129,10 +149,8 @@ export class WordAligner {
     opts.signal.throwIfAborted();
     if (!alignsLanguage(opts.language)) return segments;
     const spanish = isSpanish(opts.language);
-    const alphabet = spanish ? SPANISH_CTC_LETTERS : CTC_LETTERS;
-    const classes = 5 + alphabet.length;
-    const emissions = spanish && opts.emissions
-      ? { ...opts.emissions, file: `${opts.emissions.file}.es-${spanishWeights.sha256.slice(0, 8)}.bin` } : opts.emissions;
+    const { letters, classes, storeSuffix } = spanish ? SPANISH : ENGLISH;
+    const emissions = opts.emissions && { ...opts.emissions, file: opts.emissions.file + storeSuffix };
     const words = segments.flatMap(s => s.words);
     const { resume } = opts;
     const through = resume?.through ?? 0;
@@ -151,7 +169,7 @@ export class WordAligner {
     }
     const nextWord = hasCursor ? cursor : fixedPrefix;
     const groups = alignmentGroups(segments, undefined, nextWord);
-    if (!groups.some(g => groupLabels(g.words, alphabet).spelled)) return segments;
+    if (!groups.some(g => groupLabels(g.words, letters).spelled)) return segments;
     const timings: Array<WordTiming | undefined> = [];
     let after = through > 0 ? through : undefined;
     // Progress is how far into the speech alignment has reached. A turn covers up to five minutes of speech,
@@ -166,19 +184,29 @@ export class WordAligner {
       opts.onProgress?.(reported);
     };
     if (nextWord > 0) report(resume?.fraction ?? reached(0));
+    // Words the aligner could not place go on the sound between their placed neighbors, measured once per gap.
+    const heard = new Map<string, TimeRange[]>();
+    const settle = async (whole: boolean) => {
+      const gaps = unplacedGaps(segments, timings, MIN_SCORE, fixedPrefix, whole);
+      const sound = gaps.length ? await soundIn(wav, gaps, heard, opts.signal) : undefined;
+      return applyTimings(segments, timings, MIN_SCORE, fixedPrefix, sound, whole);
+    };
     for (let first = 0; first < groups.length;) {
       await opts.hold?.();
       opts.signal.throwIfAborted();
       const { lane } = opts;
-      // Read each turn: a pass can start reading the recording while its transcript is under way.
+      // Read each turn: a pass can start reading the recording, or another one, while its transcript is under way.
       const shared = lane?.lane.focusedOn(lane.work.mediaId) ?? false;
-      const seconds = shared ? SHARED_BATCH_SECONDS : BATCH_SECONDS;
+      const seconds = shared || lane?.lane.reading() ? SHARED_BATCH_SECONDS : BATCH_SECONDS;
       let last = first + 1;
       while (last < groups.length && groups[last]!.end - groups[first]!.start <= seconds) last++;
       const batch = groups.slice(first, last);
       const turn = async (signal: AbortSignal) => {
         const model = await (spanish ? this.spanishModel : this.model).get(signal);
-        const runs = batch.map(({ start, end, words }) => ({ start, end, words }));
+        const runs = batch.map(({ start, end, words }, i) => {
+          const next = groups[first + i + 1]?.words.slice(0, CONTEXT_WORDS);
+          return { start, end, words, ...(next?.length && { next }) };
+        });
         // The recording is decoded only when the store lacks a window these words need.
         const audio = !emissions ? wav : await storeCovers(emissions, runs, classes) ? "" : await emissions.wav();
         // Beside the store the request ends in .part, which the leftover sweep clears from a project's folder.
@@ -187,7 +215,7 @@ export class WordAligner {
           await writeFile(request, JSON.stringify({ groups: runs, after, ...(spanish && { language: "es" as const }),
             ...(emissions && { store: { file: emissions.file, offset: emissions.offset ?? 0, duration: emissions.duration } }) } satisfies AlignRequest));
           const from = reached(first), to = last >= groups.length ? 1 : reached(last);
-          return await audioWorker.request<AlignResponse>({ kind: "align", wav: audio, model, request }, { signal,
+          return await this.dispatch({ kind: "align", wav: audio, model, request }, { signal,
             onProgress: done => { if (done >= 0 && done <= 1) report(from + (to - from) * done); } });
         } finally { await rm(request, { force: true }); }
       };
@@ -202,11 +230,11 @@ export class WordAligner {
       report(first >= groups.length ? 1 : reached(first));
       if (first < groups.length && opts.onTurn) {
         const checkpoint = { through: after ?? 0, nextWord: groups[first]!.index[0]!, fraction: reported };
-        opts.onTurn(applyTimings(segments, timings, MIN_SCORE, fixedPrefix), checkpoint.through, checkpoint);
+        opts.onTurn(await settle(false), checkpoint.through, checkpoint);
       }
     }
     opts.onPlaced?.(timings.filter(t => t && t.score >= MIN_SCORE && t.end >= t.start).length, words.length - nextWord);
-    return applyTimings(segments, timings, MIN_SCORE, fixedPrefix);
+    return settle(true);
   }
 }
 
@@ -219,8 +247,9 @@ function recordingAligner(ctx: { paths: { root: string } }) {
   return aligner;
 }
 
+/** A request is waiting on this measurement now, so it goes ahead of background work in the audio lane. */
 export function measureRecordingWords(ctx: { paths: { root: string } }, mediaId: string, source: EmissionSource, ranges: TimeRange[], signal: AbortSignal) {
-  return audioLane(ctx).run({ mediaId, kind: "page" }, signal, () => recordingAligner(ctx).measure(source, ranges, signal));
+  return audioLane(ctx).run({ mediaId, kind: "page", asked: true }, signal, () => recordingAligner(ctx).measure(source, ranges, signal));
 }
 
 /**
@@ -247,7 +276,7 @@ export async function alignTranscript(ctx: { paths: { root: string; tmp: string 
     emissions?: string; resume?: AlignmentCheckpoint;
     /** Asked before each turn: something this alignment should let finish first, or nothing. */
     hold?: () => Promise<unknown> | undefined;
-    onProgress?: (fraction: number) => void; onTurn?: AlignmentTurn }) {
+    onProgress?: (fraction: number) => void; onTurn?: AlignmentTurn; onFailure?: () => void }) {
   const { source, language, segments, signal, work, onProgress, hold } = input;
   if (!alignsLanguage(language) || !segments.some(s => s.words.length)) return segments;
   let placed = segments;
@@ -266,6 +295,7 @@ export async function alignTranscript(ctx: { paths: { root: string; tmp: string 
   } catch (error) {
     signal.throwIfAborted();
     ctx.log(`[align] ${basename(source)}: ${(error as Error).message}`);
+    input.onFailure?.();
     return placed;
   } finally {
     if (!input.wav) await rm(wav, { force: true });
@@ -318,6 +348,77 @@ export async function openWav(path: string) {
   }
 }
 
+/** Frames that decide where a recording sounds, as in its waveform. */
+const SOUND_FRAME = 0.01;
+/** Quiet this short between sounds is a stop consonant's closure or a catch of breath inside speech. */
+const CLOSURE_SECONDS = 0.08;
+/** Sound this short is a click, not a word. */
+const BLIP_SECONDS = 0.05;
+/** Voice detection warms up on the audio just before a window, and reads at most a minute at once. */
+const VOICE_WARMUP = 0.3, VOICE_WINDOW = 60;
+
+/**
+ * Where `wav` sounds at speaking level inside each gap: quiet is QUIET_RMS, QUIET_PEAK and no voice detected. Cut edges
+ * also keep off sound nearer the room's own floor (quietRms); a word doesn't go there, since nobody speaks that softly,
+ * and the faint noise of a room would take the words Whisper invented over a silence. Gaps measured before are read from `heard`. A gap that can't be measured, for audio that
+ * can't be read, has no sound reading, and its words keep the aligner's older fallback.
+ */
+async function soundIn(wav: string, gaps: readonly TimeRange[], heard: Map<string, TimeRange[]>, signal: AbortSignal): Promise<SoundIn> {
+  const key = (gap: TimeRange) => `${gap.start}:${gap.end}`;
+  const missing = gaps.filter(gap => !heard.has(key(gap)));
+  const audio = missing.length ? await openWav(wav).catch(() => undefined) : undefined;
+  if (audio) {
+    try {
+      for (const gap of missing) {
+        signal.throwIfAborted();
+        heard.set(key(gap), await soundRuns(audio, gap));
+      }
+    } catch {
+      // The words keep the older fallback rather than losing the alignment.
+      signal.throwIfAborted();
+    } finally { await audio.close(); }
+  }
+  return gap => heard.get(key(gap));
+}
+
+async function soundRuns(audio: Awaited<ReturnType<typeof openWav>>, gap: TimeRange): Promise<TimeRange[]> {
+  const step = Math.round(SOUND_FRAME * SAMPLE_RATE);
+  const first = Math.floor(gap.start / SOUND_FRAME), last = Math.min(Math.ceil(gap.end / SOUND_FRAME), Math.floor(audio.samples / step));
+  if (last <= first) return [];
+  const origin = Math.max(0, first * SOUND_FRAME - VOICE_WARMUP);
+  const samples = await audio.read(Math.round(origin * SAMPLE_RATE), last * step);
+  const pcm = Int16Array.from(samples, v => Math.max(-32768, Math.min(32767, Math.round(v * 32768))));
+  const voiced = new Uint8Array(last - first);
+  for (let from = first * SOUND_FRAME; from < last * SOUND_FRAME; from += VOICE_WINDOW) {
+    const to = Math.min(last * SOUND_FRAME, from + VOICE_WINDOW), start = Math.max(origin, from - VOICE_WARMUP);
+    const at = Math.round((start - origin) * SAMPLE_RATE);
+    for (const span of await speechActivityOf(pcm.subarray(at, Math.round((to - origin) * SAMPLE_RATE)), start, from, to)) {
+      for (let f = Math.max(first, Math.floor(span.start / SOUND_FRAME)); f < Math.min(last, Math.ceil(span.end / SOUND_FRAME)); f++) voiced[f - first] = 1;
+    }
+  }
+  const offset = Math.round(origin * SAMPLE_RATE);
+  const rms = new Float64Array(last - first), peaks = new Float64Array(last - first);
+  for (let f = first; f < last; f++) {
+    let sum = 0, peak = 0;
+    for (let i = f * step - offset; i < (f + 1) * step - offset; i++) {
+      const v = samples[i] ?? 0;
+      sum += v * v;
+      peak = Math.max(peak, Math.abs(v));
+    }
+    rms[f - first] = Math.sqrt(sum / step);
+    peaks[f - first] = peak;
+  }
+  const runs: TimeRange[] = [];
+  for (let f = first; f < last; f++) {
+    if (!voiced[f - first] && rms[f - first]! <= QUIET_RMS && peaks[f - first]! <= QUIET_PEAK) continue;
+    const start = Math.max(gap.start, f * SOUND_FRAME), end = Math.min(gap.end, (f + 1) * SOUND_FRAME);
+    const previous = runs.at(-1);
+    if (previous && start - previous.end < CLOSURE_SECONDS) previous.end = end;
+    else runs.push({ start, end });
+  }
+  return runs.filter(r => r.end - r.start >= BLIP_SECONDS);
+}
+
 /** The audio each group's search reads, a margin either side of its Whisper times, joined where runs nearly touch. */
 function searchRegions(groups: AlignRequest["groups"], duration: number) {
   const order = groups.map((_, i) => i).sort((a, b) => groups[a]!.start - groups[b]!.start);
@@ -351,13 +452,13 @@ async function storeCovers(source: EmissionSource, groups: AlignRequest["groups"
 export async function runAlignWorker(wav: string, model: string, requestFile: string, onProgress?: (done: number) => void,
   sessions?: Sessions): Promise<AlignResponse> {
   const { groups, after, store, measure, language } = JSON.parse(await readFile(requestFile, "utf8")) as AlignRequest;
-  const alphabet = language === "es" ? SPANISH_CTC_LETTERS : CTC_LETTERS;
-  if (store) return alignFromStore(wav, model, groups, after, store, alphabet, onProgress, sessions, measure);
+  const lang = language === "es" ? SPANISH : ENGLISH;
+  if (store) return alignFromStore(wav, model, groups, after, store, lang, onProgress, sessions, measure);
   // Before the audio is opened: a missing runtime throws here, with no file left open.
   const ort = loadRuntime();
   const audio = await openWav(wav);
   // On the GPU when there is one. A run that fails there starts again on the CPU, so it builds its result afresh.
-  try { return await withAligner(ort, model, alphabet, sessions, async readWindow => {
+  try { return await withAligner(ort, model, lang, sessions, async readWindow => {
     const out: AlignResponse = groups.map(g => g.words.map(() => null));
     const regions = searchRegions(groups, audio.samples / SAMPLE_RATE);
     let previousEnd = after ?? -Infinity;
@@ -367,9 +468,9 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
       const from = Math.floor(region.start * SAMPLE_RATE / FRAME_SAMPLES) * FRAME_SAMPLES;
       const samples = await audio.read(from, Math.ceil(region.end * SAMPLE_RATE));
       const length = region.end - region.start;
-      const emissions = await emit(readWindow, samples, 5 + alphabet.length, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
+      const emissions = await emit(readWindow, samples, lang.classes, part => onProgress?.(seconds > 0 ? (emitted + length * part) / seconds : 1));
       emitted += length;
-      previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out, alphabet);
+      previousEnd = place({ ...emissions, origin: from / SAMPLE_RATE }, groups, region.groups, previousEnd, out, lang.letters);
     }
     return out;
   }); } finally {
@@ -381,7 +482,7 @@ export async function runAlignWorker(wav: string, model: string, requestFile: st
 function place(em: Emissions, groups: AlignRequest["groups"], indices: number[], previousEnd: number, out: AlignResponse, alphabet: string) {
   for (const g of indices) {
     const group = groups[g]!;
-    const timings = alignGroup(em, group.words, Math.max(group.start - MARGIN, previousEnd), group.end + MARGIN, alphabet);
+    const timings = alignGroup(em, group.words, Math.max(group.start - MARGIN, previousEnd), group.end + MARGIN, alphabet, group.next);
     timings.forEach((t, i) => {
       if (!t) return;
       out[g]![i] = { start: round(t.start), end: round(t.end), score: round(t.score) };
@@ -396,8 +497,8 @@ function place(em: Emissions, groups: AlignRequest["groups"], indices: number[],
  * recording, and saved; when it has them all, no audio is read and the model is never loaded.
  */
 async function alignFromStore(wav: string, model: string, groups: AlignRequest["groups"], after: number | undefined,
-  { file, offset, duration }: NonNullable<AlignRequest["store"]>, alphabet: string, onProgress?: (done: number) => void, sessions?: Sessions, measure?: TimeRange[]): Promise<AlignResponse> {
-  const classes = 5 + alphabet.length;
+  { file, offset, duration }: NonNullable<AlignRequest["store"]>, lang: AlignLanguage, onProgress?: (done: number) => void, sessions?: Sessions, measure?: TimeRange[]): Promise<AlignResponse> {
+  const { classes } = lang;
   const audio = wav ? await openWav(wav) : undefined;
   let store: EmissionFile | null | undefined;
   try {
@@ -412,7 +513,7 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
       if (!audio) throw new Error("The recording's alignment store lacks audio it was not given.");
       const ort = loadRuntime();
       // Save each verified window as it finishes. CPU fallback resumes at the first missing window.
-      await withAligner(ort, model, alphabet, sessions, async readWindow => {
+      await withAligner(ort, model, lang, sessions, async readWindow => {
         for (const [done, index] of missing.entries()) {
           if (saved.missing(saved.chunks[index]!.keep[0], saved.chunks[index]!.keep[1]).includes(index)) {
             const chunk = saved.chunks[index]!;
@@ -431,7 +532,7 @@ async function alignFromStore(wav: string, model: string, groups: AlignRequest["
       const [from, to] = region.frames;
       if (to <= from) continue;
       const em: Emissions = { logProbs: await saved.read(from, to), frames: to - from, origin: from * FRAME_SAMPLES / SAMPLE_RATE - offset };
-      previousEnd = place(em, groups, region.groups, previousEnd, out, alphabet);
+      previousEnd = place(em, groups, region.groups, previousEnd, out, lang.letters);
     }
     onProgress?.(1);
     return out;
@@ -463,15 +564,15 @@ type Session = Awaited<ReturnType<Runtime["InferenceSession"]["create"]>>;
 type ReadWindow = (part: Float32Array) => Promise<Float32Array>;
 
 /** Check the first accelerated window against this model's CPU output before its timings or emissions are used. */
-function withAligner<T>(ort: Runtime, model: string, alphabet: string, sessions: Sessions | undefined,
+function withAligner<T>(ort: Runtime, model: string, lang: AlignLanguage, sessions: Sessions | undefined,
   work: (readWindow: ReadWindow) => Promise<T>) {
-  const classes = 5 + alphabet.length;
-  const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: alphabet === CTC_LETTERS ? WEBGPU_CPU_NODES : undefined } : {};
+  const { classes } = lang;
+  const gpu = sessions && webgpuAvailable() ? { gpu: "webgpu" as const, cpuNodes: lang === ENGLISH ? WEBGPU_CPU_NODES : undefined } : {};
   return withInference(ort, model, async (session, provider) => {
     let verified = sessions?.verified.has(model) ?? false;
     return work(async part => {
       const logits = await infer(ort, session, part, classes);
-      if (!verified && (provider === "webgpu" || (provider === "dml" && alphabet === SPANISH_CTC_LETTERS))) {
+      if (!verified && (provider === "webgpu" || (provider === "dml" && lang === SPANISH))) {
         const expected = await withInference(ort, model, cpu => infer(ort, cpu, part, classes), { sessions, gpu: false });
         const { worst, flips } = compareLogits(expected, logits, classes);
         if (!(worst <= GPU_LOGIT_TOLERANCE && flips <= GPU_FLIP_TOLERANCE)) {

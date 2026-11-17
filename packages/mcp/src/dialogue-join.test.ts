@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createProject, emptyTimeline, makeMediaClip, type MediaAsset } from "@scarlet/timeline";
-import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, checkDialogueJoin, clipEdgeSound, edgeOnFrame, joinAudio, joinEvidence, padEdge, pauseCutRange, wordCutRange, type JoinPage } from "./dialogue-join.js";
+import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, checkDialogueJoin, clipEdgeSound, edgeOnFrame, quietFrameNote, soundBesideEdge, joinAudio, joinEvidence, padEdge, pauseCutRange, wordCutRange, type JoinPage } from "./dialogue-join.js";
 
 const words = [
   { start: 1, end: 1.38, text: "finish" }, { start: 1.8, end: 2.2, text: "first" },
@@ -21,6 +21,33 @@ function fixture() {
 }
 
 describe("native retake boundaries", () => {
+  it("moves an edge in running speech onto the trough the recording shows between the words, wherever their timings say", () => {
+    // “this game let me throw them”, said in one breath, then a pause and “next”. The transcript ends “game” at 1.56 s,
+    // but the level between “game” and “let” falls at 1.49–1.52 s.
+    const said = [{ start: 1, end: 1.3, text: "this" }, { start: 1.3, end: 1.56, text: "game" }, { start: 1.56, end: 1.7, text: "let" },
+      { start: 1.7, end: 1.8, text: "me" }, { start: 1.8, end: 2.1, text: "throw" }, { start: 2.1, end: 2.4, text: "them" }, { start: 3.6, end: 3.9, text: "next" }];
+    const talk = [{ start: 1, end: 2.4 }, { start: 3.6, end: 3.9 }];
+    const at = (trough: number): JoinPage => {
+      const rms = Array.from({ length: 500 }, (_, i) => i >= 149 && i <= 151 ? trough : talk.some(v => v.start <= i/100 && i/100 < v.end) ? .12 : .001);
+      return { mediaId: "mic", start: 0, end: 5, edges: joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: talk }) };
+    };
+    const { p, tl } = fixture();
+    // Cutting “let me throw them” and the pause, from just inside “let”.
+    const placed = checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.003)]);
+    expect(placed).toMatchObject({ status: "snapped", start: 1.5, end: 3.5 });
+    expect(placed.reason).toContain("start moved 0.07 s earlier onto the trough between the words in the recording (-50 dBFS");
+    // A trough no lower than a sibilant's hiss is nowhere to cut.
+    expect(checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.005)]).status).toBe("review");
+    // The trough is where the sound parts, not a licence to change which words go: an edge asked for after “let”
+    // (1.7 s) has that trough a fifth of a second back, across the whole word, and stays where it was asked.
+    expect(checkDialogueJoin(tl, p, { start: 1.7, end: 3.5 }, [at(.003)])).toMatchObject({ status: "review", start: 1.7 });
+    // A word reference reads the edge from the words' timings, which reach only a little way into the kept “game”: it
+    // sees the trough's wall, not its floor, and leaves the edge to the check above rather than saving it there.
+    const page = at(.003);
+    const cut = wordCutRange(said, 2, 5, () => page.edges);
+    expect(cut.dips).toEqual([]);
+    expect(cut.problems.join(" ")).toContain("No measured silence between “game” and “let”");
+  });
   it("only moves inward, past complete edge words, onto project frames in quiet audio", () => {
     const { p, tl } = fixture();
     const fixed = checkDialogueJoin(tl,p,{start:1.15,end:3.6},[page]);
@@ -209,6 +236,27 @@ describe("native retake boundaries", () => {
     expect(cut.room.start).toEqual({ start: expect.closeTo(1.44), end: expect.closeTo(1.52) });
   });
 
+  it("starts a cut in the silence after the kept word when the first removed word has no sound of its own", () => {
+    // “period.” then a “Thank” nobody said, which the aligner leaves with no time right after it, then a long silence
+    // and “you” two seconds on. The kept word's tail dips 40 ms before it ends.
+    const said = [{ start: 1, end: 1.5, text: "period." }, { start: 1.5, end: 1.5, text: "Thank" }, { start: 3.5, end: 3.8, text: "you." }, { start: 4.4, end: 4.8, text: "And" }];
+    const sounds = [{ start: 1, end: 1.5 }, { start: 3.5, end: 3.8 }, { start: 4.4, end: 4.8 }];
+    const rms = Array.from({ length: 250 }, (_, i) => i === 73 ? .0008 : sounds.some(v => v.start <= i / 50 && i / 50 < v.end) ? .1 : .0002);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds });
+    const cut = wordCutRange(said, 1, 2, () => edges);
+    expect(cut.dips).toEqual([]);
+    expect(cut.start).toBeCloseTo(1.5 + AIR_AFTER_SPEECH);
+  });
+
+  it("takes no breath over a very quiet room for a valley an edge can sit in", () => {
+    // Room tone at -80 dBFS, and a breath at -55 dBFS while the voice detector is still on: under the fixed valley level.
+    const said = [{ start: 1, end: 1.5, text: "quota." }, { start: 2.5, end: 3, text: "I" }];
+    const rms = Array.from({ length: 200 }, (_, i) => (i >= 50 && i < 75) || (i >= 125 && i < 150) ? .1 : i >= 78 && i < 84 ? .0018 : .0001);
+    const edges = joinEvidence(said, { from: 0, to: 4, peaks: rms, rms, speechActivity: [{ start: 1, end: 1.7 }, { start: 2.5, end: 3 }] })!;
+    expect(edges.valleys.some(v => v.start < 1.6 && 1.6 < v.end)).toBe(false);
+    expect(edges.valleys.some(v => v.start <= 1.52 && 1.54 <= v.end)).toBe(true);
+  });
+
   it("ends a cut where a kept word sounds, when the transcript times it in the pause before", () => {
     // “…got you. <1.2 s> Alright, so”, transcribed “got you all <1.2 s> right so”: the “all” of “alright” timed in the
     // quiet straight after “you”. Cutting “got you” used to end before that “all” and keep the whole pause.
@@ -257,21 +305,22 @@ describe("native retake boundaries", () => {
     const check = checkDialogueJoin(tl, p, { start: 3.97, end: 4.9 }, pages);
     expect(check.status).toBe("unchanged");
     expect(check.start).toBeCloseTo(119 / 30);
+    expect(quietFrameNote({ start: 3.97, end: 4.9 }, check)).toBe("Moved the start from 3.970 s to 3.967 s, onto a quiet frame: the recording is quiet at the edge, and the whole frame it would be saved on has sound.");
+    expect(quietFrameNote({ start: 1.6, end: 2.255 }, { start: 1.6, end: 2.255 })).toBeUndefined();
   });
 
-  it("moves an edge given in quiet onto a quiet frame when the frame the engine rounds to has the next word's sound", () => {
-    const { p, tl } = fixture();
-    // “one”, a pause, “next”, a pause, “end” at 4.0 s.
-    const said = [{ start: 1, end: 1.4, text: "one" }, { start: 2.32, end: 2.8, text: "next" }, { start: 4, end: 4.5, text: "end" }];
-    const rms = Array.from({ length: 250 }, (_, i) => (i >= 50 && i < 70) || (i >= 116 && i < 140) || (i >= 200 && i < 225) ? .12 : .001);
-    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: 1, end: 1.4 }, { start: 2.32, end: 2.8 }, { start: 4, end: 4.5 }] });
-    const pages: JoinPage[] = [{ mediaId: "mic", start: 0, end: 5, edges }];
-    // An end at 2.255 s is rounded down to frame 67 (2.233 s), which is quiet too: it stays as given.
-    expect(checkDialogueJoin(tl, p, { start: 1.6, end: 2.255 }, pages)).toMatchObject({ status: "unchanged", start: 1.6, end: 2.255 });
-    // A start at 3.97 s is rounded up to frame 120 (4.0 s), where “end” begins: it goes on frame 119, inside the quiet.
-    const check = checkDialogueJoin(tl, p, { start: 3.97, end: 4.9 }, pages);
-    expect(check.status).toBe("unchanged");
-    expect(check.start).toBeCloseTo(119 / 30);
+  it("counts the sound in the level bucket an edge falls in on the side most of the bucket is on", () => {
+    // One loud 20 ms bucket, 1.00–1.02 s.
+    const rms = Array.from({ length: 250 }, (_, i) => i === 50 ? .12 : .001);
+    const pages: JoinPage[] = [{ mediaId: "mic", start: 0, end: 5, edges: joinEvidence([], { from: 0, to: 5, peaks: rms, rms, speechActivity: [] }) }];
+    // A cut starting at 1.015 s keeps most of that bucket: its sound is kept, not removed beside the edge.
+    expect(soundBesideEdge(pages, "mic", 0, 1.015, "out", .06)).toBeUndefined();
+    // Starting at 1.005 s, most of the bucket goes with the cut.
+    expect(soundBesideEdge(pages, "mic", 0, 1.005, "out", .06)).toBe(0);
+    // And the same for a cut's end: at 1.005 s most of the bucket plays after it, at 1.015 s most of it is removed.
+    expect(soundBesideEdge(pages, "mic", 0, 1.005, "in", .06)).toBeUndefined();
+    expect(soundBesideEdge(pages, "mic", 0, 1.015, "in", .06)).toBe(0);
+    expect(soundBesideEdge(pages, "mic", 0, 1.05, "in", .06)).toBeCloseTo(.03);
   });
 
   it("resolves a word range to padded edges in the measured gaps beside it", () => {
@@ -392,5 +441,18 @@ describe("a clip edge in sound", () => {
   it("names a word split through its middle with no quiet in reach", () => {
     expect(edge(2.6, "out")).toMatchObject({ word: "obviously" });
     expect(edge(2.6, "out")).not.toHaveProperty("fragment");
+  });
+
+  it("gives the nearest clean second that plays a split word whole, and the one that leaves it out", () => {
+    // A clip ending inside “obviously” is clean once it ends after the word, or before it begins.
+    const out = edge(2.6, "out")!;
+    expect(out.wholeAt).toBeGreaterThanOrEqual(2.9);
+    expect(edge(out.wholeAt!, "out")).toBeUndefined();
+    expect(out.withoutAt).toBeLessThanOrEqual(2.28);
+    expect(edge(out.withoutAt!, "out")).toBeUndefined();
+    // A clip starting inside it plays it whole from before it begins.
+    const start = edge(2.6, "in")!;
+    expect(start.wholeAt).toBeLessThanOrEqual(2.28);
+    expect(edge(start.wholeAt!, "in")).toBeUndefined();
   });
 });

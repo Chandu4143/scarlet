@@ -1,8 +1,8 @@
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync, renameSync } from "node:fs";
 import { readdir, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { StorageProject, StorageSelection } from "@scarlet/shared";
-import type { Ctx } from "../context.js";
+import { engineIsAlive, type Ctx } from "../context.js";
 import { conflict } from "../errors.js";
 
 export function checkedProjectDir(ctx: Ctx, id: string): string {
@@ -21,17 +21,20 @@ function cacheDir(ctx: Ctx, id: string): string | undefined {
   if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return dir;
 }
 
-export function projectBusy(ctx: Ctx, id: string, expired = false): boolean {
+export function projectBusy(ctx: Ctx, id: string): boolean {
   // Other engine instances also publish their jobs to this database.
   // Trashed projects cannot claim queued work. Preserve it for Restore, but
   // only an actual worker needs to delay permanently removing the project.
-  return !!((!expired && ctx.pending.size) || ctx.db.prepare(`SELECT 1 WHERE
+  if (ctx.projectWorkPending(id) || ctx.db.prepare(`SELECT 1 WHERE
     EXISTS (SELECT 1 FROM renders WHERE project_id=? AND state IN ('queued','running')) OR
     EXISTS (SELECT 1 FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.project_id=?
       AND (t.state IN ('claimed','running') OR (p.deleted_at IS NULL AND t.state IN ('queued','waiting_for_user')))) OR
     EXISTS (SELECT 1 FROM media m JOIN projects p ON p.id=m.project_id
       WHERE m.project_id=? AND m.status NOT IN ('ready','failed')
-      AND (m.ingest_pid IS NOT NULL OR (p.deleted_at IS NULL AND p.media_paused=0)))`).get(id, id, id));
+      AND (m.ingest_pid IS NOT NULL OR (p.deleted_at IS NULL AND p.media_paused=0)))`).get(id, id, id)) return true;
+  const cacheWorkers = ctx.db.prepare(`SELECT DISTINCT r.worker_pid FROM source_cache_requests r
+    JOIN media m ON m.id=r.media_id WHERE m.project_id=? AND r.worker_pid IS NOT NULL`).all(id) as { worker_pid: number }[];
+  return cacheWorkers.some(({ worker_pid }) => engineIsAlive(ctx, worker_pid));
 }
 
 function missingSource(ctx: Ctx, id: string): boolean {
@@ -62,25 +65,47 @@ export async function storageProjects(ctx: Ctx): Promise<StorageProject[]> {
   return result;
 }
 
-export function validateSelection(ctx: Ctx, selected: StorageSelection, expired = false) {
+export function validateSelection(ctx: Ctx, selected: StorageSelection) {
   const current = ctx.db.prepare("SELECT deleted_at FROM projects WHERE id=?").get(selected.id) as { deleted_at: string | null } | undefined;
   if (!current || current.deleted_at !== selected.deletedAt) throw conflict("storage_changed", "The project changed. Rescan storage.");
-  if (projectBusy(ctx, selected.id, expired)) throw conflict("storage_busy", "Scarlet is working. Try again after the current jobs finish.");
+  if (projectBusy(ctx, selected.id)) throw conflict("storage_busy", "Scarlet is working. Try again after the current jobs finish.");
   checkedProjectDir(ctx, selected.id);
   if (!selected.deletedAt && missingSource(ctx, selected.id)) {
     throw conflict("storage_source_missing", "Reconnect missing project media before clearing its cache.");
   }
 }
 
-/** The cached renders `clearSegments` would delete. Read while the selection is checked, so both see the same state. */
+/** A cached render claimed for deletion: no render looks for it under this name. */
+const CLAIMED = ".clearing-";
+
+/**
+ * Claim the cached renders `clearSegments` will delete, by renaming each out of the names renders look for. Called while
+ * the selection is checked, in the same transaction: a render that starts after it finds nothing to reuse and makes
+ * its segment again, instead of reusing one that is then deleted under it. A file that can't be renamed, such as one in
+ * use on Windows, isn't claimed and stays. Claims an earlier clear couldn't delete are picked up again.
+ */
 export function segmentFiles(ctx: Ctx, id: string): string[] {
   const dir = cacheDir(ctx, id);
   if (!dir) return [];
-  return readdirSync(dir, { withFileTypes: true }).filter(file => file.isFile() && segmentName.test(file.name)).map(file => join(dir, file.name));
+  const claimed: string[] = [];
+  for (const file of readdirSync(dir, { withFileTypes: true })) {
+    if (!file.isFile()) continue;
+    if (file.name.startsWith(CLAIMED) && segmentName.test(file.name.slice(CLAIMED.length))) claimed.push(join(dir, file.name));
+    else if (segmentName.test(file.name)) {
+      const target = join(dir, CLAIMED + file.name);
+      try {
+        renameSync(join(dir, file.name), target);
+        claimed.push(target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") ctx.log(`[storage] kept the cached render ${file.name} of ${id}: ${(error as Error).message}`);
+      }
+    }
+  }
+  return claimed;
 }
 
 /**
- * Delete a project's cached renders, listed by `segmentFiles`, outside any transaction and without blocking the engine.
+ * Delete a project's cached renders, claimed by `segmentFiles`, outside any transaction and without blocking the engine.
  * A file that can't be deleted, such as one in use on Windows, stays for the next clear and stops no other.
  */
 export async function clearSegments(ctx: Ctx, id: string, files = segmentFiles(ctx, id)): Promise<void> {

@@ -7,6 +7,8 @@ import { createRepos } from "./repo/index.js";
 import { createApp } from "./app.js";
 import { Db, migrate, openDb } from "./db.js";
 import { startWalCheckpointer } from "./walCheckpointer.js";
+import { foldStrandedPasses, recordLeftOutFootage, retireLeftoverPasses } from "./services/changes.js";
+import { migrateDialogueOperations } from "./services/tasks.js";
 
 let directory: string;
 let db: Db;
@@ -197,6 +199,30 @@ it("recovers first-video format decisions in a library with a newer schema versi
   } finally { reopened.close(); }
 });
 
+it("installs the telemetry revision by name, beside a library whose numbered migration already added it", () => {
+  const file = join(directory, "telemetry.db");
+  const library = openDb(file);
+  const version = library.pragma("user_version", { simple: true }) as number;
+  const revision = () => library.prepare("SELECT telemetry_revision AS n FROM settings WHERE id = 1").get() as { n: number };
+  library.prepare("INSERT INTO settings (id, json) VALUES (1, '{}')").run();
+  // A library that had it from the numbered migration keeps it, its trigger and its count, with no change of version.
+  library.prepare("UPDATE settings SET json = '{\"telemetryEnabled\":false}'").run();
+  expect(revision()).toEqual({ n: 1 });
+  library.close();
+  let again = openDb(file);
+  expect(again.pragma("user_version", { simple: true })).toBe(version);
+  expect(again.prepare("SELECT telemetry_revision AS n FROM settings").get()).toEqual({ n: 1 });
+  // A library at the same number without it, as a checkout's own numbers could leave one, gets it by name.
+  again.exec("DROP TRIGGER telemetry_preference_changed; ALTER TABLE settings DROP COLUMN telemetry_revision;");
+  again.close();
+  again = openDb(file);
+  try {
+    expect(again.pragma("user_version", { simple: true })).toBe(version);
+    again.prepare("UPDATE settings SET json = '{\"telemetryEnabled\":true}'").run();
+    expect(again.prepare("SELECT telemetry_revision AS n FROM settings").get()).toEqual({ n: 1 });
+  } finally { again.close(); }
+});
+
 it("doesn't run a migration again when another engine applied it after the version was read", () => {
   const file = join(directory, "shared.db");
   const first = openDb(file);
@@ -280,4 +306,26 @@ it("backfills only successful transcriptions and preserves them across old write
     olderSave.run(JSON.stringify({ transcriptId: "new" }));
     expect(fields("labelled").lastTranscription).toBeUndefined();
   } finally { library.close(); }
+});
+
+it("finds what the start-up repairs and the export list look for without reading every edit, request or render", async () => {
+  const { ctx } = createApp({ dataDir: join(directory, "engine"), skillsSeedDir: join(directory, "empty-seed"), env: {}, log: () => {} });
+  try {
+    const prepare = vi.spyOn(ctx.db, "prepare");
+    retireLeftoverPasses(ctx);
+    foldStrandedPasses(ctx);
+    recordLeftOutFootage(ctx);
+    migrateDialogueOperations(ctx);
+    ctx.renders.exports();
+    const queries = [...new Set(prepare.mock.calls.map(([sql]) => sql))].filter(sql => /^SELECT json\b.*FROM (changes|tasks|renders)\b/s.test(sql));
+    prepare.mockRestore();
+    // Each begins with an index that holds only the rows of projects with a proposal waiting, or the rows it looks for.
+    expect(queries.map(sql => (ctx.db.prepare("EXPLAIN QUERY PLAN " + sql).all() as { detail: string }[])[0]!.detail)).toEqual([
+      "SEARCH changes USING INDEX changes_project_state (project_id=? AND state=?)",
+      "SEARCH changes USING INDEX changes_state (state=?)",
+      "SCAN changes USING INDEX changes_left_out_unread",
+      "SCAN tasks USING INDEX tasks_dialogue_unset",
+      "SCAN renders USING INDEX renders_export",
+    ]);
+  } finally { await ctx.close(); }
 });

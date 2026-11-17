@@ -106,6 +106,7 @@ export const PLATFORM_KEY = "Mod";
 export const SHORTCUTS: Array<{ keys: string[]; what: string; where: string }> = [
   { keys: [PLATFORM_KEY, ","], what: "Open Settings", where: "Everywhere" },
   { keys: [PLATFORM_KEY, "A"], what: "Select all projects", where: "Projects" },
+  { keys: [PLATFORM_KEY, "F"], what: "Find in skill", where: "Skill Editor" },
   { keys: ["Esc"], what: "Clear the selection", where: "Projects" },
   { keys: ["/"], what: "Choose an editing skill", where: "Start of an edit message" },
   { keys: ["V"], what: "Hold to talk", where: "In a project" },

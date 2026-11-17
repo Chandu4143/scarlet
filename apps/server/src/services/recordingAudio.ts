@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { open, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { speechActivity, speechActivityOf, speechActivityStart } from "@scarlet/render";
 import { extractWav } from "../render/ffmpeg.js";
-import { pcmWavHeader } from "../transcribe/wordAlign.js";
+import { EMISSION_STORE_SUFFIXES, pcmWavHeader } from "../transcribe/wordAlign.js";
 
 type Paths = { paths: { tmp: string; waveforms(projectId: string): string } };
 
@@ -29,10 +30,14 @@ export async function emissionStore(ctx: Paths, projectId: string, file: string,
   return emissionPath(ctx, projectId, await stamp(file, audioStream));
 }
 
-/** Older engines wrote under the import path during transcription and the resolved path during a scan. */
+/**
+ * Every store a recording's emissions can be under: older engines wrote under the import path during transcription
+ * and the resolved path during a scan, and a recording aligned in another language keeps that language's beside it.
+ */
 export async function emissionStorePaths(ctx: Paths, projectId: string, file: string, imported: string, audioStream?: number) {
   const [source, ...identity] = await stamp(file, audioStream);
-  return [...new Set([source, file, imported])].map(path => emissionPath(ctx, projectId, [path, ...identity]));
+  return [...new Set([source, file, imported])].map(path => emissionPath(ctx, projectId, [path, ...identity]))
+    .flatMap(store => EMISSION_STORE_SUFFIXES.map(suffix => store + suffix));
 }
 
 /** How long a recording's decode is kept after its last reader, for the next scan page to find it. */
@@ -138,4 +143,24 @@ function pcmWindows({ wav, samples, data }: Decode): Omit<RecordingAudio, "relea
       await writeFile(target, Buffer.concat([pcmWavHeader(pcm.length), pcm]));
     },
   };
+}
+
+/**
+ * Where a recording's first audio stream holds speech between `from` and `to` (up to a minute), read from the
+ * recording's one decode rather than a decode of the window. A pass asks this of window after overlapping window,
+ * 808 times on one pass, and each decoded its minute again from the source, two at a time: 7 s a call on average.
+ * The stream is the one a window's decode reads (`0:a:0`). A recording that won't decode whole is read by the window.
+ */
+export async function recordingSpeechActivity(ctx: Paths, file: string, from: number, to: number, signal: AbortSignal) {
+  const start = speechActivityStart(from);
+  let recording: RecordingAudio | undefined;
+  try {
+    recording = await recordingWav(ctx, file, signal, 0);
+  } catch {
+    signal.throwIfAborted();
+    return speechActivity(file, from, to, signal);
+  }
+  try {
+    return await speechActivityOf(await recording.pcm(start, to), start, from, to);
+  } finally { recording.release(); }
 }

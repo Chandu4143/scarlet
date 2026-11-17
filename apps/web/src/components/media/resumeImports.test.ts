@@ -84,7 +84,7 @@ it("downloads a link once however often its project reopens, and again after a q
   const saved = localStorage.getItem(SAVED)!;
   // The editor leaves the project and comes back while the link is still downloading.
   await resumeImports("prj", []);
-  expect(importLocalFile).toHaveBeenCalledExactlyOnceWith("prj", link, expect.any(Function), JSON.parse(saved)[0].importId, false);
+  expect(importLocalFile).toHaveBeenCalledExactlyOnceWith("prj", link, expect.any(Function), JSON.parse(saved)[0].importId, false, expect.any(AbortSignal));
   finish();
   await added;
   expect(store.upsertMedia).toHaveBeenCalledExactlyOnceWith("prj", expect.objectContaining({ id: "med_link" }));
@@ -248,7 +248,7 @@ it("keeps a new project's first files saved while another project is on screen, 
   store.current = { id: elsewhere.id, project: elsewhere };
   await resumeImports(project.id, [voice]);
   expect(importLocalFile.mock.calls.map(call => call[1])).toEqual(["/clips/extra.mov"]);
-  expect(importLocalFile).toHaveBeenCalledWith(project.id, "/clips/extra.mov", expect.any(Function), expect.any(String), true);
+  expect(importLocalFile).toHaveBeenCalledWith(project.id, "/clips/extra.mov", expect.any(Function), expect.any(String), true, undefined);
   expect(JSON.parse(localStorage.getItem(SAVED)!)).toEqual(first);
   expect(store.updateProject).not.toHaveBeenCalled();
 
@@ -258,7 +258,7 @@ it("keeps a new project's first files saved while another project is on screen, 
   importLocalFile.mockResolvedValueOnce(video("a.mov", 720, 1280, 24));
   await resumeImports(project.id, [voice]);
   expect(importLocalFile.mock.calls.map(call => call[1])).toEqual(["/clips/a.mov"]);
-  expect(importLocalFile).toHaveBeenCalledWith(project.id, "/clips/a.mov", expect.any(Function), expect.any(String), false);
+  expect(importLocalFile).toHaveBeenCalledWith(project.id, "/clips/a.mov", expect.any(Function), expect.any(String), false, undefined);
   expect(store.updateProject).toHaveBeenCalledExactlyOnceWith(
     { settings: { width: 720, height: 1280, aspect: "9:16", fps: 24 }, expectedFormat: { settings: project.settings, head: null } }, project.id);
   expect(localStorage.getItem(SAVED)).toBeNull();
@@ -314,7 +314,7 @@ it("lets only a new project's first files set its format, not one added behind t
   await relaunched.resumeImports(project.id, []);
   expect(importLocalFile.mock.calls.map(call => call[1])).toEqual(["/clips/voice.wav", "/clips/extra.mov"]);
   // The first selection only had audio, so the next file can now supply the first video.
-  expect(importLocalFile).toHaveBeenCalledWith(project.id, "/clips/extra.mov", expect.any(Function), expect.any(String), false);
+  expect(importLocalFile).toHaveBeenCalledWith(project.id, "/clips/extra.mov", expect.any(Function), expect.any(String), false, undefined);
   expect(store.updateProject).not.toHaveBeenCalled();
 
   // The file added later can also have reached the project before the quit, with the first one still to come.
@@ -338,6 +338,20 @@ it("carries on with a list saved before first files were marked", async () => {
   expect(importLocalFile.mock.calls.map(call => call[1])).toEqual(["/clips/a.mov", "https://example.com/c.mp4"]);
   expect(pendingImports("prj")).toEqual([]);
   expect(pendingImports("other")).toEqual([{ projectId: "other", source: "/clips/z.mov", at }]);
+});
+
+it.each([
+  ["Caf%C3%A9%20take.mp4", "Café take.mp4"],
+  ["Caf%C3%A9%20take.mp4", "Caf%C3%A9%20take.mp4"],
+  ["Caf%C3%A9%20take%2Emp4", "Café take.mp4"],
+])("recognises a saved link ending in %s when its file is named %s", async (segment, name) => {
+  const at = "2026-11-06T20:00:00.000Z";
+  const link = `https://example.com/clips/${segment}`;
+  const { resumeImports } = await relaunch(JSON.stringify([{ projectId: "prj", source: link, at }]));
+  const arrived = { ...video(name, 1920, 1080, 30), provenance: { by: "human", createdAt: at } } as MediaAsset;
+  await resumeImports("prj", [arrived]);
+  expect(importLocalFile).not.toHaveBeenCalled();
+  expect(localStorage.getItem(SAVED)).toBeNull();
 });
 
 it("carries on with files saved with a garbled mark, and doesn't let them set the format", async () => {
@@ -375,7 +389,7 @@ it("keeps interrupted files and links across a restart, with the same import ID,
   for (let interruptions = 2; interruptions <= 5; interruptions++) {
     importLocalFile.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await resumed.resumeImports("prj", []);
-    expect(importLocalFile).toHaveBeenCalledExactlyOnceWith("prj", path, expect.any(Function), first!.importId, false);
+    expect(importLocalFile).toHaveBeenCalledExactlyOnceWith("prj", path, expect.any(Function), first!.importId, false, undefined);
     expect(pendingImports("prj")).toMatchObject([{ source: path, importId: first!.importId, interruptions }, { source: link }]);
     resumed = await relaunch(localStorage.getItem(SAVED)!);
   }
@@ -429,7 +443,7 @@ it("keeps the retry for the next engine when a project read preceded the outage"
 
   online = true;
   await resumeImports("prj", []);
-  expect(importLocalFile).toHaveBeenLastCalledWith("prj", "/a.mov", expect.any(Function), importId, false);
+  expect(importLocalFile).toHaveBeenLastCalledWith("prj", "/a.mov", expect.any(Function), importId, false, undefined);
   expect(importLocalFile).toHaveBeenCalledTimes(2);
   expect(pendingImports("prj")).toEqual([]);
 });

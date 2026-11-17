@@ -4,11 +4,77 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 16, 2026
+
+- Before a dialogue pass finishes, Scarlet rereads the cuts it made outside its dialogue cut tool that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.
+- A photo or a title card that doesn’t move is ready in seconds, where Scarlet used to draw every frame of it.
+- Scarlet zooms a screen recording to fill the video around what you’re showing, eases from one thing to the next across your cuts, and keeps your camera off the lines you read, moving it to another corner when it has to. A zoom no longer leaves empty bars at the sides.
+- An edit's card no longer has an Undo edit button. To put an edit back, open it and ask in the message box.
+- When Scarlet wants you to check part of an edit, its card has an amber Check tag that plays just that part, the timeline marks that part in amber, and an edit that changed nothing there no longer says Added.
+- Scarlet checks that your camera, screen and mic recordings stay in sync through its edit, and tells you when one doesn't.
+- Scarlet hears when you keep an edit it flagged, so a request still working doesn't ask you about it again.
+- Scarlet stays connected when you pause media processing while it’s caching a video.
+- The message box shows an edit’s time on its own and widens its tag to show the × on hover. Open +1 to see and clear an additional marked range.
+- An edit you kept stays kept when Scarlet, still working, lists it again in other words, instead of asking you about it a second time.
+- Pause above the message box pauses all editing in the project and Continue picks the paused work up first, where it left off. A paused request says Paused in the chat, questions can still be answered, and Stop this edit in a request’s menu ends just that one.
+- About puts the installed version and update check at the top, shows the latest release notes, and folds earlier changes and usage report details into sections you can open.
+- Pause and resume background caching and transcription from the Projects menu, the Media panel, or by hovering over Media.
+- Make shorts works on recordings in a library you moved or restored from a backup, instead of asking you to reimport them.
+- When Scarlet opens, a recording that was ready to transcribe starts at once, without waiting for another import to finish preparing.
+- The message box shows the time of the cut or marked range beside your draft. Click the time to see and clear the targets.
+- When Scarlet flags a spot inside a long edit, opening it takes you to the passage it wants you to review.
+- A spot Scarlet marked for footage it doesn't have opens as a to-do: its card leads with what to add, has Done instead of Keep and nothing to compare or undo, and the timeline no longer shows it as a cut.
+- What a request made counts the spots Scarlet marked for you on their own.
+- A to-do Scarlet marked keeps saying what to add after you ask for a revision, and still waits for you to mark it done. An edit that changed the video and also left a marker keeps its Undo edit and Before/After.
+- When you click the message box for an open edit, the cut icon shimmers in place of the popup.
+- Numbered markers appear on the timeline as Scarlet applies edits during a dialogue pass.
+- The token count in an edit’s heading updates as Codex works.
+
 ## November 15, 2026
 
+- Renaming your first-cut dialogue skill keeps its new command working as a dialogue pass.
+- Scarlet can measure the wait between a picture cut and the next spoken word when you ask it to tighten an entrance.
+- Scarlet now uses all its editing tools on every request: frame inspection, edit comparison, captions and import/export can no longer be turned off. Settings › Tools & skills lists the tools below your skills.
+- A message you're writing about the whole video stays that way when you click or scrub the timeline.
+- A time you type in your message no longer replaces the moment you picked, and taking the moment off with × keeps it off.
+- The first thing you add to an empty message box now shows its card for a moment before folding into the icon, and the card opens the same way on every computer and closes when you click elsewhere or press Esc.
+- A call you made on a dialogue pass no longer shows as unsaved after it was saved.
+- Dismissing a short's "New project" note keeps it dismissed.
+- Words you're changing on a queued request in one project no longer replace the ones you were changing in another.
+- The Transcript now says when a recording is still being added, waiting, transcribing or has no transcript, instead of showing an empty column.
+- Searching the Transcript for words with a dash or other mark in them no longer underlines the word after each match, and hovering a word shows its time, since a click places the playhead there.
+- On a skill's page, hovering a template or skill named twice shows its note at the one under the pointer.
+- The Model list no longer loses a computer that came online while it was refreshing.
+- A cut named by its words is no longer placed on the wrong spot when the video plays the same take twice.
+- Two requests about the same edit no longer run at once, and requests about different edits of one request no longer wait for each other.
+- A cut's edge that would have caught the start of the next word now lands on a quiet frame, including when you revise a cut.
+- A punch-in or title saved at a cut's join no longer replaces that cut's description.
+- An edit another request flagged now shows as it is after it was revised, not as the version it replaced.
+- Footage a cut took out is no longer counted twice when two edits name its join.
+- An edit inside a selected passage is no longer refused when a tiny cut just before it was rounded to a whole frame.
+- A graphic or template that uses a picture with a space or a % sign in its name now keeps that picture, and saving a style guide or template that fails part-way keeps the one you had.
+- Graphics keep their exact colours when laid over the video, and stopping a graphic while Chrome is starting or loading stops it at once.
+- Make shorts now copies only the footage your video uses, no longer slows Scarlet down on drives that can't share files, and a failed run leaves nothing in the Trash.
+- Shorts made before a recording finished transcribing no longer each start their own transcription the next time Scarlet opens.
+- Clearing cached renders while a preview is being made no longer breaks that preview.
+- An edit Scarlet doubts is no longer flagged twice when a stopped request is resumed.
+- Approving an edit no longer brings back footage that was cut since, whatever form the edit takes.
+- Playback previews keep working when the hardware encoder fails, by switching to the software encoder.
+- A transition from a colour card now plays instead of staying a straight cut.
+- In a project handed to Final Cut, Resolve or Premiere, a hidden track that is still heard comes in as sound only, crossfaded sound uses two tracks instead of one more per join, pictures and graphics come in as stills, clips at another speed line up on whole frames, and the Read me lists each transition, since they come in as straight cuts.
+- Media files with names Windows can't use are renamed in a hand-off so the timeline still finds them.
+- Stopping Scarlet on Windows no longer leaves a request stuck as running when a program it started keeps going.
+- Removing a file Scarlet couldn't read now also clears what it saved while timing the words of a Spanish recording.
+- Type `/matt-talking-head` to edit in Matt Berman’s style, with tight dialogue, camera punch-ins and close-ups of what you show on screen.
+- The timeline is quieter: with no request picked it shows only the video, and a picked request's edits are numbered, crowded ones grouped in runs like 15–27. Click a run to zoom into it; hovering shows just the frame, plus one amber line when something needs you.
+- A file you add from a link is named as it is, without %20 and other codes.
+- Drag up from the picture strip or waveform to see neighboring frames, then move sideways to scrub one frame at a time.
+- The timeline hover preview keeps its picture in view while the next frame loads.
 - Export › Advanced export saves a folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro: the timeline with its cuts, tracks, zooms, volume and fades, a copy of the footage, the captions, and a Read me that lists anything that doesn't carry over.
 - In the project library, a project whose caching you paused says Importing paused instead of still importing its files.
 - Recordings of your spoken notes are no longer deleted the day after you save them.
+- Transitions: type $ to pick one, like a swipe, whip pan, dissolve or dip to black, and see it play on your own footage before you ask for it. Each transition Scarlet adds is an edit you can revise or undo.
+- Write a transition into a skill, like "every time I go to the screen recording, use $swipe": $ lists your templates in a skill's page too, and the templates and skills a skill names are marked so you can tell them from plain words.
 - Type a timestamp like 1:42 in a new edit request to mark it on the timeline. Click it to jump there, or send the note about that moment.
 - The tokens a request has used now show in the chat by default; turn them off in Settings › Usage.
 - Codex installed through Homebrew can start editing on macOS while keeping its sandbox.

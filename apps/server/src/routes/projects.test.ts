@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createProject, type Project } from "@scarlet/timeline";
+import { ATTEMPT_HEADER, TASK_HEADER, type ProjectSummary, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { OpenAIProvider } from "../transcribe/openai.js";
-import { createTask, saveTask } from "../services/tasks.js";
+import { appendTaskEvent, createTask, saveTask, taskPrompt } from "../services/tasks.js";
 import { sourcePreviews } from "../services/sourcePreviews.js";
 import { recoverTasks } from "../services/taskRecovery.js";
 
@@ -29,10 +30,170 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function api(method: string, path: string, body?: unknown) {
+function api(method: string, path: string, body?: unknown, headers?: Record<string, string>) {
   return workspace.app.request("/api" + path, { method, body: JSON.stringify(body),
-    headers: { Authorization: `Bearer ${accessToken(workspace.ctx)}`, ...(body !== undefined && { "Content-Type": "application/json" }) } });
+    headers: { Authorization: `Bearer ${accessToken(workspace.ctx)}`, ...(body !== undefined && { "Content-Type": "application/json" }), ...headers } });
 }
+
+it("stops editing across the project and continues interrupted requests ahead of the queue", async () => {
+  const { ctx } = workspace;
+  const path = `/projects/${project.id}`;
+  const other = ctx.repos.projects.insert(createProject("Other"));
+  const make = (kind: Task["kind"], state?: Task["state"], projectId = project.id) => createTask(ctx, {
+    projectId, kind, agent: kind === "transcribe" ? "api" : "claude", instruction: "Fixture",
+    state, createdBy: { type: "scarlet", name: "Scarlet" },
+  });
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "claude", installed: true }] })).json();
+  const claim = async (taskId?: string, wait = 0): Promise<Task | null> => {
+    const result = await api("POST", `/hosts/${host.id}/claim?wait=${wait}`, { taskId });
+    expect(result.status).toBe(200);
+    return (await result.json()).task;
+  };
+  const active = make("edit");
+  const running = saveTask(ctx, { ...(await claim(active.id))!, state: "running" });
+  const attempt = { [TASK_HEADER]: running.id, [ATTEMPT_HEADER]: running.startedAt! };
+  const proposal = { description: "Keep a marker", intent: "requested", skipRender: true,
+    ops: [{ op: "addMarker", marker: { id: "marker", time: 0, text: "Keep" } }] };
+  const saved = await api("POST", `${path}/changes`, proposal, attempt);
+  expect(saved.status).toBe(201);
+  const { change } = await saved.json();
+  expect((await api("POST", `/changes/${change.id}/approve`, {})).status).toBe(200);
+  const beforeStop = ctx.repos.projects.get(project.id)!;
+  const claimed = make("revise", "claimed");
+  const question = saveTask(ctx, {
+    ...appendTaskEvent(ctx, make("note", "running"), { type: "question", text: "Which take?" }).task,
+    session: { agent: "claude", id: "existing-session" },
+  });
+  // Answered and back in line, its CLI session yielded: no worker has it.
+  const answered = saveTask(ctx, {
+    ...appendTaskEvent(ctx, appendTaskEvent(ctx, make("note", "running"), { type: "question", text: "Which side?" }).task,
+      { type: "answer", text: "Left." }).task,
+    session: { agent: "claude", id: "answered-session" },
+  });
+  // A call can work ahead of an older queued edit. Previously active work still comes first after Continue.
+  const first = saveTask(ctx, { ...make("edit"), createdAt: "2026-01-01T00:00:00.000Z" });
+  const second = make("revise");
+  const transcription = make("transcribe", "running");
+  const learning = make("learning_check");
+  const skill = make("skill_edit", "running");
+  const elsewhere = make("edit", "running", other.id);
+  const announcements: string[] = [];
+  ctx.bus.on("ws", event => {
+    if (event.type === "project.updated" && event.project.editingPaused && event.projectId === project.id) announcements.push("paused");
+    if (event.type === "task.updated" && event.task.state === "cancelled") announcements.push(event.task.id);
+  });
+
+  const stop = await api("POST", `${path}/stop-editing`);
+  expect(stop.status).toBe(200);
+  const stopped = await stop.json() as { project: Project; tasks: Task[] };
+  expect(stopped.project).toMatchObject({ editingPaused: true, head: beforeStop.head, updatedAt: beforeStop.updatedAt,
+    rowRevision: beforeStop.rowRevision! + 1 });
+  expect(stopped.tasks.filter(task => task.state === "cancelled").map(task => task.id)).toEqual([running.id, claimed.id]);
+  const nextFor = (id: string) => stopped.tasks.find(task => task.resumeRootId === id)!;
+  for (const original of [running, claimed]) {
+    const next = nextFor(original.id);
+    expect(next).toMatchObject({ kind: original.kind, agent: original.agent, state: "queued", resumesAfterProjectStop: true });
+    expect(next.startedAt).toBeUndefined();
+    expect(ctx.repos.tasks.get(original.id)?.retryTaskId).toBe(next.id);
+  }
+  const [continuing, removed] = [running, claimed].map(task => nextFor(task.id));
+  // Neither the question nor the answered run held a worker, so Stop leaves them, their words and their sessions.
+  expect(ctx.repos.tasks.get(question.id)).toEqual(question);
+  expect(ctx.repos.tasks.get(answered.id)).toEqual(answered);
+  expect(continuing!.instruction).toContain(`Saved change ${change.id} [approved]`);
+  expect(stopped.tasks).toHaveLength(4);
+  expect(announcements[0]).toBe("paused");
+  expect(announcements).toHaveLength(3);
+  expect(ctx.repos.changes.get(change.id)?.state).toBe("approved");
+  expect((await api("POST", `${path}/changes`, proposal, attempt)).status).toBe(409);
+  expect(ctx.repos.tasks.get(transcription.id)?.state).toBe("running");
+  expect(ctx.repos.tasks.get(skill.id)?.state).toBe("running");
+  expect(ctx.repos.tasks.get(elsewhere.id)?.state).toBe("running");
+  const { projects } = await (await api("GET", "/projects")).json() as { projects: ProjectSummary[] };
+  expect(projects.find(p => p.id === project.id)?.activity).toEqual([{ kind: "transcribing", count: 1 }]);
+  expect((await (await api("GET", "/under-way")).json()).queued).toBe(0);
+
+  expect(await claim(first.id)).toBeNull();
+  expect((await claim())?.id).toBe(learning.id);
+  const skillFromChange = make("skill_from_change");
+  expect((await claim())?.id).toBe(skillFromChange.id);
+  const addedWhilePaused = make("note");
+  expect(await claim()).toBeNull();
+  expect((await (await api("POST", `${path}/stop-editing`)).json()).tasks).toEqual([]);
+  // The editor can answer while editing is stopped. The run waits for Continue.
+  expect((await api("POST", `/tasks/${question.id}/answer`, { text: "Use the second take." })).status).toBe(200);
+  expect(await claim()).toBeNull();
+  expect((await api("POST", `/tasks/${removed!.id}/cancel?queuedOnly=1`)).status).toBe(200);
+  expect(ctx.repos.tasks.get(removed!.id)?.state).toBe("cancelled");
+  for (const task of [first, second, addedWhilePaused]) expect(ctx.repos.tasks.get(task.id)).toEqual(task);
+  for (const task of [elsewhere, transcription, learning, skill, skillFromChange]) {
+    saveTask(ctx, { ...ctx.repos.tasks.get(task.id)!, state: "done" });
+  }
+
+  await ctx.close();
+  workspace = createApp({ dataDir: directory, skillsSeedDir: join(directory, "empty-seed"), env: {}, log: () => {} });
+  expect((await (await api("GET", `${path}?view=workspace`)).json()).project.editingPaused).toBe(true);
+  expect(await claim()).toBeNull();
+  const waiting = claim(undefined, 5);
+  await vi.waitFor(() => expect(workspace.ctx.bus.listenerCount("task.queued")).toBeGreaterThan(0));
+  const resumed = await api("POST", `${path}/resume-editing`);
+  expect(resumed.status).toBe(200);
+  expect(await resumed.json()).toMatchObject({ project: { editingPaused: false, rowRevision: beforeStop.rowRevision! + 2 } });
+  // Interrupted work goes first, then the runs that were waiting on the editor, each in its own CLI session.
+  const next = await waiting;
+  expect(next?.id).toBe(continuing!.id);
+  expect((await api("POST", `/tasks/${next!.id}/cancel?queuedOnly=1`)).status).toBe(409);
+  expect((await api("POST", `/tasks/${next!.id}/complete`, { state: "done", ifStartedAt: next!.startedAt })).status).toBe(200);
+  // The runs that were waiting on the editor carry on in their own CLI sessions, in their places in the queue.
+  const sessions = new Map([[question.id, ["existing-session", "Use the second take."]], [answered.id, ["answered-session", "Left."]]]);
+  const order: string[] = [];
+  for (let claimed = await claim(); claimed; claimed = await claim()) {
+    order.push(claimed.id);
+    const [session, text] = sessions.get(claimed.id) ?? [];
+    if (session) {
+      expect(taskPrompt(workspace.ctx, claimed)).toMatchObject({ resumeSession: session });
+      expect(taskPrompt(workspace.ctx, claimed).instruction).toContain(text);
+    }
+    expect((await api("POST", `/tasks/${claimed.id}/complete`, { state: "done", ifStartedAt: claimed.startedAt })).status).toBe(200);
+  }
+  expect(order[0]).toBe(first.id);
+  expect(order).toEqual(expect.arrayContaining([question.id, answered.id, second.id, addedWhilePaused.id]));
+});
+
+it("stops just one edit and lets the next queued request start", async () => {
+  const { ctx } = workspace;
+  const make = (kind: Task["kind"]) => createTask(ctx, {
+    projectId: project.id, kind, agent: "claude", instruction: "Fixture",
+    createdBy: { type: "scarlet", name: "Scarlet" },
+  });
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "claude", installed: true }] })).json();
+  const claim = async () => (await (await api("POST", `/hosts/${host.id}/claim`, {})).json()).task as Task | null;
+  const editing = make("edit");
+  expect((await claim())?.id).toBe(editing.id);
+  const next = make("note");
+  expect((await api("POST", `/tasks/${editing.id}/cancel`)).status).toBe(200);
+  expect(ctx.repos.tasks.get(editing.id)?.state).toBe("cancelled");
+  expect(ctx.repos.tasks.get(editing.id)?.retryTaskId).toBeUndefined();
+  expect(ctx.repos.projects.get(project.id)?.editingPaused).toBe(false);
+  expect((await claim())?.id).toBe(next.id);
+});
+
+it("removes a request from the queue without stopping an edit that has already started", async () => {
+  const { ctx } = workspace;
+  const make = (state: Task["state"]) => createTask(ctx, {
+    projectId: project.id, kind: "edit", agent: "claude", instruction: "Fixture", state,
+    createdBy: { type: "scarlet", name: "Scarlet" },
+  });
+  const running = make("running");
+  const queued = make("queued");
+  const remove = (task: Task) => api("POST", `/tasks/${task.id}/cancel?queuedOnly=1`);
+  expect((await remove(running)).status).toBe(409);
+  expect(ctx.repos.tasks.get(running.id)?.state).toBe("running");
+  expect((await remove(queued)).status).toBe(200);
+  expect((await remove(queued)).status).toBe(200);
+  expect(ctx.repos.tasks.get(queued.id)?.state).toBe("cancelled");
+  expect(ctx.repos.projects.get(project.id)?.editingPaused).toBe(false);
+});
 
 it("starts a transcription the pause cut off again as soon as media processing resumes", async () => {
   const { ctx } = workspace;
@@ -54,6 +215,30 @@ it("starts a transcription the pause cut off again as soon as media processing r
   expect(latest().id).not.toBe(task.id);
   while (ctx.pending.size) await Promise.allSettled([...ctx.pending]);
   expect(latest().state).toBe("done");
+  expect(cloud).toHaveBeenCalledTimes(2);
+  expect(ctx.repos.projects.getMedia("voice")?.transcriptId).toBeTruthy();
+});
+
+it("restarts transcription after abort cleanup when media processing is already resumed", async () => {
+  const { ctx } = workspace;
+  const finishAbort = Promise.withResolvers<void>();
+  const cloud = vi.spyOn(OpenAIProvider.prototype, "transcribe")
+    .mockImplementationOnce(({ signal }) => new Promise((_, reject) => {
+      signal!.addEventListener("abort", () => void finishAbort.promise.then(() => reject(signal!.reason)), { once: true });
+    }))
+    .mockResolvedValue({ segments: [] });
+  ctx.repos.projects.putMedia(project.id, { id: "voice", name: "Voice", path: "voice.wav", kind: "audio", duration: 60 }, "ready");
+  const { task } = await (await api("POST", "/media/voice/transcribe", {})).json();
+  try {
+    await vi.waitFor(() => expect(cloud).toHaveBeenCalledTimes(1));
+    await api("PATCH", `/projects/${project.id}`, { mediaPaused: true });
+    await api("PATCH", `/projects/${project.id}`, { mediaPaused: false });
+    expect(ctx.repos.tasks.get(task.id)?.state).toBe("running");
+  } finally {
+    finishAbort.resolve();
+  }
+  while (ctx.pending.size) await Promise.allSettled([...ctx.pending]);
+  expect(ctx.repos.tasks.get(task.id)).toMatchObject({ state: "failed", interrupted: true });
   expect(cloud).toHaveBeenCalledTimes(2);
   expect(ctx.repos.projects.getMedia("voice")?.transcriptId).toBeTruthy();
 });

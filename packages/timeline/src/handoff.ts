@@ -4,7 +4,8 @@
  * show as Scarlet does.
  */
 import type { CaptionClip, Clip, MediaAsset, MediaClip, Project, Timeline, Track } from "./schema.js";
-import { clock } from "./time.js";
+import { frames, q, seconds, type Q } from "./rational.js";
+import { clock, hms } from "./time.js";
 
 /** A frame rate as a fraction: `num / den` frames a second. 29.97 is 30000/1001. */
 export interface ExactRate { num: number; den: number }
@@ -71,17 +72,29 @@ export interface HandoffSource {
   still?: boolean;
 }
 
-/** The footage's first frame in seconds: where another editor's app counts its source times from. */
-export function sourceStart(source: HandoffSource | undefined): number {
+/** The footage's first frame, exactly: where another editor's app counts its source times from. */
+export function sourceStartQ(source: HandoffSource | undefined): Q {
   const tc = source?.timecode;
-  return tc ? tc.frames * tc.rate.den / tc.rate.num : 0;
+  return tc ? frames(tc.frames, tc.rate) : q(0);
 }
+
+/** The footage's first frame in seconds. */
+export function sourceStart(source: HandoffSource | undefined): number {
+  return seconds(sourceStartQ(source));
+}
+
+/** Names Windows keeps for devices, whatever extension follows them. */
+const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 
 /** File names that are safe on macOS and Windows, unique within the folder. */
 export function handoffFileNames(names: string[]): string[] {
   const used = new Set<string>();
   return names.map(raw => {
-    const clean = raw.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().replace(/^\.+/, "") || "Media";
+    // Windows drops trailing dots and spaces, so a name ending in them would not be the one the timeline names.
+    let clean = raw.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().replace(/^\.+/, "").replace(/[. ]+$/, "") || "Media";
+    const first = clean.indexOf(".");
+    const base = first > 0 ? clean.slice(0, first) : clean;
+    if (RESERVED.test(base.trim())) clean = `${base.trim()}_${first > 0 ? clean.slice(first) : ""}`;
     const dot = clean.lastIndexOf(".");
     const [stem, ext] = dot > 0 ? [clean.slice(0, dot), clean.slice(dot)] : [clean, ""];
     let name = clean;
@@ -115,10 +128,11 @@ export function captionTracks(timeline: Timeline): Array<{ track: Track; cues: C
   })).filter(t => t.cues.length);
 }
 
-function srtTime(seconds: number): string {
-  const ms = Math.max(0, Math.round(seconds * 1000));
+function srtTime(at: number): string {
+  const ms = Math.max(0, Math.round(at * 1000));
   const pad = (n: number, w = 2) => String(n).padStart(w, "0");
-  return `${pad(Math.floor(ms / 3_600_000))}:${pad(Math.floor(ms / 60_000) % 60)}:${pad(Math.floor(ms / 1000) % 60)},${pad(ms % 1000, 3)}`;
+  const { h, m, s } = hms(Math.floor(ms / 1000));
+  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms % 1000, 3)}`;
 }
 
 /** A caption track as a SubRip file, timed on the timeline. */
@@ -140,16 +154,20 @@ function clipName(clip: MediaClip, media: Map<string, MediaAsset>) {
 }
 
 /**
- * What the timeline files can't carry: effects, rounded corners, eased zooms, caption styling and recordings with
- * several audio streams. The editor reads this before they finish the edit.
+ * What the timeline files can't carry: transitions, effects, rounded corners, eased zooms, caption styling and
+ * recordings with several audio streams. The editor reads this before they finish the edit.
  */
 export function handoffLosses(project: Project, timeline: Timeline, sources?: Map<string, HandoffSource>): HandoffLoss[] {
   const media = new Map(project.media.map(m => [m.id, m]));
   const losses: HandoffLoss[] = [];
   const clips: Array<{ track: Track; clip: Clip }> = timeline.tracks.flatMap(track => track.clips.map(clip => ({ track, clip })));
-  for (const { clip } of clips) {
+  for (const { track, clip } of clips) {
     if (clip.kind !== "media" || clip.enabled === false) continue;
     const name = clipName(clip, media);
+    // Neither timeline file carries Scarlet's transitions: each join comes in as a straight cut.
+    if (clip.transitionIn && track.kind === "video" && !track.hidden) {
+      losses.push({ at: clip.timelineIn, what: `The ${clip.transitionIn.type} into “${name}” (it comes in as a straight cut)` });
+    }
     for (const effect of clip.effects.filter(e => e.enabled !== false)) {
       losses.push({ at: clip.timelineIn, what: `${EFFECT_NAMES[effect.type] ?? effect.type} on “${name}”` });
     }

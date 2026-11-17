@@ -3,7 +3,7 @@
  * logged in. Heuristics only: a CLI is reported as loggedIn=true when it is
  * installed and we cannot tell otherwise.
  */
-import { discoverModels, type CliAgent } from "./modelCatalog.js";
+import { discoverModels, ModelCatalogError, type CliAgent } from "./modelCatalog.js";
 import { stopCliTree } from "./processTree.js";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
@@ -255,7 +255,8 @@ export async function detect(opts: DetectOptions = {}): Promise<AgentAvailabilit
   return Promise.all(results.map(async (r) => {
     const path = r.installed && r.loggedIn !== false ? await o.find(r.id) : null;
     const catalog = path ? await (opts.catalog ?? discoverModels)(r.id as CliAgent, path, runnerEnv(r.id, results, env)).catch((err) => {
-      log(`could not read the ${r.id} model list: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof ModelCatalogError) log(`[host] model-catalog provider=${r.id} reason=${err.reason}`);
+      else log(`could not read the ${r.id} model list: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }) : undefined;
     return { ...r, ...catalog, ...(opts.models?.[r.id] ? { model: opts.models[r.id] } : {}) };
