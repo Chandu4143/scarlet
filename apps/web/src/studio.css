@@ -283,11 +283,9 @@
   background: rgb(16 16 16 / 86%);
 }
 .monitor-controls button:enabled { color: #f4f0e8; }
-.monitor-controls .preference-select.compact {
-  min-height: 28px; padding: 0 4px 0 8px; gap: 3px; border: 0; background: none;
-  font: 11px var(--font-mono); font-variant-numeric: tabular-nums;
-}
-.monitor-controls .preference-select:enabled:hover, .monitor-controls .preference-select[aria-expanded="true"] { background: rgb(255 255 255 / 10%); }
+.playback-speed { display: flex; align-items: center; }
+.playback-speed .btn-icon { width: 26px; height: 28px; }
+.playback-speed output { width: 5ch; text-align: center; color: #f4f0e8; font: 11px var(--font-mono); }
 .mic-ready {
   background: var(--color-raised);
   color: var(--color-accent-soft);

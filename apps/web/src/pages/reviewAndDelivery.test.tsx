@@ -334,8 +334,10 @@ it("zooms from the timeline controls and draws no edit points, zoomed or not", a
   await click(labeled("Zoom in"));
   expect(rail()).toBeNull();
   const zoomIn = labeled("Zoom in");
-  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true, cancelable: true })));
+  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true, cancelable: true })));
   expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("4×");
+  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true, cancelable: true })));
+  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("2×");
   await click(labeled("Fit timeline"));
   expect(seek).not.toHaveBeenCalled();
   await act(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
@@ -359,8 +361,8 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   const key = (name: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
   await render("ver_a", 200);
   const whole = stamps();
-  await key("+");
-  await key("+");
+  await key("]");
+  await key("]");
   // 4×: fifty seconds around the playhead.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
@@ -379,8 +381,8 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   await render("ver_d", 180);
   expect([stamps()[0], stamps().at(-1)]).toEqual([expect.stringMatching(/0:00$/), expect.stringMatching(/2:30$/)]);
   // A stretch the editor moved to with the playhead elsewhere stays in view too, until the playhead moves.
-  await key("+");
-  await key("+");
+  await key("]");
+  await key("]");
   const track = container.querySelector<HTMLElement>(".timeline-track")!;
   await act(() => { track.dispatchEvent(new WheelEvent("wheel", { deltaX: -800, bubbles: true, cancelable: true })); });
   const away = stamps();
@@ -552,10 +554,10 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
     expect(level()).toBe("3×");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     const key = (value: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: value, cancelable: true })));
-    await key("+");
+    await key("]");
     await act(() => vi.advanceTimersByTime(550));
     expect(level()).toBe("6×");
-    await key("-");
+    await key("[");
     await act(() => vi.advanceTimersByTime(550));
     expect(level()).toBe("3×");
     await key("0");

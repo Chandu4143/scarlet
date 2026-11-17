@@ -60,7 +60,7 @@ const initialStore = useProjectStore.getState();
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
-  usePlayerStore.setState({ time: 0, duration: 0, playing: false });
+  usePlayerStore.setState({ time: 0, duration: 0, playing: false, rate: 1 });
   // Each test starts with an empty message box, nothing saved for any request and no dialog left open over the keys.
   useUiStore.setState({ agentDraft: "", agentContext: null, savedDrafts: {}, draftOwner: null, notePopover: null, speaking: false });
   useExports.setState({ jobs: {} });
@@ -148,7 +148,7 @@ it("shows every request as one chat, oldest first", async () => {
   expect(container.querySelector('[aria-label="Suggestion"]')).toBeNull();
   // The simple player keeps the picture, the classic timeline (stills, waveform, ruler), Before/After and speed. The header stays out.
   expect(container.querySelector(".timeline-panel .timeline-filmstrip")).not.toBeNull();
-  expect(container.querySelector('.watch-monitor > .monitor-controls [aria-label="Playback speed"]')?.textContent).toBe("1×");
+  expect(container.querySelector('.watch-monitor > .monitor-controls [aria-label="Playback speed"] output')?.textContent).toBe("1×");
   expect(container.querySelector(".cut-heading")).toBeNull();
 });
 
@@ -177,18 +177,40 @@ it("loads full steps only for live requests and upgrades a queued request when w
   expect(load).toHaveBeenCalledWith(queued.id, "all");
 });
 
-it("offers playback speeds at the monitor's bottom right, and gives the keys back once one is picked", async () => {
+it("steps playback speed with the monitor buttons and +/− keys, including while the timeline has focus", async () => {
   await show();
-  const speed = container.querySelector<HTMLButtonElement>('.monitor-controls [aria-label="Playback speed"]')!;
-  await click(speed);
-  const choices = [...document.querySelectorAll<HTMLElement>('[role="listbox"] [role="option"]')];
-  expect(choices.map(c => c.textContent)).toEqual(["0.5×", "0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]);
-  await click(choices[4]!);
-  expect(usePlayerStore.getState().rate).toBe(1.5);
-  expect(speed.textContent).toBe("1.5×");
-  expect(document.querySelector('[role="listbox"]')).toBeNull();
-  expect(document.activeElement).not.toBe(speed);
-  await act(async () => usePlayerStore.getState().setRate(1));
+  const group = container.querySelector('[aria-label="Playback speed"]')!;
+  const [slower, faster] = group.querySelectorAll("button");
+  const slider = container.querySelector<HTMLElement>(".timeline-slider")!;
+  const key = (target: HTMLElement, init: KeyboardEventInit) => act(async () => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+  const check = (rate: number) => {
+    expect(group.querySelector("output")?.textContent).toBe(`${rate}×`);
+    expect(usePlayerStore.getState().rate).toBe(rate);
+    expect(slower!.disabled).toBe(rate === 0.5);
+    expect(faster!.disabled).toBe(rate === 2);
+  };
+  await click(slower!);
+  check(0.75);
+  slider.focus();
+  await key(slider, { key: "-" });
+  await key(slider, { key: "-" });
+  check(0.5);
+  await click(faster!);
+  check(0.75);
+  await key(slider, { key: "=" });
+  check(1);
+  for (const rate of [1.25, 1.5, 1.75, 2, 2]) {
+    await key(slider, { key: "+", shiftKey: true });
+    check(rate);
+  }
+  const input = document.createElement("textarea");
+  container.append(input);
+  await key(input, { key: "-" });
+  await key(slider, { key: "-", metaKey: true });
+  await key(slider, { key: "-", ctrlKey: true });
+  check(2);
 });
 
 it("turns the play button while the picture loads, in place of its icon, with nothing drawn under it", async () => {
@@ -10602,7 +10624,7 @@ it("comes back from Settings or a restart to update at the speed the editor was 
   await reopen(place);
   expect(asked).toEqual([12.5]);
   expect([usePlayerStore.getState().time, usePlayerStore.getState().rate]).toEqual([12.5, 1.5]);
-  expect(container.querySelector('.monitor-controls [aria-label="Playback speed"]')?.textContent).toBe("1.5×");
+  expect(container.querySelector('.monitor-controls [aria-label="Playback speed"] output')?.textContent).toBe("1.5×");
   // The place is used once: the address is the project's own again.
   expect(container.querySelector("#address")?.textContent).toBe(`/p/${PRJ}`);
   // At the ordinary speed the way back says only where.
