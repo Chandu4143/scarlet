@@ -3,7 +3,7 @@ import { DialogueCutsRequest } from "@scarlet/shared";
 import { createProject, emptyTimeline, makeMediaClip, type MediaAsset, type MediaClip, type TimeRange } from "@scarlet/timeline";
 import { DialogueEvidence } from "./dialogue-decisions.js";
 import { joinEvidence, type JoinPage } from "./dialogue-join.js";
-import { cutsReach, dialogueGate, equivalentShifts, joinPlays, planDialogueCuts, quotesAwayFromCut, resolveCutRange, timelineWordsNear, type DialogueCutInput, type DialoguePlanSources } from "./dialogue-plan.js";
+import { cutsReach, dialogueGate, equivalentShifts, joinPlays, keptText, planDialogueCuts, quotesAwayFromCut, resolveCutRange, timelineWordsNear, type DialogueCutInput, type DialoguePlanSources } from "./dialogue-plan.js";
 import { firstCutRanges } from "./first-cut-ranges.js";
 
 const words = [
@@ -64,8 +64,8 @@ describe("dialogue plan", () => {
     const plan = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ mediaId: "mic", fromWord: 1, toWord: 3 })] }, sources);
     expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: .9, end: 2.18, review: true }] });
     if (plan.outcome === "ready") expect(plan.gate.get(0)?.evidence).toContain("No measured silence");
-    // The held cut says what Scarlet measured and what the join plays, for the agent to settle.
-    if (plan.outcome === "ready") expect(plan.decisions[0]!.held).toBe("The words named run on into the ones beside them at the start and end: no pause or low point where they part, a join in running speech. As placed the join plays “… ready ‖ again …”.");
+    // The held cut says what Scarlet measured, what the join plays and what keeping it plays, for the agent to settle.
+    if (plan.outcome === "ready") expect(plan.decisions[0]!.held).toBe("The words named run on into the ones beside them at the start and end: no pause or low point where they part, a join in running speech. As placed the join plays “… ready ‖ again …”. Kept, it plays “… ready now start over again …”.");
   });
 
   it("meets an earlier join a cut stops a few frames short of, so no flash plays between them", async () => {
@@ -648,7 +648,7 @@ describe("dialogue plan", () => {
       expect(through.decision!.review).toBe(true);
       expect(through.gate!.evidence).toContain("No measured silence between “recognized” and “that”");
       // What Scarlet measured is its own field. The reason stays the sentence the agent wrote for the editor.
-      expect(through.decision!.held).toBe("The words named run on into the ones beside them at the start: no pause or low point where they part, a join in running speech. As placed the join plays “… recognized ‖ that likely …”.");
+      expect(through.decision!.held).toBe("The words named run on into the ones beside them at the start: no pause or low point where they part, a join in running speech. As placed the join plays “… recognized ‖ that likely …”. Kept, it plays “… recognized that that likely …”.");
       expect(through.decision!.reason).not.toContain("run on");
     }
   });
@@ -933,6 +933,10 @@ describe("equivalent removals", () => {
     const cutRange = { start: .45, end: 1.45 };
     expect(await joinPlays(tl, await sources.project(), cutRange, words, 3)).toBe("… I gave ‖ prompt I want …");
     const near = await timelineWordsNear(tl, await sources.project(), cutRange, words, 18);
+    // Kept, the cut plays its own words between the ones either side. A long passage keeps its two ends.
+    expect(keptText(near, cutRange)).toBe("… I gave it a very simple prompt I want …");
+    expect(keptText(near, cutRange, 2, 2)).toBe("… I gave it … simple prompt I …");
+    expect(keptText(near, { start: 1.46, end: 1.49 })).toBe("");
     // "is it able to build" starts 3.5 s after the cut; "very simple" is inside it and "prompt I want" beside it.
     expect(quotesAwayFromCut("Keep the completed ‘is it able to build’ question and listen for the start of ‘it.’", near, cutRange))
       .toEqual(["is it able to build"]);
