@@ -533,6 +533,30 @@ describe("dialogue plan", () => {
     await expect(resolveCutRange(tl, { mediaId: "mic", afterWord: 1, leave: .4 }, "cut", sources)).resolves.toMatchObject({ plays: .6, source: { start: 2.9, end: 3.3 } });
   });
 
+  it("places a range in seconds by the pause leave asks for, in the quiet either side, and as typed without it", async () => {
+    // “finish” [1–1.38] sounds to 1.44, “first” 1.8–2.26, “next” from 3.4. A retake of “first” typed in seconds.
+    const { tl, sources } = fixture();
+    const plan = async (c: Partial<DialogueCutInput>) => {
+      const planned = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 1.5, end: 2.9, ...c })] }, sources);
+      if (planned.outcome !== "ready") throw new Error(planned.outcome);
+      return planned;
+    };
+    // As typed, both edges are in quiet and stay: the join plays 0.06 s of quiet before the cut and 0.5 s after it.
+    expect((await plan({})).decisions[0]).toMatchObject({ start: 1.5, end: 2.9, review: false });
+    // With leave, the quiet either side comes down to it: 0.19 s after “finish” and 0.06 s before “next”, on frames.
+    const paced = await plan({ leave: .25, voiceIn: .06 });
+    expect(paced.decisions[0]).toMatchObject({ review: false });
+    expect(paced.decisions[0]!.start).toBeCloseTo(49 / 30, 6);
+    expect(paced.decisions[0]!.end).toBeCloseTo(100 / 30, 6);
+    expect(dialogueGate(paced).decisions[0]!.evidence).toContain("start moved 0.13 s later in its quiet, for the pause leave asks");
+    expect(dialogueGate(paced).decisions[0]!.evidence).toContain("end moved 0.43 s later in its quiet");
+    // The pace the skill asks for splits it: without voiceIn, its before plays after the cut and the rest before it.
+    sources.pace = { after: .14, before: .03 };
+    const tight = await plan({ leave: .1 });
+    expect(tight.decisions[0]!.start).toBeCloseTo(45 / 30, 6);
+    expect(tight.decisions[0]!.end).toBeCloseTo(101 / 30, 6);
+  });
+
   it("finds nothing to trim in a pause that already plays as short as asked at the clip's speed", async () => {
     const { tl, sources } = fixture();
     tl.tracks[1]!.clips = [makeMediaClip("mic", 0, 5, 0, { speed: 2 })];
@@ -554,8 +578,6 @@ describe("dialogue plan", () => {
     await expect(plan({ mediaId: "mic", afterWord: 1 })).rejects.toThrow("give leave with afterWord");
     await expect(plan({ mediaId: "mic", afterWord: 1, leave: .25, kind: "retake" })).rejects.toThrow("afterWord names a pause");
     await expect(plan({ mediaId: "mic", afterWord: 1, fromWord: 1, toWord: 1 })).rejects.toThrow("without fromWord or toWord");
-    await expect(plan({ start: 2.4, end: 3.2, leave: .3 })).rejects.toThrow("leave goes with a word or pause reference");
-    await expect(plan({ start: 2.4, end: 3.2, voiceIn: .1 })).rejects.toThrow("voiceIn goes with a word or pause reference");
     // After an earlier cut the two words play in different clips: the pause is that join's.
     tl.tracks[1]!.clips = [makeMediaClip("mic", 0, 2.5, 0), makeMediaClip("mic", 3, 5, 2.5)];
     await expect(plan({ mediaId: "mic", afterWord: 1, leave: .25 })).rejects.toThrow("does not play “first” and “next” (#1, #2) one after the other");

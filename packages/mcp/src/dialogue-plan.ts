@@ -12,7 +12,7 @@ import { edgeOvershoots } from "./edge-overshoot.js";
 import { timelineWords } from "./timeline-perception.js";
 import type { GapSound } from "./gap-sound.js";
 import type { DialogueEvidence } from "./dialogue-decisions.js";
-import { edgeOnFrame, pageAt as scanPageAt, checkKeptWords, type ReadKeptWords, dialogueJoinChecker, checkResumeQuote, dialogueCutPreview, dialogueJoinWords, joinEvidence, pageReaches, pauseCutRange, DEFAULT_PACE, type JoinPace, quietFrameNote, dialogueAudioStream, soundBesideEdge, wordCutRange, type JoinPage } from "./dialogue-join.js";
+import { edgeOnFrame, pageAt as scanPageAt, checkKeptWords, type ReadKeptWords, dialogueJoinChecker, checkResumeQuote, dialogueCutPreview, dialogueJoinWords, joinEvidence, pageReaches, pauseCutRange, DEFAULT_PACE, splitLeave, type JoinPace, quietFrameNote, dialogueAudioStream, soundBesideEdge, wordCutRange, type JoinPage } from "./dialogue-join.js";
 
 /** Every clip of a recording that sounds on this version, in track and clip order. */
 const audibleMediaClips = (tl: Timeline) => audibleClipsByTrack(tl).flat();
@@ -313,7 +313,6 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
   const pause = c.afterWord !== undefined;
   const words = c.mediaId !== undefined || c.fromWord !== undefined || c.toWord !== undefined || pause;
   const seconds = c.start !== undefined || c.end !== undefined;
-  if ((c.leave !== undefined || c.voiceIn !== undefined) && seconds) throw new Error(`${label}: ${c.leave !== undefined ? "leave" : "voiceIn"} goes with a word or pause reference. A range in seconds already says what plays.`);
   if (c.occurrence) {
     // The recording's id beside removeRepeat names nothing new. A range or a word reference would be a second, different removal.
     // `leave` is neither: it says how long the join plays, as it does on a word reference.
@@ -336,7 +335,10 @@ export async function resolveCutRange(tl: Timeline, c: CutRef, label: string, so
     // Times reach the agent rounded to the millisecond. An edit that ends at 1777.0666… s reads as 1777.067, and a
     // range to that end is a range to the end of the edit, not one that runs past it.
     const total = duration ?? timelineDuration(tl);
-    return { start: c.start, end: c.end > total && c.end - total <= 0.001 ? total : c.end };
+    // The pause its join plays, as on a word reference: the edges that sit in quiet go where it puts them (checkEdge).
+    const pace = sources.pace ?? DEFAULT_PACE;
+    const air = c.leave !== undefined ? splitLeave(c.leave, pace, c.voiceIn) : c.voiceIn !== undefined ? { after: pace.after, before: c.voiceIn } : undefined;
+    return { start: c.start, end: c.end > total && c.end - total <= 0.001 ? total : c.end, ...(air && { air }) };
   }
   if (!c.mediaId || c.fromWord === undefined || c.toWord === undefined) throw new Error(`${label}: a word reference needs mediaId, fromWord and toWord.`);
   return { ...await resolveWordCut(tl, { mediaId: c.mediaId, fromWord: c.fromWord, toWord: c.toWord, leave: c.leave, voiceIn: c.voiceIn }, sources, compareTakes), wordRef: true as const };
@@ -363,6 +365,8 @@ type ResolvedCut = Omit<DialogueCutInput, "mediaId" | "fromWord" | "toWord" | "a
   spoken?: TimeRange;
   /** Other word ranges that leave the same words playing and found measured quiet at both edges. */
   cleanAlternatives?: Array<{ fromWord: number; toWord: number }>;
+  /** The room tone a range in seconds asked its join to leave, with `leave` or `voiceIn`. */
+  air?: JoinPace;
 };
 /** One cut as sent to the engine (DialogueCutsRequest). */
 interface PlannedDecision extends TimeRange {
@@ -453,7 +457,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       ? await resolveWordCut(tl, { mediaId: c.mediaId, fromWord: c.fromWord, toWord: c.toWord }, sources, true)
         .then(r => ("alternativeWordRanges" in r ? r.alternativeWordRanges ?? [] : []).filter(a => !a.problems.length)).catch(() => [])
       : [];
-    return { ...rest, start: resolved.start, end: resolved.end, input: i,
+    return { ...rest, start: resolved.start, end: resolved.end, input: i, ...("air" in resolved && resolved.air && { air: resolved.air }),
       ...(clean.length && { cleanAlternatives: clean.map(a => ({ fromWord: a.fromWord, toWord: a.toWord })) }),
       ...("wordRef" in resolved && { words: resolved.words, wordEdgeProblems: resolved.problems,
         ...("spoken" in resolved && { spoken: resolved.spoken, wordEdgeDips: resolved.dips }), ...("notes" in resolved && { notes: resolved.notes }) }) };
@@ -557,7 +561,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     // two words that run together, are not checked a second time: that check takes a brief dip for speech and held
     // every cut of a doubled word for the editor. What was measured at a dip goes back to the agent.
     if (c.spoken && !c.wordEdgeProblems?.length) return c.wordEdgeDips?.length ? adjust(decided, c.wordEdgeDips.join(" ")) : base;
-    const join = checkJoin({ start: c.start, end: c.end }, c.spoken);
+    const join = checkJoin({ start: c.start, end: c.end }, c.spoken, c.air);
     // Without a measurement at the edge there is nothing to act on. The agent's own evidence stands.
     if (join.unmeasured) return base;
     // An edge left in sound: what Scarlet measured goes with the held cut, for the model's review. Named words say what

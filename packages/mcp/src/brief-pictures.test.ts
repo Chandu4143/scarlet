@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyOps, emptyTimeline, type MediaAsset, type Timeline } from "@scarlet/timeline";
-import { newBriefPictures, briefPictures } from "./brief-pictures.js";
+import { newBriefPictures, briefPictures, flashesOntoCuts } from "./brief-pictures.js";
 
 const canvas = { width: 3840, height: 2160 };
 const media = [
@@ -60,3 +60,49 @@ describe("briefPictures", () => {
     expect(newBriefPictures(edit(86.32), before, media, canvas)).toHaveLength(1);
   });
 });
+
+describe("flashesOntoCuts", () => {
+  const all = () => true;
+  /** Wide camera, then a punch-in at 86.32; a silent screen insert over the wide shot from `start` to `end`. */
+  const over = (start: number, end: number, volume = 0) => applyOps(emptyTimeline("p"), [
+    { op: "addTrack", track: { id: "v_demo", kind: "video", name: "Screen", clips: [] } },
+    { op: "addClip", trackId: "v1", clip: { id: "wide", kind: "media", mediaId: "camera", sourceIn: 308.35, sourceOut: 314.52, timelineIn: 80.15 } },
+    { op: "addClip", trackId: "v1", clip: { id: "punch", kind: "media", mediaId: "camera", sourceIn: 332.44, sourceOut: 339.25, timelineIn: 86.32, transform: tight } },
+    { op: "addClip", trackId: "v_demo", clip: { id: "insert", kind: "media", mediaId: "screen", sourceIn: 100, sourceOut: 100 + end - start, timelineIn: start, volume,
+      transform: zoomed, keyframes: [{ time: 0, transform: zoomed }, { time: 1, transform: { ...zoomed, scale: 3 } }] } },
+  ] as never);
+  const plain = applyOps(emptyTimeline("p"), [
+    { op: "addClip", trackId: "v1", clip: { id: "wide", kind: "media", mediaId: "camera", sourceIn: 308.35, sourceOut: 314.52, timelineIn: 80.15 } },
+    { op: "addClip", trackId: "v1", clip: { id: "punch", kind: "media", mediaId: "camera", sourceIn: 332.44, sourceOut: 339.25, timelineIn: 86.32, transform: tight } },
+  ] as never);
+
+  it("ends an insert that stops two frames short of the camera's cut on that cut", () => {
+    // Zzz at 0:55 (2026-11-17): the screen ended at 55.222 and the camera cut to the next take at 55.289.
+    const after = over(83.05, 86.25);
+    const { ops, met } = flashesOntoCuts(plain, after, media, canvas, all);
+    expect(met).toEqual([{ from: 86.25, to: 86.32, seconds: 0.07, clips: ["insert"] }]);
+    expect(ops).toHaveLength(1);
+    const fixed = applyOps(after, ops);
+    expect(fixed.tracks.find(t => t.id === "v_demo")!.clips[0]).toMatchObject({ timelineIn: 83.05 });
+    expect(fixed.tracks.find(t => t.id === "v_demo")!.clips[0]!.sourceOut).toBeCloseTo(103.27, 6);
+    expect(briefPictures(fixed, media, canvas)).toEqual([]);
+  });
+
+  it("starts an insert that begins two frames after the cut on that cut, keeping its moves where they were", () => {
+    const after = over(86.38, 89);
+    const { ops, met } = flashesOntoCuts(plain, after, media, canvas, all);
+    expect(met).toEqual([{ from: 86.32, to: 86.38, seconds: 0.06, clips: ["insert"] }]);
+    const insert = applyOps(after, ops).tracks.find(t => t.id === "v_demo")!.clips[0]!;
+    expect(insert.timelineIn).toBeCloseTo(86.32, 6);
+    expect(insert.sourceIn).toBeCloseTo(99.94, 6);
+    expect(insert.kind === "media" && insert.keyframes!.map(k => k.time)).toEqual([expect.closeTo(0.06, 6), expect.closeTo(1.06, 6)]);
+  });
+
+  it("leaves a longer brief picture, an audible insert, one already in the video and a clip it can't name to the run", () => {
+    expect(flashesOntoCuts(plain, over(83.05, 86.19), media, canvas, all).met).toEqual([]);
+    expect(flashesOntoCuts(plain, over(83.05, 86.25, 1), media, canvas, all).met).toEqual([]);
+    expect(flashesOntoCuts(over(83.05, 86.25), over(83.05, 86.25), media, canvas, all).met).toEqual([]);
+    expect(flashesOntoCuts(plain, over(83.05, 86.25), media, canvas, id => id !== "insert").met).toEqual([]);
+  });
+});
+
