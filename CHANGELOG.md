@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 17, 2026
+
+- Speech transcription settings show your preferred model, when Scarlet uses bundled Whisper, and how to set up CrisperWhisper.
+
 ## November 16, 2026
 
 - When Scarlet removes a restart, it no longer takes a word or two of the sentence you kept along with it, as in “this is absolutely … detail” where “beautiful” went with the stumble after it.
