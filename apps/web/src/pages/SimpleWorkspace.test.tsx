@@ -103,7 +103,7 @@ afterEach(async () => {
 const click = (element: Element) => act(async () => (element as HTMLElement).click());
 /** Most tests work on the rows. Expand list disclosures without previewing a finished request's single edit. */
 const openEdits = async () => {
-  for (const toggle of container.querySelectorAll<HTMLElement>('[aria-label="Edits"] .simple-pass-toggle[aria-expanded="false"]')) await click(toggle);
+  for (const toggle of container.querySelectorAll<HTMLElement>('[aria-label="Edits"] .simple-pass-toggle:is([aria-expanded="false"], [aria-pressed="false"])')) await click(toggle);
 };
 const showFolded = () => act(async () => root.render(<MemoryRouter><SimpleWorkspace /></MemoryRouter>));
 const show = async () => { await showFolded(); await openEdits(); };
@@ -362,15 +362,18 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   // The link is on the sentence's own line, right after it.
   expect(turn.querySelector(".simple-made-line > .simple-made + .simple-pass-toggle")).not.toBeNull();
   expect(turn.querySelector(".simple-pass-line .simple-pass-toggle")).toBeNull();
-  expect(turn.querySelector(".simple-edits")).toBeNull();
+  // What needs the editor is listed without a click, under a dim "1 needs you": just the flagged edit.
+  expect([turn.querySelector(".simple-made-line .simple-pass-need"), turn.querySelector("button.simple-list-head + .simple-edits")?.previousElementSibling?.textContent])
+    .toEqual([null, "1 needs you"]);
+  expect([...turn.querySelectorAll(".simple-edits .simple-edit-title")].map(r => r.textContent)).toEqual(["wrap"]);
   await openEdits();
   const rows = () => [...turn.querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")];
   // The reply carries no Play, Revise or Undo of its own. The thread's edits are listed once, at its end, numbered as on the timeline.
   expect(rows().map(r => r.querySelector(".simple-edit-title")?.textContent)).toEqual(["music bed", "captions", "wrap"]);
   expect(rows().map(r => r.querySelector(".edit-badge")?.textContent)).toEqual(["1", "2", "3"]);
   expect(turn.querySelector(".simple-suggest")).toBeNull();
-  // Only the edit Scarlet flagged waits for a look.
-  expect(turn.querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
+  // Only the edit Scarlet flagged waits for a look: the link back to it takes the place of "See all", over a dim label.
+  expect([turn.querySelector(".simple-made-line > .simple-pass-need")?.textContent, turn.querySelector(".simple-list-head")?.textContent]).toEqual(["Just the 1 that needs you", "All 3 edits"]);
 
   await click(rows()[1]!);
   await act(async () => {});
@@ -566,11 +569,11 @@ it("steps between a request's edits with the arrow keys, sideways or up and down
   await click(need()!);
   await act(async () => {});
   expect(openTitle()).toBe("wrap");
-  expect([need()!.getAttribute("aria-pressed"), turn.querySelector(".simple-edits")?.getAttribute("aria-label")]).toEqual(["true", "Edits that need you"]);
+  expect(turn.querySelector(".simple-edits")?.getAttribute("aria-label")).toBe("Edits that need you");
   expect(rows().map(r => [r.querySelector(".edit-badge")?.textContent, r.querySelector(".simple-edit-title")?.textContent])).toEqual([["3", "wrap"]]);
   // The link beside it still lists every edit, and "needs you" brings back just the one.
   await click(turn.querySelector(".simple-pass-toggle")!);
-  expect([rows().length, need()!.getAttribute("aria-pressed")]).toEqual([3, "false"]);
+  expect([rows().length, need()!.textContent]).toEqual([3, "Just the 1 that needs you"]);
   await click(need()!);
   expect(rows().length).toBe(1);
   // K keeps the edit on screen. That was the only one to check, so the card closes, the list of what needed the
@@ -954,9 +957,9 @@ it("steps among a pass's flagged cuts with its lists closed, where the timeline 
   await press("ArrowDown");
   expect(pass.querySelector(".simple-pass-list [aria-current='true'] .simple-pass-label")?.textContent).toBe("wrap");
   expect(cardCount()).toBe("2 of 2");
-  // The list put away, the cut stays open and the arrows still go to the other one that waits.
+  // Pressed again the list stays: the cut stays open and the arrows still go to the other one that waits.
   await click(need());
-  expect(pass.querySelector(".simple-pass-list")).toBeNull();
+  expect(pass.querySelector(".simple-pass-list")?.getAttribute("aria-label")).toBe("Edits that need you");
   await press("ArrowUp");
   expect([editPanel()?.querySelector(".edit-card-title")?.textContent, cardCount()]).toEqual(["music bed. The bed may sit too loud under the intro", "1 of 2"]);
   // Every edit listed: the arrows go through them all.
@@ -984,17 +987,16 @@ it("lists what needs the editor for a flagged edit opened from the timeline, so 
     await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(dot.style.left) * 10 })); });
     await act(async () => {});
   };
-  // No list is open. The first flagged edit's amber dot opens it, and the list that opens with it is the one
-  // "2 need you" opens: its card leads with "1 of 2", so the arrows stay among those two.
-  expect(listed()).toBeUndefined();
+  // The list of what needs the editor is open without a click. The first flagged edit's amber dot opens it, in that
+  // list: its card leads with "1 of 2", so the arrows stay among those two.
+  expect(listed()).toBe("Edits that need you");
   await pressDot("1");
-  expect([openTitle(), cardCount(), listed(), turn.querySelector(".simple-pass-need")?.getAttribute("aria-pressed")]).toEqual(["music bed", "1 of 2", "Edits that need you", "true"]);
+  expect([openTitle(), cardCount(), listed(), turn.querySelector(".simple-pass-need")?.textContent]).toEqual(["music bed", "1 of 2", "Edits that need you", "2 need you"]);
   await press("ArrowDown");
   expect([openTitle(), cardCount()]).toEqual(["wrap", "2 of 2"]);
-  // That list put away and the card closed, an edit that needs nothing opens with every edit listed, as before.
-  await click(turn.querySelector(".simple-pass-need")!);
+  // The card closed, the list of what needs the editor stays, and an edit that needs nothing opens with every edit listed.
   await press("Escape");
-  expect([editPanel(), listed()]).toEqual([null, undefined]);
+  expect([editPanel(), listed()]).toEqual([null, "Edits that need you"]);
   await pressDot("2");
   expect([openTitle(), cardCount(), listed()]).toEqual(["captions", undefined, "Edits in this thread"]);
 });
@@ -1392,7 +1394,7 @@ it("takes the card off an edit sent back for revision until its new version land
   await act(async () => {});
   expect(editPanel()!.querySelector(".edit-card-title")?.textContent).toBe("Kept the wrap's last word");
   expect(editPanel()!.querySelector(".edit-card-count")?.textContent).toBe("1 of 1");
-  expect(container.querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
+  expect(container.querySelector(".simple-pass-need")?.textContent).toBe("Just the 1 that needs you");
   // Its row is amber again, as v2, and says it came back revised.
   expect([wrap().getAttribute("aria-label"), wrap().querySelector(".simple-edit-title small")?.textContent, wrap().querySelector(".simple-edit-check")?.textContent])
     .toEqual(["Edit 3: wrap, check", "v2", "Revised"]);
@@ -1414,7 +1416,7 @@ it("marks the latest request's edits from the start, amber where one asks for a 
   expect(turns().map(t => t.getAttribute("aria-label")).at(-1)).toBe(threadWith("chg_approved_2").title);
   // Nothing has been opened. The timeline is already on the latest request, numbered as its list in the chat.
   expect(editPanel()).toBeNull();
-  expect(turnFor("chg_approved_2").querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
+  expect(turnFor("chg_approved_2").querySelector(".simple-pass-need")?.textContent).toBe("Just the 1 that needs you");
   expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
@@ -2465,8 +2467,11 @@ it("numbers an applied pass's cuts on the timeline while it has the timeline, as
   await press("Escape");
   await act(async () => {});
   expect(drawn()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
-  // Closed, the pass keeps the timeline while its flagged cut waits on the editor, and its cuts stay numbered.
-  await click(pass.querySelector(".simple-pass-toggle")!);
+  // Back on the cut that needs the editor, the pass keeps the timeline while it waits, and its cuts stay numbered.
+  await click(pass.querySelector(".simple-made-line > .simple-pass-need")!);
+  expect(drawn()).toEqual([["3", "check"]]);
+  // It opens that cut; closed, the pass keeps the timeline.
+  await press("Escape");
   expect(drawn()).toEqual([["1", undefined], ["2", undefined], ["3", "check"]]);
 });
 
@@ -2480,26 +2485,32 @@ it("lists just an applied pass's flagged cut from need you, and every edit from 
   const pass = turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass")!;
   const list = () => pass.querySelector(".simple-pass-list");
   const marks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
-  // The pass is one sentence and a link. "1 needs you" lists just the flagged cut, in the full list's own rows, and
-  // opens it. Pressed again it puts the list away; the cut stays open.
+  // The pass is one sentence and "See all". The flagged cut is listed without a click, in the full list's own rows,
+  // under a dim "1 needs you" that opens it. Pressed again it keeps that list; the cut stays open.
   expect([pass.querySelector(".simple-made")?.textContent, pass.querySelector(".simple-pass-toggle")?.textContent]).toEqual(["Made 3 edits: music bed, captions, wrap.", "See all"]);
-  expect(list()).toBeNull();
-  const need = () => pass.querySelector<HTMLElement>(".simple-pass-need")!;
+  expect([pass.querySelector(".simple-made-line .simple-pass-need"), list()?.getAttribute("aria-label"), list()?.querySelectorAll("li").length]).toEqual([null, "Edits that need you", 1]);
+  const need = () => pass.querySelector<HTMLElement>("button.simple-list-head")!;
+  expect(need().textContent).toBe("1 needs you");
   await click(need());
   await act(async () => {});
-  expect([list()?.getAttribute("aria-label"), list()?.className, list()?.querySelectorAll("li").length, need().getAttribute("aria-pressed")]).toEqual(["Edits that need you", "simple-pass-list", 1, "true"]);
+  expect([list()?.getAttribute("aria-label"), list()?.className, list()?.querySelectorAll("li").length]).toEqual(["Edits that need you", "simple-pass-list", 1]);
   // The row that needs the editor has its time in amber, and no dot before its words.
   expect([list()?.querySelector(".simple-pass-label")?.textContent, list()?.querySelector(".simple-pass-time")?.className, list()?.querySelector("button")?.getAttribute("aria-current")]).toEqual(["wrap", "simple-pass-time is-need", "true"]);
   expect(editPanel()).not.toBeNull();
   await click(need());
-  expect([list(), need().getAttribute("aria-pressed"), !!editPanel()]).toEqual([null, "false", true]);
-  await click(need());
+  expect([list()?.querySelectorAll("li").length, !!editPanel()]).toEqual([1, true]);
+  // "See all" lists every edit, under "All 3 edits", and "Just the 1 that needs you" takes its place to bring the short list back.
+  await click(pass.querySelector(".simple-pass-toggle")!);
+  const back = () => pass.querySelector<HTMLElement>(".simple-made-line > .simple-pass-need");
+  expect([list()?.querySelectorAll("li").length, pass.querySelector(".simple-list-head")?.textContent, back()?.textContent, pass.querySelector(".simple-pass-toggle")])
+    .toEqual([3, "All 3 edits", "Just the 1 that needs you", null]);
+  await click(back()!);
   expect(list()?.querySelectorAll("li").length).toBe(1);
   // Kept, nothing waits on the editor, so that list goes. The link lists every edit, and the timeline numbers them.
   await press("k");
   await act(async () => {});
   expect(editPanel()).toBeNull();
-  expect([pass.querySelector(".simple-pass-need"), list()]).toEqual([null, null]);
+  expect([pass.querySelector(".simple-pass-need, .simple-list-head"), list()]).toEqual([null, null]);
   await click(pass.querySelector(".simple-pass-toggle")!);
   await act(async () => {});
   expect(list()?.getAttribute("aria-label")).toBe("Every edit");
@@ -2542,11 +2553,11 @@ it("leaves out the link that opens every edit while each of them needs the edito
   const turn = turnFor("chg_approved_2");
   const need = () => turn.querySelector<HTMLElement>(".simple-pass-need");
   const rows = () => [...turn.querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")];
-  // "1 needs you" is the one way in: it lists the edit and opens it.
-  expect([need()?.textContent, turn.querySelector(".simple-pass-toggle")]).toEqual(["1 needs you", null]);
+  // The edit is listed without a click, under "1 needs you", which opens it. There is no "See all".
+  expect([need()?.textContent, rows().length, turn.querySelector(".simple-pass-toggle")]).toEqual(["1 needs you", 1, null]);
   await click(need()!);
   await act(async () => {});
-  expect([rows().length, need()!.getAttribute("aria-pressed"), !!editPanel(), turn.querySelector(".simple-pass-toggle")]).toEqual([1, "true", true, null]);
+  expect([rows().length, !!editPanel(), turn.querySelector(".simple-pass-toggle")]).toEqual([1, true, null]);
   // Kept, nothing needs the editor, and the link is how the edit is reached again.
   await press("k");
   await act(async () => {});
@@ -2568,15 +2579,15 @@ it("opens the list of what needs the editor, not every edit, for an edit opened 
   await showFolded();
   await act(async () => {});
   const turn = turnFor("chg_approved_2");
-  // Opened from the timeline, the edit shows in its list: the one "1 needs you" opens, so that is the link lit.
+  // Opened from the timeline, the edit shows in its list: the one under "1 needs you".
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
   strip.getBoundingClientRect = () => ({ left: 0, width: 1000 }) as DOMRect;
   const dot = container.querySelector<HTMLElement>(".simple-timeline-mark")!;
   await act(async () => { strip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, isPrimary: true, button: 0, pointerId: 1, clientX: parseFloat(dot.style.left) * 10 })); });
   await act(async () => {});
   expect(editPanel()).not.toBeNull();
-  expect([turn.querySelector(".simple-edits")?.getAttribute("aria-label"), turn.querySelector(".simple-pass-need")?.getAttribute("aria-pressed"), turn.querySelector(".simple-pass-toggle")])
-    .toEqual(["Edits that need you", "true", null]);
+  expect([turn.querySelector(".simple-edits")?.getAttribute("aria-label"), turn.querySelector(".simple-pass-need")?.textContent, turn.querySelector(".simple-pass-toggle")])
+    .toEqual(["Edits that need you", "1 needs you", null]);
 });
 
 it("leaves out a pass's link too while each of its edits needs the editor", async () => {
@@ -2626,7 +2637,8 @@ const appliedPass = (flagged: boolean) => {
   useProjectStore.setState({ current: data });
   return later;
 };
-const passToggle = () => turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass .simple-pass-toggle")!;
+/** The pass's link on its sentence's line: "See all", or while every edit is listed, "Just the N that need you". */
+const passToggle = () => turnFor("chg_approved_2").querySelector<HTMLElement>(".simple-pass .simple-made-line > :is(.simple-pass-toggle, .simple-pass-need)")!;
 const ticks = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")].map(m => m.dataset.state ?? "dot");
 
 it("numbers a settled pass's cuts while it has the timeline, and gives a request that arrives under its open list the timeline once it closes", async () => {
@@ -2666,7 +2678,6 @@ it("widens the times of a pass's list once one of its rows is past an hour, so a
       .toEqual(["simple-pass-list has-hours", ...Array(3).fill("52px minmax(0, 1fr) auto")]);
     // The list of just the edit that needs the editor has no time past the hour, and keeps the narrow column.
     await click(passToggle());
-    await click(turnFor("chg_approved_2").querySelector(".simple-pass-need")!);
     await act(async () => {});
     expect([list().className, rows().length, styled(rows()[0]!, "grid-template-columns")[0]]).toEqual(["simple-pass-list", 1, "38px minmax(0, 1fr) auto"]);
   });
@@ -2694,7 +2705,9 @@ it("gives the timeline back to a pass's open list when another request's edit cl
   await event(d => ({ ...d, changes: [...d.changes, third] }));
   await act(async () => {});
   expect(ticks()).toEqual(["dot", "dot", "check"]);
+  // Back to what needs the editor, which opens the pass's flagged cut; closed, the timeline is on the latest request.
   await click(passToggle());
+  await press("Escape");
   await act(async () => {});
   expect(numbered()).toEqual([["1", "check"], ["3", "check"], ["1", "check"]]);
   expect(container.querySelector(".simple-timeline-mark.is-numbered")?.getAttribute("style")).toContain("31.25%");
@@ -6765,8 +6778,10 @@ it("gives the timeline to a request that arrived under a pass's open list once t
   await press("Escape");
   await act(async () => {});
   expect(ticks()).toEqual(["dot", "dot", "check"]);
-  // The list closes. Only the flagged edit from the older pass stays beside the latest request's marker.
+  // The list closes, opening the pass's flagged cut, and then the card. Only the flagged edit from the older pass stays
+  // beside the latest request's marker.
   await click(passToggle());
+  await press("Escape");
   await act(async () => {});
   expect(turnFor("chg_later").querySelector(".simple-pass-need")?.textContent).toBe("1 needs you");
   expect(numbered()).toEqual([["3", "check"], ["1", "check"]]);
@@ -7812,7 +7827,8 @@ it("opens a finished request's edits from its result line, with no chevron, time
   await act(async () => {});
   const turn = turnFor("chg_approved_2");
   const line = () => turn.querySelector<HTMLButtonElement>(".simple-pass-toggle")!;
-  const listOpen = () => !!turn.querySelector(".simple-edits, .simple-pass-list, [aria-label=\"Edits\"] ol");
+  // Its flagged edit is listed without a click; the line opens every edit.
+  const listOpen = () => !!turn.querySelector(".simple-edits[aria-label=\"Edits in this thread\"]");
   // What the request made is its line, and the line is what opens its edits: there is no chevron beside it.
   expect([listOpen(), line().getAttribute("aria-expanded"), line().getAttribute("title")]).toEqual([false, "false", expect.stringContaining("Show the edits")]);
   expect(turn.querySelector(".simple-pass-chevron, .run-chevron")).toBeNull();
@@ -7820,8 +7836,10 @@ it("opens a finished request's edits from its result line, with no chevron, time
   expect(turn.querySelector(".req-time, .req-step, .req-steps")).toBeNull();
   expect(turn.textContent).not.toContain("Laying the music under the whole edit.");
   await click(line());
-  expect([listOpen(), line().getAttribute("aria-expanded"), line().getAttribute("title")]).toEqual([true, "true", expect.stringContaining("Hide the edits")]);
-  await click(line());
+  // Every edit listed, the link back to the edit that needs the editor takes its place.
+  const back = () => turn.querySelector<HTMLButtonElement>(".simple-made-line > .simple-pass-need")!;
+  expect([listOpen(), turn.querySelector(".simple-pass-toggle"), back().textContent, back().getAttribute("title")]).toEqual([true, null, "Just the 1 that needs you", "Show just the ones that need you"]);
+  await click(back());
   expect(listOpen()).toBe(false);
 });
 
@@ -7842,15 +7860,15 @@ it("brings a list the editor opens into view: at the end of a long conversation 
     await showFolded();
     await act(async () => {});
     const turn = turnFor("chg_approved_2");
-    const line = () => turn.querySelector<HTMLButtonElement>(".simple-pass-toggle")!;
+    const line = () => turn.querySelector<HTMLButtonElement>(".simple-made-line > :is(.simple-pass-toggle, .simple-pass-need)")!;
     // Nothing moves until the editor asks: the chat opens at its latest message.
     expect(scrolled).toEqual([]);
     await click(line());
     const first = turn.querySelector(".simple-edits .simple-edit")!;
     expect(scrolled).toEqual([first]);
-    // Putting the list away moves nothing.
+    // Putting the list away moves nothing but the edit it opens, kept in view.
     await click(line());
-    expect(scrolled).toEqual([first]);
+    expect([scrolled.length, scrolled.at(-1)?.textContent]).toEqual([2, expect.stringContaining("wrap")]);
   });
 });
 
@@ -9583,8 +9601,10 @@ it("underlines the chat actions, makes edit result links stand out, and keeps am
     expect(look("Finish when ready")).toBe("silver underline gray");
     expect(look("See all")).toBe("white underline white");
     expect(getComputedStyle(buttonIn(turnFor("chg_approved_2"), "See all")!).fontWeight).toBe("600");
-    // What needs the editor is amber, rule and all: an edit to check, and Scarlet's question.
-    expect(["1 needs you", "Answer"].map(look)).toEqual(Array(2).fill("orange underline orange"));
+    // What needs the editor is amber, rule and all: Scarlet's question. Over the rows that need the editor,
+    // "1 needs you" is a dim label, ruled only under the pointer.
+    expect(look("Answer")).toBe("orange underline orange");
+    expect(getComputedStyle(buttonIn(turnFor("chg_approved_2"), "1 needs you")!).textDecoration).toBe("none");
     // The one action of a request that stopped early is a link like the rest, not white.
     await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_running" ? { ...t, state: "cancelled" as const, finishedAt: new Date().toISOString() } : t) }));
     expect(look("Resume")).toBe("silver underline gray");
@@ -9616,8 +9636,9 @@ it("draws a revision of one applied edit under that edit's row, at work, and und
   expect(container.querySelector('.unit[data-run="task_fix"]')).toBeNull();
   expect(owner().closest(".simple-pin")).not.toBeNull();
   expect(owner().querySelector(":scope > .unit-msg .simple-revising")).toBeNull();
-  // With the list closed it sits under what the request made: named for its edit, with the editor's words and Scarlet at work.
-  expect(owner().querySelector(".simple-edits")).toBeNull();
+  // While only the edit that needs the editor is listed it sits under what the request made: named for its edit, with
+  // the editor's words and Scarlet at work.
+  expect(owner().querySelector(".simple-edits")?.getAttribute("aria-label")).toBe("Edits that need you");
   expect(sub().parentElement?.classList.contains("simple-pass")).toBe(true);
   expect([tagIn(sub()), wordsOf(sub().querySelector(".subunit-msg p"))]).toEqual(["Edit at 0:00", "Make the captions bigger."]);
   expect(sub().querySelector('[aria-label="Scarlet’s work"] .working-text')).not.toBeNull();
@@ -9748,7 +9769,7 @@ it("keeps Scarlet's reply to two lines however long it is, and opens it in full 
   expect([reply().className.includes("is-clipped"), reply().getAttribute("aria-expanded"), reply().onclick]).toEqual([false, null, null]);
 });
 
-it("keeps an edit in the need-you list where it was once it's kept, until that list closes", async () => {
+it("keeps an edit in the need-you list where it was once it's kept, until nothing needs the editor", async () => {
   appliedEdits();
   // Two of the request's three edits ask for a look.
   vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
@@ -9763,8 +9784,8 @@ it("keeps an edit in the need-you list where it was once it's kept, until that l
   const need = () => turn.querySelector<HTMLElement>(".simple-pass-need");
   const rows = () => [...turn.querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")].map(r =>
     [r.querySelector(".edit-badge")?.textContent?.trim(), r.querySelector(".simple-edit-title")?.textContent, r.querySelector(".edit-badge")?.classList.contains("is-kept")]);
-  expect([need()?.textContent, turn.querySelector(".simple-edits")]).toEqual(["2 need you", null]);
-  // "2 need you" lists just those two, numbered as in the whole list, and opens the first.
+  // Just those two are listed without a click, numbered as in the whole list. "2 need you" opens the first.
+  expect([need()?.textContent, rows()]).toEqual(["2 need you", [["2", "captions", false], ["3", "wrap", false]]]);
   await click(need()!);
   await act(async () => {});
   expect(rows()).toEqual([["2", "captions", false], ["3", "wrap", false]]);
@@ -10389,23 +10410,25 @@ it("takes Scarlet's closing words out of the chat with a revision that has left,
   expect(block.nextElementSibling?.textContent).toContain("Check edit 3 to hear how the ending lands.");
 });
 
-it("gives a request's list the place of Scarlet's reply while it's open, and brings the reply back on Hide", async () => {
+it("gives a request's list the place of Scarlet's reply while it's open, and brings the reply back when it's put away", async () => {
   madeRequest();
   await showFolded();
   await act(async () => {});
   const block = () => container.querySelector<HTMLElement>('.unit[data-run="task_made"]')!;
   const reply = () => block().nextElementSibling?.classList.contains("from-scarlet") ? block().nextElementSibling!.querySelector(".said")?.textContent : undefined;
-  const link = () => block().querySelector<HTMLButtonElement>(".simple-pass-toggle")!;
+  const link = () => block().querySelector<HTMLButtonElement>(".simple-made-line > :is(.simple-pass-toggle, .simple-pass-need)")!;
   // Folded, the request says what it made, and Scarlet's reply follows it.
   expect([link().textContent, reply()]).toEqual(["See all", "Check edit 3 to hear how the ending lands."]);
   const drawn = block();
   // Opened, the list has the reply's place. It is the same block, not drawn anew.
   await click(link());
-  expect([link().textContent, !!block().querySelector(".simple-edits"), reply()]).toEqual(["Hide", true, undefined]);
+  expect([link().textContent, block().querySelector(".simple-edits")?.getAttribute("aria-label"), reply()]).toEqual(["Just the 1 that needs you", "Edits in this thread", undefined]);
   expect(block()).toBe(drawn);
-  // Hide puts the list away, and the reply is back.
+  // That link puts every edit away and opens the edit that needs the editor. Once its card closes, the reply is back
+  // with just that edit listed.
   await click(link());
-  expect([link().textContent, block().querySelector(".simple-edits"), reply()]).toEqual(["See all", null, "Check edit 3 to hear how the ending lands."]);
+  await press("Escape");
+  expect([link().textContent, block().querySelector(".simple-edits")?.getAttribute("aria-label"), reply()]).toEqual(["See all", "Edits that need you", "Check edit 3 to hear how the ending lands."]);
 });
 
 it("keeps a revision whose new version couldn't be prepared, since nothing else would say it came to nothing", async () => {
@@ -10452,7 +10475,7 @@ it("keeps a list the editor opened on a request open when a revision of one of i
   await act(async () => {});
   expect(block().closest(".simple-pin")).not.toBeNull();
   expect(block().querySelectorAll(".simple-edits .simple-edit").length).toBe(3);
-  expect(block().querySelector(".simple-pass-toggle")?.textContent).toBe("Hide");
+  expect(block().querySelector(".simple-made-line > .simple-pass-need")?.textContent).toBe("Just the 1 that needs you");
   // And back in the conversation once the revision is done.
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_fix" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString(), changeIds: ["chg_fixed"] } : t),
     changes: [...d.changes, { ...d.changes.find(c => c.id === "chg_approved_2")!, id: "chg_fixed", taskId: "task_fix", threadId: thread.id, createdAt: new Date().toISOString(),
