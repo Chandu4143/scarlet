@@ -202,7 +202,7 @@
   /* While the picture loads, the play button turning is the one sign of it: the playback controls show until it is in. */
   .watch-monitor .monitor-playback[data-loading] { opacity: 1; transition-duration: .15s; transition-delay: 0s; }
 }
-.timeline-panel { --timeline-tools-space: 32px; position: relative; width: 100%; min-width: 0; padding: 0 11px 11px; border: 1px solid #383735; border-radius: 9px; background: #1a1918; }
+.timeline-panel { position: relative; width: 100%; min-width: 0; padding: 0 11px 11px; border: 1px solid #383735; border-radius: 9px; background: #1a1918; }
 .timeline-track { --ruler-height: 30px; --lane-height: clamp(78px, 9.8vh, 96px); --wave-height: calc(var(--lane-height) * .3); position: relative; }
 .timeline-slider { position: relative; height: calc(var(--ruler-height) + var(--lane-height)); border-radius: 4px; cursor: ew-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
 .timeline-ruler { position: absolute; inset: 0 0 auto; height: calc(var(--ruler-height) - 4px); overflow: hidden; pointer-events: none; }
@@ -255,21 +255,12 @@
 @keyframes waveform-grow { from { transform: scaleY(.15); opacity: .35; } }
 /* A half-width tile advances exactly one repeat so the ripple loops without a jump. */
 @keyframes waveform-travel { from { mask-position: 0% center; } to { mask-position: 100% center; } }
-/* The zoom control sits quietly at the ruler's right end, centred in its strip, like the card's small icons. The ruler
-   fades out under it so no tick or label runs beneath the icon. */
-.timeline-view-controls { position: absolute; top: 2px; right: 7px; z-index: 12; color: #eceae5; }
-.timeline-view-trigger { display: grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--color-dim); cursor: pointer; transition: background-color .12s, color .12s; }
-.timeline-view-trigger:hover, .timeline-view-trigger[aria-expanded="true"] { background: var(--color-raised); color: var(--color-fg); }
-.timeline-view-trigger:focus-visible { outline-offset: -2px; }
-.timeline-panel:has(> .timeline-view-controls) .timeline-ruler { mask-image: linear-gradient(to left, transparent 22px, #000 38px); }
-.timeline-tools { position: absolute; right: 0; bottom: calc(100% + 6px); width: 178px; padding: 5px 7px; border: 1px solid #53534e; border-radius: 7px; background: #262625; box-shadow: 0 3px 10px #0007; font-size: 12px; }
-.timeline-tools::after { content: ""; position: absolute; bottom: -4px; right: 8px; width: 6px; height: 6px; transform: rotate(45deg); background: inherit; border-right: 1px solid #53534e; border-bottom: 1px solid #53534e; }
-.timeline-zoom-row { display: flex; align-items: center; gap: 2px; }
-.timeline-tools button { min-height: 24px; border-radius: 4px; }
-.timeline-tools button:enabled:hover { background: #44443e; }
-.timeline-tools button:disabled { color: #97958f; }
+.timeline-zoom-row { position: absolute; top: 0; right: 0; z-index: 5; display: flex; align-items: center; gap: 3px; color: #eceae5; font-size: 12px; }
+.timeline-zoom-row button { min-height: 20px; border-radius: 4px; }
+.timeline-zoom-row button:enabled:hover { background: #44443e; }
+.timeline-zoom-row button:disabled { opacity: .45; }
 .timeline-zoom-step { width: 27px; background: #343432; font-size: 16px; line-height: 1; }
-.timeline-zoom-level { min-width: 33px; text-align: center; font: 11px var(--font-mono); }
+.timeline-zoom-level { min-width: 6ch; text-align: center; font: 11px var(--font-mono); }
 .timeline-fit { margin-left: auto; padding: 0 8px; border: 1px solid #53534e; }
 .timeline-filmstrip > div, .filmstrip-held > div { min-width: 0; overflow: hidden; background: var(--color-raised); }
 .timeline-filmstrip img { display: block; width: 100%; height: 100%; object-fit: cover; }

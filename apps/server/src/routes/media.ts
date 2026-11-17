@@ -290,6 +290,12 @@ export function mediaRoutes(ctx: Ctx) {
       const spans = await speech.get(key, () => ctx.track(recordingSpeechActivity(ctx, file, from, to, ctx.projectSignal(media.projectId)), media.projectId));
       return c.json({ mediaId: media.id, from, to, ...wf, speechActivity: spans });
     }
+    if (c.req.query("format") === "peaks-f64le") {
+      // Legacy JSON caches may contain more precision than the current float32 cache.
+      const data = new DataView(new ArrayBuffer(wf.peaks.length * 8));
+      for (let i = 0; i < wf.peaks.length; i++) data.setFloat64(i * 8, wf.peaks[i]!, true);
+      return c.body(data.buffer, 200, { "Content-Type": "application/octet-stream" });
+    }
     return c.json({ mediaId: media.id, from, to, peaks: wf.peaks, rms: wf.rms });
   });
 
@@ -307,7 +313,7 @@ export function mediaRoutes(ctx: Ctx) {
     const search = c.req.query("search");
     if (search !== undefined) {
       const contextWords = z.coerce.number().int().min(0).max(30).parse(c.req.query("contextWords") ?? 6);
-      return c.json(transcripts.search(transcript, search, contextWords));
+      return c.json(transcripts.search(transcript, search, contextWords, c.req.query("wordSnapshot")));
     }
     return c.json(c.req.query("audioSources") === "1" && from !== null && to !== null && !omitWords
       ? await ctx.track(readSources(media.projectId, media, transcript, from, to), media.projectId) : transcript);

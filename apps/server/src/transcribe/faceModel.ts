@@ -25,9 +25,10 @@ const STRIDES = [8, 16, 32] as const;
 
 /**
  * A face in a frame: its box as fractions of the frame (left, top, right, bottom), how sure the detector was (0..1),
- * and roughly where it looks: degrees from facing the camera, positive toward the frame's right.
+ * roughly where it looks (degrees from facing the camera, positive toward the frame's right) and the point midway
+ * between its eyes, as fractions of the frame.
  */
-export interface Face { box: [number, number, number, number]; score: number; yaw: number }
+export interface Face { box: [number, number, number, number]; score: number; yaw: number; eyes: [number, number] }
 
 /** How much `a` and `b` overlap, as a share of both together. */
 export function iou(a: readonly number[], b: readonly number[]) {
@@ -66,10 +67,10 @@ export function decodeFaces(outputs: Outputs, width: number, height: number, min
       const col = i % cols, row = (i - col) / cols;
       const cx = (col + bbox[i * 4]!) * stride, cy = (row + bbox[i * 4 + 1]!) * stride;
       const w = Math.exp(bbox[i * 4 + 2]!) * stride, h = Math.exp(bbox[i * 4 + 3]!) * stride;
-      const x = (k: number) => (col + kps[i * 10 + k * 2]!) * stride;
+      const x = (k: number) => (col + kps[i * 10 + k * 2]!) * stride, y = (k: number) => (row + kps[i * 10 + k * 2 + 1]!) * stride;
       const clamp = (v: number) => Math.min(1, Math.max(0, v));
       found.push({ box: [clamp((cx - w / 2) / width), clamp((cy - h / 2) / height), clamp((cx + w / 2) / width), clamp((cy + h / 2) / height)],
-        score, yaw: faceYaw(x(0), x(1), x(2)) });
+        score, yaw: faceYaw(x(0), x(1), x(2)), eyes: [clamp((x(0) + x(1)) / 2 / width), clamp((y(0) + y(1)) / 2 / height)] });
     }
   }
   found.sort((a, b) => b.score - a.score);

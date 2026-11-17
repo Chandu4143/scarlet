@@ -334,16 +334,15 @@
 .simple-pass-toggle[data-so-far] { color: #eae5da; text-decoration-color: #ae9d79; }
 .simple-pass-toggle:is(:hover, :focus-visible) { text-decoration-thickness: 2px; }
 .simple-pass-toggle:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
-/* What needs the editor is listed without a click. While every edit is listed instead, the amber link back to it takes
-   the place of "See all" on the line that sums up what the request made. */
-.simple-pass-need { padding: 0; border: 0; background: none; color: var(--color-warn); font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
-  text-decoration: underline; text-underline-offset: 3px; }
-.simple-pass-need:is(:hover, :focus-visible) { text-decoration-thickness: 2px; }
-/* While the editor can switch between them, a dim label over the rows says which list they are. */
-.simple-list-head { margin: 4px 0 2px; font-size: 11.5px; letter-spacing: .02em; color: var(--color-dim); }
-/* Over the rows that need the editor it is "N need you", and opens the first of them: dim, ruled only under the pointer. */
-button.simple-list-head { display: block; padding: 0; font-weight: 400; text-decoration: none; color: var(--color-dim); }
-button.simple-list-head:is(:hover, :focus-visible) { color: var(--color-muted); text-decoration: underline; text-decoration-thickness: 1px; }
+/* Keep the review choices together above the list, including when its rows scroll in a pinned request. */
+.simple-review-tabs { display: flex; flex: none; align-items: baseline; gap: 18px; margin: 4px 0 5px; border-bottom: 1px solid var(--color-line); }
+.simple-review-tab { display: inline-flex; align-items: baseline; gap: 6px; min-height: 28px; margin-bottom: -1px; padding: 4px 0; border: 0;
+  border-bottom: 2px solid transparent; background: none; color: var(--color-muted); font: inherit; font-weight: 600;
+  line-height: 19px; white-space: nowrap; cursor: pointer; }
+.simple-review-tab:is(:hover, :focus-visible) { color: var(--color-fg); }
+.simple-review-tab[aria-pressed="true"] { border-bottom-color: var(--color-fg); color: var(--color-fg); }
+.simple-review-tab[aria-pressed="true"]:has(.simple-review-tab-count) { border-bottom-color: var(--color-warn); }
+.simple-review-tab-count { color: var(--color-warn); font-variant-numeric: tabular-nums; }
 .simple-pass-ok { color: var(--color-ok); }
 /* Keep offscreen rows' absolute screen-reader labels in the list's scroll area. */
 .simple-pass-list { position: relative; max-height: 320px; overflow-y: auto; margin: 0 4px 4px; border-top: 1px solid var(--color-line); }
@@ -472,7 +471,7 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 .unit-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warn); }
 /* What needs the editor, listed under the band, takes the dot's place. A word for how the run ended stays, before it: with calls or edits still waiting, the
    action under them ("Resume") would otherwise have nothing that says the run stopped. */
-.unit:has(.simple-pass-need, .simple-list-head) > .unit-msg > .unit-state:has(> .unit-dot) { display: none; }
+.unit:has(.simple-review-tab-count) > .unit-msg > .unit-state:has(> .unit-dot) { display: none; }
 /* The active request's action follows its metrics. */
 .unit-stop { flex: none; align-self: center; font-size: 12.5px; line-height: 19px; }
 .unit-state:not(:empty) + .unit-stop { margin-left: -2px; }
@@ -502,7 +501,7 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
   .unit-token-word { display: none; }
 }
 /* Stop, or the word for where it stands, sits on the first line of the editor's words, on their baseline, however
-   many lines they take: level with "N need you". A dot has no baseline of its own, so it sits in the middle of that
+   many lines they take. A dot has no baseline of its own, so it sits in the middle of that
    line, beside the Stop after it. */
 .unit > .unit-msg > .unit-stop, .unit > .unit-msg > .unit-state:not(:has(> .unit-dot)) { align-self: baseline; }
 .unit > .unit-msg > .unit-state:has(> .unit-dot) { align-self: flex-start; height: 19px; }
@@ -671,7 +670,7 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .simple-made b { font-weight: 600; color: var(--color-fg); font-variant-numeric: tabular-nums; }
 /* The gap is the sentence's own, at its end: a link that wraps to the next line starts at the margin, not 9px in. */
 .simple-made-line > .simple-made { margin-right: 9px; }
-.req .simple-pass-need, .req .simple-pass-ok, .req .simple-pass-line > .simple-link { flex: none; white-space: nowrap; }
+.req .simple-pass-ok, .req .simple-pass-line > .simple-link { flex: none; white-space: nowrap; }
 .req .simple-pass .req-right { gap: 6px; }
 /* A row is one line. Its title carries the whole note, and the card on the timeline shows it in full. */
 .req .simple-pass-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

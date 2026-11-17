@@ -482,6 +482,37 @@ function reviewTimeIn(check: string) {
   return match[0].split(":").reduce((seconds, part) => seconds * 60 + Number(part), 0);
 }
 
+/**
+ * Whether `head` plays all the footage `before` plays through `span`, picture and sound each on a track of its kind.
+ * Read clip by clip and not through a time map: the version that shows a cut's footage can lay the sound that
+ * followed the cut under the picture it put back, and a map then finds that stretch on the working cut by its sound.
+ */
+function playsAll(before: Timeline, span: TimeRange, head: Timeline, fps: number) {
+  const slack = 1 / fps;
+  let any = false;
+  for (const track of before.tracks) for (const clip of track.clips) {
+    if (!("mediaId" in clip)) continue;
+    let placed: TimeRange;
+    try { placed = clipRange(clip); } catch { continue; }
+    const from = Math.max(span.start, placed.start), to = Math.min(span.end, placed.end);
+    if (to - from <= slack / 2) continue;
+    any = true;
+    const speed = clip.speed ?? 1;
+    const need = { start: clip.sourceIn + (from - placed.start) * speed, end: clip.sourceIn + (to - placed.start) * speed };
+    const have = head.tracks.filter(other => other.kind === track.kind).flatMap(other => other.clips)
+      .flatMap(other => "mediaId" in other && other.mediaId === clip.mediaId ? [{ start: other.sourceIn, end: other.sourceOut }] : [])
+      .sort((x, y) => x.start - y.start);
+    let reach = need.start;
+    for (const piece of have) {
+      if (piece.end <= reach) continue;
+      if (piece.start > reach + slack) break;
+      reach = piece.end;
+    }
+    if (reach < need.end - slack) return false;
+  }
+  return any;
+}
+
 /** Return playable ranges on the working cut, never mixing clocks from different versions or branches. */
 export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVersionLink[],
   readVersion: (version: string) => Timeline | undefined, fps: number, media?: ProjectFiles): ThreadEdit[] {
@@ -656,6 +687,8 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     const start = back?.(span.start, "right"), end = back?.(span.end, "left");
     return typeof start === "number" && typeof end === "number" && start <= removed.start + 0.5 / fps && end >= removed.end - 0.5 / fps;
   });
+  // Where each reason to look was raised, for a flag whose cut has since left the video (see the end).
+  const flaggedAt = new Map<string, NonNullable<SavedEdit["reviewLocation"]>>();
   for (const { version, named, still, resaved, putBack, markerSays: _markerSays, reviewLocation, ...edit } of edits) {
     const map = mapFrom(version);
     if (!map) continue;
@@ -694,6 +727,7 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     const review = placeReview(placed, reviewLocation);
     if (review) placed.reviewRange = review.range;
     if (review?.says) placed.reviewSays = review.says;
+    if (placed.check && reviewLocation) flaggedAt.set(placed.check, reviewLocation);
     const first = (resaved && placed.at !== undefined ? revised(placed, [placed.at], { start: placed.at, end: placed.at }) ?? revised(placed, [placed.at]) : undefined) ??
       (still && placed.at !== undefined ? cutThere(placed) : undefined) ?? sameAs(placed, named);
     if (first) {
@@ -704,5 +738,41 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     if (placed.at !== undefined && placed.kind === "restore") placed.kind = "other";
     result.push(placed);
   }
-  return result.sort((a, b) => (a.at ?? a.range.start) - (b.at ?? b.range.start));
+  // A cut is in the video while footage it took out is missing from it. A pass can put a cut's footage back with a save
+  // of the whole timeline that never names the cut: one trimmed a pause that held the “5.5” of “Opus 5.5”, put the words
+  // back three saves later as “Restored the complete Opus 5.5 model name”, and the cut stayed listed, red on the
+  // timeline over words the video played, carrying a flag raised about the join beside it (2026-11-16). A cut whose
+  // footage the working cut plays again, all of it, is not listed. A reason to look it carried goes to the cut that is
+  // at the flagged place now, kept under the flag's own identity, or stays as a passage to check when there is none.
+  const playsAgain = (cut: ThreadEdit) => {
+    const { version, removed } = cut.beforeCut!, before = read(version);
+    // A version that reads as the working cut's own tracks has nothing taken out to compare.
+    return !!before && before.tracks !== head.tracks && removed.end - removed.start > 0.5 / fps && playsAll(before, removed, head, fps);
+  };
+  const gone = new Set(result.filter(edit => edit.beforeCut && edit.at !== undefined && playsAgain(edit)));
+  for (const cut of gone) {
+    if (!cut.check) continue;
+    const location = flaggedAt.get(cut.check), map = location && mapFrom(location.version);
+    const from = map && (map(location.range.start, "right") ?? map(location.range.start, "left"));
+    const to = map && (map(location.range.end, "left") ?? map(location.range.end, "right"));
+    const flagged = typeof from === "number" && typeof to === "number" && to >= from ? { start: from, end: to } : cut.range;
+    const there = result.findLast(other => !gone.has(other) && other.beforeCut && other.at !== undefined && !other.check &&
+      other.at >= flagged.start - NAMED_SLACK && other.at <= flagged.end + NAMED_SLACK);
+    if (there) {
+      there.check = cut.check;
+      if (cut.recheck) there.recheck = cut.recheck;
+      if (cut.reviewSays) there.reviewSays = cut.reviewSays;
+      there.reviewRef = cut.reviewRef ?? { changeId: cut.changeId, spot: cut.spot };
+      there.reviewChangeId = cut.reviewChangeId ?? cut.changeId;
+    } else {
+      // Nothing is cut there now: what is left to check is how the passage plays.
+      gone.delete(cut);
+      delete cut.beforeCut;
+      delete cut.at;
+      cut.kind = "other";
+      cut.range = flagged.end > flagged.start ? flagged : cut.range;
+      cut.reviewRange = cut.range;
+    }
+  }
+  return result.filter(edit => !gone.has(edit)).sort((a, b) => (a.at ?? a.range.start) - (b.at ?? b.range.start));
 }

@@ -33,7 +33,10 @@ export interface RepeatEvidence {
 export interface SilenceLeft { id: string; start: number; end: number; seconds: number; mediaId: string;
   /** Where it starts in the recording. */
   source: number; after: string; before: string; atJoin: boolean }
-/** A wordless stretch this long that a pass leaves playing is accounted for: cut, or kept for what the viewer sees or hears in it. */
+/**
+ * A wordless stretch this long that a pass leaves playing is accounted for: cut, or kept for what the viewer sees or
+ * hears in it. The default when the check isn't given one; how long a silence may play unremarked is the skill's pace.
+ */
 export const SILENCE_LEFT_SECONDS = 2;
 /** A join whose sound, read letter by letter, doesn't match the words the transcript says it plays. */
 export interface JoinHearing { at: number; mediaId: string; side: "out" | "in"; issue: "clipped" | "fragment"; heard: string;
@@ -80,6 +83,7 @@ export const RepeatAuditRequest = z.object({
   version: z.string().min(1), startedAt: z.string().optional(),
   keep: z.array(z.object({ id: z.string().min(1), reason: z.string().trim().min(1).max(300) })).max(100).default([]),
   offset: z.number().int().nonnegative().default(0),
+  silencesFrom: z.number().finite().min(0.5).max(30).default(SILENCE_LEFT_SECONDS),
 });
 
 export const SheetOptions = {

@@ -76,9 +76,15 @@ function progressLabel(text: string): string | undefined {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+const toolNames = new WeakMap<TaskEvent, string>();
+
 export function toolName(event: TaskEvent): string {
+  const known = toolNames.get(event);
+  if (known !== undefined) return known;
   const name = typeof event.data?.tool === "string" ? event.data.tool : event.text.trim().split(/\s+/, 1)[0] ?? "";
-  return name.replace(/^(?:mcp__scarlet__|mcp_scarlet_|scarlet(?:__|[./]))/i, "").replaceAll(".", "_").toLowerCase();
+  const tool = name.replace(/^(?:mcp__scarlet__|mcp_scarlet_|scarlet(?:__|[./]))/i, "").replaceAll(".", "_").toLowerCase();
+  toolNames.set(event, tool);
+  return tool;
 }
 
 export const waitLabels: Record<string, string> = { transcript: "the transcript", sound: "the sound analysis", dialogue: "dialogue analysis" };

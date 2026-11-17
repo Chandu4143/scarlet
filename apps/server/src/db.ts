@@ -616,6 +616,9 @@ function ensureReadIndexes(db: Db): void {
  * that run as Scarlet starts find nothing to do without reading the edits and requests that were done with long ago.
  */
 const LOOKUP_INDEXES = {
+  changes_by_task: "ON changes(project_id, json_extract(json, '$.taskId'))",
+  tasks_by_revised_cut: "ON tasks(project_id, json_extract(json, '$.context.changeId')) WHERE json_extract(json, '$.context.cutIndex') IS NOT NULL",
+  tasks_by_resume_root: "ON tasks(json_extract(json, '$.resumeRootId')) WHERE json_extract(json, '$.resumeRootId') IS NOT NULL",
   changes_state: "ON changes(state)",
   renders_export: "ON renders(created_at) WHERE json_extract(json, '$.export.owner') IS NOT NULL",
   changes_left_out_unread: `ON changes(created_at) WHERE state = 'approved' AND json_extract(json, '$.leftOut') IS NULL

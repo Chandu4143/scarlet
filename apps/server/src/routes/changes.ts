@@ -87,7 +87,7 @@ export function changeRoutes(ctx: Ctx) {
       // What Scarlet changed on its own: confident cuts it staged, edges it put on frames, earlier staged cuts it let go.
       ...(stagedForEditor && { stagedForEditor }), ...(onFrames && { onFrames }), ...(droppedFromReview && { droppedFromReview }),
       // The version to build on next: where the confident cuts left the edit.
-      head: ctx.repos.projects.get(c.req.param("id"))?.head }, 201);
+      head: ctx.repos.projects.header(c.req.param("id"))?.head }, 201);
   });
 
   r.get("/projects/:id/changes", (c) => {

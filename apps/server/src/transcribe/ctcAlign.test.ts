@@ -245,6 +245,24 @@ describe("grouping and fallback", () => {
       expect(times(later)).toEqual([["two", 1.45, 1.75], ["too", 1.75, 2.4]]);
     });
 
+    it("puts a number the aligner can't spell on sound long enough to say it, however far its estimate sits", () => {
+      // “Opus 5.5 and”: the estimate sat on the 80 ms onset of “and”, beside a second of “five point five”.
+      const sliver = applyTimings(run([["5.5", 8.92, 9]]), placed(1), undefined, 0, () => [{ start: 0.5, end: 1.4 }, { start: 8.92, end: 9 }]);
+      expect(times(sliver)).toEqual([["5.5", 0.5, 1.4]]);
+      // “second place 56 percent”: the estimate ended 0.6 s before “fifty six”.
+      const far = applyTimings(run([["56", 0.5, 0.6]]), placed(1), undefined, 0, () => [{ start: 1.2, end: 1.8 }]);
+      expect(times(far)).toEqual([["56", 1.2, 1.8]]);
+      // A word the aligner tried and didn't hear stays unheard at that distance.
+      const tried = applyTimings(run([["two", 0.5, 0.6]]), placed(1), undefined, 0, () => [{ start: 1.2, end: 1.8 }]);
+      expect(times(tried)).toEqual([["two", 0.5, 0.5]]);
+      // With nothing longer in the gap, a number keeps the short sound its estimate is on.
+      const short = applyTimings(run([["6", 8.9, 9]]), placed(1), undefined, 0, () => [{ start: 8.9, end: 9 }]);
+      expect(times(short)).toEqual([["6", 8.9, 9]]);
+      // Two numbers in one gap keep their order, each on its own stretch.
+      const two = applyTimings(run([["12", 0.5, 0.6], ["40", 8.9, 9]]), placed(2), undefined, 0, () => [{ start: 1, end: 1.5 }, { start: 3, end: 3.6 }, { start: 8.92, end: 9 }]);
+      expect(times(two)).toEqual([["12", 1, 1.5], ["40", 3, 3.6]]);
+    });
+
     it("gives a word over no sound no time, right after the word before, so it holds up no pause", () => {
       const out = applyTimings(run([["two", 0.5, 9], ["...", 9, 9]]), placed(2), undefined, 0, () => []);
       expect(times(out)).toEqual([["two", 0.5, 0.5], ["...", 9, 9]]);
@@ -466,11 +484,29 @@ describe("transcript alignment", () => {
     await alignWords(ctx(), "page.wav", [segment(1, 11, [["hello", 1, 2], ["there", 10, 11]])], { language: "en", signal, emissions });
     expect(decode).not.toHaveBeenCalled();
     expect(sent).toEqual([{ wav: "", store: { file, offset: 2, duration: 60 } }]);
+    // A full transcript can use those frames even when no retained WAV or model is available.
+    const extract = vi.spyOn(ffmpeg, "extractWav").mockRejectedValue(new Error("recording unavailable"));
+    await alignTranscript(ctx(), { source: "talk.mov", emissions: file, segments: [segment(1, 2, [["hello", 1, 2]])], signal });
+    expect(extract).not.toHaveBeenCalled();
+    expect(LocalWhisperModel.prototype.get).not.toHaveBeenCalled();
+    expect(sent[1]).toEqual({ wav: "", store: { file, offset: 0 } });
     // Words at 42-52 s need the second window, so the worker gets the whole recording to infer it from.
     await alignWords(ctx(), "page.wav", [segment(40, 50, [["again", 40, 41], ["later", 49, 50]])], { language: "en", signal, emissions });
     expect(decode).toHaveBeenCalledTimes(1);
-    expect(sent[1]).toEqual({ wav: join(dir, "whole.wav"), store: { file, offset: 2, duration: 60 } });
+    expect(sent.at(-1)).toEqual({ wav: join(dir, "whole.wav"), store: { file, offset: 2, duration: 60 } });
+    expect(LocalWhisperModel.prototype.get).toHaveBeenCalledTimes(1);
     expect((await readdir(dir)).filter(f => f.endsWith(".part"))).toEqual([]);
+  });
+
+  it("keeps a retryable transcript when audio cannot be decoded without fetching model weights", async () => {
+    const segments = [segment(1, 2, [["hello", 1, 2]])];
+    const failed = vi.fn();
+    vi.spyOn(ffmpeg, "extractWav").mockRejectedValue(new Error("recording unavailable"));
+    for (const emissions of [undefined, join(dir, "missing-emissions.bin")]) {
+      expect(await alignTranscript(ctx(), { source: "talk.mov", emissions, segments, signal, onFailure: failed })).toBe(segments);
+    }
+    expect(failed).toHaveBeenCalledTimes(2);
+    expect(LocalWhisperModel.prototype.get).not.toHaveBeenCalled();
   });
 
   it("keeps the provider's times for other languages and when the aligner fails", async () => {

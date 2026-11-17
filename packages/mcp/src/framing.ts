@@ -21,10 +21,14 @@ export interface Framing {
   within?: Box;
   /** Seconds the move takes. Zero is a straight cut to the frame. */
   over: number;
+  /** How the move eases: the skill's feel for a zoom. easeInOut when absent. */
+  ease?: MoveEase;
   /** The corner of the video the picture laid over the recording sits in from this framing on, at the size and margins it has. */
   inset?: Corner;
 }
 
+export const MOVE_EASES = ["easeInOut", "easeIn", "easeOut", "linear"] as const;
+export type MoveEase = typeof MOVE_EASES[number];
 export const CORNERS = ["bottom-right", "bottom-left", "top-right", "top-left"] as const;
 export type Corner = typeof CORNERS[number];
 
@@ -321,7 +325,7 @@ export function framingOps(timeline: Timeline, media: readonly MediaAsset[], can
     const under = playing(made, Math.min(settles, to - 1e-3)) ?? playing(made, f.at)!;
     if (f.inset && f.inset !== corner) {
       // The inset goes with the frame: over the same move, or on the same cut.
-      if (over > 0) insetPath.push({ time: f.at, corner: corner ?? null, ease: "easeInOut" }, { time: settles, corner: f.inset, ease: "linear" });
+      if (over > 0) insetPath.push({ time: f.at, corner: corner ?? null, ease: f.ease ?? "easeInOut" }, { time: settles, corner: f.inset, ease: "linear" });
       else { insetPath.at(-1)!.ease = "hold"; insetPath.push({ time: f.at, corner: f.inset, ease: "linear" }); }
       corner = f.inset;
     }
@@ -329,7 +333,7 @@ export function framingOps(timeline: Timeline, media: readonly MediaAsset[], can
     const whole = over_.some(c => c.atStart && area(c.box) >= COVERS_ALL);
     const covers = over_.filter(c => area(c.box) < COVERS_ALL).map(c => c.box);
     const placed = placeFrame(f.show, f.within, covers, shape);
-    if (over > 0 && previous) path.push({ time: f.at, frame: previous, ease: "easeInOut" }, { time: settles, frame: placed.frame, ease: "linear" });
+    if (over > 0 && previous) path.push({ time: f.at, frame: previous, ease: f.ease ?? "easeInOut" }, { time: settles, frame: placed.frame, ease: "linear" });
     else {
       if (path.length) path[path.length - 1]!.ease = "hold";
       path.push({ time: f.at, frame: placed.frame, ease: "linear" });

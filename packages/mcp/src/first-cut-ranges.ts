@@ -1,5 +1,5 @@
 import { timelineFromKeepRanges, type MediaAsset } from "@scarlet/timeline";
-import { dialogueAudioStream, PAUSE_BEAT } from "./dialogue-join.js";
+import { DEFAULT_PACE, dialogueAudioStream } from "./dialogue-join.js";
 import { NoPauseToTrim, planDialogueCuts, SETTLED_MARGIN, type DialoguePlanSources } from "./dialogue-plan.js";
 import { measureQuietKeptWords } from "./quiet-kept-word.js";
 
@@ -12,7 +12,9 @@ interface FirstCutKeep {
 }
 
 /** Place the missing source handles. The same recording can occur more than once, in any playback order. */
-export async function firstCutRanges(keep: FirstCutKeep[], projectId: string, audio: MediaAsset, sources: DialoguePlanSources) {
+/** `leave` is the pause, word to word, that two adjacent keeps play; it defaults to the pace's room tone either side. */
+export async function firstCutRanges(keep: FirstCutKeep[], projectId: string, audio: MediaAsset, sources: DialoguePlanSources, leave?: number) {
+  const pause = leave ?? (sources.pace ?? DEFAULT_PACE).after + (sources.pace ?? DEFAULT_PACE).before;
   const rows = keep.map(r => ({ ...r }));
   const indexed = rows.some(r => r.fromWord !== undefined);
   const evidence: string[] = [];
@@ -68,8 +70,8 @@ export async function firstCutRanges(keep: FirstCutKeep[], projectId: string, au
       const split = left?.end ?? right?.start ?? (midpoint[l]! + midpoint[h]!) / 2;
       set(split, split, reason);
     };
-    // Two kept pieces that follow one another: the pause between them comes down to the default padding of a join.
-    const cut = { mediaId: audio.id, ...(adjacent ? { afterWord: l, leave: PAUSE_BEAT } : { fromWord: l + 1, toWord: h - 1 }),
+    // Two kept pieces that follow one another: the pause between them comes down to `leave`.
+    const cut = { mediaId: audio.id, ...(adjacent ? { afterWord: l, leave: pause } : { fromWord: l + 1, toWord: h - 1 }),
       kind, decision: "cut" as const, reason: "Place the edges of the selected words." };
     try {
       const plan = await planDialogueCuts({ tl: source, cuts: [cut], only: kind, localPauses: false,

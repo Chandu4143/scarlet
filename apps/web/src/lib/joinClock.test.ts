@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Timeline } from "@scarlet/timeline";
-import { joinClock, verifiedJoinClock } from "./joinClock";
+import { composeClocks, joinClock, verifiedJoinClock } from "./joinClock";
 
 describe("joinClock", () => {
   const clock = joinClock([{ start: 40, end: 50 }, { start: 10, end: 20 }, { start: 18, end: 25 }], 100);
@@ -23,6 +23,28 @@ describe("joinClock", () => {
     expect(clock.toView(9.999)).toBeCloseTo(9.999, 9);
     expect(clock.toMedia(45)).toBe(25);
     expect(clock.toView(25)).toBe(50);
+  });
+});
+
+describe("composeClocks", () => {
+  // An earlier version 100 s long. The working cut took out 30–35 since; a call takes 24–30 of the working cut out,
+  // which is 24–30 here too, so the two removals meet at the call's end.
+  const earlier = joinClock([{ start: 30, end: 35 }], 100);
+  const call = joinClock([{ start: 24, end: 30 }], 95);
+  const both = composeClocks(earlier, call);
+
+  it("removes what both clocks remove, in the earlier version's clock", () => {
+    expect(both.duration).toBe(100);
+    expect(both.removed).toEqual([{ start: 24, end: 35 }]);
+  });
+
+  it("plays the call's media for the earlier version, a moment in either removal landing on the one join", () => {
+    expect(both.toMedia(10)).toBe(10);
+    expect(both.toMedia(26)).toBe(24);
+    expect(both.toMedia(32)).toBe(24);
+    expect(both.toMedia(40)).toBe(29);
+    expect(both.toView(24)).toBe(35);
+    expect(both.toView(29)).toBe(40);
   });
 });
 

@@ -119,7 +119,9 @@ export function taskRoutes(ctx: Ctx) {
       }
       return c.json({ task });
     }
-    return c.json({ task, checksTaskAttempts: true, events: ctx.repos.taskEvents.list(task.id, c.req.query("events") === "conversation" ? "conversation" : "all") });
+    const view = c.req.query("events");
+    const events = view === "none" ? [] : ctx.repos.taskEvents.list(task.id, view === "conversation" ? "conversation" : "all");
+    return c.json({ task, checksTaskAttempts: true, events });
   });
 
   // Called by agent hosts before each run. workDir is the task artifact directory on the host; timeLimit is the run's limit in minutes.

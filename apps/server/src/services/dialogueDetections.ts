@@ -48,6 +48,29 @@ async function localModelIdentity(runtime: LocalRuntime) {
     ...(runtime.script ? [fileStamp(runtime.script)] : [])]);
 }
 
+type ScanWord = DialogueDetections["segments"][number]["words"][number];
+
+/**
+ * The words a recording's saved scan pages read, each from the page it sits furthest inside (a page reads worse at
+ * its edges, and pages overlap), with the stretches the pages cover.
+ */
+export function wordsFromPages(pages: ReadonlyArray<TimeRange & { words: readonly ScanWord[] }>) {
+  const depth = (p: TimeRange, t: number) => Math.min(t - p.start, p.end - t);
+  const words = pages.flatMap((p, i) => p.words.filter(w => {
+    const middle = (w.start + w.end) / 2;
+    if (!(w.end > w.start) || middle < p.start || middle >= p.end) return false;
+    return pages.every((q, k) => k === i || middle < q.start || middle >= q.end || depth(q, middle) < depth(p, middle) ||
+      (depth(q, middle) === depth(p, middle) && k > i));
+  })).sort((a, b) => a.start - b.start);
+  const covered: TimeRange[] = [];
+  for (const p of [...pages].sort((a, b) => a.start - b.start)) {
+    const last = covered.at(-1);
+    if (last && p.start <= last.end) last.end = Math.max(last.end, p.end);
+    else covered.push({ start: p.start, end: p.end });
+  }
+  return { words, covered };
+}
+
 const detectors = new WeakMap<Ctx, ReturnType<typeof dialogueDetector>>();
 
 /** The engine's one detector, so a scan started ahead of a pass and the pass's own calls share pages under way. */
@@ -441,5 +464,18 @@ export function dialogueDetector(ctx: Ctx) {
       if (dropped()) return;
     }
   }
-  return { detect, checkpoints, start, prefetch };
+  /**
+   * What the pages saved for a recording under the current settings read between `from` and `to`, without reading
+   * any more: the verbatim words a pass saw, where the transcript tidies a restart away.
+   */
+  async function savedWords(projectId: string, media: MediaAsset, from: number, to: number) {
+    const { fingerprint, legacy } = await source(projectId, media, media.duration ?? to, ctx.settings().transcription);
+    const rows = ctx.db.prepare(`SELECT start, end, result FROM dialogue_scan_pages
+      WHERE media_id = ? AND fingerprint IN (?, ?) AND end > ? AND start < ? ORDER BY fingerprint = ? DESC`)
+      .all(media.id, fingerprint, legacy, from, to, fingerprint) as Array<TimeRange & { result: string }>;
+    const seen = new Set<string>();
+    return wordsFromPages(rows.filter(r => !seen.has(`${r.start}-${r.end}`) && seen.add(`${r.start}-${r.end}`))
+      .map(r => ({ start: r.start, end: r.end, words: (JSON.parse(r.result) as DialogueDetections).segments.flatMap(s => s.words) })));
+  }
+  return { detect, checkpoints, start, prefetch, savedWords };
 }
