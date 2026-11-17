@@ -11,7 +11,7 @@ import { AREA_HOLDS_AT, AREA_SIDES, SHOW_EDGE_HEIGHT, SHOW_EDGE_STEP, SHOW_EDGE_
   type AreaBox, type AreaSide, type HeldArea, type ShowArea } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { badRequest, notFound } from "../errors.js";
-import { areaAt } from "@scarlet/shared";
+import { areaAt, wholePicture } from "@scarlet/shared";
 import { FINISHED_TASK, createTask } from "./tasks.js";
 import { rememberLast, withFrames, type VideoMedia } from "./pictureReading.js";
 
@@ -143,13 +143,17 @@ const ASKS_AT_ONCE = 12;
  * request's agent and model, beside that request and outside the project's queue. Each looks at one full-size frame and
  * saves an area. Waits for them up to `waitMs`. A second an area already holds for starts none unless asked `again`, and
  * neither does one in a stretch another run is already looking at.
+ *
+ * A recording with no area yet gets one look before the rest: a camera's answer is the whole picture, which holds for
+ * all of it, and ten looks at once all said so (29 of one pass's 48 looks were at its camera, 2026-11-17). Once two
+ * looks have both said the whole picture and none has said otherwise, asking `again` starts no more.
  */
 export async function askAreas(ctx: Ctx, media: VideoMedia, opts: { seconds: number[]; taskId: string; waitMs: number; again?: boolean }): Promise<{ asked: number; answered: number; waiting: number }> {
   const asker = ctx.repos.tasks.get(opts.taskId);
   if (!asker || asker.projectId !== media.projectId || asker.agent === "api" || asker.kind === "area_check") return { asked: 0, answered: 0, waiting: 0 };
-  const state = await showArea(ctx, media, { waitMs: Math.min(opts.waitMs, 240_000) });
+  const deadline = Date.now() + opts.waitMs;
+  let state = await showArea(ctx, media, { waitMs: Math.min(opts.waitMs, 240_000) });
   if (!state.done) return { asked: 0, answered: 0, waiting: 0 };
-  const stretchOf = (second: number) => state.unset.find(([from, to]) => second >= from - 1e-6 && second < to + 1e-6);
   const live = ctx.repos.tasks.select("project_id = ? AND kind = 'area_check' AND state NOT IN ('done', 'failed', 'cancelled')", [media.projectId])
     .filter(task => task.context.areaCheck?.mediaId === media.id);
   const watched = [...live];
@@ -157,22 +161,33 @@ export async function askAreas(ctx: Ctx, media: VideoMedia, opts: { seconds: num
   // One look serves the frames near it in a stretch: a second within a few minutes of one being looked at starts none.
   const NEAR = 150;
   const taken: number[] = live.map(task => task.context.areaCheck!.at);
-  for (const second of opts.seconds) {
-    if (asked >= ASKS_AT_ONCE) break;
-    if (!(second >= 0 && second <= (media.duration ?? 0)) || (!opts.again && areaAt(state.areas, second))) continue;
-    const stretch = stretchOf(second);
-    if (taken.some(other => Math.abs(other - second) < NEAR && (!stretch || (other >= stretch[0] && other < stretch[1])))) continue;
-    taken.push(second);
-    const at = Math.round(second * 100) / 100;
-    watched.push(createTask(ctx, { projectId: media.projectId, kind: "area_check", agent: asker.agent, model: asker.model, effort: asker.effort, fast: asker.fast,
-      serviceTier: asker.serviceTier, instruction: `What viewers may see of ${media.name ?? media.id} at ${at} s`, context: { checksTaskId: asker.id, areaCheck: { mediaId: media.id, at } },
-      createdBy: asker.createdBy }));
-    asked++;
-  }
-  if (asked) ctx.log(`[show-area] ${media.id}: asked about ${asked} frame${asked === 1 ? "" : "s"} for ${asker.id}`);
-  const deadline = Date.now() + opts.waitMs;
   const open = () => watched.filter(task => !FINISHED_TASK.has(ctx.repos.tasks.get(task.id)?.state ?? "done"));
-  while (open().length && Date.now() < deadline) await new Promise(done => setTimeout(done, 500));
+  const settle = async () => { while (open().length && Date.now() < deadline) await new Promise(done => setTimeout(done, 500)); };
+  const start = (seconds: number[], most: number) => {
+    const allWhole = state.areas.length >= 2 && state.areas.every(a => wholePicture(a.area));
+    let started = 0;
+    for (const second of seconds) {
+      if (started >= most || asked >= ASKS_AT_ONCE) break;
+      if (!(second >= 0 && second <= (media.duration ?? 0)) || (opts.again ? allWhole : areaAt(state.areas, second))) continue;
+      const stretch = state.unset.find(([from, to]) => second >= from - 1e-6 && second < to + 1e-6);
+      if (taken.some(other => Math.abs(other - second) < NEAR && (!stretch || (other >= stretch[0] && other < stretch[1])))) continue;
+      taken.push(second);
+      const at = Math.round(second * 100) / 100;
+      watched.push(createTask(ctx, { projectId: media.projectId, kind: "area_check", agent: asker.agent, model: asker.model, effort: asker.effort, fast: asker.fast,
+        serviceTier: asker.serviceTier, instruction: `What viewers may see of ${media.name ?? media.id} at ${at} s`, context: { checksTaskId: asker.id, areaCheck: { mediaId: media.id, at } },
+        createdBy: asker.createdBy }));
+      asked++; started++;
+    }
+  };
+  if (!state.areas.length) {
+    if (!live.length) start(opts.seconds, 1);
+    await settle();
+    state = await showArea(ctx, media, { waitMs: 5000 });
+    if (!state.done) return { asked, answered: watched.length - open().length, waiting: open().length };
+  }
+  start(opts.seconds, ASKS_AT_ONCE);
+  if (asked) ctx.log(`[show-area] ${media.id}: asked about ${asked} frame${asked === 1 ? "" : "s"} for ${asker.id}`);
+  await settle();
   const waiting = open().length;
   return { asked, answered: watched.length - waiting, waiting };
 }
