@@ -82,6 +82,7 @@ afterEach(async () => {
 const show = (element: ReactNode) => act(async () => root.render(element));
 const click = (element: HTMLElement) => act(async () => element.click());
 const labeled = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+const zoomLevel = () => container.querySelector<HTMLButtonElement>(".timeline-zoom-level")!;
 const exportButton = () => container.querySelector<HTMLButtonElement>('button[form="export-working-cut"]');
 const buttonByText = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === text);
 const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
@@ -331,21 +332,22 @@ it("keeps zoom controls on the timeline and draws no edit points, zoomed or not"
   expect(controls?.contains(zoomIn)).toBe(true);
   expect(labeled("Timeline controls")).toBeNull();
   expect(labeled("Zoom out").disabled).toBe(true);
-  expect(labeled("Fit timeline").disabled).toBe(true);
+  expect(zoomLevel().disabled).toBe(true);
   expect(button("Show edit points")).toBeUndefined();
   const ruler = container.querySelector(".timeline-ruler")!;
   expect(ruler.textContent).toContain("2:00");
-  expect(ruler.textContent).not.toContain("2:30");
+  expect(ruler.textContent).toContain("2:30");
+  expect(ruler.textContent).not.toContain("3:00");
   expect(ruler.querySelector('.ruler-major[style*="75%"]')).toBeTruthy();
   await act(() => zoomIn.dispatchEvent(new PointerEvent("pointerdown", { button: 0, isPrimary: true, bubbles: true })));
   await click(zoomIn);
   expect(rail()).toBeNull();
   await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true, cancelable: true })));
-  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("4×");
+  expect(zoomLevel().textContent).toBe("400%");
   await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true, cancelable: true })));
-  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("2×");
-  await click(labeled("Fit timeline"));
-  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("1×");
+  expect(zoomLevel().textContent).toBe("200%");
+  await click(zoomLevel());
+  expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
   expect(scrub).not.toHaveBeenCalled();
   expect(selectRange).not.toHaveBeenCalled();
@@ -374,7 +376,7 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   // 4×: fifty seconds around the playhead.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
-  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:00$/), expect.stringMatching(/2:30$/)]);
+  expect([zoomed[0], zoomed.at(-1)]).toEqual(["2:00", "2:40"]);
   // A revision lands. The head moves first and the new cut arrives a moment later, ten seconds shorter. The timeline is
   // built again each time, on the stretch it showed.
   await render(undefined, 200);
@@ -470,7 +472,7 @@ it("draws crowded edits as one pill that zooms to its run on a press, and a dot 
   expect(seek).not.toHaveBeenCalled();
   expect(markers().map(m => m.textContent)).toEqual(["1", "2", "3", "4"]);
   // Back on the whole video, a press on a dot opens its edit; beside a marker a press scrubs as before.
-  await click(labeled("Fit timeline"));
+  await click(zoomLevel());
   vi.spyOn(strip(), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await point("pointermove", 620);
   expect(strip().classList.contains("is-aimed")).toBe(false);
@@ -481,7 +483,7 @@ it("draws crowded edits as one pill that zooms to its run on a press, and a dot 
   expect(opened).toEqual([5]);
 });
 
-it("zooms a pill when another group's circle is under the pointer too", async () => {
+it("zooms a range label when another group's edit sits at the same time", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
@@ -493,6 +495,9 @@ it("zooms a pill when another group's circle is under the pointer too", async ()
   ]} />);
   const pill = container.querySelector<HTMLElement>(".simple-timeline-mark.is-pill")!;
   expect([pill.textContent, pill.style.left]).toEqual(["12+", "11%"]);
+  const single = container.querySelector<HTMLElement>(".simple-timeline-mark:not(.is-pill)")!;
+  const right = parseFloat(pill.style.left) * 10 + parseFloat(pill.style.width) / 2;
+  expect(parseFloat(single.style.left) * 10 - parseFloat(single.style.width) / 2).toBeGreaterThan(right);
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
   vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await act(() => strip.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, isPrimary: true, button: 0, clientX: 111, bubbles: true })));
@@ -531,7 +536,6 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
   vi.spyOn(track, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 0, 400, 120));
   const slider = labeled("Position in the video");
   const playheadX = () => slider.querySelector<HTMLElement>(".timeline-playhead")?.style.left;
-  const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
   vi.useFakeTimers();
   try {
     // x=200 is one quarter of this nonzero-based timeline, directly over its playhead.
@@ -543,32 +547,32 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
     });
     frameAt.mockClear();
     await wheel(-50);
-    expect(level()).toBe("1.3×");
+    expect(zoomLevel().textContent).toBe("135%");
     await wheel(-50, true);
-    expect(level()).toBe("2.5×");
+    expect(zoomLevel().textContent).toBe("246%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     expect(frameAt).not.toHaveBeenCalled();
     await act(() => { vi.advanceTimersByTime(150); });
     expect(frameAt).toHaveBeenCalled();
-    await click(labeled("Fit timeline"));
+    await click(zoomLevel());
     await act(() => vi.advanceTimersByTime(550));
     for (const [type, scale] of [["gesturestart", 1], ["gesturechange", 2], ["gesturechange", 3], ["gestureend", 3]] as const) {
       const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 200 });
       await act(() => track.dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
     }
-    expect(level()).toBe("3×");
+    expect(zoomLevel().textContent).toBe("300%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     const key = (value: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: value, cancelable: true })));
     await key("]");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("6×");
+    expect(zoomLevel().textContent).toBe("600%");
     await key("[");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("3×");
+    expect(zoomLevel().textContent).toBe("300%");
     await key("0");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("1×");
+    expect(zoomLevel().textContent).toBe("100%");
     expect(seek).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
 });
@@ -1316,21 +1320,21 @@ it("adds a second zoom step to the one under way, and turns a zoom back from whe
   usePlayerStore.setState({ time: 50, playing: true });
   await render(50);
   const slider = container.querySelector(".timeline-slider");
-  const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
   await click(labeled("Zoom in"));
-  expect(level()).toBe("1×");
+  expect(zoomLevel().textContent).toBe("100%");
   await advance(130);
-  const halfway = parseFloat(level()!);
-  expect(halfway).toBeGreaterThan(1);
+  const halfway = parseFloat(zoomLevel().textContent!);
+  expect(halfway).toBeGreaterThan(100);
+  expect(halfway).toBeLessThan(200);
   await render(51); // An unrelated playback tick must not pull the view back.
   expect(container.querySelector(".timeline-slider")).toBe(slider);
   await click(labeled("Zoom in")); // A second step compounds the pending destination.
   await advance(500);
-  expect(level()).toBe("4×");
+  expect(zoomLevel().textContent).toBe("400%");
   await click(labeled("Zoom out"));
   await advance(60);
-  await click(labeled("Fit timeline")); // Reverse an in-flight zoom from its current pose.
+  await click(zoomLevel()); // Reverse an in-flight zoom from its current pose.
   await advance(500);
-  expect(level()).toBe("1×");
+  expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
 });

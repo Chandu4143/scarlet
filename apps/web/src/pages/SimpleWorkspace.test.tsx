@@ -153,7 +153,7 @@ it("shows every request as one chat, oldest first", async () => {
   expect(container.querySelector('[aria-label="Suggestion"]')).toBeNull();
   // The simple player keeps the picture, the classic timeline (stills, waveform, ruler), Before/After and speed. The header stays out.
   expect(container.querySelector(".timeline-panel .timeline-filmstrip")).not.toBeNull();
-  expect(container.querySelector('.watch-monitor > .monitor-controls [aria-label="Playback speed"] output')?.textContent).toBe("1×");
+  expect(container.querySelector('.watch-monitor > .monitor-controls button[title="Playback speed"]')?.textContent).toBe("1×");
   expect(container.querySelector(".cut-heading")).toBeNull();
 });
 
@@ -166,7 +166,7 @@ it("draws no diamond for a caption on the timeline, which marks only what needs 
   expect(container.querySelector(".timeline-ruler")?.textContent).not.toBe("");
   expect(container.querySelector(".timeline-markers, .timeline-marker")).toBeNull();
   const controls = container.querySelectorAll(".timeline-track > [aria-label='Timeline zoom'] button");
-  expect([...controls].map(button => button.getAttribute("aria-label"))).toEqual(["Zoom out", "Zoom in", "Fit timeline"]);
+  expect([...controls].map(button => button.getAttribute("aria-label"))).toEqual(["Zoom out", "100% zoom, fit timeline", "Zoom in"]);
   expect([...container.querySelectorAll(".timeline-track button")]).toEqual([...controls]);
 });
 
@@ -183,28 +183,38 @@ it("loads full steps only for live requests and upgrades a queued request when w
   expect(load).toHaveBeenCalledWith(queued.id, "all");
 });
 
-it("steps playback speed with the monitor buttons and +/− keys, including while the timeline has focus", async () => {
+it("opens the speed stepper from the monitor button and keeps +/− available with the stepper closed", async () => {
   await show();
-  const group = container.querySelector('[aria-label="Playback speed"]')!;
-  const [slower, faster] = group.querySelectorAll("button");
+  const trigger = container.querySelector<HTMLButtonElement>('.monitor-controls button[title="Playback speed"]')!;
+  const panel = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Playback speed"]');
   const slider = container.querySelector<HTMLElement>(".timeline-slider")!;
   const key = (target: HTMLElement, init: KeyboardEventInit) => act(async () => {
     target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
   });
   const check = (rate: number) => {
-    expect(group.querySelector("output")?.textContent).toBe(`${rate}×`);
+    expect(trigger.textContent).toBe(`${rate}×`);
     expect(usePlayerStore.getState().rate).toBe(rate);
-    expect(slower!.disabled).toBe(rate === 0.5);
-    expect(faster!.disabled).toBe(rate === 2);
   };
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(panel()).toBeNull();
+  await click(trigger);
+  expect(trigger.getAttribute("aria-controls")).toBe(panel()!.id);
+  const [slower, faster] = panel()!.querySelectorAll("button");
   await click(slower!);
   check(0.75);
-  slider.focus();
+  expect(panel()!.querySelector("output")?.textContent).toBe("0.75×");
+  await key(slower!, { key: "-" });
+  expect(slower!.disabled).toBe(true);
+  await click(faster!);
+  check(0.75);
+  await key(faster!, { key: "Escape" });
+  expect(panel()).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  await act(async () => slider.focus());
   await key(slider, { key: "-" });
   await key(slider, { key: "-" });
   check(0.5);
-  await click(faster!);
-  check(0.75);
+  await key(slider, { key: "+" });
   await key(slider, { key: "=" });
   check(1);
   for (const rate of [1.25, 1.5, 1.75, 2, 2]) {
@@ -217,6 +227,14 @@ it("steps playback speed with the monitor buttons and +/− keys, including whil
   await key(slider, { key: "-", metaKey: true });
   await key(slider, { key: "-", ctrlKey: true });
   check(2);
+  expect(panel()).toBeNull();
+  await click(trigger);
+  expect(panel()!.querySelector<HTMLButtonElement>('[aria-label="Increase playback speed"]')!.disabled).toBe(true);
+  await act(async () => { document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+  expect(panel()).toBeNull();
+  await click(trigger);
+  await act(async () => input.focus());
+  expect(panel()).toBeNull();
 });
 
 it("turns the play button while the picture loads, in place of its icon, with nothing drawn under it", async () => {
@@ -10683,6 +10701,11 @@ it("leaves full screen on the first Esc and keeps the open edit, which the next 
   await click(container.querySelector('button[aria-label="Full screen"]')!);
   await act(async () => {});
   expect(container.querySelector(".cut-preview")!.hasAttribute("data-expanded")).toBe(true);
+  const speed = container.querySelector<HTMLButtonElement>('.monitor-controls button[title="Playback speed"]')!;
+  await click(speed);
+  await act(async () => { speed.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  expect(speed.getAttribute("aria-expanded")).toBe("false");
+  expect(container.querySelector(".cut-preview")!.hasAttribute("data-expanded")).toBe(true);
   await press("Escape");
   expect(container.querySelector(".cut-preview")!.hasAttribute("data-expanded")).toBe(false);
   expect(editPanel()).not.toBeNull();
@@ -10718,7 +10741,7 @@ it("comes back from Settings or a restart to update at the speed the editor was 
   await reopen(place);
   expect(asked).toEqual([12.5]);
   expect([usePlayerStore.getState().time, usePlayerStore.getState().rate]).toEqual([12.5, 1.5]);
-  expect(container.querySelector('.monitor-controls [aria-label="Playback speed"] output')?.textContent).toBe("1.5×");
+  expect(container.querySelector('.monitor-controls button[title="Playback speed"]')?.textContent).toBe("1.5×");
   // The place is used once: the address is the project's own again.
   expect(container.querySelector("#address")?.textContent).toBe(`/p/${PRJ}`);
   // At the ordinary speed the way back says only where.
