@@ -259,12 +259,16 @@ function queueSourceProxies(ctx: Ctx, mediaIds: string[]): void {
   if (ctx.shutdown.aborted) return;
   let queue = proxyQueue.get(ctx);
   if (!queue) proxyQueue.set(ctx, queue = { queued: new Set(), tail: Promise.resolve() });
-  for (const id of mediaIds) {
-    if (queue.queued.has(id)) continue;
-    const added = ctx.db.prepare("INSERT OR IGNORE INTO source_cache_requests SELECT id, NULL FROM media WHERE id = ?").run(id);
-    if (added.changes) ctx.log(`[media] proxy_queued media=${logId(id)}`);
-    queue.queued.add(id);
-    const q = queue;
+  const q = queue;
+  const pending = [...new Set(mediaIds)].filter(id => !q.queued.has(id));
+  if (!pending.length) return;
+  const added = ctx.db.prepare(`INSERT OR IGNORE INTO source_cache_requests (media_id, worker_pid)
+    SELECT m.id, NULL FROM json_each(?) AS j JOIN media m ON m.id = j.value ORDER BY j.key
+    RETURNING media_id`).all(JSON.stringify(pending)) as { media_id: string }[];
+  const registered = new Set(added.map(row => row.media_id));
+  for (const id of pending) {
+    if (registered.has(id)) ctx.log(`[media] proxy_queued media=${logId(id)}`);
+    q.queued.add(id);
     q.tail = q.tail.then(async () => {
       try {
         // Nothing to cache after all, so nothing is left waiting.

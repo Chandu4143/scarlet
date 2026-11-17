@@ -1,10 +1,12 @@
 import type { AgentUsage, Task, UsageGroup, UsageGroupBy, UsageResponse, UsageTotals } from "@scarlet/shared";
 import { newId } from "@scarlet/timeline";
 import { now, type Db } from "../db.js";
+import { estimateApiTokenCost } from "./apiTokenCost.js";
 
 interface TotalsRow {
   key?: string | null;
   models?: string;
+  claims?: string;
   runs: number;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -30,7 +32,21 @@ const SUMS = `count(*) AS runs,
   sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
   sum(reasoning_tokens) AS reasoning_tokens,
   min(at) AS first_at, max(at) AS last_at`;
-const TASK_SUMS = `${SUMS}, json_group_array(DISTINCT model ORDER BY model) FILTER (WHERE model IS NOT NULL) AS models`;
+const TASK_SUMS = `${SUMS}, json_group_array(DISTINCT model ORDER BY model) FILTER (WHERE model IS NOT NULL) AS models,
+  json_group_array(json_array(model, coalesce(run_started_at, at), input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)) AS claims`;
+
+type Claim = [model: string | null, at: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number];
+
+/** Price each claim before combining its usage with claims for other models. */
+function estimateClaims(claims: string): number | null {
+  let total = 0;
+  for (const [model, at, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens] of JSON.parse(claims) as Claim[]) {
+    const cost = estimateApiTokenCost(model, { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }, at);
+    if (cost === undefined) return null;
+    total += cost;
+  }
+  return total;
+}
 
 function toTotals(r: TotalsRow | undefined): UsageTotals {
   const input = r?.input_tokens ?? 0;
@@ -40,6 +56,7 @@ function toTotals(r: TotalsRow | undefined): UsageTotals {
   return {
     runs: r?.runs ?? 0,
     ...(r?.models !== undefined && { models: JSON.parse(r.models) as string[] }),
+    ...(r?.claims !== undefined && { estimatedApiCostUsd: estimateClaims(r.claims) }),
     inputTokens: input,
     outputTokens: output,
     cacheReadTokens: cacheRead,

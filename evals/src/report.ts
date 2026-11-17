@@ -176,6 +176,8 @@ export function runMarkdown(title: string, rows: TrialRow[]): string {
     keys.push("labeledSourceWords", "retainedSkippedWords", "differingLabeledWords", "differingWordFraction");
   if (rows.some(r => r.headline?.editorWordRemovingCuts !== undefined))
     keys.push("recoveredWordRemovingCuts", "editorWordRemovingCuts", "matchedAudioJoins", "matchedPauseErrorMs");
+  if (rows.some(r => r.headline?.editorEdgesShared !== undefined))
+    keys.push("editorEdgesShared", "editorEdgesInWindow", "editorEdgeSpeechMisses", "editorEdgeSpeechMissesOver100Ms", "editorEdgePlaysRemovedSpeech", "editorEdgeDropsKeptSpeech");
   if (rows.some(r => r.headline?.verifiedPictureCuts !== undefined))
     keys.push("verifiedPictureCuts", "eligibleEditorEntrances", "matchedPictureEntrances", "pictureEntranceErrorMs", "pictureEntranceBiasMs", "candidateTrimmedEntrances", "candidateEntrancesInFade");
   const lines = [`# ${title}`, "", `| Case | Config | Trials (done) | ${keys.join(" | ")} |`, `|---|---|---|${keys.map(() => "---").join("|")}|`];

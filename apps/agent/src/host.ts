@@ -104,8 +104,11 @@ export class AgentHost {
     this.stopped = false;
     // An old folder's Claude sessions go with it, unless Claude Code was told to keep its files somewhere other than the home.
     const home = (this.opts.env ?? process.env).CLAUDE_CONFIG_DIR ? undefined : homedir();
-    await pruneTaskDirs(this.opts.workRoot, undefined, home).catch((err) => this.log(`could not prune old task folders: ${errMsg(err)}`));
-    this.agents = await (this.opts.detect ?? (() => detectAgents({ models: this.config.models, log: this.log })))();
+    const [agents] = await Promise.all([
+      (this.opts.detect ?? (() => detectAgents({ models: this.config.models, log: this.log })))(),
+      pruneTaskDirs(this.opts.workRoot, undefined, home).catch((err) => this.log(`could not prune old task folders: ${errMsg(err)}`)),
+    ]);
+    this.agents = agents;
     await this.register();
     this.heartbeatTimer = setInterval(() => void this.heartbeat(), this.opts.heartbeatMs ?? 30_000);
     if (this.opts.ws !== false) this.connectWs();
@@ -204,7 +207,7 @@ export class AgentHost {
   /** Recover cancellations missed before subscribing or while disconnected. */
   private async checkCancellations(): Promise<void> {
     await Promise.allSettled([...this.running.values()].map(async (run) => {
-      const { task } = await this.client.task(run.task.id);
+      const { task } = await this.client.task(run.task.id, "none");
       if (task.state === "cancelled") run.controller.abort("server-cancelled");
     }));
   }
@@ -517,7 +520,7 @@ export class AgentHost {
 
   /** Prepare the task folder, fetch the engine's prompt and build the MCP spec. `fresh` skips resuming the CLI session. */
   async prepare(task: Task, fresh = false): Promise<Prepared> {
-    const { task: current } = await this.client.task(task.id);
+    const { task: current } = await this.client.task(task.id, "none");
     if (current.state === "cancelled") {
       this.running.get(task.id)?.controller.abort("server-cancelled");
       throw new Error("Task cancelled");

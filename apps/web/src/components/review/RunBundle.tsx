@@ -13,11 +13,17 @@ import { runAim, runIsActive, runItems, runLines, runSummary, workTime, workTime
 import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
 
 /**
- * Tokens the agent used on a request. Hovering or focusing the count opens a note above it with every part: input,
- * output, cache read and write, and how many runs it took. Shown only when turned on in Settings → Usage.
+ * Hovering or focusing the count shows the token breakdown and estimated API cost.
+ * Shown only when turned on in Settings → Usage.
  * The note is placed against the window, so the pinned request's scrolling box doesn't clip it.
  */
-type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens">;
+type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens" | "runs">;
+const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+
+function formatEstimatedCost(estimate: RunUsage["estimatedApiCostUsd"]) {
+  if (estimate == null) return "Unavailable";
+  return estimate > 0 && estimate < 0.01 ? `<${usd.format(0.01)}` : usd.format(estimate);
+}
 
 function Tokens({ usage, className, time, details = [] }: {
   usage?: RunUsage; className?: string; time?: string; details?: [label: string, value: string][];
@@ -72,11 +78,15 @@ function Tokens({ usage, className, time, details = [] }: {
   ];
   const label = tokenLabel(usage.totalTokens);
   const [count, unit] = label.split(" ");
-  const breakdown = tokenBreakdown(usage);
-  const accessibleDetails = details.map(([name, value]) => `${name}: ${value}`).join(", ");
+  const breakdown = tokenBreakdown({ ...usage, runs: undefined });
+  const cost = formatEstimatedCost(usage.estimatedApiCostUsd);
+  const costDescription = usage.estimatedApiCostUsd == null
+    ? "API pricing is unavailable for some or all of the reported usage."
+    : "Reported tokens at standard API rates for short context and default cache duration.";
+  const accessibleDetails = [...details.map(([name, value]) => `${name}: ${value}`), `Estimated API cost: ${cost}`].join(", ");
   return <><button ref={ref} type="button" className={`run-dim run-tokens${className ? ` ${className}` : ""}`} title=""
-    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}${accessibleDetails ? `. ${accessibleDetails}` : ""}`} data-breakdown={breakdown}
-    aria-expanded={open} aria-controls={open ? id : undefined}
+    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}. ${accessibleDetails}`} data-breakdown={breakdown}
+    aria-description={costDescription} aria-expanded={open} aria-controls={open ? id : undefined}
     onPointerEnter={e => { if (e.pointerType !== "touch") setMode(value => value ?? "preview"); }}
     onPointerLeave={() => { if (!ref.current?.matches(":focus-visible")) setMode(value => value === "preview" ? null : value); }}
     onFocus={() => setMode(value => value ?? "preview")} onBlur={() => setMode(null)}
@@ -88,8 +98,8 @@ function Tokens({ usage, className, time, details = [] }: {
       {details.map(([name, value]) => <span key={name}><span>{name}</span><b>{value}</b></span>)}
       {parts.filter(([label, n]) => n || label === "Input" || label === "Output").map(([label, n]) =>
         <span key={label}><span>{label}</span><b>{n.toLocaleString()}</b></span>)}
-      {usage.runs > 1 && <span><span>Runs</span><b>{usage.runs}</b></span>}
       <span className="tokens-tip-total"><span>Total</span><b>{usage.totalTokens.toLocaleString()}</b></span>
+      <span title={costDescription} style={mode === "pinned" ? { pointerEvents: "auto" } : undefined}><span>Est Cost</span><b>{cost}</b></span>
     </span>, document.body)}</>;
 }
 
@@ -223,9 +233,11 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
   const sum = (key: keyof RunUsage) => reports.reduce((total, usage) => total + (usage?.[key] ?? 0), 0);
   const totalTokens = sum("totalTokens");
   const usage = totalTokens ? {
-    runs: sum("runs"), inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+    inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
     cacheReadTokens: sum("cacheReadTokens"), cacheWriteTokens: sum("cacheWriteTokens"),
     totalTokens,
+    estimatedApiCostUsd: reports.some(report => report?.totalTokens && report.estimatedApiCostUsd == null)
+      ? null : sum("estimatedApiCostUsd"),
   } : undefined;
   const models = new Set<string>();
   const efforts = new Set<string>();

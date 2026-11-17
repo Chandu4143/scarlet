@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appliedCutReview, appliedReviewChange, applyOps, canStartCutReview, Change, cutPlaybackWindow, cutSummary, describeDialogueRemovals, dialogueReceipt, dialogueRemovals,
-  emptyTimeline, isolatedReviewCut, makeMediaClip, planCutReview, reviewedTimeline, reviewCutSummaries, reviewReasons, timelineDuration, timelineFromKeepRanges, type MediaAsset,
+  emptyTimeline, isolatedReviewCut, makeMediaClip, planCutReview, reviewedTimeline, reviewCutSummaries, reviewHeldNotes, reviewReasons, timelineDuration, timelineFromKeepRanges, type MediaAsset,
 } from "./index.js";
 
 const media: MediaAsset[] = [{ id: "camera", name: "Interview", path: "interview.mp4", kind: "video", duration: 12 },
@@ -231,6 +231,13 @@ describe("the reasons for each cut in a review", () => {
     ];
     expect(reviewCutSummaries({ cutReasons }, cuts)).toEqual(["Trim the restart", "Use the second take · Trim the pause", undefined]);
     expect(reviewCutSummaries({ cutReasons }, [{ removed: { start: 6, end: 8 }, reviewIndex: 0 }])).toEqual(["Trim the restart"]);
+  });
+
+  it("carry what Scarlet measured when it held a cut, apart from the agent's reasons", () => {
+    const cutReasons = [{ start: 1, end: 2, reason: "Restart", held: "No pause at the start. Kept, it plays “… a a …”." },
+      { start: 2, end: 3, reason: "Long pause", held: "No pause at the start. Kept, it plays “… a a …”." }, { start: 4, end: 6, reason: "Retake" }];
+    expect(reviewHeldNotes({ cutReasons }, cuts)).toEqual(["No pause at the start. Kept, it plays “… a a …”.", undefined, undefined]);
+    expect(reviewHeldNotes({ cutReasons: [{ start: 1, end: 2, reason: "Restart" }] }, cuts)).toEqual([undefined, undefined, undefined]);
   });
 
   it("are the change's description for every cut when no reasons were saved", () => {

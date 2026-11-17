@@ -1543,6 +1543,7 @@ it("keeps conversation events ordered and reserves the complete log for the defa
   task = appendTaskEvent(ctx, task, { type: "log", text: "Comparing the recordings.", data: { kind: "editor_progress" } }).task;
   for (const type of ["log", "question", "answer", "tool"] as const) task = appendTaskEvent(ctx, task, { type, text: type }).task;
   const url = "/tasks/" + task.id;
+  expect(await (await api("GET", url + "?events=none")).json()).toMatchObject({ task: { id: task.id }, checksTaskAttempts: true, events: [] });
   expect((await (await api("GET", url + "?events=conversation")).json()).events.map((e: { text: string }) => e.text)).toEqual(["Comparing the recordings.", "question", "answer"]);
   expect((await (await api("GET", url)).json()).events.map((e: { text: string }) => e.text)).toEqual(["Comparing the recordings.", "log", "question", "answer", "tool"]);
   const other = ctx.repos.projects.insert(createProject("Other project"));
@@ -3666,6 +3667,10 @@ it("holds a pass until each restart and long silence its edit still plays is cut
     silences: [{ start: 4.2, end: 13, seconds: 8.8, after: "stuff.", before: "Next", atJoin: false }] });
   // The first attempt is removable whole: the phrase and what followed it.
   expect(found.repeats[0].occurrences.first.words.map((w: { text: string }) => w.text)).toHaveLength(6);
+  // How long a silence may play is the skill's pace: asked from 10 s, the 8.8 s wait isn't counted.
+  const slower = await (await api("POST", projectsPath() + `/tasks/${pass.id}/repeat-audit`, { version, silencesFrom: 10 })).json();
+  expect(slower).toMatchObject({ remaining: 1 });
+  expect(slower.silences).toBeUndefined();
   // The pass can't finish over them.
   expect((await finish()).state).toBe("queued");
   await claim();

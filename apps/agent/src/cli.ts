@@ -166,7 +166,7 @@ async function cmdRun(flags: Record<string, string>, positional: string[]): Prom
   if (!projectId) throw new Error("--project is required");
   if (!instruction) throw new Error("instruction is required");
   const client = new ScarletClient({ baseUrl: cfg.server, token: cfg.token });
-  const detail = await client.project(projectId);
+  const detail = await client.workspace(projectId);
   const { skills } = await client.skills({ projectId, view: "prompt" }).catch((err) => {
     console.error(`[scarlet-agent] could not load the project's skills; running without them: ${err instanceof Error ? err.message : String(err)}`);
     return { skills: [] };

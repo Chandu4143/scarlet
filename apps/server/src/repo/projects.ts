@@ -100,10 +100,10 @@ export class ProjectsRepo {
     return duration;
   }
 
-  private rowToProject(row: ProjectRow): Project {
+  withMedia(header: Omit<Project, "media">): Project {
     return {
-      ...projectHeader(row),
-      media: this.listMedia(row.id).map(({ status: _s, error: _e, ...asset }) => asset),
+      ...header,
+      media: this.listMedia(header.id).map(({ status: _s, error: _e, ...asset }) => asset),
     };
   }
 
@@ -113,8 +113,8 @@ export class ProjectsRepo {
   }
 
   get(id: string): Project | null {
-    const row = this.db.prepare(`${WITH_SOURCE} WHERE p.id = ? AND p.deleted_at IS NULL`).get(id) as ProjectRow | undefined;
-    return row ? this.rowToProject(row) : null;
+    const header = this.header(id);
+    return header ? this.withMedia(header) : null;
   }
 
   /** Move to the trash (kept TRASH_DAYS, then purged). */
@@ -258,6 +258,13 @@ export class ProjectsRepo {
     const row = this.db.prepare("SELECT * FROM media WHERE project_id = ? AND json_extract(json, '$.importId') = ? LIMIT 1")
       .get(projectId, importId) as MediaRow | undefined;
     return row ? this.rowToMedia(row) : null;
+  }
+
+  /** Whether any of these media ids is one of the project's recordings. */
+  hasAnyMedia(projectId: string, ids: Iterable<string>): boolean {
+    const wanted = [...ids];
+    return wanted.length > 0 && !!this.db.prepare(`SELECT 1 FROM json_each(?) wanted JOIN media m
+      ON m.id = wanted.value WHERE m.project_id = ? LIMIT 1`).get(JSON.stringify(wanted), projectId);
   }
 
   /** A render reads original metadata for the sources that can contribute to its window. */

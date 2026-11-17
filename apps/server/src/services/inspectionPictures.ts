@@ -1,5 +1,5 @@
 import {
-  activityFilter, buildFilterGraph, contactSheet, fileInDirectory, packSheet, renderTimelineFrame,
+  activityFilter, buildFilterGraph, contactSheet, fileInDirectory, packSheet, timelinePreviewDecoder, renderTimelineFrame,
   resolveFfmpeg, runCapture, sampleTimes, sheetScale, snapRange, type GraphOptions,
 } from "@scarlet/render";
 import type { InspectionWindow } from "@scarlet/shared";
@@ -97,7 +97,8 @@ export function inspectionPictures(ctx: Ctx) {
 
       const activity = mode === "activity";
       if (activity && (end - first) * frameBytes > 64 * 1024 * 1024) throw new Error("Use the rendered preview for this frame rate.");
-      const inputs: Inputs = { pictureSource: previewPictures(mediaRoot), decoder: await pictureDecoder(ctx.settings().render.hwaccel) };
+      const accel = ctx.settings().render.hwaccel;
+      const inputs: Inputs = { pictureSource: previewPictures(mediaRoot), decoder: await pictureDecoder(accel) };
       // Each decode takes its turn in the engine's picture lane, on the GPU when there is one.
       const lane = pictureLane(ctx);
       async function read<T>(demand: AbortSignal, fn: (inputs: Inputs, signal: AbortSignal) => Promise<T>) {
@@ -150,7 +151,8 @@ export function inspectionPictures(ctx: Ctx) {
       for (const i of indices) {
         if (raw) frames.push(tiles.get(i)!);
         else frames.push(await stills.get(JSON.stringify([identity, i]), demand => ctx.track(read(demand, (options, active) =>
-          renderTimelineFrame(project, timeline, { start: i / fps, end: (i + 1) / fps }, mediaRoot, active, 320, options)), project.id), { signal }));
+          renderTimelineFrame(project, timeline, { start: i / fps, end: (i + 1) / fps }, mediaRoot, active, 320,
+            { ...options, decoder: timelinePreviewDecoder(accel, options.decoder) })), project.id), { signal }));
       }
       const sheet = await packSheet(frames, indices.map(i => i / fps), raw, signal);
       return { ...sheet, changedFrames: activity ? changes.size : undefined };

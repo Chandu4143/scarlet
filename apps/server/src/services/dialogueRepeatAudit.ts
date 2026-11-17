@@ -8,7 +8,7 @@ import { acousticWordReader } from "../transcribe/acousticWords.js";
 import { EmissionFile } from "../transcribe/emissions.js";
 import { readsEnglishSpeech, measureRecordingWords } from "../transcribe/wordAlign.js";
 import { transcriptLanguage } from "./transcriptReader.js";
-import { dialogueDetector } from "./dialogueDetections.js";
+import { dialogueDetector, sharedDialogueDetector } from "./dialogueDetections.js";
 import { emissionStore, recordingWav, type RecordingAudio } from "./recordingAudio.js";
 
 interface Word extends TimeRange { text: string }
@@ -163,13 +163,14 @@ const LONGEST_WORD = 1.5;
 function restarts(spoken: Heard[]) {
   const found = [];
   for (const r of findRestarts(spoken.map(w => w.text), spoken.map(w => w.start), spoken.map(w => w.end))) {
-    const attempt = spoken.slice(r.at, r.next), a = spoken.slice(r.at, r.at + r.length), b = spoken.slice(r.next, r.next + r.length);
-    const before = spoken.slice(Math.max(0, r.at - 5), r.at), after = spoken.slice(r.next + r.length, r.next + r.length + 7);
+    const again = r.again ?? r.length;
+    const attempt = spoken.slice(r.at, r.next), a = spoken.slice(r.at, r.at + r.length), b = spoken.slice(r.next, r.next + again);
+    const before = spoken.slice(Math.max(0, r.at - 5), r.at), after = spoken.slice(r.next + again, r.next + again + 7);
     const anchor = [...a, ...b].map(w => [w.track, w.mediaId, round(w.source), w.text]);
     const id = createHash("sha256").update(JSON.stringify(["restart", anchor])).digest("hex").slice(0, 20);
     const between = attempt.slice(r.length).map(w => w.said).join(" ");
     found.push({ id, phrase: a.map(w => w.said).join(" "), first: span(attempt), second: span(b),
-      occurrences: { first: occurrence(attempt, spoken[r.at - 1], b[0]), second: occurrence(b, attempt.at(-1), spoken[r.next + r.length]) },
+      occurrences: { first: occurrence(attempt, spoken[r.at - 1], b[0]), second: occurrence(b, attempt.at(-1), spoken[r.next + again]) },
       before: before.map(w => w.said).join(" "), after: after.map(w => w.said).join(" "),
       precedingEnd: before.length ? round(before.at(-1)!.end) : undefined, followingStart: after.length ? round(after[0]!.start) : undefined,
       atJoin: attempt.at(-1)!.clip !== b[0]!.clip, restart: true as const, ...(between && { between }) });
@@ -178,11 +179,11 @@ function restarts(spoken: Heard[]) {
 }
 
 /** Stretches of the edit that play no word on any dialogue recording. */
-function silencesLeft(spoken: Heard[]): SilenceLeft[] {
+function silencesLeft(spoken: Heard[], from: number): SilenceLeft[] {
   const found: SilenceLeft[] = [];
   let last: Heard | undefined, lastEnd = -Infinity;
   for (const w of spoken) {
-    if (last && w.start - lastEnd >= SILENCE_LEFT_SECONDS - 1e-6) {
+    if (last && w.start - lastEnd >= from - 1e-6) {
       const id = createHash("sha256").update(JSON.stringify(["silence", last.mediaId, round(last.source), w.mediaId, round(w.source)])).digest("hex").slice(0, 20);
       found.push({ id, start: round(lastEnd), end: round(w.start), seconds: round(w.start - lastEnd), mediaId: last.mediaId,
         source: round(Math.min(last.sourceEnd, last.source + LONGEST_WORD)), after: last.said, before: w.said, atJoin: last.clip !== w.clip });
@@ -279,7 +280,7 @@ function clipById(tl: Timeline, id: string) {
 }
 
 /** Read each audible source separately so two live microphones never form a spurious repeated word together. */
-export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timeline, task: Task, signal: AbortSignal) {
+export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timeline, task: Task, signal: AbortSignal, silencesFrom = SILENCE_LEFT_SECONDS) {
   const scope = task.context;
   const current = placements(project, tl);
   const base = scope.version && scope.version !== tl.version && scope.time !== undefined && scope.end !== undefined
@@ -345,6 +346,13 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
         if (!store) throw new Error("The recording's speech measurements are unavailable.");
         const transcript = media.transcriptId ? ctx.repos.transcripts.get(media.transcriptId) : undefined;
         const said = transcript?.segments.flatMap(s => s.words).filter(w => w.end > w.start && !/^\s*\[.*\]\s*$/.test(w.text)) ?? [];
+        // What a part plays, in the verbatim words the pass's scan read wherever it read them: the transcript tidies a
+        // restart away ("including 3D, including three, uh, including its ability" reads "including 3D, including its
+        // ability" there), and the restarts it hid played on in finished passes (2026-11-16).
+        const scanned = await sharedDialogueDetector(ctx).savedWords(project.id, media, Math.min(...ranges.map(r => r.start)),
+          Math.max(...ranges.map(r => r.end))).catch(() => undefined);
+        const inScan = (t: number) => !!scanned?.covered.some(r => t >= r.start && t < r.end);
+        const playedWords = [...(scanned?.words ?? []), ...said.filter(w => !inScan((w.start + w.end) / 2))];
         for (const part of selected) {
           const [lo, hi] = store.frameRange(part.source.start, part.source.end);
           const reader = acousticWordReader();
@@ -354,8 +362,8 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
           }
           const read = reader.finish();
           for (const word of read) add(part, word);
-          // What the transcript says this part plays: a word is in the part its middle is in.
-          for (const word of said) {
+          // What the part plays: a word is in the part its middle is in.
+          for (const word of playedWords) {
             const middle = (word.start + word.end) / 2;
             if (middle >= part.source.start && middle < part.source.end && !names(word.text)) add(part, word, spoken);
           }
@@ -389,7 +397,7 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
     if (!repeats.some(known => near(known.first.start, r.first.start) && near(known.second.start, r.second.start))) repeats.push(r);
   }
   repeats.sort((a, b) => a.first.start - b.first.start);
-  const silences = silencesLeft(spokenLanes.flat().sort(byTime));
+  const silences = silencesLeft(spokenLanes.flat().sort(byTime), silencesFrom);
   // Reused footage can play the same pair in two places. A keep applies only to the placement the editor considered.
   const ids = new Set<string>(), reused = new Set<string>();
   for (const r of repeats) {

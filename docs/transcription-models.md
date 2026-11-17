@@ -1,6 +1,6 @@
 # Transcription models
 
-Choose a model in **App Settings → General → Transcribe speech with**. The selection applies to new transcriptions, including imports, dialogue analysis and voice notes. Opening an existing project keeps its saved transcript.
+Choose your **Preferred model** under **App Settings → General → Speech transcription**. The selection applies to new transcriptions, including imports, dialogue analysis and voice notes. Opening an existing project keeps its saved transcript.
 
 In **Media**, hover over the circular arrow beside **Transcribed**, or focus it with Tab, to see when that recording’s last successful transcription finished and which model produced it. Click the arrow to re-transcribe the original recording with your current settings.
 

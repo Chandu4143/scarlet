@@ -4,8 +4,22 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 17, 2026
+
+- Edit numbers sit above the footage, and clicking the zoom percentage on the ruler fits the whole timeline.
+- Click the speed beside Full screen to open the player’s − and + controls.
+- Cuts Scarlet places by time now leave only the pause your skill asks for after your last word, instead of whatever quiet was there.
+- A screen demo that ends or starts a frame or two off the camera's cut now changes on that cut, so your camera no longer flashes full frame between them.
+- Speech transcription settings show your preferred model, when Scarlet uses bundled Whisper, and how to set up CrisperWhisper.
+
 ## November 16, 2026
 
+- When Scarlet removes a restart, it no longer takes a word or two of the sentence you kept along with it, as in “this is absolutely … detail” where “beautiful” went with the stumble after it.
+- A dialogue pass no longer trims a pause that has words in it the transcript missed, such as the “five point five” in “Opus 5.5” or a line you said twice. Scarlet reads what was said there and decides on the words.
+- Numbers are timed where you say them, so the pause before one no longer looks empty.
+- A cut that Scarlet later put back no longer stays in an edit's list or on the timeline.
+- An edit’s token breakdown shows Est Cost using the model’s published API prices.
+- Click − or + in the player or press those keys to change playback speed in 0.25× steps. Use [ and ] to zoom the timeline.
 - Before a dialogue pass finishes, Scarlet rereads the cuts it made outside its dialogue cut tool that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.
 - A photo or a title card that doesn’t move is ready in seconds, where Scarlet used to draw every frame of it.
 - Scarlet zooms a screen recording to fill the video around what you’re showing, eases from one thing to the next across your cuts, and keeps your camera off the lines you read, moving it to another corner when it has to. A zoom no longer leaves empty bars at the sides.

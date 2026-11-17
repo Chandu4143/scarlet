@@ -506,9 +506,8 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   if (isDialoguePass(task) && task.repeatAudit?.returns) {
     // The goal and what counts as done, not the steps: the tools say how they check and repair.
     const finish = "The dialogue pass has saved its editing work. What is left is the closing check on the current playback: " +
-      "no word the cuts clipped, no accidental repeat or abandoned attempt beside the take that replaced it, no long " +
-      "silence with nothing in it, and no join that leaves a stray word or a sentence without its start or its end should play. " +
-      "Keep intentional speech, a silence the viewer needs, and a join that reads as a whole thought, each with its reason. " +
+      "no word the cuts clipped should play, and each repeat, silence and divided sentence the check lists is cut, kept " +
+      "with its reason, or staged for the editor when you doubt it, as the skill and the editor ask. " +
       "The pass is done once dialogue_check_repeats on the current version has nothing outstanding. " +
       "Honor the editor’s scope, preferences, protected footage and decisions.";
     return { systemPrompt, instruction: finish + "\nEditor’s request: " + firstMessage(task.instruction.trim()) +
