@@ -205,7 +205,12 @@ export function gapSound(levels: GapLevels, gap: TimeRange, speechDb = speakingL
   };
   for (let i = Math.max(0, Math.floor((start - levels.from) / step)); i < levels.rms.length; i++) {
     const from = Math.max(start, levels.from + i * step), to = Math.min(end, levels.from + (i + 1) * step);
-    if (to <= from) break;
+    // A start on a bucket's edge can round into the bucket before it, which then has no width here: read on. Stopping
+    // there read the “five point five” after “Opus” as quiet, and a pause trim took it out (2026-11-16).
+    if (to <= from) {
+      if (levels.from + i * step >= end) break;
+      continue;
+    }
     if (dbfs(levels.rms[i]!) >= floor) open ??= from;
     else close(from);
   }

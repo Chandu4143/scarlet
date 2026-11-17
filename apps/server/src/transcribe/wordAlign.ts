@@ -49,7 +49,7 @@ const WEBGPU_CPU_NODES = [1, 2, 3, 4, 5, 6].map(layer => `/wav2vec2/feature_extr
 const GPU_LOGIT_TOLERANCE = 0.05, GPU_FLIP_TOLERANCE = 0.001;
 
 /** Bump with the model or the algorithm so cached word-timed results are rebuilt. */
-export const alignmentVersion = 5;
+export const alignmentVersion = 6;
 /** Audio searched on each side of a run's Whisper times. */
 const MARGIN = 0.5;
 /** Words of the next run read after a run's own, enough to cover the margin's half second of speech. */
