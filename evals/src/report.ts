@@ -80,6 +80,10 @@ export function evaluationMarkdown(ev: Evaluation): string {
       lines.push(`**Doubled in the applied cut (${p.appliedRepeats.length}).** ` +
         p.appliedRepeats.map(x => `${clock(x.at)} “${x.text.replace(/\|/g, "/")}”${x.join ? " (join)" : ""}`).join(" · "), "");
     }
+    if (p.appliedDividedJoins?.length) {
+      lines.push(`**Joins that divide a sentence in the applied cut (${p.appliedDividedJoins.length}), to read.** ` +
+        p.appliedDividedJoins.map(x => `${clock(x.at)} “${x.before.split(" ").slice(-6).join(" ")} ‖ ${x.after.split(" ").slice(0, 6).join(" ")}”`).join(" · "), "");
+    }
     if (p.appliedGaps.length) {
       lines.push(`**Longest gaps in the applied cut.** ` +
         p.appliedGaps.slice(0, 15).map(g => `${clock(g.at)} ${g.seconds.toFixed(1)} s${g.join ? " (join)" : ""}`).join(" · "), "");
@@ -164,7 +168,7 @@ export function runMarkdown(title: string, rows: TrialRow[]): string {
   const groups = new Map<string, TrialRow[]>();
   for (const row of rows) groups.set(`${row.caseId}\u0000${row.config}`, [...(groups.get(`${row.caseId}\u0000${row.config}`) ?? []), row]);
   const keys = ["appliedSeconds", "reviewSeconds", "appliedSpeechEdges", "reviewSpeechEdges", "clippedWordsOnSound", "needsYourCall", "heldByScarlet", "gapsLeft", "looseJoins",
-    "deadAirSeconds", "recommendedDeadAirSeconds", "recommendedLooseJoins", "restartsLeft", "silencesLeft", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
+    "deadAirSeconds", "recommendedDeadAirSeconds", "recommendedLooseJoins", "restartsLeft", "silencesLeft", "dividedJoins", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
     "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "activeMinutes", "tokens"];
   if (rows.some(r => r.headline?.verifiedPublishedWords !== undefined))
     keys.push("verifiedPublishedWords", "missingVerifiedWords", "verifiedWordRecall");

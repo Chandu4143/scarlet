@@ -77,8 +77,8 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
         if (review) mapRanges(review.original.version, change.restoredCuts.flatMap(i => review.cuts[i]?.removed ?? []), protectedRanges);
       }
     }
-    if (request.keep.some(k => !check.repeats.some(r => r.id === k.id) && !check.silences.some(s => s.id === k.id)))
-      throw badRequest("unknown_repeat", "A kept id must match a repeat or a silence found on this version.");
+    if (request.keep.some(k => !check.repeats.some(r => r.id === k.id) && !check.silences.some(s => s.id === k.id) && !check.fragments.some(f => f.id === k.id)))
+      throw badRequest("unknown_repeat", "A kept id must match a repeat, a silence or a divided sentence found on this version.");
     if (request.keep.length) {
       const fresh = request.keep.filter(k => !kept.has(k.id));
       if (fresh.length) appendTaskEvent(ctx, owner, { type: "log", text: "", data: { kind: "repeat_kept", version: tl.version,
@@ -108,17 +108,23 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
       const times = [...at].filter(t => !stagedRanges.some(r => r.start - frame <= t && t <= r.end + frame));
       return times.length ? [{ ...u, joins: times.length, from: Math.min(...times), to: Math.max(...times) }] : [];
     });
+    // A join that divides a sentence is settled once the pass has read it and kept it with its reason. One a cut
+    // staged for review makes isn't played yet.
+    const fragments = check.fragments.filter(f => !kept.has(f.id) && !stagedRanges.some(r => r.start - frame <= f.at && f.at <= r.end + frame));
     const unavailable = check.unavailable.map(u => `Couldn’t check ${u.mediaId}: ${u.reason}`);
     const last = owner.repeatAudit;
-    const remaining = repeats.length + silences.length;
+    const remaining = repeats.length + silences.length + fragments.length;
     const returns = last?.version === tl.version && (last.remaining === undefined || remaining >= last.remaining) ? last.returns : 0;
     // A join inside a range staged for review isn't played yet; the review reads it.
     const joins = check.joins.filter(j => !stagedRanges.some(r => r.start - frame <= j.at && j.at <= r.end + frame));
-    const noFindings = !check.repeats.length && !check.silences.length && !joins.length && !unheardJoins.length && !unavailable.length;
+    const noFindings = !check.repeats.length && !check.silences.length && !check.fragments.length && !joins.length && !unheardJoins.length && !unavailable.length;
     saveTask(ctx, { ...owner, state: "running", repeatAudit: { version: tl.version, remaining, unavailable, returns, noFindings } });
     return { version: tl.version, ...(named !== tl.version && { readInsteadOf: named }), heard: check.repeats.length, staged: staged.length, remaining,
-      repeats: repeats.slice(request.offset, request.offset + 25), ...(request.offset + 25 < repeats.length && { nextOffset: request.offset + 25 }),
+      // One offset pages the repeats and the divided sentences together: a pass asked for the next pages of both at once.
+      repeats: repeats.slice(request.offset, request.offset + 25),
+      ...(request.offset + 25 < Math.max(repeats.length, fragments.length) && { nextOffset: request.offset + 25 }),
       ...(silences.length && { silences: silences.slice(0, 25) }),
+      ...(fragments.length && { fragments: fragments.slice(request.offset, request.offset + 25) }),
       ...(check.unavailable.length && { unavailable: check.unavailable }),
       ...(check.joins.length && { joins }), ...(unheardJoins.length && { unheardJoins }) };
   }, "immediate")();

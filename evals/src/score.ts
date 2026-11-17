@@ -14,7 +14,7 @@ import {
 import { pictureAt } from "./layout.ts";
 import { comparePicture, summarizePicture, type PictureComparison, type PictureSample, type PictureSummary } from "./picture.ts";
 import { comparePublishedJoinSpacing, type PublishedReference } from "./published.ts";
-import { keptSource, playedWords, sourceSpan, timelineRangeToSource, wordsWithout, type MediaInfo, type SourceRange } from "./timeline.ts";
+import { dividedJoins, keptSource, playedWords, sourceSpan, timelineRangeToSource, wordsWithout, type DividedJoin, type MediaInfo, type SourceRange } from "./timeline.ts";
 
 export interface ScoreInput {
   media: MediaInfo[];
@@ -73,6 +73,8 @@ interface PacingScore {
   sharedJoins?: Record<"applied" | "proposed", ReturnType<typeof comparePublishedJoinSpacing>>;
   appliedGaps: PacingGap[];
   appliedRepeats: PacingRepeat[];
+  /** The applied version's joins that took words out of a sentence, with the words either side: to read, for stray words and cut-off sentences. */
+  appliedDividedJoins: DividedJoin[];
 }
 export interface Score {
   versions: { source: string; applied: string; proposed: string };
@@ -206,6 +208,7 @@ export function scoreRun(input: ScoreInput): Score {
       sharedJoins: { applied: comparePublishedJoinSpacing(published, appliedWords), proposed: comparePublishedJoinSpacing(published, proposedWords) },
     } : input.reference?.timeline && { reference: summary(pacing(words(input.reference.timeline))) }),
     appliedGaps: gapList.sort((a, b) => b.seconds - a.seconds).slice(0, 60), appliedRepeats: repeatList,
+    appliedDividedJoins: dividedJoins(timelines.applied, media, evidence),
   };
   // Staged cuts are timed on the review's base version, which is the applied one whenever a review was scored.
   const recommendedCuts = (input.review?.cuts ?? []).filter(c => c.assessment?.verdict === "cut").map(c => c.removed);
@@ -277,6 +280,8 @@ export function scoreRun(input: ScoreInput): Score {
       recommendedLooseJoins: (recommendedPacing ?? appliedPacing).gaps.atJoins,
       restartsLeft: (recommendedPacing ?? appliedPacing).restarts,
       silencesLeft: (recommendedPacing ?? appliedPacing).silences,
+      // Joins that divide a sentence in the applied cut: each is one the closing check has the pass read.
+      dividedJoins: pacingScore.appliedDividedJoins.length,
       repeatsLeft: appliedPacing.repeats.total,
       repeatsAtJoins: appliedPacing.repeats.atJoins,
       sharedAppliedJoins: pacingScore.sharedJoins?.applied.shared ?? null,

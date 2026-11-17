@@ -3679,6 +3679,99 @@ it("holds a pass until each restart and long silence its edit still plays is cut
   expect(await finish()).toMatchObject({ state: "done", repeatAudit: { remaining: 0 } });
 });
 
+it("holds a pass until each join that divides a sentence is repaired or kept with its reason", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  const claim = async () => (await (await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id })).json()).task as Task;
+  const finish = async () => (await (await api("POST", `/tasks/${pass.id}/complete`, { state: "done" })).json()).task as Task;
+  const check = (version: string, keep?: { id: string; reason: string }[]) => api("POST", projectsPath() + `/tasks/${pass.id}/repeat-audit`, { version, keep });
+  await claim();
+  await micSpeech();
+  // “Do not use tools. Do, do not use tools. Now the reason is speed. It holds up. Sorry, phone. Thanks.”, a word every 0.4 s.
+  const words = "Do not use tools. Do, do not use tools. Now the reason is speed. It holds up. Sorry, phone. Thanks.".split(" ")
+    .map((text, i) => ({ text, start: 1 + i * .4, end: 1.3 + i * .4 }));
+  // An “I” the aligner gave no time sits after “up.”, in front of the aside that is cut: it has no sound, so it isn't a stray word.
+  words.splice(17, 0, { text: "I", start: 7.75, end: 7.75 });
+  const transcript = ctx.repos.transcripts.put({ id: "mic-words", projectId: project.id, mediaId: "mic", language: "en", provider: "whispercpp",
+    segments: [{ id: "seg", start: 1, end: 9, text: words.map(w => w.text).join(" "), words }], createdAt: new Date().toISOString() });
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20, transcriptId: transcript.id }, "ready");
+  const piece = (id: string, from: number, to: number, at: number) =>
+    ({ op: "addClip" as const, trackId: "a1", clip: { id, kind: "media" as const, mediaId: "mic", sourceIn: from, sourceOut: to, timelineIn: at } });
+  // The restart's second saying came out, and its first word stayed in front of the next sentence. A second cut took the aside whole.
+  const version = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Tighten the take",
+    ops: [piece("a", 0, 2.95, 0), piece("b", 4.55, 7.75, 2.95), piece("c", 8.55, 9.4, 6.15)] }).change.toVersion;
+  const found = await (await check(version)).json();
+  expect(found).toMatchObject({ remaining: 1, fragments: [{ at: 2.95, mediaId: "mic", out: 2.95, in: 4.55, before: "Do not use tools. Do,", after: "Now the reason is speed. It holds up.",
+    removed: 4, removedStart: "do not use tools.", split: ["out"], lastWord: 4, firstWord: 9 }] });
+  // The join that took the aside out stands between two whole sentences, and is not listed. Nor is the soundless “I” before it.
+  expect(found.fragments).toHaveLength(1);
+  expect((await finish()).state).toBe("queued");
+  await claim();
+  await expect((await check(version, [{ id: "unknown", reason: "Reads whole." }])).json()).resolves.toMatchObject({ error: { code: "unknown_repeat" } });
+  // Repaired: the stray word goes, and the join is between two whole sentences.
+  const repaired = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Remove the stray word",
+    ops: [{ op: "rippleDelete", start: 2.55, end: 2.95 }] }).change.toVersion;
+  const after = await (await check(repaired)).json();
+  expect(after.remaining).toBe(0);
+  expect(after.fragments).toBeUndefined();
+  expect(await finish()).toMatchObject({ state: "done", repeatAudit: { remaining: 0 } });
+});
+
+it("lists a divided sentence at a join the pass made itself, and not at one the dialogue cut tool placed", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id });
+  const check = (version: string) => api("POST", projectsPath() + `/tasks/${pass.id}/repeat-audit`, { version });
+  await micSpeech();
+  // “And I ran it twice, three times and it held. So we kept, uh, the fast one for now.”, a word every 0.4 s.
+  const words = "And I ran it twice, three times and it held. So we kept, uh, the fast one for now.".split(" ").map((text, i) => ({ text, start: 1 + i * .4, end: 1.3 + i * .4 }));
+  const transcript = ctx.repos.transcripts.put({ id: "mic-words", projectId: project.id, mediaId: "mic", language: "en", provider: "whispercpp",
+    segments: [{ id: "seg", start: 1, end: 9, text: words.map(w => w.text).join(" "), words }], createdAt: new Date().toISOString() });
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20, transcriptId: transcript.id }, "ready");
+  const laid = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Lay in the take", ops: [
+    { op: "addClip", trackId: "a1", clip: { id: "take", kind: "media", mediaId: "mic", sourceIn: 0, sourceOut: 10, timelineIn: 0 } },
+  ] }).change.toVersion;
+  // The dialogue cut tool takes “twice,” out: the pass named that word, and the tool placed the join.
+  const cut = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: pass.id, fromVersion: laid, description: "Keep the corrected number",
+    cuts: [{ start: 2.55, end: 2.95, review: false, kind: "retake", reason: "He took the number back." }] });
+  expect(cut.status).toBe(201);
+  const afterCut = (await cut.json()).changes[0].toVersion;
+  const quiet = await (await check(afterCut)).json();
+  expect(quiet.fragments).toBeUndefined();
+  // A ripple of the pass's own takes “uh, the” out and leaves “kept, ‖ fast one”: that join is listed, the tool's still isn't.
+  const rippled = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Drop the filler",
+    ops: [{ op: "rippleDelete", start: 5.75, end: 6.55 }] }).change.toVersion;
+  const found = await (await check(rippled)).json();
+  expect(found.fragments).toMatchObject([{ before: expect.stringMatching(/So we kept,$/), after: "fast one for now.", removedStart: "uh, the", split: ["out", "in"] }]);
+});
+
+it("settles a join that divides a sentence once the pass keeps it with the sentence as it reads", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id });
+  const check = (version: string, keep?: { id: string; reason: string }[]) => api("POST", projectsPath() + `/tasks/${pass.id}/repeat-audit`, { version, keep });
+  await micSpeech();
+  // “And I ran it twice, three times and it held.”: the number taken back is cut.
+  const words = "And I ran it twice, three times and it held.".split(" ").map((text, i) => ({ text, start: 1 + i * .4, end: 1.3 + i * .4 }));
+  const transcript = ctx.repos.transcripts.put({ id: "mic-words", projectId: project.id, mediaId: "mic", language: "en", provider: "whispercpp",
+    segments: [{ id: "seg", start: 1, end: 5, text: words.map(w => w.text).join(" "), words }], createdAt: new Date().toISOString() });
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20, transcriptId: transcript.id }, "ready");
+  const version = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Keep the corrected number", ops: [
+    { op: "addClip", trackId: "a1", clip: { id: "a", kind: "media", mediaId: "mic", sourceIn: 0, sourceOut: 2.55, timelineIn: 0 } },
+    { op: "addClip", trackId: "a1", clip: { id: "b", kind: "media", mediaId: "mic", sourceIn: 2.95, sourceOut: 6, timelineIn: 2.55 } },
+  ] }).change.toVersion;
+  const found = await (await check(version)).json();
+  // The words either side, and the one that came out, are what the model reads to tell that it still says what was run.
+  expect(found).toMatchObject({ remaining: 1, fragments: [{ before: "And I ran it", after: "three times and it held.", removed: 1, removedStart: "twice,", split: ["out", "in"] }] });
+  const kept = await (await check(version, [{ id: found.fragments[0].id, reason: "Reads “And I ran it three times and it held.”" }])).json();
+  expect(kept.remaining).toBe(0);
+  expect(kept.fragments).toBeUndefined();
+  expect((await (await api("POST", `/tasks/${pass.id}/complete`, { state: "done" })).json()).task).toMatchObject({ state: "done" });
+});
+
 it("finds a six-word opening repeated inside the kept audio and clears it when the pickup is removed", async () => {
   const { ctx } = workspace;
   const { task, base } = dialoguePassInParts();
