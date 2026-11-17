@@ -20,6 +20,9 @@ const ToolDiagnostic = z.object({
   outcome: z.enum(["ok", "failed", "refused", "preparing", "degraded"]),
   elapsedMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   evidenceMisses: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  // How much the tool gave back to the model: the characters of its text and how many pictures or sounds. Never the content.
+  resultChars: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  resultMedia: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
 }).strict();
 
 function usageGroupBy(value: string | undefined, fallback: UsageGroupBy): UsageGroupBy {
@@ -210,7 +213,8 @@ export function taskRoutes(ctx: Ctx) {
     const task = requireTask(c.req.param("taskId"), c.req.param("projectId"));
     const attempt = requestAttempt(c.req.raw);
     if (!attempt?.startedAt || attempt.taskId !== task.id || attempt.startedAt !== task.startedAt) return c.body(null, 204);
-    ctx.log(`[mcp] tool-finished task=${task.id} attempt=${attempt.startedAt} tool=${body.tool} outcome=${body.outcome} elapsedMs=${body.elapsedMs} evidenceMisses=${body.evidenceMisses}`);
+    ctx.log(`[mcp] tool-finished task=${task.id} attempt=${attempt.startedAt} tool=${body.tool} outcome=${body.outcome} elapsedMs=${body.elapsedMs} evidenceMisses=${body.evidenceMisses}` +
+      (body.resultChars === undefined ? "" : ` resultChars=${body.resultChars}`) + (body.resultMedia ? ` resultMedia=${body.resultMedia}` : ""));
     return c.body(null, 204);
   });
 
@@ -219,6 +223,10 @@ export function taskRoutes(ctx: Ctx) {
     const { startedAt, ...usage } = await jsonBody(c, RecordTaskUsageRequest);
     const task = requireTask(c.req.param("taskId"), c.req.param("projectId"));
     ctx.repos.usage.record(task, usage, startedAt);
+    // A run reports its totals as it goes. Each report is logged, so the log shows how its context grew between the
+    // tool results around it: a pass that read 53.7 million cached tokens left one total and no way to say on what (2026-11-16).
+    ctx.log(`[task] usage task=${task.id} model=${usage.model ?? "unknown"} input=${usage.inputTokens} cacheRead=${usage.cacheReadTokens} ` +
+      `cacheWrite=${usage.cacheWriteTokens} output=${usage.outputTokens} reasoning=${usage.reasoningTokens}`);
     ctx.bus.publish({ type: "task.usage", projectId: task.projectId, taskId: task.id, usage: ctx.repos.usage.taskTotals(task.id) });
     return c.json({});
   });

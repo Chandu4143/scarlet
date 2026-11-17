@@ -699,6 +699,22 @@ describe("timeline_propose", () => {
 });
 
 describe("waveform_get", () => {
+  it("answers a request for more buckets than it gives at the most it gives, and says so", async () => {
+    const asked: number[] = [];
+    mock.state.waveform = (mediaId, from, to, points) => {
+      asked.push(points);
+      return { mediaId, from, to, peaks: Array.from({ length: points }, () => 0.5) };
+    };
+    const r = (await client.callTool({ name: "waveform_get", arguments: { mediaId: "m1", from: 0, to: 120, points: 6000 } })) as CallToolResult;
+    expect(r.isError).toBeFalsy();
+    const body = JSON.parse(textOf(r));
+    expect(asked).toEqual([4000]);
+    expect(body.peaksDb.length).toBe(4000);
+    expect(body.pointsCapped).toEqual({ asked: 6000, returned: 4000 });
+    const within = JSON.parse(textOf((await client.callTool({ name: "waveform_get", arguments: { mediaId: "m1", from: 0, to: 120, points: 4000 } })) as CallToolResult));
+    expect(within.pointsCapped).toBeUndefined();
+  });
+
   it("detects silences from synthetic peaks and renders a sparkline", async () => {
     mock.state.waveform = (mediaId, from, to, points) => ({
       mediaId,

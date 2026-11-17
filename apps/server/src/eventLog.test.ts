@@ -56,7 +56,20 @@ it("logs a tool result for its claim after it ended, without writing a task even
   expect(lines.filter(line => line.startsWith("[mcp]"))).toEqual([
     `[mcp] tool-finished task=${task.id} attempt=${startedAt} tool=task_question outcome=ok elapsedMs=18 evidenceMisses=0`,
   ]);
+  // A tool that says how much it gave back has that logged too, as sizes.
+  await scoped.post(path, { ...diagnostic, tool: "transcript_get", resultChars: 48210, resultMedia: 2 });
+  expect(lines.filter(line => line.startsWith("[mcp]")).at(-1)).toBe(
+    `[mcp] tool-finished task=${task.id} attempt=${startedAt} tool=transcript_get outcome=ok elapsedMs=18 evidenceMisses=0 resultChars=48210 resultMedia=2`);
   await expect(scoped.post(path, { ...diagnostic, tool: "Private result" })).rejects.toMatchObject({ status: 400 });
+  expect(lines.join("\n")).not.toContain("Private");
+});
+
+it("logs each usage report a run makes, so the log shows its context growing between tool results", async () => {
+  const { project } = await api.createProject({ name: "Usage" });
+  const { task } = await api.createTask(project.id, { kind: "edit", agent: "codex", instruction: "Private request" });
+  await api.recordTaskUsage(task.id, { model: "halo-alpha", inputTokens: 1200, cacheReadTokens: 480000, outputTokens: 90 });
+  expect(lines.filter(line => line.startsWith("[task] usage"))).toEqual([
+    `[task] usage task=${task.id} model=halo-alpha input=1200 cacheRead=480000 cacheWrite=0 output=90 reasoning=0`]);
   expect(lines.join("\n")).not.toContain("Private");
 });
 
