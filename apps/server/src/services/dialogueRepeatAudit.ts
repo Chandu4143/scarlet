@@ -8,7 +8,7 @@ import { acousticWordReader } from "../transcribe/acousticWords.js";
 import { EmissionFile } from "../transcribe/emissions.js";
 import { readsEnglishSpeech, measureRecordingWords } from "../transcribe/wordAlign.js";
 import { transcriptLanguage } from "./transcriptReader.js";
-import { dialogueDetector } from "./dialogueDetections.js";
+import { dialogueDetector, sharedDialogueDetector } from "./dialogueDetections.js";
 import { emissionStore, recordingWav, type RecordingAudio } from "./recordingAudio.js";
 
 interface Word extends TimeRange { text: string }
@@ -346,6 +346,13 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
         if (!store) throw new Error("The recording's speech measurements are unavailable.");
         const transcript = media.transcriptId ? ctx.repos.transcripts.get(media.transcriptId) : undefined;
         const said = transcript?.segments.flatMap(s => s.words).filter(w => w.end > w.start && !/^\s*\[.*\]\s*$/.test(w.text)) ?? [];
+        // What a part plays, in the verbatim words the pass's scan read wherever it read them: the transcript tidies a
+        // restart away ("including 3D, including three, uh, including its ability" reads "including 3D, including its
+        // ability" there), and the restarts it hid played on in finished passes (2026-11-16).
+        const scanned = await sharedDialogueDetector(ctx).savedWords(project.id, media, Math.min(...ranges.map(r => r.start)),
+          Math.max(...ranges.map(r => r.end))).catch(() => undefined);
+        const inScan = (t: number) => !!scanned?.covered.some(r => t >= r.start && t < r.end);
+        const playedWords = [...(scanned?.words ?? []), ...said.filter(w => !inScan((w.start + w.end) / 2))];
         for (const part of selected) {
           const [lo, hi] = store.frameRange(part.source.start, part.source.end);
           const reader = acousticWordReader();
@@ -355,8 +362,8 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
           }
           const read = reader.finish();
           for (const word of read) add(part, word);
-          // What the transcript says this part plays: a word is in the part its middle is in.
-          for (const word of said) {
+          // What the part plays: a word is in the part its middle is in.
+          for (const word of playedWords) {
             const middle = (word.start + word.end) / 2;
             if (middle >= part.source.start && middle < part.source.end && !names(word.text)) add(part, word, spoken);
           }
