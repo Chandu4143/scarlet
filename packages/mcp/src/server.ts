@@ -1419,10 +1419,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   );
 
   const phraseIndexes = new WeakMap<TranscriptWord[], ReturnType<typeof indexTranscriptWords>>();
+  // An engine that answers a search without the order of its words never will: later searches read the list at once.
+  let searchHasWordOrder = true;
   async function exactMatches(mediaId: string, query: string, contextWords: number) {
     let words: TranscriptWord[] | null;
     const hasRead = () => wordLists.has(mediaId) || aligningWords.has(mediaId) || readingWords.has(JSON.stringify([mediaId, true]));
-    if (ctx.task?.context.recordTranscriptDigests || hasRead()) {
+    if (ctx.task?.context.recordTranscriptDigests || hasRead() || !searchHasWordOrder) {
       // A cached read tracks alignment; evaluation runs also record the complete timed list they used.
       words = await transcriptWords(mediaId);
     } else {
@@ -1444,6 +1446,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
           }
         }
         // Older search results lack the order of the words they refer to. Search the full list we can remember.
+        if (!found) searchHasWordOrder = false;
         words = await transcriptWords(mediaId);
       } else {
         // Older engines and very long queries return the original transcript.

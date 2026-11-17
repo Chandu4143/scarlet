@@ -7,7 +7,7 @@ import type { Ctx } from "../context.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
-import { ensureHead, ensureProjectHead, resolveTimeline } from "../services/timeline.js";
+import { ensureProjectHead, resolveTimeline } from "../services/timeline.js";
 import { jsonBody, requireProject, requireProjectHeader } from "./util.js";
 import { actorFor, logActivity, quote } from "../services/activity.js";
 import { applyChoicesWhenDone } from "../services/changes.js";
@@ -22,7 +22,7 @@ export function timelineRoutes(ctx: Ctx) {
     const project = requireProjectHeader(ctx, id);
     if (version && version !== "head") return c.json({ timeline: resolveTimeline(ctx, project, version) });
     const row = project.head ? ctx.repos.versions.get(id, project.head) : null;
-    return c.json({ timeline: row?.timeline ?? ensureHead(ctx, id).timeline });
+    return c.json({ timeline: row?.timeline ?? resolveTimeline(ctx, ensureProjectHead(ctx, id)) });
   });
 
   r.get("/projects/:id/versions", (c) => {

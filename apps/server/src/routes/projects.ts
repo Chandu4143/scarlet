@@ -6,7 +6,7 @@ import { withActivity } from "../services/projectActivity.js";
 import { holdProjectEditing, resumeProjectEditing, resumeProjectTranscriptions } from "../services/taskRecovery.js";
 import { Hono } from "hono";
 import { z } from "zod/v3";
-import { EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
+import { EditReviewRequest, threadTimeline, type ThreadEdit, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
 import { makeShorts, planShorts } from "../services/shorts.js";
 import { createProject, hasInitialTimeline } from "@scarlet/timeline";
 import type { AppEnv } from "../auth.js";
@@ -89,31 +89,45 @@ export function projectRoutes(ctx: Ctx) {
     return thread;
   }
 
-  function editLists(projectId: string, ids: string[]) {
-    return ctx.db.transaction(() => {
+  /** Read the project's history once for every requested thread, then project each list on its own turn so
+   * playback and frame requests run between long histories. A list that fails to project fails alone. */
+  async function editLists(projectId: string, ids: string[]) {
+    const { project, threads, head, links, media } = ctx.db.transaction(() => {
       const project = requireProjectHeader(ctx, projectId);
       const wanted = new Set(ids);
       const threads = ctx.repos.projects.threads(projectId).filter(thread => wanted.has(thread.id));
-      const read = (version: string) => ctx.repos.versions.get(projectId, version)?.timeline;
-      const head = project.head && read(project.head);
-      const links = head ? ctx.repos.versions.links(projectId) : [];
-      const media = head ? ctx.repos.projects.listMedia(projectId) : [];
-      const lists = Object.fromEntries(threads.map(thread => [thread.id, head
-        ? threadTimeline(thread, head, links, read, project.settings.fps, media) : []]));
-      return { version: project.head, lists };
+      const head = project.head ? ctx.repos.versions.get(projectId, project.head)?.timeline : undefined;
+      return { project, threads, head, links: head ? ctx.repos.versions.links(projectId) : [], media: head ? ctx.repos.projects.listMedia(projectId) : [] };
     })();
+    // Saved versions are never rewritten or removed, so reading them after the snapshot sees the same history.
+    const read = (version: string) => ctx.repos.versions.get(projectId, version)?.timeline;
+    const lists: [string, ThreadEdit[]][] = [];
+    const failed: [string, Error][] = [];
+    for (const [i, thread] of threads.entries()) {
+      if (i) await new Promise(resolve => setImmediate(resolve));
+      try {
+        lists.push([thread.id, head ? threadTimeline(thread, head, links, read, project.settings.fps, media) : []]);
+      } catch (error) {
+        failed.push([thread.id, error instanceof Error ? error : new Error(String(error))]);
+      }
+    }
+    return { version: project.head, lists: Object.fromEntries(lists), failed: new Map(failed) };
   }
 
-  r.get("/projects/:id/threads/:threadId/edits", c => {
+  r.get("/projects/:id/threads/:threadId/edits", async c => {
     const id = c.req.param("threadId");
-    const { version, lists } = editLists(c.req.param("id"), [id]);
+    const { version, lists, failed } = await editLists(c.req.param("id"), [id]);
+    const error = failed.get(id);
+    if (error) throw error;
     if (!Object.hasOwn(lists, id)) throw notFound("thread");
     return c.json({ version, edits: lists[id] });
   });
 
   r.post("/projects/:id/thread-edits", async c => {
     const { threads } = await jsonBody(c, z.object({ threads: z.array(z.string()).min(1).max(64) }));
-    return c.json(editLists(c.req.param("id"), threads));
+    const { version, lists, failed } = await editLists(c.req.param("id"), threads);
+    for (const [id, error] of failed) ctx.log(`[error] edit list for thread ${id}: ${error.stack ?? error.message}`);
+    return c.json({ version, lists, ...(failed.size > 0 && { failed: Object.fromEntries([...failed].map(([id, error]) => [id, error.message || "internal error"])) }) });
   });
 
   r.post("/projects/:id/threads/:threadId/disposition", async c => {

@@ -202,14 +202,16 @@ export class WordAligner {
       let last = first + 1;
       while (last < groups.length && groups[last]!.end - groups[first]!.start <= seconds) last++;
       const batch = groups.slice(first, last);
+      const runs = batch.map(({ start, end, words }, i) => {
+        const next = groups[first + i + 1]?.words.slice(0, CONTEXT_WORDS);
+        return { start, end, words, ...(next?.length && { next }) };
+      });
+      // A saved window needs only the timing search. The original audio still supplies any unplaced words' gap readings.
+      // A recording is decoded before its turn joins the audio lane, so a pass's reading never waits behind the decode.
+      const cached = emissions ? await storeCovers(emissions, runs, classes) : false;
+      const audio = cached ? "" : emissions ? await emissions.wav() : await getWav();
+      opts.signal.throwIfAborted();
       const turn = async (signal: AbortSignal) => {
-        const runs = batch.map(({ start, end, words }, i) => {
-          const next = groups[first + i + 1]?.words.slice(0, CONTEXT_WORDS);
-          return { start, end, words, ...(next?.length && { next }) };
-        });
-        // A saved window needs only the timing search. The original audio still supplies any unplaced words' gap readings.
-        const cached = emissions && await storeCovers(emissions, runs, classes);
-        const audio = cached ? "" : emissions ? await emissions.wav() : await getWav();
         const model = cached ? "" : await (spanish ? this.spanishModel : this.model).get(signal);
         // Beside the store the request ends in .part, which the leftover sweep clears from a project's folder.
         const request = emissions ? `${emissions.file}.${randomUUID()}.part` : `${audio}.${randomUUID()}.align.json`;

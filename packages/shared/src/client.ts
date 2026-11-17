@@ -135,7 +135,8 @@ export const TASK_HEADER = "X-Scarlet-Task";
 export const ATTEMPT_HEADER = "X-Scarlet-Task-Started-At";
 
 type ThreadEdits = { version: string | null; edits: ThreadEdit[] };
-type ThreadEditBatch = { ids: Set<string>; read: Promise<{ version: string | null; lists: Record<string, ThreadEdit[]> }> };
+type ThreadEditLists = { version: string | null; lists: Record<string, ThreadEdit[]>; failed?: Record<string, string> };
+type ThreadEditBatch = { ids: Set<string>; read: Promise<ThreadEditLists> };
 
 export class ScarletClient {
   private readonly baseUrl: string;
@@ -288,7 +289,7 @@ export class ScarletClient {
     return this.get<Pick<ProjectDetail, "project" | "timeline">>(`/projects/${id}?view=workspace`);
   }
   /** Opening the workspace asks for many threads in the same turn. Share the engine's project history
-   * read across them. Limit each batch so playback requests can run between long histories. */
+   * read across them. A thread whose list fails to project fails alone. */
   async threadEdits(projectId: string, threadId: string): Promise<ThreadEdits> {
     const path = `/projects/${apiPathId(projectId)}`;
     const single = () => this.get<ThreadEdits>(`${path}/threads/${encodeURIComponent(threadId)}/edits`);
@@ -301,20 +302,22 @@ export class ScarletClient {
           const { version, edits } = await single();
           return { version, lists: { [threadId]: edits } };
         }
-        return this.post<{ version: string | null; lists: Record<string, ThreadEdit[]> }>(`${path}/thread-edits`, { threads: [...ids] });
+        return this.post<ThreadEditLists>(`${path}/thread-edits`, { threads: [...ids] });
       });
       batch = { ids, read };
       this.editBatches.set(projectId, batch);
     }
     batch.ids.add(threadId);
     try {
-      const { version, lists } = await batch.read;
+      const { version, lists, failed } = await batch.read;
+      if (failed && Object.hasOwn(failed, threadId)) throw new ScarletApiError(500, "internal_error", failed[threadId]!);
       if (!Object.hasOwn(lists, threadId)) throw new ScarletApiError(404, "not_found", "thread not found");
       return { version, edits: lists[threadId]! };
     } catch (error) {
-      // Clients connected to an older engine can still read each list through its original route.
+      // Clients connected to an older engine can still read each list through its original route. The engine
+      // may name the path decoded or behind a prefix, so only the method and the route's last segment are matched.
       if (error instanceof ScarletApiError && error.status === 404 && error.code === "not_found" &&
-          error.message === `no route for POST /api${path}/thread-edits`) return single();
+          error.message.startsWith("no route for POST ") && error.message.endsWith("/thread-edits")) return single();
       throw error;
     }
   }

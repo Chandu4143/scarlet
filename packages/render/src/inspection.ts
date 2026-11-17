@@ -293,7 +293,9 @@ export async function reviewWindow(file: string, range: TimeRange,
       "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2", "-update", "1", picture,
       ...(audio ? pcmOutput(0, auditionFilter(range), audio) : [])];
     const { stdout, stderr } = await readReview(file, range, opts.signal, sheet);
-    const [jpeg, audition] = await Promise.all([readFile(picture), audio && readFile(audio)]);
+    // ffmpeg writes no picture when the window decodes no frame: sheetResult then says so instead of naming a temp file.
+    const sheetPicture = readFile(picture).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? Buffer.alloc(0) : Promise.reject(error));
+    const [jpeg, audition] = await Promise.all([sheetPicture, audio && readFile(audio)]);
     return { ...sheetResult(jpeg, stderr, times.length), events: reviewEvents(stderr, stdout, range, opts.origin),
       wav: audition ? wavFromPcm(audition) : undefined };
   } finally { await Promise.all([rm(picture, { force: true }), audio && rm(audio, { force: true })]); }

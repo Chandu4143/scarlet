@@ -79,6 +79,28 @@ it("projects simultaneous edit lists from one history read and returns just the 
   expect(special.edits[0].changeId).toBe("change1");
 });
 
+it("fails only the thread whose edit list cannot be projected", async () => {
+  const { ctx } = workspace;
+  const { version } = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 120 }]), { parent: null });
+  ctx.repos.projects.update(project.id, { head: version });
+  for (const [i, threadId] of ["one", "broken"].entries()) {
+    ctx.repos.changes.put(Change.parse({ id: "change" + i, threadId, projectId: project.id, state: "approved",
+      fromVersion: version, toVersion: version, ranges: [{ start: i, end: i + 1 }], description: "Edit " + i,
+      author: { type: "agent", name: "Scarlet" }, createdAt: "2026-01-01T00:00:00Z" }));
+  }
+  const threads = ctx.repos.projects.threads.bind(ctx.repos.projects);
+  vi.spyOn(ctx.repos.projects, "threads").mockImplementation(id =>
+    threads(id).map(thread => thread.id === "broken" ? { ...thread, tasks: 5 as never } : thread));
+  const path = "/projects/" + project.id;
+  const result = await api("POST", path + "/thread-edits", { threads: ["one", "broken"] });
+  expect(result.status).toBe(200);
+  const body = await result.json();
+  expect(body.lists.one[0].changeId).toBe("change0");
+  expect(body.lists).not.toHaveProperty("broken");
+  expect(body.failed.broken).toMatch(/not a function/);
+  expect((await api("GET", path + "/threads/broken/edits")).status).toBe(500);
+});
+
 it("stops editing across the project and continues interrupted requests ahead of the queue", async () => {
   const { ctx } = workspace;
   const path = `/projects/${project.id}`;

@@ -49,6 +49,22 @@ describe("workspace edit lists", () => {
     ]);
     expect(calls.map(c => c.path)).toEqual(["/projects/p/thread-edits", "/projects/p/threads/a/edits", "/projects/p/threads/b/edits"]);
   });
+
+  it("rejects only a thread whose list the engine could not project", async () => {
+    const { client } = engine(() => json({ version: "v1", lists: { one: [] }, failed: { two: "history unreadable" } }));
+    const [one, two] = await Promise.all([client.threadEdits("p", "one"), failure(client.threadEdits("p", "two"))]);
+    expect(one).toEqual({ version: "v1", edits: [] });
+    expect([two.status, two.message]).toEqual([500, "history unreadable"]);
+  });
+
+  it("recognizes an older engine's missing route behind a prefix or a decoded id", async () => {
+    const { client, calls } = engine(c => c.method === "POST" ? engineError(404, "not_found", "no route for POST /engine/api/projects/a b/thread-edits")
+      : json({ version: "head", edits: [] }));
+    expect(await Promise.all([client.threadEdits("a b", "x"), client.threadEdits("a b", "y")])).toEqual([
+      { version: "head", edits: [] }, { version: "head", edits: [] },
+    ]);
+    expect(calls.filter(c => c.method === "GET")).toHaveLength(2);
+  });
 });
 
 describe("a request", () => {

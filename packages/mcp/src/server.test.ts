@@ -861,6 +861,28 @@ it("combines word context and independently detected speech on a waveform sugges
 });
 
 describe("transcript tools", () => {
+  it("reads the whole list at once after an engine answers a search without its word order", async () => {
+    const original = { extra: mock.state.extra, transcripts: mock.state.transcripts };
+    mock.state.transcripts = { m1: transcript, m2: { ...transcript, mediaId: "m2" } };
+    mock.state.extra = (req, res) => {
+      if (!req.path.endsWith("/transcript") || !req.query.has("search")) return false;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ segmentCount: 1, wordCount: 10, matches: [{ wordIndex: 0, start: 0, end: 0.4, context: "[ Welcome ]" }] }));
+      return true;
+    };
+    const editor = await connect();
+    try {
+      for (const mediaId of ["m1", "m2"]) {
+        const search = await editor.callTool({ name: "transcript_search", arguments: { mediaId, query: "welcome" } });
+        expect(search.isError).toBeFalsy();
+      }
+      const searched = mock.requests.filter(r => r.query.has("search")).map(r => r.path.split("/").at(-2));
+      expect(searched).toEqual(["m1"]);
+    } finally {
+      await editor.close();
+      Object.assign(mock.state, original);
+    }
+  });
   it("records the actual timed word list once for an evaluation task", async () => {
     const task = Task.parse({ id: "eval-words", projectId: "prj_test", kind: "edit", state: "running", agent: "codex",
       instruction: "Cut dialogue", context: { recordTranscriptDigests: true }, createdBy: { type: "human", name: "Editor" } });

@@ -766,12 +766,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     // (RecordingSpeakers.awaitedByPass). Nothing a pass reads needs word times before its first page.
     // A pass reading any recording of the project counts: it turns to this one next, and its first page here waits
     // for these speakers just the same.
-    const passReading = () => {
-      for (const id of audioLane(ctx).focusedMediaIds()) {
-        if (ctx.db.prepare("SELECT 1 FROM media WHERE id = ? AND project_id = ?").get(id, projectId)) return true;
-      }
-      return false;
-    };
+    const passReading = () => ctx.repos.projects.hasAnyMedia(projectId, audioLane(ctx).focusedMediaIds());
     const speakersFirst = () => ctx.speakers.beside && passReading() ? ctx.speakers.awaitedByPass(projectId) : undefined;
     // Once the words are placed, the recording shows what their times still miss. A word the aligner couldn't place
     // keeps the provider's time, which can run over a wait, so it is brought in to its sound. Local Whisper can also

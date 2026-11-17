@@ -260,6 +260,13 @@ export class ProjectsRepo {
     return row ? this.rowToMedia(row) : null;
   }
 
+  /** Whether any of these media ids is one of the project's recordings. */
+  hasAnyMedia(projectId: string, ids: Iterable<string>): boolean {
+    const wanted = [...ids];
+    return wanted.length > 0 && !!this.db.prepare(`SELECT 1 FROM json_each(?) wanted JOIN media m
+      ON m.id = wanted.value WHERE m.project_id = ? LIMIT 1`).get(JSON.stringify(wanted), projectId);
+  }
+
   /** A render reads original metadata for the sources that can contribute to its window. */
   assets(projectId: string, ids: ReadonlySet<string>): MediaAsset[] {
     if (!ids.size) return [];

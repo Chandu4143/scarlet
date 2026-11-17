@@ -14,7 +14,7 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { requestCutPlaybackFile, waitForPlayback } from "../services/playback.js";
 import { serveFile } from "../files.js";
 import { logId, throttledLog } from "../logText.js";
-import { ensureHead } from "../services/timeline.js";
+import { ensureProjectHead } from "../services/timeline.js";
 import { AnalysisCache } from "../services/analysisCache.js";
 import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
 import { previewPictures } from "../services/previewPictures.js";
@@ -261,7 +261,7 @@ export function renderRoutes(ctx: Ctx) {
     const attempt = requestAttempt(c.req.raw);
     const head = project.head && ctx.repos.versions.exists(project.id, project.head) ? project.head : ctx.db.transaction(() => {
       requireProjectEditAttempt(ctx, attempt, project.id);
-      return ensureHead(ctx, project.id).head;
+      return ensureProjectHead(ctx, project.id).head;
     }, "immediate")();
     const version = body.version && body.version !== "head" ? body.version : head;
     if (version !== head && !ctx.repos.versions.exists(project.id, version)) throw notFound(`version ${version}`);
