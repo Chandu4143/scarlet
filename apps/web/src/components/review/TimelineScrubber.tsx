@@ -300,6 +300,8 @@ export interface TimelineDot {
   open?(): void;
   /** The edit was applied a moment ago: its marker arrives with a moment, a cut's red closing up into it first. */
   landed?: "cut" | "edit";
+  /** When it was applied (ms, as Date.now()). A marker drawn again mid-moment picks the moment up where it is. */
+  landedAt?: number;
 }
 
 /** A marker shows its edit's number. Edits that share a marker show their run of numbers ("12–13"), or the lowest and a plus when they skip. */
@@ -325,6 +327,8 @@ const MARK_SNAP = 24;
 /** A pill's run reaches at most this many pixels along the track, so a dense pass reads as several runs ("1–14",
  *  "15–27") that each zoom to a stretch worth seeing, not as one pill for all of it. */
 const RUN_REACH = 104;
+/** How long an edit's arrival plays, in ms: a cut's red closing (.26 s) and then the marker's ring (.7 s). */
+const LANDING_PLAYS = 1000;
 
 interface MarkLayout {
   /** Names the marker: its group and its first edit's time. */
@@ -623,20 +627,49 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const groupSpan = target?.span ?? span;
   const markLayout = useMemo(() => marks ? layoutMarks(marks, from, span, width, groupSpan) : [], [marks, from, span, width, groupSpan]);
   const [hotMark, setHotMark] = useState<string>();
+  // An edit's arrival plays once. Markers are drawn again as the cut's timeline settles, a pill takes in a newer edit
+  // or the view moves, and each would start the moment over, so a marker drawn again picks it up where it is, and one
+  // drawn after it ended is simply there. The offset is fixed the first time a marker is drawn for a landing, since
+  // changing it on a running animation would skip it ahead.
+  const landingOffsets = useRef(new Map<string, { offset: number; landedAt: number }>());
   // A pass can mark hundreds of cuts. Rebuild their nodes only when the markers change.
-  const markNodes = useMemo(() => <>{markLayout.map(mark => {
-    const { key, times, dots, at, label, width: size } = mark;
-    const on = dots.some(dot => dot.current);
-    const hot = key === hotMark || (litMark !== undefined && times.includes(litMark));
-    const landed = dots.some(dot => dot.landed === "cut") ? "cut" : dots.some(dot => dot.landed) ? "edit" : undefined;
-    const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
-      className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
-      style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 } }}>
-      {label && <span className="simple-timeline-number">{label}</span>}
-    </i>;
-    // A cut just applied: a sliver of its red closes up where the footage came out, then its marker arrives.
-    return landed === "cut" ? [<i key={`${key}-closing`} aria-hidden="true" className="simple-timeline-closing" style={{ left: `${at}%` }} />, node] : node;
-  })}</>, [markLayout, hotMark, litMark]);
+  const markNodes = useMemo(() => {
+    const now = Date.now();
+    const offsets = landingOffsets.current;
+    for (const [id, { landedAt }] of offsets) if (now - landedAt > 10 * LANDING_PLAYS) offsets.delete(id);
+    const elapsed = (id: string, landedAt: number) => {
+      if (!offsets.has(id)) offsets.set(id, { offset: Math.max(0, now - landedAt), landedAt });
+      return offsets.get(id)!.offset;
+    };
+    const fresh = (dot: TimelineDot) => !!dot.landed && now - (dot.landedAt ?? now) < LANDING_PLAYS;
+    const closing = (id: string, left: number, delay: number) =>
+      <i key={id} aria-hidden="true" className="simple-timeline-closing" style={{ left: `${left}%`, animationDelay: `${-delay}ms` }} />;
+    return <>{markLayout.map(mark => {
+      const { key, times, dots, at, label, width: size } = mark;
+      const on = dots.some(dot => dot.current);
+      const hot = key === hotMark || (litMark !== undefined && times.includes(litMark));
+      // Only a marker that is new arrives: one made of edits that all just landed. A pill that was already there takes
+      // a newer edit in quietly, its run of numbers widening, and only that cut's red closes up, where it is.
+      const arrived = dots.filter(fresh);
+      const isNew = arrived.length > 0 && arrived.length === dots.length;
+      const landed = !isNew ? undefined : arrived.some(dot => dot.landed === "cut") ? "cut" : "edit";
+      const landedAt = Math.max(...arrived.map(dot => dot.landedAt ?? now));
+      const delay = isNew ? elapsed(`${key}|${landedAt}`, landedAt) : 0;
+      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
+        className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
+        style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 },
+          ...landed && delay > 0 && { animationDelay: `${(landed === "cut" ? 260 : 0) - delay}ms` } }}>
+        {label && <span className="simple-timeline-number">{label}</span>}
+      </i>;
+      // A cut just applied: a sliver of its red closes up where the footage came out, then its marker arrives.
+      if (landed === "cut") return [closing(`${key}-closing`, at, delay), node];
+      const cuts = arrived.filter(dot => dot.landed === "cut" && dot.time >= from && dot.time <= from + span);
+      return cuts.length ? [...cuts.map(dot => {
+        const id = `${key}-closing-${dot.edit ?? dot.time}`;
+        return closing(id, percent(dot.time), elapsed(`${id}|${dot.landedAt}`, dot.landedAt ?? now));
+      }), node] : node;
+    })}</>;
+  }, [markLayout, hotMark, litMark]); // eslint-disable-line react-hooks/exhaustive-deps
   // Hovering a marker shows the frame and its time, as anywhere on the timeline. One holding what waits on the editor
   // says which, and the frame is that one's.
   const hotDots = hotMark === undefined ? undefined : markLayout.find(mark => mark.key === hotMark)?.dots;

@@ -2471,7 +2471,7 @@ export function SimpleWorkspace() {
   // Each applied edit's dot names it, says where it sits and how long it runs, and quotes the change it came from.
   const editDot = (thread: Thread, e: ThreadEdit, title: string, at: number): TimelineDot => {
     const landed = justLanded(e.changeId) ? e.beforeCut || e.at !== undefined ? "cut" as const : "edit" as const : undefined;
-    return { time: at, landed, title, summary: e.label, edit: `${e.changeId}/${e.spot}`,
+    return { time: at, landed, landedAt: landed && landing.current?.at.get(e.changeId), title, summary: e.label, edit: `${e.changeId}/${e.spot}`,
       detail: e.beforeCut ? `Removed ${lengthLabel(e.beforeCut.removed.end - e.beforeCut.removed.start)}`
         : e.at !== undefined ? editKindWord(e) ?? "Cut" : [editKindWord(e), span(e.range)].filter(Boolean).join(" · "),
       context: [...thread.changes, ...thread.flagged ?? []].find(c => belongsTo(e, c))?.description,
