@@ -202,17 +202,13 @@
   /* While the picture loads, the play button turning is the one sign of it: the playback controls show until it is in. */
   .watch-monitor .monitor-playback[data-loading] { opacity: 1; transition-duration: .15s; transition-delay: 0s; }
 }
-.timeline-panel { position: relative; width: 100%; min-width: 0; padding: 2px 9px 6px; border-radius: 8px; background: #1a1918; }
-.timeline-track {
-  --time-scale-height: 28px; --marker-strip-height: 0px; --ruler-height: calc(var(--time-scale-height) + var(--marker-strip-height));
-  --lane-height: clamp(60px, 7.8vh, 78px); --wave-height: 12px; position: relative;
-}
-.timeline-track[data-has-marks] { --marker-strip-height: 22px; }
+.timeline-panel { position: relative; width: 100%; min-width: 0; padding: 0 11px 11px; border: 1px solid #383735; border-radius: 9px; background: #1a1918; }
+.timeline-track { --ruler-height: 30px; --lane-height: clamp(78px, 9.8vh, 96px); --wave-height: calc(var(--lane-height) * .3); position: relative; }
 .timeline-slider { position: relative; height: calc(var(--ruler-height) + var(--lane-height)); border-radius: 4px; cursor: ew-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
-.timeline-ruler { position: absolute; inset: 0 0 auto; height: calc(var(--time-scale-height) - 2px); overflow: hidden; pointer-events: none; }
+.timeline-ruler { position: absolute; inset: 0 0 auto; height: calc(var(--ruler-height) - 4px); overflow: hidden; pointer-events: none; }
 .timeline-ruler > span { position: absolute; bottom: 0; width: 1px; }
-.ruler-major { height: 4px; background: #777674; }
-.ruler-major > span { position: absolute; left: 2px; bottom: 7px; color: #c6c5c3; font: 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ruler-major { height: 6px; background: #87847f; }
+.ruler-major > span { position: absolute; left: 3px; bottom: 9px; color: #aaa69e; font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .timeline-lanes {
   position: absolute; inset: var(--ruler-height) 0 0; display: flex; flex-direction: column; overflow: hidden;
   border-radius: inherit; background: #2d2b28; pointer-events: none;
@@ -220,9 +216,9 @@
 .timeline-media { display: flex; flex-direction: column; width: 100%; height: 100%; transform-origin: left center; }
 .timeline-media + .timeline-media { position:absolute; inset:0; }
 .timeline-filmstrip { flex: 1 1 auto; min-height: 0; display: grid; grid-auto-flow: column; grid-template-rows: minmax(0, 1fr); grid-auto-columns: minmax(0, 1fr); overflow: hidden; }
-.timeline-waveform { flex: 0 0 var(--wave-height); min-height: 0; width: 100%; color: #a7a6a4; background: #252525; }
+.timeline-waveform { flex: 0 0 var(--wave-height); min-height: 0; width: 100%; color: #e1d9c5; background: #35332e; border-top: 1px solid #292824; }
 .timeline-waveform > svg { display: block; }
-.timeline-waveform.is-loading { background-image: linear-gradient(#ffffff16, #ffffff16); background-size: 100% 1px; background-position: center; background-repeat: no-repeat; }
+.timeline-waveform.is-loading { background-image: linear-gradient(rgb(225 217 197 / 15%), rgb(225 217 197 / 15%)); background-size: 100% 1px; background-position: center; background-repeat: no-repeat; }
 .waveform-ripple {
   height: 100%; opacity: .37;
   background: repeating-linear-gradient(90deg, currentColor 0 1.5px, transparent 1.5px 5px);
@@ -259,9 +255,9 @@
 @keyframes waveform-grow { from { transform: scaleY(.15); opacity: .35; } }
 /* A half-width tile advances exactly one repeat so the ripple loops without a jump. */
 @keyframes waveform-travel { from { mask-position: 0% center; } to { mask-position: 100% center; } }
-.timeline-zoom-row { position: absolute; top: 0; right: 0; z-index: 5; display: flex; align-items: center; height: var(--time-scale-height); gap: 2px; padding-left: 6px; color: var(--color-fg); }
+.timeline-zoom-row { position: absolute; top: 0; right: 0; z-index: 5; display: flex; align-items: center; height: 20px; gap: 2px; padding-left: 6px; color: var(--color-fg); }
 .timeline-zoom-row::before { content: ""; position: absolute; left: 0; height: 14px; border-left: 1px solid #484745; }
-.timeline-zoom-row button { display: grid; place-items: center; height: 26px; border-radius: 4px; background: transparent; color: inherit; }
+.timeline-zoom-row button { display: grid; place-items: center; height: 20px; border-radius: 4px; background: transparent; color: inherit; }
 .timeline-zoom-row button:enabled { cursor: pointer; }
 .timeline-zoom-row button:enabled:hover { background: var(--color-raised); }
 .timeline-zoom-row button:focus-visible { outline: 2px solid var(--color-fg); outline-offset: -2px; }
@@ -298,14 +294,14 @@
 }
 /* A jump glides: the playhead and its time slide to the new place (GLIDE_MS in TimelineScrubber). */
 /* A stretch the editor marks for their message: a drag along the ruler draws it, and each end has a handle. */
-.timeline-range-zone { position: absolute; inset: 0 0 auto; height: var(--time-scale-height); cursor: crosshair; }
+.timeline-range-zone { position: absolute; inset: 0 0 auto; height: var(--ruler-height); cursor: crosshair; }
 .timeline-range { position: absolute; z-index: 2; inset-block: 0; min-width: 2px; pointer-events: none; border-radius: 3px;
   background: rgba(244, 241, 233, .1); border-inline: 1.5px solid #f4f1e9; }
 .timeline-range.is-live { background: rgba(244, 241, 233, .16); }
 /* A handle is the full height of the timeline, so the end's line can be held anywhere along it. Its grip is drawn on the ruler. */
 .timeline-range-handle { position: absolute; z-index: 4; top: 0; bottom: 0; width: 18px; margin-left: -9px; padding: 0; border: 0; background: none;
   cursor: ew-resize; touch-action: none; }
-.timeline-range-handle::before { content: ""; position: absolute; top: 2px; left: 3px; width: 12px; height: calc(var(--time-scale-height) - 4px); box-sizing: border-box;
+.timeline-range-handle::before { content: ""; position: absolute; top: 2px; left: 3px; width: 12px; height: calc(var(--ruler-height) - 4px); box-sizing: border-box;
   border-radius: 4px; background: #f4f1e9 linear-gradient(to right, transparent 4px, #1a1918 4px 5px, transparent 5px 7px, #1a1918 7px 8px, transparent 8px) no-repeat 0 7px / 12px calc(100% - 14px);
   box-shadow: 0 0 0 .5px rgb(0 0 0 / 45%); }
 .timeline-range-handle:focus-visible::before { outline: 2px solid var(--color-fg); outline-offset: 2px; }
@@ -372,8 +368,6 @@
   content: ""; position: absolute; left: 50%; top: -5px; transform: translateX(-50%);
   width: 9px; height: 9px; background: #f4f1e9; clip-path: polygon(0 0, 100% 0, 100% 54%, 50% 100%, 0 54%);
 }
-.timeline-track[data-has-marks] .timeline-playhead { inset-block-start: var(--ruler-height); }
-.timeline-track[data-has-marks] .timeline-playhead::before { display: none; }
 .edit-card-icon { display: inline-grid; place-items: center; flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: none;
   color: var(--color-dim); cursor: pointer; }
 .edit-card-icon:enabled:hover { background: var(--color-raised); color: var(--color-fg); }
