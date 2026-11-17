@@ -643,3 +643,45 @@ it("selects a four-frame menu that opens and disappears between normal screen th
   expect(sheet.windows[0]?.timestamps.some(t=>t>=11/30-0.00001 && t<0.5)).toBe(true);
   await expect(client.contactSheet(projectId,{mediaId:"menu",from:0,to:13,mode:"activity"})).rejects.toMatchObject({status:400});
 });
+
+it("frames a recording on an area so the renderer fills the video with it, and shows the framed video before saving", async () => {
+  const { ctx } = workspace;
+  const editor = new Client({ name: "test", version: "1" });
+  const [engineSide, editorSide] = InMemoryTransport.createLinkedPair();
+  const server = createScarletMcpServer(client, { projectId, agent: "claude", author: { type: "agent", name: "Claude" } });
+  await server.connect(engineSide);
+  await editor.connect(editorSide);
+  const file = join(ctx.paths.media(projectId), "sample.mp4");
+  /** A JPEG as 32x18 grey levels, coarse enough that resampling differences don't count. */
+  const coarse = async (jpeg: Buffer) => (await runCapture(resolveFfmpeg(), ["-v", "error", "-f", "image2pipe", "-c:v", "mjpeg", "-i", "pipe:0",
+    "-vf", "scale=32:18:flags=area,format=gray", "-f", "rawvideo", "pipe:1"], { stdin: jpeg })).stdout;
+  const apart = (a: Buffer, b: Buffer) => a.reduce((sum, level, i) => sum + Math.abs(level - b[i]!), 0) / a.length;
+  try {
+    const head = ctx.repos.projects.get(projectId)!.head;
+    // The bottom-right quarter of the picture, then a pull back to all of it.
+    const framings = [{ at: 0, show: [50, 50, 100, 100] }, { at: 1, show: [0, 0, 100, 100], over: 1 }];
+    const preview = await editor.callTool({ name: "timeline_framing", arguments: { mediaId: "m", framings, preview: true, fromVersion: base } }) as CallToolResult;
+    expect(preview.isError, JSON.stringify(preview.content.find(block => block.type === "text"))).toBeFalsy();
+    const report = JSON.parse((preview.content.find(block => block.type === "text" && block.text.includes('"framings"')) as { text: string }).text);
+    expect(report).toMatchObject({ preview: true, saved: false, clips: 1, video: "320x180" });
+    expect(report.framings.map((f: { frame: number[]; zoom: number; arrives: string }) => [f.frame, f.zoom, f.arrives])).toEqual([[[50, 50, 100, 100], 2, "cut"], [[0, 0, 100, 100], 1, "move"]]);
+    expect(ctx.repos.projects.get(projectId)!.head).toBe(head);
+    const pictures = preview.content.filter(block => block.type === "image").map(block => Buffer.from((block as { data: string }).data, "base64"));
+    expect(pictures).toHaveLength(2);
+    // What the renderer drew is that quarter of the source, filling the video, and then the whole picture.
+    const quarter = await coarse(await extractFrame(file, 0.08, { width: 320, area: [0.5, 0.5, 1, 1] }));
+    const whole = await coarse(await extractFrame(file, 2.08, { width: 320 }));
+    expect(apart(await coarse(pictures[0]!), quarter)).toBeLessThan(6);
+    expect(apart(await coarse(pictures[0]!), await coarse(await extractFrame(file, 0.08, { width: 320 })))).toBeGreaterThan(15);
+    expect(apart(await coarse(pictures[1]!), whole)).toBeLessThan(6);
+
+    const saved = await editor.callTool({ name: "timeline_framing", arguments: { mediaId: "m", framings, fromVersion: base, intent: "requested",
+      description: "Framed the corner, then pulled back", reason: "The corner is what the narration is about." } }) as CallToolResult;
+    expect(saved.isError, JSON.stringify(saved.content.find(block => block.type === "text"))).toBeFalsy();
+    const change = JSON.parse((saved.content[0] as { text: string }).text);
+    const made = ctx.repos.versions.get(projectId, change.toVersion)!.timeline;
+    const clip = made.tracks[0]!.clips[0]!;
+    expect(clip.kind === "media" && clip.keyframes?.map(k => [k.time, k.transform.scale, k.ease])).toEqual([[1, 2.006, "easeInOut"], [2, 1.003, "linear"]]);
+    expect(change.backgroundShows).toBeUndefined();
+  } finally { await editor.close(); }
+});

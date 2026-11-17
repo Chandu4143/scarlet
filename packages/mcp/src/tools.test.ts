@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { EDITING_TOOL_GROUPS, ScarletApiError, ScarletClient, Task } from "@scarlet/shared";
-import { emptyTimeline, makeMediaClip, OpError, timelineDuration, type MediaClip, type Note, type Timeline, type Transcript } from "@scarlet/timeline";
+import { applyOps, emptyTimeline, makeMediaClip, OpError, timelineDuration, type MediaClip, type Note, type Timeline, type Transcript } from "@scarlet/timeline";
 import { z } from "zod/v3";
 import { toolAnnotations } from "./annotations.js";
 import { syncRate } from "./audio-sync.js";
@@ -149,6 +149,161 @@ describe("audio_sync", () => {
       const short = await call(c, "audio_sync", { referenceId: "m1", secondaryId: "m2" });
       expect(short.isError).toBe(true);
       expect(textOf(short)).toContain("The waveform of m2 covered 1000 of 1375 samples from 0.0 s.");
+    } finally { await c.close(); }
+  });
+});
+
+describe("timeline_framing", () => {
+  const screen = { id: "scr", kind: "video" as const, name: "screen.mp4", path: "screen.mp4", duration: 120, fps: 30, width: 3840, height: 2160 };
+  const inset = { scale: 0.3, x: 0.326, y: 0.315, cropLeft: 0.105, cropRight: 0.05, cornerRadius: 0.095 };
+  beforeEach(() => {
+    // A screen demo cut in two at 10 s, with the camera in the corner over it.
+    mock.state.project.media = [...mock.state.project.media, screen];
+    const tl = emptyTimeline("prj_test");
+    tl.version = "cut";
+    tl.tracks[0]!.clips = [makeMediaClip("scr", 0, 10, 0, { id: "s0", volume: 0 }), makeMediaClip("scr", 12, 32, 10, { id: "s1", volume: 0 })];
+    tl.tracks.splice(1, 0, { id: "v2", kind: "video", name: "Camera", muted: false, hidden: false,
+      clips: [makeMediaClip("m1", 0, 30, 0, { id: "cam", transform: inset as MediaClip["transform"] })] });
+    mock.state.timeline = tl;
+    mock.state.extra = (req, res) => {
+      if (req.method === "POST" && req.path === "/projects/prj_test/timeline-pictures") {
+        const times = (req.body as { times: number[] }).times;
+        return reply(res, { pictures: times.map(time => ({ time, jpeg: "/9j/4A==" })) });
+      }
+      if (req.method === "GET" && req.path === "/projects/prj_test/media/scr/screen-text") return reply(res, { from: 0, to: 1, readSeconds: 1, done: true, spans: [
+        { start: 0, end: 30, text: "Pass@1 vs. cost per task", box: [0.3, 0.3, 0.5, 0.32] },
+        { start: 0, end: 30, text: "Claude Fable 5", box: [0.62, 0.62, 0.68, 0.635] },
+        { start: 0, end: 30, text: "GPT-6 Sol max", box: [0.72, 0.62, 0.78, 0.635] },
+        { start: 0, end: 30, text: "A sentence whose end runs under the inset", box: [0.4, 0.6, 0.76, 0.615] },
+        { start: 0, end: 30, text: "Recycle Bin", box: [0.0, 0.04, 0.03, 0.05] }] });
+      return false;
+    };
+  });
+  afterEach(() => { mock.state.extra = undefined; });
+  const proposed = () => sent("/projects/prj_test/changes").map(r => r.body as { ops: Array<{ op: string; clipId: string; patch: { transform: Record<string, number>; keyframes: unknown[] } }> });
+  const framings = [{ at: 0, show: [25, 20, 70, 70], within: [20, 5, 90, 95] }, { at: 9.5, show: [30, 28, 52, 40] }];
+
+  it("fills the video around each area, moves between them across the cut, and reports each frame with its picture", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const result = await ok(c, "timeline_framing", { mediaId: "scr", framings, reason: "The chart is what the narration is about." });
+      const { ops } = proposed()[0]!;
+      expect(ops.map(o => [o.op, o.clipId])).toEqual([["updateClip", "s0"], ["updateClip", "s1"]]);
+      // Each clip is cropped to the canvas's shape or larger, so the picture covers the video.
+      for (const { patch } of ops) {
+        const t = patch.transform;
+        expect(t.scale).toBeGreaterThanOrEqual(1);
+        expect((1 - t.cropLeft! - t.cropRight!) / (1 - t.cropTop! - t.cropBottom!)).toBeGreaterThan(0.99);
+      }
+      expect(ops[0]!.patch.keyframes).toHaveLength(2);
+      expect(ops[1]!.patch.keyframes).toHaveLength(2);
+      const report = JSON.parse(result.content.filter(x => x.type === "text").map(x => (x as { text: string }).text).find(t => t.includes('"framings"'))!);
+      expect(report).toMatchObject({ mediaId: "scr", clips: 2, video: "1920x1080", textUnderCover: [0] });
+      expect(report.framings[0]).toMatchObject({ at: 0, arrives: "cut", holds: 9.5, covers: [[expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number)]] });
+      expect(report.framings[0].hidden).toBeUndefined();
+      expect(report.framings[0].beyondWithin).toBeUndefined();
+      // The chart's title is in the area shown; the label under the inset is named; the desktop's text is neither.
+      expect(report.framings[0].text.lines).toBe(3);
+      expect(report.framings[0].text.underCover).toEqual(["GPT-6 Sol max", "A sentence whose end runs under the inset"]);
+      // The one corner where the camera would sit on none of the frame's text.
+      expect(report.framings[0].text.cornersClearOfText).toEqual(["top-right"]);
+      expect(report.framings[1]).toMatchObject({ arrives: "move", settles: 10.5, holds: 19.5 });
+      expect(report.framings[1].zoom).toBeGreaterThan(2.5);
+      expect(report.framings[1].text).toMatchObject({ lines: 1, smallest: expect.any(Number) });
+      expect(result.content.filter(x => x.type === "image")).toHaveLength(2);
+      const pictures = sent("/projects/prj_test/timeline-pictures")[0]!.body as { version: string; ops: unknown[]; times: number[] };
+      expect(pictures.version).toBe("cut");
+      expect(pictures.ops).toHaveLength(2);
+      expect(pictures.times).toEqual([0.1, 10.6]);
+    } finally { await c.close(); }
+  });
+
+  it("shows a preview without saving, and names a framing that falls where the recording doesn't play", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const result = await ok(c, "timeline_framing", { mediaId: "scr", framings, preview: true });
+      expect(sent("/projects/prj_test/changes")).toHaveLength(0);
+      expect(textOf(result)).toContain('"preview":true,"saved":false');
+      expect(result.content.filter(x => x.type === "image")).toHaveLength(2);
+      // Moved to the corner the text leaves free, the camera covers no line, and its clip is part of the edit.
+      const moved = await ok(c, "timeline_framing", { mediaId: "scr", framings: [{ ...framings[0], inset: "top-right" }], preview: true });
+      const there = JSON.parse(textOf(moved).split("\n")[0]!);
+      expect(there).toMatchObject({ insetClips: 1 });
+      expect(there.textUnderCover).toBeUndefined();
+      expect(there.framings[0].text.underCover).toBeUndefined();
+      expect((sent("/projects/prj_test/timeline-pictures").at(-1)!.body as { ops: Array<{ clipId: string }> }).ops.map(o => o.clipId)).toEqual(["s0", "s1", "cam"]);
+      // Asked to keep clear of text, the camera goes to that corner by itself, and comes home once nothing is under it there.
+      const cleared = JSON.parse(textOf(await ok(c, "timeline_framing", { mediaId: "scr", preview: true,
+        framings: [{ ...framings[0], inset: "clear" }, { at: 9.5, show: [30, 28, 52, 40], inset: "clear" }] })).split("\n")[0]!);
+      expect(cleared.framings.map((f: { inset: string }) => f.inset)).toEqual(["top-right", "bottom-right"]);
+      expect(cleared.textUnderCover).toBeUndefined();
+      expect(cleared.insetClips).toBe(1);
+      const refused = await call(c, "timeline_framing", { mediaId: "scr", framings: [{ at: 45, show: [0, 0, 50, 50] }], preview: true });
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toContain("framings[0].at 45 s: scr doesn't play there");
+    } finally { await c.close(); }
+  });
+
+  it("saves a stretch as one edit in the agent's words, and a second framing of it as that edit revised", async () => {
+    let saves = 0;
+    const others = mock.state.extra!;
+    // An engine that applies what was asked for, as it does for a request the editor made.
+    mock.state.extra = (req, res) => {
+      if (req.method !== "POST" || req.path !== "/projects/prj_test/changes") return others(req, res);
+      const body = req.body as { ops: Parameters<typeof applyOps>[1]; description: string; timelineEdits?: unknown };
+      const after = { ...applyOps(mock.state.timeline!, body.ops), version: `framed${++saves}` };
+      mock.state.timeline = after;
+      return reply(res, { change: { id: `chg_framed${saves}`, projectId: "prj_test", fromVersion: "cut", toVersion: after.version, description: body.description,
+        author: { type: "agent", name: "mock" }, noteIds: [], ranges: [], state: "approved", renders: [], timelineEdits: body.timelineEdits }, timeline: after });
+    };
+    const c = await connect({ taskId: "task-framing" });
+    try {
+      await ok(c, "timeline_get");
+      const edits = () => sent("/projects/prj_test/changes").map(r => (r.body as { timelineEdits?: unknown[] }).timelineEdits);
+      await ok(c, "timeline_framing", { intent: "requested", mediaId: "scr", framings, description: "Framed the chart", reason: "The chart is what the narration is about." });
+      expect(edits()[0]).toEqual([{ label: "Framed the chart", range: { start: 0, end: 30 }, reason: "The chart is what the narration is about." }]);
+      // Having seen it, the agent frames the same stretch wider: the editor's list keeps one row for it.
+      await ok(c, "timeline_framing", { intent: "requested", mediaId: "scr", framings: [{ at: 0, show: [20, 10, 80, 80] }], description: "Widened the chart", reason: "The axis labels were cut off." });
+      expect(edits()[1]).toEqual([{ label: "Widened the chart", range: { start: 0, end: 30 }, reason: "The axis labels were cut off.", replaces: { changeId: "chg_framed1", spot: 0 } }]);
+      // A framing of part of it is an edit of its own, and one of the whole stretch after that revises the whole stretch's row.
+      await ok(c, "timeline_framing", { intent: "requested", mediaId: "scr", framings: [{ at: 12, show: [30, 30, 50, 50] }], to: 20, description: "Pushed in on the title", reason: "He reads the title aloud." });
+      expect(edits()[2]).toEqual([{ label: "Pushed in on the title", range: { start: 12, end: 20 }, reason: "He reads the title aloud." }]);
+      await ok(c, "timeline_framing", { intent: "requested", mediaId: "scr", framings: [{ at: 0, show: [20, 10, 80, 80] }], description: "Held the wide chart", reason: "The push-in hid the legend." });
+      expect((edits()[3] as Array<{ replaces?: unknown }>)[0]!.replaces).toEqual({ changeId: "chg_framed2", spot: 0 });
+      // The editor undid that edit meanwhile, so the engine won't revise it: the framing is saved as an edit of its own.
+      const applying = mock.state.extra!;
+      mock.state.extra = (req, res) => req.method === "POST" && req.path === "/projects/prj_test/changes" && (req.body as { timelineEdits?: Array<{ replaces?: unknown }> }).timelineEdits?.[0]?.replaces
+        ? reply(res, { error: { code: "invalid_replacement", message: "Choose an individual edit in this thread to revise." } }, 400) : applying(req, res);
+      await ok(c, "timeline_framing", { intent: "requested", mediaId: "scr", framings: [{ at: 0, show: [10, 10, 90, 90] }], description: "Showed the whole chart", reason: "He compares both ends." });
+      expect(edits().slice(4).map(list => (list as Array<{ replaces?: unknown }>)[0]!.replaces)).toEqual([{ changeId: "chg_framed4", spot: 0 }, undefined]);
+    } finally { await c.close(); }
+  });
+
+  it("says where a crop made with timeline_propose leaves the background showing", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const crop = { x: 0, y: 0, scale: 1, cropLeft: 0.355, cropRight: 0.27, cropTop: 0.096, cropBottom: 0.1 };
+      const result = JSON.parse(textOf(await ok(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "s0", patch: { transform: crop } }, { op: "updateClip", clipId: "s1", patch: { transform: crop } }],
+        description: "Framed the phone demo", reason: "The phone is what the narration is about." })).split("\n")[0]!);
+      expect(result.backgroundShows).toEqual([{ from: 0, to: 30, clipId: "s0", clips: 2, share: expect.any(Number) }]);
+      expect(result.backgroundShows[0].share).toBeGreaterThan(0.4);
+      expect(result.backgroundNext).toContain("timeline_framing");
+    } finally { await c.close(); }
+  });
+});
+
+describe("media_frame", () => {
+  it("asks for one area of the picture with labelled percent lines", async () => {
+    const c = await connect();
+    try {
+      const result = await ok(c, "media_frame", { mediaId: "m1", t: 12, width: 1280, area: [30, 10, 80, 90], grid: true });
+      const asked = mock.requests.find(r => r.path.endsWith("/media/m1/frame"))!;
+      expect(Object.fromEntries(asked.query)).toMatchObject({ t: "12", w: "1280", area: "30,10,80,90", grid: "1" });
+      expect(textOf(result)).toContain("30–80% across and 10–90% down, lines in percent of the whole picture");
+      expect(textOf(await call(c, "media_frame", { mediaId: "m1", t: 12, area: [30, 10, 30.5, 90] }))).toContain("at least 1 percent each way");
     } finally { await c.close(); }
   });
 });
@@ -459,10 +614,28 @@ describe("review notes", () => {
 describe("tool annotations", () => {
   // Every tool that saves an edit, a recommendation, a file or a message to the editor. A harness may retry or
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
-  const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
+  const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
     "graphic_render", "template_save", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
+
+  it("gives every tool an input schema a harness can convert: no array that lists an item per position", async () => {
+    const c = await connect({ agent: "codex", capabilities: { images: true, audio: true, files: true }, author: { type: "agent", name: "codex" } });
+    try {
+      const { tools } = await c.listTools();
+      expect(tools.map(t => t.name)).toEqual(expect.arrayContaining(["timeline_framing", "media_frame"]));
+      const positional: string[] = [];
+      const walk = (node: unknown, path: string) => {
+        if (!node || typeof node !== "object") return;
+        for (const [key, value] of Object.entries(node)) {
+          if ((key === "items" && Array.isArray(value)) || key === "prefixItems") positional.push(path);
+          walk(value, `${path}.${key}`);
+        }
+      };
+      for (const t of tools) walk(t.inputSchema, t.name);
+      expect(positional).toEqual([]);
+    } finally { await c.close(); }
+  });
 
   it("marks exactly the tools that change something as writes, and nothing as destructive", () => {
     expect(every.filter(name => !toolAnnotations(name).readOnlyHint).sort()).toEqual([...writes].sort());

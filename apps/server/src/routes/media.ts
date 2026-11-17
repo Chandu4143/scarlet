@@ -360,10 +360,16 @@ export function mediaRoutes(ctx: Ctx) {
     const source = await stat(file).catch(() => null);
     if (!source) throw notFound("source file");
     const preview = c.req.query("preview") === "1";
-    const key = JSON.stringify([file, media.hash, source.size, source.mtimeMs, source.ctimeMs, t, w, preview]);
+    // An agent's closer look: one area of the picture, in percent of it, and lines at round percents to name an area by.
+    const asked = c.req.query("area")?.split(",").map(Number);
+    if (asked && !(asked.length === 4 && asked.every(n => Number.isFinite(n) && n >= 0 && n <= 100) && asked[2]! - asked[0]! >= 1 && asked[3]! - asked[1]! >= 1))
+      throw badRequest("bad_area", "area is left,top,right,bottom in percent of the picture, at least 1 percent each way.");
+    const area = asked?.map(n => n / 100) as [number, number, number, number] | undefined;
+    const grid = c.req.query("grid") === "1" && media.width && media.height ? { width: media.width, height: media.height } : undefined;
+    const key = JSON.stringify([file, media.hash, source.size, source.mtimeMs, source.ctimeMs, t, w, preview, area, !!grid]);
     const frame = async (demand: AbortSignal) => {
       const signal = AbortSignal.any([demand, ctx.projectSignal(media.projectId)]);
-      if (preview && media.fps && media.width && media.height) {
+      if (preview && !area && !grid && media.fps && media.width && media.height) {
         const minimumHeight = Math.ceil(w * media.height / media.width);
         const picture = await previewPictures(ctx.paths.media(media.projectId), { signal })(media, t, t + 1 / media.fps, minimumHeight);
         if (picture) {
@@ -378,7 +384,7 @@ export function mediaRoutes(ctx: Ctx) {
       const indexedMp4 = !!media.previewClock && hasIndexedAvc(media);
       // The original decodes on an NVIDIA GPU when there is one.
       const decoder = await pictureDecoder(ctx.settings().render.hwaccel) === "cuda" ? "cuda" as const : undefined;
-      return ctx.render.extractFrame(file, t, { width: w, signal, indexedMp4, decoder });
+      return ctx.render.extractFrame(file, t, { width: w, signal, indexedMp4, decoder, area, grid });
     };
     try {
       // Frames share the engine’s picture lane with contact sheets. The editor’s own requests go first.

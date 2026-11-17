@@ -94,6 +94,13 @@ export const SheetRequest = z.object({
   .refine(v => v.to > v.from && v.to - v.from <= 120 + WINDOW_SLACK, "Choose a positive window up to 120 seconds")
   .refine(v => v.mode !== "activity" || v.to <= v.from + 12 + WINDOW_SLACK, "Check screen activity in windows up to twelve seconds")
   .refine(v => v.focus === undefined || (v.focus >= v.from && v.focus < v.to), "Focus must be within the window");
+/** Moments of an edit as the viewer would see them: a saved version, or that version with `ops` applied and not saved. */
+export const TimelinePicturesRequest = z.object({
+  version: z.string().min(1),
+  ops: z.array(z.record(z.unknown())).max(2000).optional(),
+  times: z.array(z.number().finite().nonnegative()).min(1).max(12),
+  width: z.number().int().min(320).max(1280).default(960),
+});
 /** Up to 24 source windows whose frame-to-frame change is measured without drawing a sheet. */
 export const PictureActivityRequest = z.object({
   windows: z.array(z.object({ mediaId: z.string().min(1), from: z.number().finite().nonnegative(), to: z.number().finite().positive() })

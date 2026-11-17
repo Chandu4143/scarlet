@@ -1,6 +1,7 @@
 import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
-import { UNFRAMED_NEXT, unframedBeside } from "./clip-framing.js";
+import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
+import { CORNERS, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
 import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
 /**
@@ -102,7 +103,7 @@ const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
-const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
+const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
 const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this footage after fromVersion. Read that passage on currentVersion and make the edit again there.";
@@ -193,7 +194,7 @@ const OPS_DOC = `Op types (all times are seconds; timeline times are positions i
 Clip fields:
 - volume is linear gain (1 = unchanged, 0 = mute). Fades (audioFadeIn/Out, videoFadeIn/Out) are seconds.
 - speed plays a media clip faster (above 1) or slower, its sound kept at pitch. A speed change keeps sourceIn and sourceOut, so the clip gets shorter or longer and the clips after it don't move. To play a stretch of the edit faster with every track in sync: splitClip each clip that plays through it at both ends, set speed on each middle piece, then rippleDelete from the stretch's start plus its new length to its old end.
-- transform: A patch replaces the whole transform, so include the framing you want to keep. x and y are offsets from the center as fractions of the canvas width and height, scale 1 fits the cropped source to the canvas, rotation is degrees clockwise, cropLeft/Right/Top/Bottom are fractions of the source. cornerRadius rounds the cropped layer's corners (0–0.5 of its shorter side, 0 for square). keyframes: [{time, transform, ease}] animate x, y and scale, with time in seconds from the clip's start and ease linear | easeIn | easeOut | easeInOut | hold.
+- transform: A patch replaces the whole transform, so include the framing you want to keep. x and y are offsets from the center as fractions of the canvas width and height, scale 1 fits the cropped source to the canvas, rotation is degrees clockwise, cropLeft/Right/Top/Bottom are fractions of the source. cornerRadius rounds the cropped layer's corners (0–0.5 of its shorter side, 0 for square). keyframes: [{time, transform, ease}] animate x, y and scale, with time in seconds from the clip's start and ease linear | easeIn | easeOut | easeInOut | hold. A crop that isn't the canvas's shape leaves the timeline's background beside the picture, and keyframes don't animate a crop: to zoom in on an area of a picture, or move from one area to another, use timeline_framing.
 - effects: [{type, params, enabled}]. A patch replaces the whole array, so include the stages you keep. Audio types: denoise {amount dB, noiseFloor dBFS}, expander {thresholdDb, rangeDb, ratio, attack ms, release ms}, eq {highpass Hz, lowpass Hz, bands [{frequency, gain dB, width Q}]}, compressor {thresholdDb, ratio, attack ms, release ms, makeupDb}, limiter {limitDb, attack ms, release ms}, loudnorm {i LUFS, tp dBTP, lra LU}.
 - A later video track composites on top of an earlier one. A caption clip can carry a title or label.`;
 
@@ -864,6 +865,20 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const editReasonInput = EditReason.optional().describe(
     "One short sentence for the card above the timeline explaining the footage cue, editorial tradeoff, or editor request that motivated this choice.",
   );
+  /**
+   * An area of a picture as [left, top, right, bottom] in percent of it. An array of one item type, not a tuple: Codex
+   * drops a tool whose schema lists an item per position, without a word, and a run then framed by hand with neither
+   * timeline_framing nor media_frame in its tool list (2026-11-16).
+   */
+  const percentBox = z.array(z.number().min(0).max(100)).length(4);
+  const timelineEditsInput = z.array(z.object({
+    label: z.string().min(1).max(180).describe("Short editor-facing title, at most 50 characters"),
+    range: z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).describe("Seconds in the resulting timeline. For a cut, give the point where it joins with start equal to end. For any other edit, give all the footage as it plays, from its first second to its last."),
+    summary: z.string().trim().min(1).max(SUMMARY_MAX).optional().describe("A short sentence for the chat about what this edit changed, including notable side effects"),
+    reason: editReasonInput.describe("Why you made this specific edit, shown on its card. Supply one for every item."),
+    check: z.string().trim().min(1).max(120).optional().describe("A few words naming a doubt the editor must settle by listening or looking. Marks the edit as needing the editor until they keep it. The card plays the edit's range: for a doubt about a few seconds of a longer edit, flag those seconds with edit_flag once it is saved instead."),
+    replaces: z.object({ changeId: z.string(), spot: z.number().int().nonnegative() }).optional(),
+  })).optional().describe("List each distinct edit this save makes and its exact playback range in the resulting timeline. A passage it leaves as it was is not an edit, even one you checked. Keep overlapping edits separate. For a revision set replaces to the original change ID and zero-based edit index, and give the full updated range and reason.");
 
   /** A ripple removal that went onto whole frames: asked as given, removed where it went, and how much later it moved first. */
   type FrameAdjustment = { asked: [number, number]; removed: [number, number]; movedBy?: number };
@@ -927,6 +942,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // The summary leaves the saved timeline out, so the edit is laid on its base here, as it was checked before saving.
     const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
+    const bare = made && !notApplied ? await getProject().then(({ project }) => backgroundShows(before, made, project.media, project.settings)).catch(() => []) : [];
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -945,6 +961,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(onWholeFrames.length && { onWholeFrames }),
       ...(notApplied && { notApplied: { ...notApplied, next: NOT_APPLIED_NEXT } }),
       ...(unframed.length && { unframedBeside: unframed, next: UNFRAMED_NEXT }),
+      ...(bare.length && { backgroundShows: bare, backgroundNext: BACKGROUND_NEXT }),
     };
     return json(result);
   }
@@ -997,7 +1014,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         let outcome: ToolOutcome;
         let result: ToolResult;
         try {
-          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
+          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_framing", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
             throw new Error("This request only tightens local pauses. Save classified pauses with dialogue_apply_cuts.");
           if (PASS_WIDE_TOOLS.has(name)) {
             const selected = await useStagedCut();
@@ -1225,16 +1242,20 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "media_frame",
-    "Grab a single video frame as a JPEG image so you can look at it. `t` is seconds into the SOURCE media (not the timeline; use timeline_at to map a timeline time to a source time). `width` is the output width in pixels (default 640; keep it small). Use this to check framing, what is on screen, or whether a screen recording shows the relevant content.",
+    "Look at a single video frame. `t` is seconds into the SOURCE media (not the timeline; use timeline_at to map a timeline time to a source time). `width` is the picture's width in pixels: 640 by default, which shows what is in the frame; a screen recording's panes, controls and text take 1280 to 1920 to make out. `area` looks closer at one part of the picture, drawn `width` wide. `grid` draws lines at round percents of the source picture, each labelled at the top and left edges, so an area can be named as [left, top, right, bottom] in percent: the units of screen_text's boxes and of timeline_framing.",
     {
       mediaId: z.string().describe("Media asset id"),
       t: z.number().min(0).describe("Source time in seconds"),
       width: z.number().int().min(64).max(1920).optional().describe("Output width in pixels, default 640"),
+      area: percentBox.optional()
+        .describe("Only this part of the picture: [left, top, right, bottom] in percent of it"),
+      grid: z.boolean().optional().describe("Draw labelled percent lines over the picture"),
     },
-    async ({ mediaId, t, width }) => {
+    async ({ mediaId, t, width, area, grid }) => {
       const w = width ?? 640;
+      if (area && !(area[2]! - area[0]! >= 1 && area[3]! - area[1]! >= 1)) throw new Error("area is [left, top, right, bottom] in percent, at least 1 percent each way.");
       const res = await client.withResource("media", mediaId, async path => {
-        const url = client.url(`${path}/frame?t=${t}&w=${w}`);
+        const url = client.url(`${path}/frame?t=${t}&w=${w}${area ? `&area=${area.join(",")}` : ""}${grid ? "&grid=1" : ""}`);
         const headers: Record<string, string> = {};
         if (client.token) headers.Authorization = `Bearer ${client.token}`;
         const response = await fetchImpl(url, { headers });
@@ -1248,7 +1269,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
       return {
         content: [
-          { type: "text", text: `Frame of ${mediaId} at ${t.toFixed(3)} s (${w}px wide).` },
+          { type: "text", text: `Frame of ${mediaId} at ${t.toFixed(3)} s (${w}px wide${area ? `, ${area[0]}–${area[2]}% across and ${area[1]}–${area[3]}% down` : ""}${grid ? ", lines in percent of the whole picture" : ""}).` },
           { type: "image", data: buf.toString("base64"), mimeType: mime },
         ],
       };
@@ -2658,14 +2679,7 @@ ${OPS_DOC}`,
       }), z.literal("asPlaced")]).optional()
         .describe("Optional camera inset during the specified clips’ overlap. Supply framing (scale, center-relative x/y, optional crop and cornerRadius), or use the preset quarter-size bottom-right inset. Omit pictureLayout to use the submitted clip transforms."),
       intent: intentInput,
-      timelineEdits: z.array(z.object({
-        label: z.string().min(1).max(180).describe("Short editor-facing title, at most 50 characters"),
-        range: z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).describe("Seconds in the resulting timeline. For a cut, give the point where it joins with start equal to end. For any other edit, give all the footage as it plays, from its first second to its last."),
-        summary: z.string().trim().min(1).max(SUMMARY_MAX).optional().describe("A short sentence for the chat about what this edit changed, including notable side effects"),
-        reason: editReasonInput.describe("Why you made this specific edit, shown on its card. Supply one for every item."),
-        check: z.string().trim().min(1).max(120).optional().describe("A few words naming a doubt the editor must settle by listening or looking. Marks the edit as needing the editor until they keep it. The card plays the edit's range: for a doubt about a few seconds of a longer edit, flag those seconds with edit_flag once it is saved instead."),
-        replaces: z.object({ changeId: z.string(), spot: z.number().int().nonnegative() }).optional(),
-      })).optional().describe("List each distinct edit this save makes and its exact playback range in the resulting timeline. A passage it leaves as it was is not an edit, even one you checked. Keep overlapping edits separate. For a revision set replaces to the original change ID and zero-based edit index, and give the full updated range and reason."),
+      timelineEdits: timelineEditsInput,
       ...(!ctx.taskId && { autoApprove: z.boolean().optional().describe("Apply a standalone edit authored directly by the editor") }),
       skipRender: z.boolean().optional().describe("Skip before/after renders (metadata-only changes like markers)"),
       withdraws: z.array(z.string()).max(20).optional().describe("Change IDs of this request's own suggestions or alternatives, still waiting for the editor, that this one replaces, such as a draft or a test. They leave the editor's review when this one is saved."),
@@ -2822,6 +2836,157 @@ ${OPS_DOC}`,
       const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
       const result = await propose({ intent, ops, description, reason, noteIds }, before);
       return { ...result, content: [...result.content, { type: "text" as const, text: `Joins:\n${report.join("\n")}` }] };
+    },
+  );
+
+  /** Pictures of framings one call returns. */
+  const FRAMING_PICTURES = 12;
+  /** The framings this run has saved and that are in the video: a later one over the same stretch takes the earlier one's place in the editor's list. */
+  let framed: Array<{ changeId: string; mediaId: string; trackId?: string; from: number; to: number }> = [];
+  tool(
+    "timeline_framing",
+    "Frame a recording's picture on an area of it over a stretch of the edit: a zoom in on a pane, a move from one subject to the next, a pull back out. Each framing names the area that must be seen (`show`) from a timeline second (`at`), as [left, top, right, bottom] in percent of the SOURCE picture: the units of screen_text's boxes" + (caps.images ? " and media_frame's grid" : "") + ". Scarlet places the tightest frame of the video's shape around it, so the picture always fills the video with no background beside it, and keeps the area clear of any picture laid over the recording, such as a camera inset. `within` is the area the frame may show, one window for example: the frame grows into it and goes past it only when it has to. The same `show`, `within` and inset place the same frame again, so a framing you resend unchanged stays as it was while you change others. `inset` moves the picture laid over the recording to another corner of the video from that framing on, at the size and margins it has, travelling with the frame's move; it stays there through `to` unless a later framing moves it again. `inset` as `clear` leaves the choice of corner to what is on screen: the picture's own corner when it sits on none of the frame's text there, else a corner where it sits on none, and the result says which (`inset`) or that no corner is clear (`noCornerClearOfText`). The picture moves to each frame over `over` seconds (default 1; 0 is a straight cut), easing in and out, and holds until the next framing or `to`; a move runs on across the cuts that split the footage into clips. The first framing moves from the frame already there when the footage plays on from before it, and otherwise starts on its frame. Clips of the recording outside the stretch keep their framing. The result gives each frame as placed: `frame` in percent of the source, `zoom`, `sourcePixels` (source pixels per pixel of the video; under 1 the picture is enlarged past its own detail), `holds` seconds, `hidden` (percent of `show` that a cover or the frame's edge hides), `beyondWithin` (percent of the frame past `within`, by side) with `insideWithin` (the largest frame that stays inside it, and the percent of `show` that one hides), `covers` (other pictures over the video there, in percent of the video), `notOnPicture` when another picture fills the video there, and `text` where the recording's text has been read (screen_text reads it): the lines in `show`, their smallest and usual height in pixels of the video, any a cover sits on (`underCover`), and the corners where the cover would sit on none (`cornersClearOfText`); `textUnderCover` lists the framings that have such lines." + (caps.images ? ` With a picture of the video at each frame's settled moment, ${FRAMING_PICTURES} a call starting at \`picturesFrom\`.` : "") + " `preview` works all of this out and shows it without saving. A framing saved over a stretch this request already framed takes that edit's place in the editor's list, unless you give `timelineEdits`. For a crop with the background showing, an inset or a rotation, use timeline_propose's updateClip.",
+    {
+      intent: intentInput,
+      mediaId: z.string().describe("The recording whose picture to frame"),
+      trackId: z.string().optional().describe("Only its clips on this track"),
+      framings: z.array(z.object({
+        at: z.number().finite().nonnegative().describe("Timeline seconds where the picture starts moving to this frame"),
+        show: percentBox.describe("The area that must be seen: [left, top, right, bottom] in percent of the source picture"),
+        within: percentBox.optional().describe("The area the frame may show, in the same units"),
+        over: z.number().finite().min(0).max(30).default(1).describe("Seconds the move takes; 0 cuts straight to the frame"),
+        inset: z.enum([...CORNERS, "clear"]).optional().describe("Move the picture laid over the recording to this corner of the video from here on, or `clear` for a corner where it sits on none of the frame's text"),
+      })).min(1).max(300).describe("In time order"),
+      to: z.number().finite().positive().optional().describe("Timeline seconds where the last frame stops holding. Defaults to the end of the recording's last clip."),
+      preview: z.boolean().optional().describe("Work out the frames and show them without saving"),
+      ...(caps.images && { picturesFrom: z.number().int().nonnegative().optional().describe("Index of the first framing to picture") }),
+      description: z.string().min(1).default("Framed the picture on what is being shown").describe("One short sentence for the chat about what the editor will see"),
+      reason: editReasonInput,
+      timelineEdits: timelineEditsInput,
+      noteIds: z.array(z.string()).optional(),
+      fromVersion: z.string().optional().describe("Version the framing applies to. Defaults to the version you last read."),
+    },
+    async ({ intent, mediaId, trackId, framings, to, preview, description, reason, timelineEdits, noteIds, fromVersion, ...rest }) => {
+      const picturesFrom = (rest as { picturesFrom?: number }).picturesFrom ?? 0;
+      const { project } = await getProject();
+      const before = await getTimeline(fromVersion ?? lastTimeline?.version);
+      if (!before || before.version === "draft") throw new Error("There is no saved timeline to frame yet.");
+      const fraction = (box: readonly number[]) => box.map(n => n / 100) as Box;
+      const percent = (box: readonly number[]) => box.map(n => Math.round(n * 1000) / 10);
+      // Where each framing puts the inset: the corner it names, or for `clear` the one worked out below.
+      const corners: Array<Corner | undefined> = framings.map(f => f.inset === "clear" ? undefined : f.inset);
+      const place = () => framingOps(before, project.media, project.settings,
+        framings.map((f, i) => ({ at: f.at, show: fraction(f.show), within: f.within && fraction(f.within), over: f.over, inset: corners[i] })), { mediaId, trackId, to });
+      let plan = place();
+
+      // What the recording's text says about each frame, where it has been read. A frame whose inset is to sit clear of
+      // text waits a little for a reading; nothing else here waits for one.
+      const lines = await Promise.all(plan.frames.map(async (f, i) => {
+        if (f.notOnPicture) return undefined;
+        try {
+          const read = await client.get<{ done: boolean; spans: Array<{ text: string; box: [number, number, number, number] }> }>(
+            `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/screen-text?from=${f.sourceTime}&to=${f.sourceTime + 1}&wait=${framings[i]!.inset === "clear" ? 20 : 2}`);
+          return read.done ? read.spans : undefined;
+        } catch { return undefined; }
+      }));
+      const overlap = (a: readonly number[], b: readonly number[]) => Math.max(0, Math.min(a[2]!, b[2]!) - Math.max(a[0]!, b[0]!)) * Math.max(0, Math.min(a[3]!, b[3]!) - Math.max(a[1]!, b[1]!));
+      /** Whether a cover sits on a real part of any line of the frame's text. A sentence whose end runs under the inset counts. */
+      const onText = (frame: Box, covers: readonly Box[], spans: ReadonlyArray<{ box: readonly number[] }>) => spans.some(s => {
+        const [fl, ft, fr, fb] = frame, fw = fr - fl, fh = fb - ft;
+        const onVideo = [(s.box[0]! - fl) / fw, (s.box[1]! - ft) / fh, (s.box[2]! - fl) / fw, (s.box[3]! - ft) / fh];
+        const seen = overlap(onVideo, [0, 0, 1, 1]);
+        return seen > 0 && covers.some(c => overlap(onVideo, c) >= 0.05 * seen);
+      });
+      const cornerOf = (box: Box): Corner => `${(box[1] + box[3]) / 2 >= 0.5 ? "bottom" : "top"}-${(box[0] + box[2]) / 2 >= 0.5 ? "right" : "left"}`;
+      // `clear`: the inset's own corner when no text of the frame is under it there, else the corner it is in, else
+      // another with none. Moving it moves the frame that keeps `show` clear of it, so each choice is checked again
+      // on the frames it makes.
+      const home = plan.frames.map(f => f.covers[0] && cornerOf(f.covers[0]));
+      const noneClear = new Set<number>();
+      if (framings.some(f => f.inset === "clear")) for (let pass = 0; pass < 3; pass++) {
+        let moved = false;
+        noneClear.clear();
+        framings.forEach((f, i) => {
+          const frame = plan.frames[i]!, spans = lines[i];
+          if (f.inset !== "clear" || !spans || frame.notOnPicture || !frame.covers.length) return;
+          const here = cornerOf(frame.covers[0]!);
+          const chosen = [...new Set([home[i] ?? here, here, ...CORNERS])].find(corner => !onText(frame.frame, frame.covers.map(c => boxInCorner(c, corner)), spans));
+          if (!chosen) noneClear.add(i);
+          else if (chosen !== here) { corners[i] = chosen; moved = true; }
+        });
+        if (!moved) break;
+        plan = place();
+      }
+      const report = plan.frames.map((f, i) => {
+        const show = fraction(framings[i]!.show);
+        const [fl, ft, fr, fb] = f.frame, fw = fr - fl, fh = fb - ft;
+        const inside = (box: readonly number[], x: number, y: number) => x >= box[0]! && x <= box[2]! && y >= box[1]! && y <= box[3]!;
+        const spans = lines[i]?.map(s => ({ ...s, x: (s.box[0] + s.box[2]) / 2, y: (s.box[1] + s.box[3]) / 2 }));
+        const shown = spans?.filter(s => inside(show, s.x, s.y));
+        const heights = shown?.map(s => Math.round((s.box[3] - s.box[1]) / fh * project.settings.height)).sort((a, b) => a - b);
+        const under = spans?.filter(s => onText(f.frame, f.covers, [s]));
+        // The corners the covers could sit in with no line of the frame's text under them.
+        const clear = !under?.length ? undefined : CORNERS.filter(corner => !onText(f.frame, f.covers.map(c => boxInCorner(c, corner)), spans!));
+        return {
+          at: f.at, arrives: f.arrives, settles: f.settles, holds: f.holds, frame: percent(f.frame), zoom: Math.round(f.zoom * 100) / 100, sourcePixels: Math.round(f.sourcePixels * 100) / 100,
+          ...(f.hidden >= 0.005 && { hidden: Math.round(f.hidden * 100) }),
+          ...(f.beyondWithin && { beyondWithin: Object.fromEntries(Object.entries(f.beyondWithin).map(([side, share]) => [side, Math.round(share * 100)])) }),
+          ...(f.insideWithin && { insideWithin: { frame: percent(f.insideWithin.frame), hidden: Math.round(f.insideWithin.hidden * 100) } }),
+          ...(f.covers.length && { covers: f.covers.map(percent) }),
+          ...(framings[i]!.inset && f.covers.length && { inset: cornerOf(f.covers[0]!) }),
+          ...(noneClear.has(i) && { noCornerClearOfText: true }),
+          ...(f.notOnPicture && { notOnPicture: true }),
+          ...(heights && { text: heights.length
+            ? { lines: heights.length, smallest: heights[0], usual: heights[Math.floor(heights.length / 2)],
+              ...(under?.length && { underCover: under.slice(0, 5).map(s => s.text.slice(0, 60)), ...(under.length > 5 && { underCoverMore: under.length - 5 }), cornersClearOfText: clear }) }
+            : { lines: 0 } }),
+        };
+      });
+
+      const unread = plan.frames.filter((f, i) => !f.notOnPicture && !lines[i]).length;
+      const covered = report.flatMap((f, i) => typeof f.text === "object" && "underCover" in f.text && f.text.underCover ? [i] : []);
+      // One edit for the stretch, in the model's own words, unless it listed its own. A run looks at a framing once it
+      // is saved and frames the stretch again: 16 saves for 11 demos on one run (2026-11-16), each a row in the editor's
+      // list. A save over a stretch an earlier one of this run framed revises that row.
+      const stretch = { start: framings[0]!.at, end: Math.min(to ?? Infinity, Math.max(...plan.frames.map(f => f.settles + f.holds))) };
+      // Of the earlier framings this one covers, the longest is the row it revises.
+      const earlier = !ctx.taskId ? [] : framed.filter(f => f.mediaId === mediaId && f.trackId === trackId && stretch.start <= f.from + 0.05 && stretch.end >= f.to - 0.05)
+        .sort((a, b) => (b.to - b.from) - (a.to - a.from));
+      const edits = timelineEdits ?? (reason && stretch.end > stretch.start
+        ? [{ label: description.slice(0, 180), range: stretch, reason, ...(earlier.length && { replaces: { changeId: earlier[0]!.changeId, spot: 0 } }) }] : undefined);
+      const save = (timelineEdits: typeof edits) => propose({ intent, ops: plan.ops, description, reason, noteIds, timelineEdits }, before);
+      // An earlier framing the editor has since undone, or another request changed, is no longer this run's to revise: the framing is saved as its own edit.
+      const saved = preview ? undefined : await save(edits).catch(error => {
+        if (!(error instanceof ScarletApiError && error.code === "invalid_replacement") || timelineEdits) throw error;
+        return save(edits?.map(({ replaces: _replaces, ...edit }) => edit));
+      });
+      if (saved && !saved.isError) {
+        const change = JSON.parse((saved.content[0] as { text: string }).text) as { changeId: string; state: string; notApplied?: unknown };
+        if (change.state === "approved" && !change.notApplied) {
+          framed = [...framed.filter(f => f !== earlier[0]), { changeId: change.changeId, mediaId, trackId, from: stretch.start, to: stretch.end }];
+        }
+      }
+      const content: ToolResult["content"] = [...(saved?.content ?? []),
+        { type: "text", text: JSON.stringify({ ...(preview && { preview: true, saved: false }), mediaId, clips: plan.clips, ...(plan.insetClips && { insetClips: plan.insetClips }),
+          // Named once ahead of the list: among a hundred framings, the few with text under a cover were read past.
+          ...(covered.length && { textUnderCover: covered }), video: `${project.settings.width}x${project.settings.height}`, framings: report,
+          ...(unread && { textUnread: `The recording's text at ${unread} of these frames isn't read yet. It is being read now: a later call, or a preview, reports it.` }) }) }];
+      if (caps.images && !saved?.isError) {
+        const shown = plan.frames.map((f, index) => ({ f, index })).slice(picturesFrom, picturesFrom + FRAMING_PICTURES);
+        // The picture a moment after the frame settles, and before it gives way to the next.
+        const times = shown.map(({ f }) => f.settles + Math.min(0.1, f.holds / 2));
+        try {
+          const { pictures } = shown.length ? await client.timelinePictures(ctx.projectId, { version: before.version, ops: plan.ops as Array<Record<string, unknown>>, times }) : { pictures: [] };
+          pictures.forEach((picture, n) => content.push(
+            { type: "text", text: `framings[${shown[n]!.index}] at ${picture.time.toFixed(2)} s, as the video plays it:` },
+            { type: "image", mimeType: "image/jpeg", data: picture.jpeg }));
+          const next = picturesFrom + shown.length;
+          if (next < plan.frames.length) content.push({ type: "text", text: `Pictures of framings ${picturesFrom}–${next - 1}. picturesFrom ${next} with preview shows the next ${Math.min(FRAMING_PICTURES, plan.frames.length - next)}.` });
+        } catch (error) {
+          noteUnmeasured("pictures of the framed video", error);
+        }
+      }
+      return { content };
     },
   );
 
