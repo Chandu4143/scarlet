@@ -54,16 +54,25 @@ export function syncedSources(tl: Timeline, mediaId: string, source: number): Re
   return at === undefined ? undefined : Object.fromEntries(layersAt(tl, at).map(l => [l.clip.mediaId, l.source]));
 }
 
-/** What a version shows while the presenter's recording plays `source`. A layer under one that covers the frame is hidden. */
-export function pictureAt(tl: Timeline, mediaId: string, source: number): PictureSample | undefined {
-  const t = timelineSecond(tl, mediaId, source);
-  if (t === undefined) return undefined;
+/** Each recording a version shows at a timeline second, and where. A layer under one that covers the frame is hidden. */
+export function shownAt(tl: Timeline, at: number): Record<string, Placement> {
   const layers: Record<string, Placement> = {};
-  for (const { clip } of layersAt(tl, t).reverse()) {
-    const placed = layerPlacement(transformAt(clip as Keyed, t - clip.timelineIn));
+  for (const { clip } of layersAt(tl, at).reverse()) {
+    const placed = layerPlacement(transformAt(clip as Keyed, at - clip.timelineIn));
     if (!placed) continue;
     layers[clip.mediaId] ??= placed;
     if (placed.rect.w * placed.rect.h >= 0.98) break;
   }
-  return { t, mediaId, source, layers };
+  return layers;
+}
+
+/** The recording second a version plays of one recording at a timeline second, when its picture is on a video track there. */
+export function sourceSecondAt(tl: Timeline, mediaId: string, at: number): number | undefined {
+  return layersAt(tl, at).find(l => l.clip.mediaId === mediaId)?.source;
+}
+
+/** What a version shows while the presenter's recording plays `source`. A layer under one that covers the frame is hidden. */
+export function pictureAt(tl: Timeline, mediaId: string, source: number): PictureSample | undefined {
+  const t = timelineSecond(tl, mediaId, source);
+  return t === undefined ? undefined : { t, mediaId, source, layers: shownAt(tl, t) };
 }

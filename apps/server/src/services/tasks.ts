@@ -496,6 +496,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     skills: assistantSkills(ctx.repos.skills.select("1=1", [], "name ASC"), c.skillIds, true),
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,
+    areaCheck: task.kind === "area_check" ? task.context.areaCheck : undefined,
     workDir: opts.workDir,
     timeLimitMinutes: opts.timeLimitMinutes,
     capabilities: { ...agentCapabilities(task.agent), plan: plans },
@@ -506,8 +507,8 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   if (isDialoguePass(task) && task.repeatAudit?.returns) {
     // The goal and what counts as done, not the steps: the tools say how they check and repair.
     const finish = "The dialogue pass has saved its editing work. What is left is the closing check on the current playback: " +
-      "no word the cuts clipped should play, and each repeat, silence and divided sentence the check lists is cut or kept " +
-      "with its reason, as the skill and the editor ask. " +
+      "no word the cuts clipped should play, and each repeat, silence and divided sentence the check lists is cut, kept " +
+      "with its reason, or staged for the editor when you doubt it, as the skill and the editor ask. " +
       "The pass is done once dialogue_check_repeats on the current version has nothing outstanding. " +
       "Honor the editor’s scope, preferences, protected footage and decisions.";
     return { systemPrompt, instruction: finish + "\nEditor’s request: " + firstMessage(task.instruction.trim()) +

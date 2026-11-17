@@ -24,15 +24,76 @@ export function framesFor(samples: number): number {
   return samples < RECEPTIVE_SAMPLES ? 0 : Math.floor((samples - RECEPTIVE_SAMPLES) / FRAME_SAMPLES) + 1;
 }
 
+const ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+  "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+const TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+const SCALES: Array<[number, string]> = [[1e9, "billion"], [1e6, "million"], [1e3, "thousand"]];
+
+function cardinal(n: number): string {
+  if (n < 20) return ONES[n]!;
+  if (n < 100) return TENS[Math.floor(n / 10)]! + (n % 10 ? " " + ONES[n % 10] : "");
+  if (n < 1000) return ONES[Math.floor(n / 100)] + " hundred" + (n % 100 ? " " + cardinal(n % 100) : "");
+  for (const [size, name] of SCALES) if (n >= size) return cardinal(Math.floor(n / size)) + " " + name + (n % size ? " " + cardinal(n % size) : "");
+  return "";
+}
+
+/** "1999" as a year, "429" as "four twenty-nine": the number in two halves. */
+function inPairs(n: number, split: number): string {
+  const head = Math.floor(n / split), tail = n % split;
+  return cardinal(head) + " " + (tail === 0 ? "hundred" : tail < 10 ? "oh " + ONES[tail] : cardinal(tail));
+}
+
+const ORDINAL: Record<string, string> = { one: "first", two: "second", three: "third", five: "fifth", eight: "eighth", nine: "ninth", twelve: "twelfth" };
+const lastWord = (words: string, change: (w: string) => string) => words.replace(/(\S+)$/, change);
+
 /**
- * Character labels for one transcript word. `null` when the text is not speech (punctuation, bracketed sound
- * tags). A single WILDCARD when the word is spoken but cannot be spelled in A–Z (its own times are kept,
- * but it still occupies audio between its neighbors).
+ * How a number written in digits may be said, most likely first: "$7.63" is "seven sixty three", or "seven dollars and
+ * sixty three cents", and so on. Null when the text is not a number.
  */
-export function wordLabels(text: string, letters = CTC_LETTERS): number[] | null {
+export function spokenNumber(text: string): string[] | null {
+  const core = text.trim().replace(/^[^\p{L}\p{N}$€£]+|[^\p{L}\p{N}%]+$/gu, "");
+  const m = /^([$€£]?)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(%|st|nd|rd|th|s|k|m|bn?)?$/i.exec(core);
+  if (!m) return null;
+  const [, currency, whole, fraction, suffix = ""] = m;
+  const digits = whole!.replace(/,/g, "");
+  if (digits.length > 12) return null;
+  const n = Number(digits);
+  const one = (d: string) => d.split("").map(c => ONES[Number(c)]).join(" ");
+  let forms = digits.length > 1 && digits.startsWith("0") ? [one(digits)] : [cardinal(n)];
+  if (!fraction && !currency && digits.length === 4 && n >= 1100 && n < 2100 && n % 1000 >= 10) forms.unshift(inPairs(n, 100));
+  else if (!fraction && digits.length === 3 && !digits.startsWith("0") && n % 100) forms.push(inPairs(n, 100));
+  const unit = suffix.toLowerCase();
+  if (unit === "k") forms = forms.flatMap(f => [f + " k", f + " thousand"]);
+  else if (unit === "m") forms = forms.map(f => f + " million");
+  else if (unit === "b" || unit === "bn") forms = forms.map(f => f + " billion");
+  else if (["st", "nd", "rd", "th"].includes(unit)) forms = forms.map(f => lastWord(f, w => ORDINAL[w] ?? (w.endsWith("y") ? w.slice(0, -1) + "ieth" : w + "th")));
+  else if (unit === "s") forms = forms.map(f => lastWord(f, w => w.endsWith("y") ? w.slice(0, -1) + "ies" : w + "s"));
+  const [money, cents] = currency === "$" ? ["dollars", "cents"] : currency === "€" ? ["euros", "cents"] : currency === "£" ? ["pounds", "pence"] : [];
+  const units = money && n === 1 ? money.slice(0, -1) : money;
+  if (fraction && money && fraction.length === 2) {
+    const c = Number(fraction), small = c < 10 ? "oh " + ONES[c] : cardinal(c);
+    forms = forms.flatMap(f => [`${f} ${small}`, `${f} ${units} and ${cardinal(c)} ${cents}`, `${f} ${units} ${cardinal(c)}`, `${f} point ${one(fraction)}`]);
+  } else {
+    if (fraction) forms = forms.map(f => `${f} point ${one(fraction)}`);
+    if (money) forms = forms.flatMap(f => [`${f} ${units}`, f]);
+  }
+  if (unit === "%") forms = forms.map(f => f + " percent");
+  return [...new Set(forms)].slice(0, 4);
+}
+
+/**
+ * Character labels for one transcript word, one list for each way it may be said, most likely first. `null` when the
+ * text is not speech (punctuation, bracketed sound tags). A number is spelled as it is said, with a word separator
+ * between its words, so the aligner hears it like any other word. A single WILDCARD when the word is spoken but cannot
+ * be spelled in A–Z (its own times are kept, but it still occupies audio between its neighbors).
+ */
+export function wordReadings(text: string, letters = CTC_LETTERS): number[][] | null {
   const raw = text.trim();
   if (!raw || /^[[(*♪].*[\])*♪]$/u.test(raw)) return null;
-  const normalized = letters === CTC_LETTERS ? raw.normalize("NFKD").replace(/\p{M}/gu, "") : raw.normalize("NFC");
+  const english = letters === CTC_LETTERS;
+  const whole = english ? spokenNumber(raw) : null;
+  if (whole) return whole.map(form => spell(form, letters)!);
+  const normalized = english ? raw.normalize("NFKD").replace(/\p{M}/gu, "") : raw.normalize("NFC");
   const s = normalized.replace(/[‘’ʼ`´]/g, "'").toUpperCase();
   const out: number[] = [];
   const letter = (ch: string | undefined) => !!ch && ch !== "'" && ch !== "-" && letters.includes(ch);
@@ -44,9 +105,32 @@ export function wordLabels(text: string, letters = CTC_LETTERS): number[] | null
       if (letter(s[i - 1]) && letter(s[i + 1])) out.push(5 + letters.indexOf(ch));
     } else if (/[-–—/]/.test(ch)) {
       if (out.length && out.at(-1) !== SEPARATOR && letter(s[i + 1])) out.push(ch === "-" && letters.includes("-") ? 5 + letters.indexOf("-") : SEPARATOR);
-    } else if (/[\p{L}\p{N}$%&@+#=€£]/u.test(ch)) return [WILDCARD];
+    } else if (english && /\d/.test(ch)) {
+      // A number inside a name ("GPT-6", "M4") is said as its words.
+      const run = /^\d+(?:[.,]\d+)*/.exec(s.slice(i))![0];
+      if (out.length && out.at(-1) !== SEPARATOR) out.push(SEPARATOR);
+      out.push(...spell(spokenNumber(run)?.[0] ?? run.split("").map(d => ONES[Number(d)] ?? "").join(" "), letters)!);
+      i += run.length - 1;
+      if (letter(s[i + 1])) out.push(SEPARATOR);
+    } else if (/[\p{L}\p{N}$%&@+#=€£]/u.test(ch)) return [[WILDCARD]];
   }
+  return out.length ? [out] : null;
+}
+
+/** Labels for words written in letters, a separator between words. */
+function spell(words: string, letters: string): number[] | null {
+  const out: number[] = [];
+  for (const ch of words.toUpperCase()) {
+    if (letters.includes(ch) && ch !== "'" && ch !== "-") out.push(5 + letters.indexOf(ch));
+    else if (ch === " " && out.length && out.at(-1) !== SEPARATOR) out.push(SEPARATOR);
+  }
+  while (out.at(-1) === SEPARATOR) out.pop();
   return out.length ? out : null;
+}
+
+/** The labels for the way a word is most likely said (wordReadings). */
+export function wordLabels(text: string, letters = CTC_LETTERS): number[] | null {
+  return wordReadings(text, letters)?.[0] ?? null;
 }
 
 /** Measured on a gated close mic against energy onsets: the first letter's frame lags the onset by ~20 ms. */
@@ -64,12 +148,13 @@ export interface WordTiming { start: number; end: number; score: number }
 
 /** Labels for a run of words, a word separator after each spoken word. The model emits the separator as
  * the word's sound ends, so it marks word ends better than the last letter's emission spike. */
-export function groupLabels(words: readonly AlignWord[], letters = CTC_LETTERS) {
+export function groupLabels(words: readonly AlignWord[], letters = CTC_LETTERS, reading: readonly number[] = []) {
   const tokens: number[] = [];
   const owner: number[] = [];
   let spoken = 0, spelled = 0;
   words.forEach((w, i) => {
-    const labels = wordLabels(w.text, letters);
+    const readings = wordReadings(w.text, letters);
+    const labels = readings && readings[Math.min(reading[i] ?? 0, readings.length - 1)]!;
     if (!labels) return;
     spoken++;
     if (labels[0] !== WILDCARD) spelled++;
@@ -87,6 +172,13 @@ export function groupLabels(words: readonly AlignWord[], letters = CTC_LETTERS) 
  */
 export function ctcAlign(logProbs: Float32Array, from: number, to: number, tokens: readonly number[], classes = CLASSES,
   needed = tokens.length): Array<[number, number]> | null {
+  return ctcPath(logProbs, from, to, tokens, classes, needed)?.spans ?? null;
+}
+
+/** ctcAlign's path, with its log probability: how well the labels explain the frames, comparable between label
+ * sequences over the same frames. */
+export function ctcPath(logProbs: Float32Array, from: number, to: number, tokens: readonly number[], classes = CLASSES,
+  needed = tokens.length): { spans: Array<[number, number]>; score: number } | null {
   const T = to - from, L = tokens.length, S = 2 * L + 1;
   // Labels past `needed` are optional context: the path may stop after any of them, and only the needed ones get spans.
   needed = Math.min(Math.max(1, needed), L);
@@ -134,6 +226,7 @@ export function ctcAlign(logProbs: Float32Array, from: number, to: number, token
   let s = S - 1;
   for (let end = S - 2; end >= finish - 2; end--) if (prev[end]! > prev[s]!) s = end;
   if (prev[s] === -Infinity) return null;
+  const score = prev[s]!;
   const spans: Array<[number, number]> = new Array(L);
   for (let t = T - 1; t >= 0; t--) {
     if (s % 2) {
@@ -144,7 +237,7 @@ export function ctcAlign(logProbs: Float32Array, from: number, to: number, token
     }
     if (t) s -= back[t * S + s]!;
   }
-  return needed < L ? spans.slice(0, needed) : spans;
+  return { spans: needed < L ? spans.slice(0, needed) : spans, score };
 }
 
 /** Peak probability of a label within its aligned frames. */
@@ -172,17 +265,35 @@ export interface Emissions {
  */
 export function alignGroup(em: Emissions, words: readonly AlignWord[], start: number, end: number, alphabet = CTC_LETTERS,
   next: readonly AlignWord[] = []): Array<WordTiming | undefined> {
-  const out: Array<WordTiming | undefined> = new Array(words.length).fill(undefined);
+  // A number can be said more than one way. Each other way is tried in turn and kept when it explains the run's sound
+  // better: a shorter reading's letters can each be heard well while the rest of the number goes unexplained.
+  const reading = words.map(() => 0);
+  let best = alignReading(em, words, start, end, alphabet, next, reading);
+  words.forEach((w, i) => {
+    const ways = wordReadings(w.text, alphabet)?.length ?? 0;
+    for (let r = 1; r < ways; r++) {
+      const tried = alignReading(em, words, start, end, alphabet, next, reading.with(i, r));
+      if (tried.path > best.path) { reading[i] = r; best = tried; }
+    }
+  });
+  return best.timings;
+}
+
+function alignReading(em: Emissions, words: readonly AlignWord[], start: number, end: number, alphabet: string,
+  next: readonly AlignWord[], reading: readonly number[]): { timings: Array<WordTiming | undefined>; path: number } {
+  const timings: Array<WordTiming | undefined> = new Array(words.length).fill(undefined);
+  const none = { timings, path: -Infinity };
   const classes = 5 + alphabet.length;
-  const { tokens, owner, spoken, spelled } = groupLabels(words, alphabet);
+  const { tokens, owner, spoken, spelled } = groupLabels(words, alphabet, reading);
   // Mostly unspellable text (another language, numbers) gives the aligner too little to anchor on.
-  if (!spelled || spelled < 0.6 * spoken) return out;
+  if (!spelled || spelled < 0.6 * spoken) return none;
   const from = Math.max(0, Math.floor((start - em.origin) / FRAME_SECONDS));
   const to = Math.min(em.frames, Math.ceil((end - em.origin) / FRAME_SECONDS));
-  if (to <= from) return out;
+  if (to <= from) return none;
   const context = groupLabels(next, alphabet).tokens;
-  const spans = ctcAlign(em.logProbs, from, to, [...tokens, ...context], classes, tokens.length);
-  if (!spans) return out;
+  const found = ctcPath(em.logProbs, from, to, [...tokens, ...context], classes, tokens.length);
+  if (!found) return none;
+  const { spans } = found;
   const time = (frame: number) => em.origin + frame * FRAME_SECONDS;
   let k = 0, previousEnd = -Infinity;
   while (k < tokens.length) {
@@ -192,16 +303,17 @@ export function alignGroup(em: Emissions, words: readonly AlignWord[], start: nu
     let total = 0, letters = 0, spread = false;
     for (; k < tokens.length && owner[k] === word; k++) {
       if (tokens[k]! >= 5) { total += peak(em.logProbs, tokens[k]!, spans[k]!, classes); letters++; }
-      if (k > first && spans[k]![0] - spans[k - 1]![1] - 1 > MAX_LETTER_GAP_FRAMES) spread = true;
+      // A pause between the words of a number ("seven… sixty-three") is no letter gap.
+      if (k > first && tokens[k]! >= 5 && tokens[k - 1]! >= 5 && spans[k]![0] - spans[k - 1]![1] - 1 > MAX_LETTER_GAP_FRAMES) spread = true;
     }
     if (!letters) continue;
     // A letter is emitted shortly after its sound begins. The lead never reaches back past zero, where the caller's
     // audio starts: a transcript can't hold a negative time.
     const end = Math.min(spans[k]![1] + 1, spans[k - 1]![1] + 1 + MAX_TAIL_FRAMES);
-    out[word] = { start: Math.max(0, previousEnd, time(spans[first]![0]) - ONSET_LEAD), end: time(end), score: spread ? 0 : total / letters };
+    timings[word] = { start: Math.max(0, previousEnd, time(spans[first]![0]) - ONSET_LEAD), end: time(end), score: spread ? 0 : total / letters };
     previousEnd = time(end);
   }
-  return out;
+  return { timings, path: found.score };
 }
 
 /**
@@ -362,7 +474,8 @@ const UNTRIED_SECONDS = 0.15;
  */
 function keepOnSound(words: readonly TranscriptWord[], run: Placement[], sound: readonly TimeRange[], gap: TimeRange) {
   const labels = words.map(w => wordLabels(w.text));
-  const spoken = labels.map(l => !!l), untried = labels.map(l => l?.[0] === WILDCARD);
+  // A number the aligner spelled but couldn't place is still one it may have misread.
+  const spoken = labels.map(l => !!l), untried = labels.map((l, i) => l?.[0] === WILDCARD || (!!l && /\p{N}/u.test(words[i]!.text)));
   const holdsUntried = (k: number) => sound[k]!.end - sound[k]!.start >= UNTRIED_SECONDS;
   // The stretch each spoken word goes with, in order: never one before the stretch of the word before it.
   const heard: Array<number | undefined> = [];

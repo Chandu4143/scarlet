@@ -2,21 +2,18 @@ import { useState } from "react";
 import type { AgentId } from "@scarlet/shared";
 import { ModelProviders } from "../agent/ModelProviders";
 import { Link } from "react-router-dom";
-import { errorMessage, IS_MOCK } from "../../lib/client";
-import { desktop } from "../../lib/desktop";
+import { ModelRefreshButton, ModelRefreshFeedback, useModelRefresh } from "../agent/ModelRefresh";
 import { AGENT_LABEL, onlineAgents, useHostsStore } from "../../stores/hosts";
 import { modelChoices, useModelPreferences } from "../../stores/modelPicker";
 import { FavoriteButton } from "../agent/FavoriteButton";
-import { Icon, InlineError, Loading, SectionTitle, Toggle } from "../ui/primitives";
+import { Icon, Loading, SectionTitle, Toggle } from "../ui/primitives";
 
 export function ModelSettings({ onSignIn }: { onSignIn?: () => void } = {}) {
-  const { hosts, customOpenaiModels, customClaudeModels, status, load, error } = useHostsStore();
+  const { hosts, customOpenaiModels, customClaudeModels, status, error } = useHostsStore();
   const { hidden, favorites, setVisible } = useModelPreferences();
   const [provider, setProvider] = useState<AgentId>();
   const [search, setSearch] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState("");
-  const [refreshed, setRefreshed] = useState(false);
+  const refresh = useModelRefresh();
   const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels);
   const choices = modelChoices(agents);
   const query = search.trim().toLowerCase();
@@ -26,32 +23,10 @@ export function ModelSettings({ onSignIn }: { onSignIn?: () => void } = {}) {
   const visible = catalog.filter(m => !hidden.includes(m.key)).length;
   const matches = catalog.filter(m => `${m.label} ${m.model ?? ""}`.toLowerCase().includes(query));
 
-  async function refresh() {
-    setRefreshed(false);
-    setRefreshing(true);
-    setRefreshError("");
-    try {
-      if (!IS_MOCK) {
-        const host = await desktop.hostRefreshAgents();
-        if (host.error) throw new Error(host.error);
-      }
-      await load();
-      setRefreshed(useHostsStore.getState().status === "ready");
-    } catch (e) {
-      setRefreshError(errorMessage(e));
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
   return (
     <section className="card p-5">
-      <SectionTitle right={<div className="flex items-center gap-2">
-        <span role="status" className="inline-flex items-center gap-1 text-xs text-muted">
-          {refreshed && !error && <><Icon name="check" /> Models refreshed</>}
-        </span>
-        <button className="btn-quiet" disabled={refreshing} onClick={() => void refresh()}>{refreshing ? "Refreshing…" : "Refresh models"}</button></div>}>Model picker</SectionTitle>
-      {(refreshError || error) && <InlineError>{refreshError || error}</InlineError>}
+      <SectionTitle right={<ModelRefreshButton action={refresh} />}>Model picker</SectionTitle>
+      <ModelRefreshFeedback action={refresh} loadError={error} />
       {!choices.length && (status === "loading" ? <Loading label="Reading models…" /> :
         // Every model a signed-in agent offers is listed, so none at all means its list couldn't be read.
         agents.length ? <p className="mt-4 text-[13px] text-muted">Couldn’t read the model list. Refresh models to try again, and update Claude Code or Codex if it still fails.</p> :

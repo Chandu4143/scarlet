@@ -2,6 +2,7 @@ import { readFile, rm } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { join, win32 } from "node:path";
 import { z } from "zod/v3";
+import { normalizeTranscriptToken } from "@scarlet/shared";
 import { newId, type TranscriptSegment, type TranscriptWord } from "@scarlet/timeline";
 import { extractWav, run } from "../render/ffmpeg.js";
 import { decodedRecording } from "../services/recordingAudio.js";
@@ -207,7 +208,8 @@ export class WhisperCppProvider implements TranscriptionProvider {
 
 export function parseWhisperJson(json: Partial<WhisperJson>): TranscriptSegment[] {
   const out: TranscriptSegment[] = [];
-  for (const seg of json.transcription ?? []) {
+  const segments = json.transcription ?? [];
+  for (const [index, seg] of segments.entries()) {
     const start = seg.offsets.from / 1000;
     const end = seg.offsets.to / 1000;
     const words: TranscriptWord[] = [];
@@ -225,7 +227,25 @@ export function parseWhisperJson(json: Partial<WhisperJson>): TranscriptSegment[
       }
       words.push({ text: text.trim(), start: ws, end: Math.max(ws, we), confidence: tok.p });
     }
-    out.push({ id: newId("seg"), start, end: Math.max(start, end), text: seg.text.trim(), words: words.filter((w) => w.text) });
+    const segment = { id: newId("seg"), start, end: Math.max(start, end), text: seg.text.trim(), words: words.filter((w) => w.text) };
+    if (index === segments.length - 1 && repeatsTail(out.at(-1), segment)) continue;
+    out.push(segment);
   }
   return out;
+}
+
+/** Words in the longest copy of a line's end that repeatsTail takes for Whisper's. */
+const TAIL_COPY_WORDS = 4;
+
+/**
+ * Whisper can write the end of a line again over the quiet at the end of the audio it reads: "…coming in behind it at
+ * $3.26." and then "$3.26.", two seconds after it was said. The aligner placed the copy on the price's sound and pulled
+ * the words before it early. A last segment that is only the last few words of the one before, after it ends, is that
+ * copy. A speaker who says them again mid-recording is in the middle of a window, so it stays.
+ */
+function repeatsTail(before: TranscriptSegment | undefined, segment: TranscriptSegment) {
+  if (!before || !segment.words.length || segment.words.length > TAIL_COPY_WORDS || segment.start < before.end) return false;
+  const said = (words: TranscriptWord[]) => words.map(w => normalizeTranscriptToken(w.text)).filter(Boolean);
+  const copy = said(segment.words), last = said(before.words).slice(-copy.length);
+  return copy.length > 0 && last.length === copy.length && copy.every((w, i) => w === last[i]);
 }

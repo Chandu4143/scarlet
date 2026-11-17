@@ -43,6 +43,8 @@ export interface PromptContext {
   editSkill?: Skill;
   /** What a learning_check task reads. Such a task edits no video, so its prompt is about the request alone. */
   learningCheck?: LearningCheckContext;
+  /** What an area_check task looks at. Such a task edits no video, so its prompt is about one frame. */
+  areaCheck?: { mediaId: string; at: number };
   /** Directory the agent may use for temp files; mentioned in the prompt. */
   workDir?: string;
   /** How long the host lets this run take, in minutes. Omitted when the host doesn't say. */
@@ -103,7 +105,7 @@ The editor sets the brief. You decide what context to inspect, which tools to us
 
 - Before your first tool call, say in one sentence what the request will come to when you are done, such as “I’ll take the retakes, false starts and dead air out of the interview and bring you any cut I’m unsure of.” Scarlet keeps that sentence above your steps for as long as you work, so it is about the whole request, not your first step.
 - After that sentence, while you work, Scarlet shows your latest update whole as what you are doing, on two lines, until your next tool call: one sentence of at most 100 characters on what you are doing now. A longer update is cut off there.
-- Always save why you made each edit, even when the editor asked for the exact change. Scarlet shows the short summary of what changed in the chat and the reason on the card above the timeline. For example, “Zoomed in on the score” in the chat and “So viewers can read the score as you say it” on the card. Ground the reason in the footage, the editorial goal or the editor’s request. For an exact request, a short reference to that request is enough. Add \`check\` only when a doubt is left for the editor to settle by listening or looking. Any doubt you leave about an edit goes on that edit: \`check\` as you save it, or \`edit_flag\` once it is in the video, an earlier request’s edit included. The flag holds the edit among those that need the editor until they keep it.
+- Always save why you made each edit, even when the editor asked for the exact change. Scarlet shows the short summary of what changed in the chat and the reason on the card above the timeline. For example, “Zoomed in on the score” in the chat and “So viewers can read the score as you say it” on the card. Ground the reason in the footage, the editorial goal or the editor’s request. For an exact request, a short reference to that request is enough. Add \`check\` only when a doubt is left for the editor to settle by listening or looking. Any doubt you leave about an edit goes on that edit: \`check\` as you save it, or \`edit_flag\` once it is in the video, an earlier request’s edit included. The flag holds the edit among those that need the editor until they keep it. A doubt about something you leave in, such as a restart that may not be meant, reaches the editor the same way, as an edit they can approve or skip: in a dialogue pass, a cut staged for review.
 - End with at most two short sentences about what needs the editor: a judgment call, something you chose not to do, or a question. Scarlet shows them under the request on two lines, about 120 characters, and folds the rest of a longer message away until the editor clicks it. The same goes for a request you finish without an edit: say why in those two sentences. Don’t restate the edits; refer to them by number, such as “edit 4”. When nothing needs the editor, one short sentence is enough.
 - Give times as m:ss.t on the timeline the editor will watch. Don’t mention source seconds, clip IDs, version IDs, tool names or operations. Say “edit” for a change, and “cut” only for an edit that removes footage.`;
 
@@ -145,6 +147,21 @@ End with one or two plain sentences telling the editor what you changed${learnin
  * they asked before, their skills and the rules Scarlet already has, and decides one thing. It is shown no footage:
  * the rule is in what the editor said.
  */
+/**
+ * One frame, one question. A pass asked to find the window while it framed a whole video answered in bulk from small
+ * pictures and took a browser's edge for the app's; asked this about one full-size frame, the same model boxed the
+ * window to a fifth of a percent (2026-11-16).
+ */
+function buildAreaCheckPrompt(check: { mediaId: string; at: number }, prefix: string): string {
+  return [
+    "# You are looking at one frame of a screen recording for Scarlet, a video editor",
+    `Look at the frame of recording \`${check.mediaId}\` at ${check.at} s: call \`${prefix}media_frame\` with \`t\` ${check.at} and \`width\` 1920. Call it yourself and look at the picture it returns.`,
+    "The recording was made for a video. The presenter is showing viewers one application window. Other things are on screen too: the desktop, a taskbar or dock, a recording app, a video call, other windows behind it, and bars or controls that float over it.",
+    "Decide the box that holds only the window being presented, so that nothing else shows when the video is cropped to it. For a web browser, that is the page, without its tabs and toolbars. Where the window runs off the picture, the box ends at the picture's edge. When the whole picture is what viewers should see (a camera, a full-screen app), the box is the whole picture.",
+    `Save it with \`${prefix}screen_area\`: one area in \`set\`, at ${check.at}, for \`${check.mediaId}\`, as [left, top, right, bottom] in percent of the picture to one decimal place, with \`pictures\` 0. Then stop: no other frames, no edits, no reply beyond a few words naming the window.`,
+  ].join("\n\n");
+}
+
 function buildLearningCheckPrompt(check: LearningCheckContext): string {
   const list = (lines: string[]) => lines.map(l => `- ${l}`).join("\n");
   return [
@@ -201,6 +218,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
   }
   if (ctx.editSkill) return buildSkillEditPrompt(ctx, ctx.editSkill);
   if (ctx.learningCheck) return buildLearningCheckPrompt(ctx.learningCheck);
+  if (ctx.areaCheck) return buildAreaCheckPrompt(ctx.areaCheck, ctx.capabilities?.toolPrefix ?? "");
   const parts: string[] = [SCARLET_INTRO];
   // Only a caller that says the run has the tool is asked: a harness's default says what it can do, not how this run was launched.
   if (ctx.capabilities?.plan) parts.push(PLAN_STEPS);

@@ -16,7 +16,7 @@ export const EDITING_TOOL_GROUPS = [
   { title: "Motion graphics", description: "Draw graphics from web pages and saved templates, and read the files and style guide the editor gave.",
     tools: ["graphic_render", "graphic_get", "template_list", "template_get", "template_save", "style_guide_save", "attachment_read"] },
   { title: "Frame inspection", description: "Examine a source frame or several moments from an edit together.",
-    tools: ["media_frame", "frame_contact_sheet", "frame_contact_sheet_batch"] },
+    tools: ["media_frame", "frame_contact_sheet", "frame_contact_sheet_batch", "screen_area"] },
   { title: "Edit comparison", description: "Listen to source audio or compare both sides of a proposed edit.",
     tools: ["change_review_cut", "source_audio"] },
   { title: "Caption generation", description: "Build a caption track from the transcript.",

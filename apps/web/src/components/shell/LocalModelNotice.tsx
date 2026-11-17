@@ -3,7 +3,7 @@ import { create } from "zustand";
 import type { LocalModelStatus, LocalTranscriptionModel, ServerSettings } from "@scarlet/shared";
 import { api, errorMessage } from "../../lib/client";
 import { desktop } from "../../lib/desktop";
-import { InlineError } from "../ui/primitives";
+import { Icon, InlineError } from "../ui/primitives";
 
 interface CrisperSetup {
   phase: "idle" | "choosing" | "installing" | "failed";
@@ -67,18 +67,22 @@ export function LocalModelNotice({ model, status }: { model: LocalTranscriptionM
     case "missing": text = model === "custom" ? "Choose a model file in Advanced." : "First transcription downloads up to 998 MB."; break;
     default: text = status === null ? "Model status unavailable" : "Checking model…";
   }
-  if (fallback) {
-    const notice = "Using bundled Whisper until CrisperWhisper is set up.";
-    text = status.state === "ready" ? notice : notice + " " + text;
-  } else if (status?.reason) {
-    text = status.reason;
-  }
-  return <div className="mt-2 text-xs text-muted">
-    <span role="status" className="inline-flex items-baseline gap-1.5">
-      <span aria-hidden className={'size-1.5 shrink-0 rounded-full ' + (status?.state === "ready" ? "bg-ok" : "bg-dim")} />
-      <span>{text}</span>
+  const ready = status?.state === "ready";
+  const tone = ready ? "bg-ok" : status?.state === "failed" || status?.state === "invalid" ? "bg-warn" : "bg-dim";
+  return <div className="transcription-status">
+    <div role="status" className="flex min-w-0 items-baseline gap-2">
+      <span aria-hidden className={`size-1.5 shrink-0 self-start mt-[6px] rounded-full ${tone}`} />
+      <div>
+        {fallback ? <>
+          <p className="font-medium">{ready ? "Using bundled Whisper" : "Bundled Whisper fallback"}</p>
+          <p className="mt-0.5 text-muted">{ready ? "CrisperWhisper takes over after setup." : text}</p>
+        </> : <p>{status?.reason ?? text}</p>}
+      </div>
+    </div>
+    <span className="transcription-privacy">
+      <Icon name="monitor" size={14} />
+      {model === "custom" ? "Scarlet passes audio to the selected local runtime." : "Audio stays on this computer."}
     </span>
-    <div className="mt-1 text-dim">{model === "custom" ? "Scarlet passes audio to the selected local runtime." : "Audio stays on this computer."}</div>
   </div>;
 }
 
@@ -103,18 +107,27 @@ export function TranscriptionGuide({ crisper = false }: { crisper?: boolean }) {
     setError("");
     void desktop.openUrl(url).catch(e => setError(errorMessage(e)));
   };
-  return <div className="my-2 text-xs text-muted">
-    {crisper && <p className="mb-2">CrisperWhisper is licensed for non-commercial research. Commercial use requires a separate license.</p>}
-    <details>
-      <summary className="cursor-pointer underline">{crisper ? "Set up CrisperWhisper" : "Custom model setup"}</summary>
-      <div className="mt-2 space-y-2">
-        {crisper ? <>
-          <p>Download the <button type="button" className="underline" onClick={() => open(crisperWeights)}>CrisperWhisper 2.0 large model files</button> to one folder. Setup requires 64-bit Python 3.12 on Windows, Ubuntu 24.04 x86-64 or Apple silicon with macOS 14 or later. On Ubuntu, install python3.12-venv. Choose the model folder below. Scarlet verifies the files and downloads the runtime libraries.</p>
-          <CrisperSetupButton />
-        </> : <p>Choose a whisper.cpp model file, or supply a local adapter that writes word-timed JSON. You can leave the model file empty when the adapter manages its own weights. Save your selection in Advanced.</p>}
-        <button type="button" className="underline" onClick={() => open(setupGuide)}>Open transcription model guide</button>
-        <InlineError>{error}</InlineError>
-      </div>
-    </details>
-  </div>;
+  return <details className={crisper ? "transcription-setup" : "my-2 text-xs text-muted"}>
+    {crisper ? (
+      <summary className="transcription-setup-row" aria-labelledby="crisper-setup-title" aria-describedby="crisper-license">
+        <span>
+          <span id="crisper-setup-title">Set up CrisperWhisper</span>
+          <span id="crisper-license" className="mt-1 block text-xs font-normal text-dim">For non-commercial research. Commercial use requires a separate license.</span>
+        </span>
+        <Icon name="chevron" size={14} />
+      </summary>
+    ) : <summary className="cursor-pointer underline">Custom model setup</summary>}
+    <div className={crisper ? "transcription-instructions" : "mt-2 space-y-2"}>
+      {crisper ? <>
+        <p>Setup requires 64-bit Python 3.12 on Windows, Ubuntu 24.04 x86-64 or Apple silicon with macOS 14 or later. On Ubuntu, install <code>python3.12-venv</code>.</p>
+        <ol className="list-decimal space-y-2 pl-5">
+          <li>Download the <button type="button" className="underline" onClick={() => open(crisperWeights)}>CrisperWhisper 2.0 large model files</button> into one folder.</li>
+          <li>Choose that folder below. Scarlet verifies the files and downloads the runtime libraries.</li>
+        </ol>
+        <CrisperSetupButton />
+      </> : <p>Choose a whisper.cpp model file, or supply a local adapter that writes word-timed JSON. You can leave the model file empty when the adapter manages its own weights. Save your selection in Advanced.</p>}
+      <button type="button" className="underline" onClick={() => open(setupGuide)}>Open transcription model guide</button>
+      <InlineError>{error}</InlineError>
+    </div>
+  </details>;
 }

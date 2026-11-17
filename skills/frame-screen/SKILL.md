@@ -28,4 +28,4 @@ My camera stays in its corner at the same size throughout. Every line I read and
 
 Switching between the screen and my camera full screen follows the same rule as the frames: each lasts long enough to take in. A few frames of camera between two stretches of screen, or of screen between two of camera, reads as a glitch: keep the screen on through it, or line the switch up with the cut beside it.
 
-`timeline_transcript`, `screen_text`, `media_frame` and `timeline_framing` cover what this needs.
+`timeline_transcript`, `screen_text`, `media_frame`, `screen_area` and `timeline_framing` cover what this needs.

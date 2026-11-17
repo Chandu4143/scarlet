@@ -88,7 +88,7 @@ const toolSteps: Record<string, StepSpec> = {
   } },
   media_profile: sound, waveform_get: sound, sound_picture: sound, source_audio: sound,
   audio_sync: { group: "sync", verb: "Lined up", doing: "Lining up", detail: () => "the sound", once: true },
-  media_frame: picture, frame_contact_sheet: picture, frame_contact_sheet_batch: picture,
+  media_frame: picture, frame_contact_sheet: picture, frame_contact_sheet_batch: picture, screen_area: picture,
   screen_text: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
   faces: { group: "faces", verb: "Found", doing: "Finding", detail: () => "where the faces are", once: true },
   dialogue_check_repeats: sound,

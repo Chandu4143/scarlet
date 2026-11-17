@@ -288,11 +288,28 @@ describe("timeline_framing", () => {
       const tight = { scale: 1.18, x: 0, y: -0.06 };
       const camera = (id: string, from: number, to: number, at: number, transform?: object) =>
         ({ op: "addClip", trackId: "v3", clip: { id, kind: "media", mediaId: "m1", sourceIn: from, sourceOut: to, timelineIn: at, volume: 0, ...(transform && { transform }) } });
-      // The wide camera ends three frames before the punch-in, so the screen and inset show through for 0.1 s.
+      // The wide camera ends four frames before the punch-in, so the screen and inset show through for 0.13 s.
+      const result = JSON.parse(textOf(await ok(c, "timeline_propose", { ops: [{ op: "addTrack", track: { id: "v3", kind: "video", name: "Full camera", clips: [] } },
+        camera("wide", 0, 9.87, 0), camera("punch", 10, 30, 10, tight)], description: "Punched in on the camera", reason: "He makes the main point here." })).split("\n")[0]!);
+      expect(result.briefPictures).toEqual([{ from: 9.87, to: 10, seconds: 0.13, shows: ["cam", "s0"], before: ["wide"], after: ["punch"] }]);
+      expect(result.briefNext).toContain("run the shot before or after over it");
+      expect(result.metCut).toBeUndefined();
+    } finally { await c.close(); }
+  });
+
+  it("moves a picture laid over the edit onto the cut beside it when it would flash for a tenth of a second or less", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const tight = { scale: 1.18, x: 0, y: -0.06 };
+      const camera = (id: string, from: number, to: number, at: number, transform?: object) =>
+        ({ op: "addClip", trackId: "v3", clip: { id, kind: "media", mediaId: "m1", sourceIn: from, sourceOut: to, timelineIn: at, volume: 0, ...(transform && { transform }) } });
+      // Three frames short: the screen and inset would show through for 0.1 s.
       const result = JSON.parse(textOf(await ok(c, "timeline_propose", { ops: [{ op: "addTrack", track: { id: "v3", kind: "video", name: "Full camera", clips: [] } },
         camera("wide", 0, 9.9, 0), camera("punch", 10, 30, 10, tight)], description: "Punched in on the camera", reason: "He makes the main point here." })).split("\n")[0]!);
-      expect(result.briefPictures).toEqual([{ from: 9.9, to: 10, seconds: 0.1, shows: ["cam", "s0"], before: ["wide"], after: ["punch"] }]);
-      expect(result.briefNext).toContain("run the shot before or after over it");
+      expect(result.briefPictures).toBeUndefined();
+      expect(result.metCut).toEqual([{ from: 9.9, to: 10, seconds: 0.1, clips: ["wide"] }]);
+      expect(result.metCutNext).toContain("onto the cut beside it");
     } finally { await c.close(); }
   });
 
@@ -307,6 +324,70 @@ describe("timeline_framing", () => {
       expect(result.backgroundShows[0].share).toBeGreaterThan(0.4);
       expect(result.backgroundNext).toContain("timeline_framing");
     } finally { await c.close(); }
+  });
+
+  describe("with areas viewers may see on record", () => {
+    // One window from 0 to 60 s of the screen recording: 10-80% across, 10-90% down. Nothing is set after that.
+    const window = { at: 5, area: [0.1, 0.1, 0.8, 0.9], noLine: [], holds: [[0, 60]] };
+    let posted: unknown[];
+    beforeEach(() => {
+      posted = [];
+      const earlier = mock.state.extra!;
+      mock.state.extra = (req, res) => {
+        if (req.path === "/projects/prj_test/media/scr/show-area") {
+          if (req.method === "POST") posted.push(req.body);
+          return reply(res, { mediaId: "scr", step: 5, done: true, areas: [window], unset: [[60, 120]] });
+        }
+        if (req.path.endsWith("/show-area")) return reply(res, { mediaId: "m1", step: 5, done: true, areas: [], unset: [[0, 60]] });
+        return earlier(req, res);
+      };
+    });
+
+    it("saves an area in fractions and lists the areas, where they hold and what is unset", async () => {
+      const c = await connect();
+      try {
+        await ok(c, "timeline_get");
+        const result = JSON.parse(textOf(await ok(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 80, 90] }], pictures: 0 })));
+        expect(posted).toEqual([{ set: [{ at: 5, area: [0.1, 0.1, 0.8, 0.9] }] }]);
+        expect(result.areas).toEqual([{ at: 5, area: [10, 10, 80, 90], holds: [[0, 60]], heldSeconds: 60 }]);
+        // The edit plays nothing of the recording past 30 s, so the unset stretch is not on picture.
+        expect(result.unset).toEqual([{ from: 60, to: 120, onPicture: 0, look: 90 }]);
+        expect(textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }] }))).toContain("at least 5 percent each way");
+      } finally { await c.close(); }
+    });
+
+    it("refuses a save that frames the recording past its area, and one that frames part of a picture with no area", async () => {
+      const c = await connect();
+      try {
+        await ok(c, "timeline_get");
+        const past = textOf(await call(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "s0", patch: { transform: { cropLeft: 0.1, cropTop: 0.1, cropBottom: 0.1 } } }],
+          intent: "requested", description: "Cropped the demo.", reason: "The window is the subject." }));
+        expect(past).toContain("Not saved.");
+        expect(past).toContain("past it right 20%");
+        const none = textOf(await call(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "cam", patch: { transform: { scale: 1.4 } } }],
+          intent: "requested", description: "Punched in.", reason: "Emphasis." }));
+        expect(none).toContain("no area says what viewers may see");
+        expect(none).toContain("m1 source 0-60 s");
+        expect(proposed()).toHaveLength(0);
+        // Inside the area it saves.
+        await ok(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "s0", patch: { transform: { cropLeft: 0.1, cropTop: 0.1, cropRight: 0.2, cropBottom: 0.1 } } }],
+          intent: "requested", description: "Cropped the demo.", reason: "The window is the subject." });
+        expect(proposed()).toHaveLength(1);
+      } finally { await c.close(); }
+    });
+
+    it("keeps a frame with no `within` inside the area on record", async () => {
+      const c = await connect();
+      try {
+        await ok(c, "timeline_get");
+        const result = JSON.parse(textOf(await ok(c, "timeline_framing", { mediaId: "scr", framings: [{ at: 0, show: [30, 30, 60, 60] }], preview: true })).split("\n")[0]!);
+        const [left, top, right, bottom] = result.framings[0].frame as number[];
+        expect(left).toBeGreaterThanOrEqual(10);
+        expect(top).toBeGreaterThanOrEqual(10);
+        expect(right).toBeLessThanOrEqual(80);
+        expect(bottom).toBeLessThanOrEqual(90);
+      } finally { await c.close(); }
+    });
   });
 });
 
@@ -630,7 +711,7 @@ describe("tool annotations", () => {
   // Every tool that saves an edit, a recommendation, a file or a message to the editor. A harness may retry or
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
   const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
-    "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
+    "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "screen_area", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
     "graphic_render", "template_save", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
 
