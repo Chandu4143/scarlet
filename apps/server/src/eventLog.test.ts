@@ -149,7 +149,9 @@ it("answers work its caller cancelled with 499, and doesn't log it as an engine 
   });
   const res = await request("POST", `/projects/${project.id}/media/import-frame`, JSON.stringify({ path: import.meta.filename }), { signal: caller.signal });
   expect(res.status).toBe(499);
-  expect(lines.map(withoutCorrelation)).toEqual([expect.stringMatching(/^\[http\] POST \/api\/projects\/prj_\w+\/media\/import-frame → 499 in \d+ms; the caller had already disconnected$/)]);
+  // Only what the request itself logged: a slow runner also notes that the engine was held up meanwhile ([stall]).
+  expect(http()).toEqual([expect.stringMatching(/^\[http\] POST \/api\/projects\/prj_\w+\/media\/import-frame → 499 in \d+ms; the caller had already disconnected$/)]);
+  expect(lines.filter(line => line.startsWith("[error]"))).toEqual([]);
   // A fault that only happens to follow a disconnect is still a fault.
   vi.spyOn(workspace.ctx.render, "extractFrame").mockImplementationOnce(async function brokenDecode() { throw new Error("no decoder"); });
   expect((await request("POST", `/projects/${project.id}/media/import-frame`, JSON.stringify({ path: import.meta.filename }), { signal: AbortSignal.abort() })).status).toBe(500);
