@@ -79,7 +79,7 @@ it("opens the monitor from one snapshot while preserving edits and imports that 
   expect(reread).not.toHaveBeenCalled();
 });
 
-it("resnapshots after subscribing when the socket connects during a first project read", async () => {
+it("resnapshots after subscribing when the socket connects during a first project read made without one", async () => {
   let socket!: TestSocket;
   class TestSocket {
     static OPEN = 1;
@@ -99,9 +99,10 @@ it("resnapshots after subscribing when the socket connects during a first projec
   vi.spyOn(api, "changes").mockResolvedValue({ changes: [] });
   vi.spyOn(api, "notes").mockResolvedValue({ notes: [] });
   vi.spyOn(api, "tasks").mockResolvedValue({ tasks: [] });
+  // The read begins before there is any connection to wait for.
+  const first = initial.load(PRJ);
   const stop = startRealtime();
   try {
-    const first = initial.load(PRJ);
     socket.readyState = TestSocket.OPEN;
     socket.onopen!();
     finishOld({ project, timeline: null });
@@ -111,6 +112,46 @@ it("resnapshots after subscribing when the socket connects during a first projec
     socket.onmessage!({ data: JSON.stringify({ type: "project.subscribed", projectId: PRJ, found: true }) });
     await vi.waitFor(() => expect(useProjectStore.getState().current?.project.name).toBe("After reconnect"));
     expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    leaveProject(PRJ);
+    stop();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("reads a project opened while the socket connects once, after the engine confirms it is listening", async () => {
+  let socket!: TestSocket;
+  class TestSocket {
+    static OPEN = 1;
+    readyState = 0;
+    onopen?: () => void;
+    onmessage?: (event: { data: string }) => void;
+    send = vi.fn();
+    close = vi.fn();
+    constructor() { socket = this; }
+  }
+  vi.stubGlobal("WebSocket", TestSocket);
+  const db = buildDb();
+  const project = db.projects.find(p => p.id === PRJ)!;
+  const read = vi.spyOn(api, "workspace").mockResolvedValue({ project, timeline: null });
+  vi.spyOn(api, "changes").mockResolvedValue({ changes: [] });
+  vi.spyOn(api, "notes").mockResolvedValue({ notes: [] });
+  vi.spyOn(api, "tasks").mockResolvedValue({ tasks: [] });
+  const stop = startRealtime();
+  try {
+    const first = initial.load(PRJ);
+    await Promise.resolve();
+    // Nothing is read until the connection opens and the engine says it is listening.
+    expect(read).not.toHaveBeenCalled();
+    socket.readyState = TestSocket.OPEN;
+    socket.onopen!();
+    expect(socket.send).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ type: "subscribe", projectId: PRJ }));
+    expect(read).not.toHaveBeenCalled();
+    socket.onmessage!({ data: JSON.stringify({ type: "project.subscribed", projectId: PRJ, found: true }) });
+    await first;
+    expect(useProjectStore.getState().current?.project).toEqual(project);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(api.changes).toHaveBeenCalledTimes(1);
   } finally {
     leaveProject(PRJ);
     stop();
@@ -168,6 +209,28 @@ it("keeps a newer project update when the timeline refresh for its head finishes
 
   await vi.waitFor(() => expect(store().timeline).toBe(timeline));
   expect(store().project).toEqual(paused);
+});
+
+it("reads a burst of new working cuts once more after the read that is out, not once each", async () => {
+  const { current, project } = open();
+  const release: Array<(detail: Pick<ProjectDetail, "project" | "timeline">) => void> = [];
+  const read = vi.spyOn(api, "workspace").mockImplementation(() => new Promise(resolve => release.push(resolve)));
+  for (const head of ["h1", "h2", "h3"]) initial.applyEvent({ type: "project.updated", projectId: PRJ, project: { ...project, head } });
+  const asked = initial.refreshHead(PRJ);
+  expect(read).toHaveBeenCalledTimes(1);
+  release[0]!({ project: { ...project, head: "h1" }, timeline: { ...current.timeline!, version: "h1" } });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  const last = { ...current.timeline!, version: "h3" };
+  release[1]!({ project: { ...project, head: "h3" }, timeline: last });
+  // Every caller waits for the read that began after it asked.
+  await asked;
+  expect(store().timeline).toBe(last);
+  expect(read).toHaveBeenCalledTimes(2);
+  // The burst is over: the next new working cut is read at once.
+  initial.applyEvent({ type: "project.updated", projectId: PRJ, project: { ...project, head: "h4" } });
+  expect(read).toHaveBeenCalledTimes(3);
+  release[2]!({ project: { ...project, head: "h4" }, timeline: { ...current.timeline!, version: "h4" } });
+  await vi.waitFor(() => expect(store().timeline?.version).toBe("h4"));
 });
 
 it.each([2, 3, 4])("uses the latest authoritative project when the head refresh returns revision %s", async rowRevision => {
@@ -1216,6 +1279,85 @@ it("reads the library again when a project was made while a read was out, so the
   await loading;
   expect(read).toHaveBeenCalledTimes(2);
   expect(useProjectStore.getState().list.map(p => p.id)).toEqual(["prj_new", PRJ]);
+});
+
+it("discards a Projects read from before Stop finished, even after leaving the editor", async () => {
+  const { db, project } = open();
+  const task = { ...db.tasks.find(t => t.kind === "edit")!, state: "cancelled" as const };
+  const summary = db.summaries[PRJ]!;
+  const transcribing = { kind: "transcribing" as const, count: 1 };
+  const editing = { ...summary, activity: [{ kind: "editing" as const, count: 1 }, transcribing] };
+  const afterStop = { ...summary, activity: [transcribing] };
+  let finishStop!: (response: Awaited<ReturnType<typeof api.stopEditing>>) => void;
+  let finishRead!: (response: { projects: typeof editing[] }) => void;
+  vi.spyOn(api, "stopEditing").mockImplementation(() => new Promise(resolve => { finishStop = resolve; }));
+  const read = vi.spyOn(api, "projects").mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }))
+    .mockResolvedValue({ projects: [afterStop] });
+
+  const stop = initial.stopEditing(PRJ);
+  useProjectStore.setState({ current: null });
+  const loading = initial.loadList();
+  finishStop({ project: { ...project, editingPaused: true }, tasks: [task] });
+  await stop;
+  const published = vi.fn();
+  const unsubscribe = useProjectStore.subscribe(state => published(state.list));
+  try {
+    finishRead({ projects: [editing] });
+    await loading;
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(published).toHaveBeenCalledExactlyOnceWith([afterStop]);
+    expect(useProjectStore.getState().list).toEqual([afterStop]);
+  } finally {
+    unsubscribe();
+  }
+});
+
+it("releases the queue after Stop settles and keeps newer project details", async () => {
+  const { db, project } = open();
+  const running = { ...db.tasks.find(t => t.kind === "edit")!, projectId: PRJ, state: "running" as const };
+  const cancelled = { ...running, state: "cancelled" as const };
+  const queued = { ...running, id: "tsk_waiting", state: "queued" as const };
+  useProjectStore.setState({ current: { ...store(), tasks: [running, queued] } });
+  let finishStop!: (response: Awaited<ReturnType<typeof api.stopEditing>>) => void;
+  const paused = { ...project, editingPaused: true, rowRevision: 1 };
+  vi.spyOn(api, "stopEditing").mockImplementation(() => new Promise(resolve => { finishStop = resolve; }));
+  const sendResume = vi.spyOn(api, "resumeEditing").mockResolvedValue({ project: { ...project, name: "Renamed meanwhile", rowRevision: 3, editingPaused: false }, tasks: [] });
+  const stop = initial.stopEditing(PRJ);
+  // The engine can publish the pause before it answers the Stop request, already showing Continue.
+  initial.applyEvent({ type: "project.updated", projectId: PRJ, project: { ...paused, name: "Renamed meanwhile", rowRevision: 2 } });
+  const resume = initial.resumeEditing(PRJ);
+  expect(sendResume).not.toHaveBeenCalled();
+  finishStop({ project: paused, tasks: [cancelled] });
+  await Promise.all([stop, resume]);
+  expect(sendResume).toHaveBeenCalledExactlyOnceWith(PRJ);
+  expect(store().project).toMatchObject({ editingPaused: false, name: "Renamed meanwhile" });
+  expect(store().tasks).toEqual([cancelled, queued]);
+});
+
+it("keeps the pause when a timeline read that began before Stop finishes late", async () => {
+  const { project, current } = open();
+  let finishRead!: (response: Awaited<ReturnType<typeof api.workspace>>) => void;
+  vi.spyOn(api, "workspace").mockImplementation(() => new Promise(resolve => { finishRead = resolve; }));
+  vi.spyOn(api, "stopEditing").mockResolvedValue({ project: { ...project, editingPaused: true }, tasks: [] });
+  const read = initial.refreshHead(PRJ);
+  await initial.stopEditing(PRJ);
+  finishRead({ project: { ...project, editingPaused: false }, timeline: current.timeline });
+  await read;
+  expect(store().project.editingPaused).toBe(true);
+});
+
+it("keeps the continuation's newer socket state when the Stop response arrives", async () => {
+  const { db, project } = open();
+  const running = { ...db.tasks.find(t => t.kind === "edit")!, projectId: PRJ, state: "running" as const };
+  const held = { ...running, id: "tsk_held", state: "queued" as const, resumeRootId: running.id, resumesAfterProjectStop: true };
+  useProjectStore.setState({ current: { ...store(), tasks: [running] } });
+  let finishStop!: (response: Awaited<ReturnType<typeof api.stopEditing>>) => void;
+  vi.spyOn(api, "stopEditing").mockImplementation(() => new Promise(resolve => { finishStop = resolve; }));
+  const stop = initial.stopEditing(PRJ);
+  initial.applyEvent({ type: "task.updated", projectId: PRJ, task: { ...held, state: "cancelled" } });
+  finishStop({ project: { ...project, editingPaused: true }, tasks: [{ ...running, state: "cancelled", retryTaskId: held.id }, held] });
+  await stop;
+  expect(store().tasks).toEqual([{ ...running, state: "cancelled", retryTaskId: held.id }, { ...held, state: "cancelled" }]);
 });
 
 it("says a project is in the trash when it can't be opened because it was deleted", async () => {

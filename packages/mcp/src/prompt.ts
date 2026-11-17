@@ -343,8 +343,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
   // Skills
   if (ctx.skills.length) {
     const blocks = ctx.skills.map((s) => {
-      const base = skillExtends(s);
-      const layered = base && ctx.skills.some(o => o.name === base) ? `\n\nThis builds on ${base}, above. Where the two differ, follow this one.` : "";
+      const bases = skillExtends(s).filter(base => ctx.skills.some(o => o.name === base));
+      const named = bases.length > 1 ? `${bases.slice(0, -1).join(", ")} and ${bases.at(-1)}` : bases[0];
+      // A guide the skill calls by name is in the prompt whether or not this request needs it, such as one the skill
+      // keeps for when the editor asks: the skill's own words say when each applies.
+      const layered = !named ? "" : `\n\nThis builds on ${named}, above${/(?:^|[\s(])\/[a-z0-9]/im.test(stripFrontmatter(s.content)) ? ", and calls each as /name where it applies, with what it changes beside the call" : ""}. Where ${bases.length > 1 ? "it and one of them" : "the two"} differ, follow this one.`;
       return `## ${s.name}\n\n${s.description}${layered}\n\n${stripFrontmatter(s.content).trim()}`;
     });
     parts.push(`# Your skills\n\nThe editor’s request and selected skills give the brief. Consult other enabled guides through skills_list as needed. Preserve the editor’s stated preferences and protected moments.\n\n${blocks.join("\n\n---\n\n")}`);

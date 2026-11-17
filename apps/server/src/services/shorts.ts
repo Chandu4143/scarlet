@@ -3,7 +3,7 @@ import { cp, mkdir, readdir, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import { ASPECT_PRESETS, createProject, newId, timelineDuration, type MediaAsset, type Project, type Timeline } from "@scarlet/timeline";
-import type { MakeShortsRequest, ShortsPlanRequest, Task, User } from "@scarlet/shared";
+import type { MakeShortsRequest, ShortsPlanRequest, Task, TaskAttempt, User } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { actorFor, logActivity, quote } from "./activity.js";
@@ -12,6 +12,7 @@ import { resolveTimeline, storeVersion } from "./timeline.js";
 import { recoverSourcePreviews } from "./sourcePreviews.js";
 import { cloneOrSteadyCopy } from "./steadyCopy.js";
 import { discardProjects } from "./trash.js";
+import { requireActiveAttempt } from "./taskAttempt.js";
 
 const run = promisify(execFile);
 
@@ -204,15 +205,16 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
  * the first gets a run of its own, started with its moment. Projects left without a moment, when the run found fewer
  * than the editor allowed, go to the trash: the editor asked for up to that many.
  */
-export function planShorts(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRequest) {
-  return ctx.db.transaction(() => saveShortsPlan(ctx, user, taskId, plan), "immediate")();
+export function planShorts(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRequest, attempt?: TaskAttempt) {
+  return ctx.db.transaction(() => saveShortsPlan(ctx, user, taskId, plan, attempt), "immediate")();
 }
 
-function saveShortsPlan(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRequest) {
+function saveShortsPlan(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRequest, attempt?: TaskAttempt) {
   const task = ctx.repos.tasks.get(taskId);
   if (!task) throw notFound("task");
   const short = task.context.short;
   if (!short || short.index !== 1) throw badRequest("not_first_short", "Only the first short’s run chooses the moments, in a request Make shorts started.");
+  if (attempt) requireActiveAttempt(ctx, attempt, task.projectId, task.id);
   if (FINISHED_TASK.has(task.state)) throw conflict("task_finished", "This short’s request has already ended.");
   if (plan.moments.length > short.count) throw badRequest("too_many_moments", `The editor asked for up to ${short.count}.`);
   if (!ctx.repos.projects.header(task.projectId)) throw notFound("project");

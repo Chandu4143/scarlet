@@ -102,7 +102,9 @@ interface ProjectState {
   declineLearning(learningId: string): Promise<void>;
 
   createTask(projectId: string, body: CreateTaskRequest): Promise<Task>;
-  cancelTask(taskId: string): Promise<void>;
+  cancelTask(taskId: string, queuedOnly?: boolean): Promise<void>;
+  stopEditing(projectId: string): Promise<void>;
+  resumeEditing(projectId: string): Promise<void>;
   /** Retry or resume a run. It runs on the model picked now. */
   retryTask(taskId: string, runWith?: RunChoice): Promise<void>;
   /** Finish a run that ended without its transcripts once they are ready, or stop waiting to. */
@@ -140,6 +142,18 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   return next;
 }
 
+function upsertEditingTasks(before: Task[], live: Task[], changed: Task[]): Task[] {
+  const original = new Map(before.map(task => [task.id, task]));
+  return changed.reduce((tasks, task) => {
+    const current = tasks.find(item => item.id === task.id);
+    // The socket can already have a later state, but the stop response can carry a new retry link.
+    if (current && current !== original.get(task.id)) {
+      return task.retryTaskId && !current.retryTaskId ? upsert(tasks, { ...current, retryTaskId: task.retryTaskId }) : tasks;
+    }
+    return upsert(tasks, task);
+  }, live);
+}
+
 function mergeSinceLoad<T extends { id: string }>(snapshot: T[], base: T[], live: T[]): T[] {
   if (base === live) return snapshot;
   const before = new Map(base.map(item => [item.id, item]));
@@ -165,11 +179,14 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
   let projectLoad = 0;
   let listRevision = 0;
   let listRequest: { client: typeof api; job: Promise<void> } | undefined;
+  const editingRequests = new Map<string, Promise<void>>();
   let opening: { id: string; events: WsEvent[]; imports: MediaAsset[] } | undefined;
   const eventLookups = new Map<string, Promise<void>>();
   /** The runs whose steps the open project's pages have asked for, each with the fullest read asked. */
   let askedEvents: { project: string; scopes: Record<string, "all" | "conversation"> } | undefined;
   let headLookup = 0;
+  /** The read of the open project's new working cut that is out, and the one more a burst of new ones asked for. */
+  let headRead: { projectId: string; job: Promise<void>; again?: Promise<void> } | undefined;
   /**
    * The open project as the engine last described it (`saved`), and the editor's changes to it the engine hasn't
    * described yet: a rename still being saved, and filings an older engine confirmed without sending the project.
@@ -240,12 +257,38 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
   store.subscribe(({ current }) => {
     if (readAgain && current?.id !== readAgain.id) dropReadAgain();
     if (headAgain && current?.id !== headAgain.id) dropHeadAgain();
+    if (headRead && current?.id !== headRead.projectId) headRead = undefined;
     if (askedEvents && current?.id !== askedEvents.project) askedEvents = undefined;
     if (activityRead && current?.id !== activityRead.projectId) activityRead = undefined;
   });
   const patch = (projectId: string, fn: (d: ProjectData) => Partial<ProjectData>) => {
     const cur = get().current;
     if (cur?.id === projectId) set({ current: { ...cur, ...fn(cur) } });
+  };
+  const refreshListActivity = (projectId: string) => {
+    // A Projects read may have counted activity from before the request changed it.
+    if (listRequest || get().list.some(p => p.id === projectId)) {
+      listRevision++;
+      void get().loadList();
+    }
+  };
+  const changeEditing = (projectId: string, send: () => Promise<{ project: Project; tasks: Task[] }>) => {
+    // The socket can show Continue before the Stop response arrives. Keep the two actions in order.
+    const previous = editingRequests.get(projectId);
+    const update = async () => {
+      const before = get().current?.id === projectId ? get().current!.tasks : [];
+      const { project, tasks } = await send();
+      patch(projectId, d => ({
+        project: takeProject(d, project) ?? d.project,
+        tasks: tasks.length ? upsertEditingTasks(before, d.tasks, tasks) : d.tasks,
+      }));
+      refreshListActivity(projectId);
+    };
+    const request = (previous ? previous.then(update, update) : update()).finally(() => {
+      if (editingRequests.get(projectId) === request) editingRequests.delete(projectId);
+    });
+    editingRequests.set(projectId, request);
+    return request;
   };
   const replaceChange = (change: Change) => patch(change.projectId, d => {
     const changes = upsert(d.changes, change);
@@ -270,6 +313,28 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
     if (!projectId) return;
     const { learning } = await send(projectId);
     patch(projectId, (d) => ({ learnings: upsert(d.learnings ?? [], learning) }));
+  };
+  /** Read the open project's working cut and its timeline anew, after the head moved. */
+  const readHead = async (projectId: string) => {
+    const before = get().current;
+    if (before?.id !== projectId) return;
+    heldFor(before);
+    const readAt = ++clock;
+    const request = ++headLookup;
+    const epoch = projectLoad;
+    const detail = await api.workspace(projectId);
+    if (request !== headLookup || epoch !== projectLoad || get().current?.id !== projectId) return;
+    versionLookup = undefined;
+    dropHeadAgain();
+    patch(projectId, d => {
+      const h = heldFor(d);
+      const project = takeProject(d, detail.project, readAt);
+      return { ...(project && { project }),
+        ...(detail.project.head === h.saved.head && {
+          timeline: sameVersion(d.timeline, detail.timeline), versions: undefined,
+          historyRevision: (d.historyRevision ?? 0) + 1, headError: undefined,
+        }) };
+    });
   };
   /**
    * The edit moved to `head` and its timeline couldn't be read. One failed read mustn't take the conversation and the
@@ -358,6 +423,8 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       // Whatever reads a project takes over from a wait to read one again, or to read its timeline again.
       dropReadAgain();
       dropHeadAgain();
+      // A read of the working cut that is out was asked before this one: its answer is dropped, so none waits on it.
+      headRead = undefined;
       const request = ++projectLoad;
       const same = get().current?.id === id;
       if (!same) {
@@ -469,25 +536,21 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       }
     },
     async refreshHead(projectId = get().current?.id) {
-      const before = get().current;
-      if (!projectId || before?.id !== projectId) return;
-      heldFor(before);
-      const readAt = ++clock;
-      const request = ++headLookup;
-      const epoch = projectLoad;
-      const detail = await api.workspace(projectId);
-      if (request !== headLookup || epoch !== projectLoad || get().current?.id !== projectId) return;
-      versionLookup = undefined;
-      dropHeadAgain();
-      patch(projectId, d => {
-        const h = heldFor(d);
-        const project = takeProject(d, detail.project, readAt);
-        return { ...(project && { project }),
-          ...(detail.project.head === h.saved.head && {
-            timeline: sameVersion(d.timeline, detail.timeline), versions: undefined,
-            historyRevision: (d.historyRevision ?? 0) + 1, headError: undefined,
-          }) };
+      if (!projectId || get().current?.id !== projectId) return;
+      // One read at a time. A burst of new working cuts while one is out reads once more after it, and every caller
+      // in the burst waits for that read: it began after what each of them saw.
+      const out = headRead?.projectId === projectId ? headRead : undefined;
+      if (out) return out.again ??= out.job.catch(() => undefined).then(() => {
+        if (headRead === out) headRead = undefined;
+        return get().refreshHead(projectId);
       });
+      const read = { projectId, job: readHead(projectId) } as NonNullable<typeof headRead>;
+      headRead = read;
+      try {
+        await read.job;
+      } finally {
+        if (headRead === read && !read.again) headRead = undefined;
+      }
     },
     async loadVersions() {
       const cur = get().current;
@@ -761,9 +824,16 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
       patch(projectId, d => ({ tasks: d.tasks.some(t => t.id === task.id) ? d.tasks : [...d.tasks, task] }));
       return task;
     },
-    async cancelTask(taskId) {
-      const { task } = await api.cancelTask(taskId);
+    async cancelTask(taskId, queuedOnly) {
+      const { task } = await api.cancelTask(taskId, queuedOnly);
       patch(task.projectId, (d) => ({ tasks: upsert(d.tasks, task) }));
+      refreshListActivity(task.projectId);
+    },
+    stopEditing(projectId) {
+      return changeEditing(projectId, () => api.stopEditing(projectId));
+    },
+    resumeEditing(projectId) {
+      return changeEditing(projectId, () => api.resumeEditing(projectId));
     },
     async retryTask(taskId, runWith) {
       const { task } = await api.retryTask(taskId, runWith);

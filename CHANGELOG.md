@@ -7,10 +7,15 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 16, 2026
 
 - When Scarlet reworks the whole video in one go, every cut it made is listed, so you can open, revise or undo each one.
+- Scarlet zooms a screen recording to fill the video around what you’re showing, eases from one thing to the next across your cuts, and keeps your camera off the lines you read, moving it to another corner when it has to. A zoom no longer leaves empty bars at the sides.
+- An edit's card no longer has an Undo edit button. To put an edit back, open it and ask in the message box.
+- When Scarlet wants you to check part of an edit, its card has an amber Check tag that plays just that part, the timeline marks that part in amber, and an edit that changed nothing there no longer says Added.
+- Scarlet checks that your camera, screen and mic recordings stay in sync through its edit, and tells you when one doesn't.
 - Scarlet hears when you keep an edit it flagged, so a request still working doesn't ask you about it again.
 - Scarlet stays connected when you pause media processing while it’s caching a video.
 - The message box shows an edit’s time on its own and widens its tag to show the × on hover. Open +1 to see and clear an additional marked range.
 - An edit you kept stays kept when Scarlet, still working, lists it again in other words, instead of asking you about it a second time.
+- Pause above the message box pauses all editing in the project and Continue picks the paused work up first, where it left off. A paused request says Paused in the chat, questions can still be answered, and Stop this edit in a request’s menu ends just that one.
 - About puts the installed version and update check at the top, shows the latest release notes, and folds earlier changes and usage report details into sections you can open.
 - Pause and resume background caching and transcription from the Projects menu, the Media panel, or by hovering over Media.
 - Make shorts works on recordings in a library you moved or restored from a backup, instead of asking you to reimport them.

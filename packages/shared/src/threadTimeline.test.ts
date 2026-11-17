@@ -451,6 +451,31 @@ describe("a doubt a later request raises about an edit already in the video", ()
     expect(project("Check the removed footage.", { version: "v2", range: { start: 85, end: 90 } }).reviewRange).toBeUndefined();
   });
 
+  it("opens a flag at the span its words name inside its passage, where that span is now", () => {
+    const working = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 80 }, { start: 100, end: 3468 }]), version: "v3" };
+    const history = [{ ...links[0]!, createdAt: "2026-01-01T00:00:00Z" }, { ...links[1]!, createdAt: "2026-01-02T00:00:00Z" },
+      { version: "v3", parent: "v2", createdAt: "2026-01-03T00:00:00Z" }];
+    const versions = { base: { ...emptyTimeline("project"), version: "base" }, v1: earlier, v2: head };
+    const edit = { ...pass, timelineEdits: [{ label: "Pricing and model names", range: { start: 0, end: 3468 } }] };
+    const project = (check: string) => {
+      const [review] = buildThreads({
+        changes: [{ ...edit, flags: [{ spot: 0, taskId: "cutting", at: "2026-01-02T00:05:00Z", check, location: { version: "v2", range: { start: 460, end: 523 } } }] }],
+        notes: [], tasks: [run("cutting", "dialogue")],
+      });
+      return threadTimeline(review!, working, history, version => versions[version as keyof typeof versions], 30)[0]!;
+    };
+    // Matt's flag gave 56 seconds and named the three it meant, in the clock of the version it flagged.
+    expect(project("Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices at 8:38.5–8:41.6.")).toMatchObject({
+      reviewRange: { start: 498.5, end: 501.6 }, reviewSays: "Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices.",
+      check: "Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices at 8:38.5–8:41.6." });
+    expect(project("Listen around 8:39 for a doubled pickup.")).toMatchObject({ reviewRange: { start: 499, end: 499 }, reviewSays: "Listen for a doubled pickup." });
+    // Words with no time, or a time outside the passage, leave the passage as flagged.
+    expect(project("Check the price pickup.")).toMatchObject({ reviewRange: { start: 440, end: 503 } });
+    expect(project("Check the price pickup.").reviewSays).toBeUndefined();
+    expect(project("Same pickup as at 2:10.").reviewRange).toEqual({ start: 440, end: 503 });
+    expect(project("The source take at 8:39 is cleaner.").reviewRange).toEqual({ start: 440, end: 503 });
+  });
+
   it("puts a revision the raising request made of it in its place", () => {
     const revision = { ...zooms, id: "fix", timelineEdits: [{ label: "Close the gap", range: { start: 724, end: 726 }, replaces: { changeId: "pass", spot: 1 } }] };
     const [framing] = buildThreads({ changes: [{ ...pass, flags }, revision], notes: [], tasks: [run("framing-run", "framing")] })

@@ -2,7 +2,7 @@ import { DialogueScanPage, requestText, type Task, type TaskEvent } from "@scarl
 import { cutSummary, mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { appliedEditSummary } from "../components/review/cutReviewDetails";
 import { clock, lengthLabel, plural } from "./format";
-import { editConfirmation, taskChatText, toolName, waitLabels, waitTools } from "./taskActivity";
+import { editConfirmation, inputMediaIds, taskChatText, toolName, waitLabels, waitTools } from "./taskActivity";
 
 /**
  * One agent run, shown the way Codex shows its work: short updates from the agent and one line per
@@ -234,9 +234,9 @@ export function runItems(task: Task, events: readonly TaskEvent[], changes: read
     const spec = toolSteps[name];
     if (!spec) continue;
     const args = input(event);
-    const waitKey = waitTools[name] && typeof args.mediaId === "string" ? `${waitTools[name]}/${args.mediaId}` : undefined;
+    const waitKeys = waitTools[name] ? inputMediaIds(args).map(id => `${waitTools[name]}/${id}`) : [];
     // Calls that only collect work still being prepared are covered by the waiting row.
-    if (waitKey && waits.has(waitKey)) continue;
+    if (waitKeys.some(key => waits.has(key))) continue;
     // Collecting a submitted picture batch looks at nothing new.
     if (typeof args.batchId === "string") continue;
     if (spec.once) {
@@ -255,7 +255,7 @@ export function runItems(task: Task, events: readonly TaskEvent[], changes: read
     const item = { kind: "step" as const, at, verb: spec.verb, detail: "" };
     items.push(item);
     group = { count, found: spans(event), first: event, item, spec };
-    if (waitKey) reads.set(waitKey, item);
+    for (const key of waitKeys) reads.set(key, item);
   }
   finishGroup();
   return items;

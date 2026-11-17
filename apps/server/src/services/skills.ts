@@ -574,13 +574,17 @@ export function seedSkillList(ctx: Ctx, list: Array<{ folder: string; content: s
 
 // Pinned skills guide the prompt. The agent can look up any enabled skill.
 export function assistantSkills(skills: Skill[], selected: string[] | undefined, forPrompt: boolean) {
-  // A chosen skill that builds on another brings it along, first: the editor's own style is read on top of the guide.
+  // A chosen skill that builds on others brings them along, first and in the order it names them, each with the
+  // guides it builds on in turn: the editor's own style is read on top of the guides.
   if (forPrompt && selected?.length) {
-    const bases = selected.flatMap(id => {
-      const base = skillExtends(skills.find(s => s.id === id) ?? { content: "" });
-      const found = base && skills.find(s => s.name === base && s.enabled);
-      return found && !selected.includes(found.id) ? [found] : [];
+    const seen = new Set(selected);
+    const under = (skill: Skill | undefined): Skill[] => !skill ? [] : skillExtends(skill).flatMap(base => {
+      const found = skills.find(s => s.name === base && s.enabled);
+      if (!found || seen.has(found.id)) return [];
+      seen.add(found.id);
+      return [...under(found), found];
     });
+    const bases = selected.flatMap(id => under(skills.find(s => s.id === id)));
     const chosen = skills.filter(s => selected.includes(s.id));
     return [...new Map([...bases, ...chosen].map(s => [s.id, s])).values()].filter(skill => skill.enabled);
   }
