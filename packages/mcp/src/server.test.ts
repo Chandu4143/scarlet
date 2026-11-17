@@ -2146,7 +2146,8 @@ it("inspects a split word and submits only the exact timing and disposition the 
     expect(fixed.start).toBeGreaterThan(.5);
     expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
     const submit = (decision: string, start: number) => isolated.callTool({ name: "dialogue_apply_cuts", arguments: {
-      version: tl.version, description: "Remove the abandoned take", cuts: [{ start, end: range.end, kind: "retake", decision, reason: "Repeated start" }],
+      // The removal takes “everyone” with the restart “welcome back.”: the agent means it to go.
+      version: tl.version, description: "Remove the abandoned take", cuts: [{ start, end: range.end, kind: "retake", decision, reason: "Repeated start", dropWords: "everyone" }],
     } });
     const submitted = () => mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).at(-1)?.body;
     // An edge inside a word narrows onto the recording's silence and waits for audition.
@@ -3346,7 +3347,8 @@ it("submits only the agent's selected cuts and reviews, including when it used c
     const project = await editor.callTool({ name: "project_get", arguments: {} });
     expect(JSON.parse(textOf(project).split("\n\n").at(-1)!)).toMatchObject({ editContext: context });
     const plan = [
-      { start: 1, end: 2, kind: "retake", decision: "cut", reason: "The pickup stops mid-sentence." },
+      // “welcome back.” goes, and the restart after it plays without “welcome”: the agent means it to.
+      { start: 1, end: 2, kind: "retake", decision: "cut", reason: "The pickup stops mid-sentence.", dropWords: "welcome" },
       { start: 3, end: 4, kind: "coaching", decision: "cut", picture: "uncertain", reason: "The editor selected the director’s cue for removal." },
       { start: 4, end: 5, kind: "filler", decision: "keep", reason: "Quoted hesitation." },
       { start: 6, end: 7, kind: "pause", decision: "review", reason: "Time to read the result." },

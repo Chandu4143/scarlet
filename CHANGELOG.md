@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- When Scarlet removes a restart, it no longer takes a word or two of the sentence you kept along with it, as in “this is absolutely … detail” where “beautiful” went with the stumble after it.
 - A dialogue pass no longer trims a pause that has words in it the transcript missed, such as the “five point five” in “Opus 5.5” or a line you said twice. Scarlet reads what was said there and decides on the words.
 - Numbers are timed where you say them, so the pause before one no longer looks empty.
 - A cut that Scarlet later put back no longer stays in an edit's list or on the timeline.
