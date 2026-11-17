@@ -149,10 +149,14 @@ export function timelineFromKeepRanges(
   return TimelineSchema.parse(tl);
 }
 
-/** Group words by the caption limits, keeping words spoken at the same instant in one cue. */
+/**
+ * Group words by the caption limits, keeping words spoken at the same instant in one cue. With `readingRate`
+ * (characters a second) a cue stays up until it can be read, short of the next cue; with `sentences` a cue ends with
+ * its sentence.
+ */
 export function captionsFromWords(
   words: TranscriptWord[],
-  opts: { maxWords?: number; maxChars?: number; maxGap?: number; minDuration?: number } = {},
+  opts: { maxWords?: number; maxChars?: number; maxGap?: number; minDuration?: number; readingRate?: number; sentences?: boolean } = {},
 ) {
   const maxWords = opts.maxWords ?? 5;
   const maxChars = opts.maxChars ?? 32;
@@ -164,11 +168,12 @@ export function captionsFromWords(
   const flush = (nextStart = Infinity) => {
     if (!cur.length) return;
     const start = cur[0]!.start;
-    const end = Math.max(latestEnd, start + (opts.minDuration ?? 0));
+    const text = cur.map((w) => w.text).join(" ");
+    const end = Math.max(latestEnd, start + (opts.minDuration ?? 0), opts.readingRate ? start + text.length / opts.readingRate : 0);
     clips.push({
       start,
       end: nextStart > start ? Math.min(end, nextStart) : end,
-      text: cur.map((w) => w.text).join(" "),
+      text,
       words: cur,
     });
     cur = [];
@@ -184,7 +189,8 @@ export function captionsFromWords(
       next++;
     }
     const groupSize = next - first;
-    if (cur.length && (cur.length + groupSize > maxWords || chars + 1 + groupChars > maxChars || word.start - latestEnd > maxGap)) {
+    const sentenceEnded = opts.sentences && cur.length > 0 && /[.?!…]["'”’)\]]*$/u.test(cur.at(-1)!.text);
+    if (cur.length && (cur.length + groupSize > maxWords || chars + 1 + groupChars > maxChars || word.start - latestEnd > maxGap || sentenceEnded)) {
       flush(word.start);
     }
     chars += (cur.length ? 1 : 0) + groupChars;

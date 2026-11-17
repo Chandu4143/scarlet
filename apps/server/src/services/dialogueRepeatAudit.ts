@@ -178,11 +178,11 @@ function restarts(spoken: Heard[]) {
 }
 
 /** Stretches of the edit that play no word on any dialogue recording. */
-function silencesLeft(spoken: Heard[]): SilenceLeft[] {
+function silencesLeft(spoken: Heard[], from: number): SilenceLeft[] {
   const found: SilenceLeft[] = [];
   let last: Heard | undefined, lastEnd = -Infinity;
   for (const w of spoken) {
-    if (last && w.start - lastEnd >= SILENCE_LEFT_SECONDS - 1e-6) {
+    if (last && w.start - lastEnd >= from - 1e-6) {
       const id = createHash("sha256").update(JSON.stringify(["silence", last.mediaId, round(last.source), w.mediaId, round(w.source)])).digest("hex").slice(0, 20);
       found.push({ id, start: round(lastEnd), end: round(w.start), seconds: round(w.start - lastEnd), mediaId: last.mediaId,
         source: round(Math.min(last.sourceEnd, last.source + LONGEST_WORD)), after: last.said, before: w.said, atJoin: last.clip !== w.clip });
@@ -279,7 +279,7 @@ function clipById(tl: Timeline, id: string) {
 }
 
 /** Read each audible source separately so two live microphones never form a spurious repeated word together. */
-export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timeline, task: Task, signal: AbortSignal) {
+export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timeline, task: Task, signal: AbortSignal, silencesFrom = SILENCE_LEFT_SECONDS) {
   const scope = task.context;
   const current = placements(project, tl);
   const base = scope.version && scope.version !== tl.version && scope.time !== undefined && scope.end !== undefined
@@ -389,7 +389,7 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
     if (!repeats.some(known => near(known.first.start, r.first.start) && near(known.second.start, r.second.start))) repeats.push(r);
   }
   repeats.sort((a, b) => a.first.start - b.first.start);
-  const silences = silencesLeft(spokenLanes.flat().sort(byTime));
+  const silences = silencesLeft(spokenLanes.flat().sort(byTime), silencesFrom);
   // Reused footage can play the same pair in two places. A keep applies only to the placement the editor considered.
   const ids = new Set<string>(), reused = new Set<string>();
   for (const r of repeats) {

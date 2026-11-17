@@ -26,4 +26,6 @@ Go tight by default, and no tighter than the subject: the whole pane, card, pass
 
 My camera stays in its corner at the same size throughout. Every line I read and every control I use stays fully visible: place the subject so the camera doesn't cover it, and if it still would, move the camera to another corner for that stretch and bring it back afterwards. When I speak straight to camera without referring to anything on screen, consider showing my camera full screen instead of the screen recording.
 
+Switching between the screen and my camera full screen follows the same rule as the frames: each lasts long enough to take in. A few frames of camera between two stretches of screen, or of screen between two of camera, reads as a glitch: keep the screen on through it, or line the switch up with the cut beside it.
+
 `timeline_transcript`, `screen_text`, `media_frame` and `timeline_framing` cover what this needs.

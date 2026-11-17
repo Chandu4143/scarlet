@@ -10,7 +10,7 @@ import { audibleClipsByTrack, round3 } from "./analysis.js";
 import { quietKeptWords, type QuietKeptWord } from "./quiet-kept-word.js";
 import type { GapSound } from "./gap-sound.js";
 import type { DialogueEvidence } from "./dialogue-decisions.js";
-import { edgeOnFrame, pageAt as scanPageAt, checkKeptWords, type ReadKeptWords, dialogueJoinChecker, checkResumeQuote, dialogueCutPreview, dialogueJoinWords, joinEvidence, pageReaches, pauseCutRange, PAUSE_BEAT, quietFrameNote, dialogueAudioStream, soundBesideEdge, wordCutRange, type JoinPage } from "./dialogue-join.js";
+import { edgeOnFrame, pageAt as scanPageAt, checkKeptWords, type ReadKeptWords, dialogueJoinChecker, checkResumeQuote, dialogueCutPreview, dialogueJoinWords, joinEvidence, pageReaches, pauseCutRange, DEFAULT_PACE, type JoinPace, quietFrameNote, dialogueAudioStream, soundBesideEdge, wordCutRange, type JoinPage } from "./dialogue-join.js";
 
 /** Every clip of a recording that sounds on this version, in track and clip order. */
 const audibleMediaClips = (tl: Timeline) => audibleClipsByTrack(tl).flat();
@@ -64,6 +64,8 @@ export interface DialoguePlanSources {
   readKeptWords?: ReadKeptWords;
   /** Actual duration of a centered dialogue crossfade in project frames, when known. */
   crossfadeFrames?: number;
+  /** The room tone the model asked joins to leave either side (its skill's pace). Scarlet's default when absent. */
+  pace?: JoinPace;
   /** Sound at speaking level in a stretch of a recording that holds no transcript word, when its levels can be read. */
   sound?(mediaId: string, range: TimeRange): Promise<GapSound | undefined>;
 }
@@ -152,7 +154,9 @@ async function placeWordCut(tl: Timeline, words: TranscriptWord[], ref: { mediaI
   const clips = audibleMediaClips(tl).filter(c => c.mediaId === ref.mediaId && (!ref.clipId || c.id === ref.clipId));
   // `leave` is what the editor hears; the quiet is measured in the recording, which the clip plays at its speed.
   const playing = clips.find(c => words[fromWord]!.start < c.sourceOut && words[toWord]!.end > c.sourceIn) ?? clips[0];
-  const cut = wordCutRange(words, fromWord, toWord, pageAt, ref.leave === undefined ? undefined : ref.leave * (playing?.speed ?? 1));
+  const speed = playing?.speed ?? 1;
+  const pace = sources.pace && { after: sources.pace.after * speed, before: sources.pace.before * speed };
+  const cut = wordCutRange(words, fromWord, toWord, pageAt, ref.leave === undefined ? undefined : ref.leave * speed, pace);
   if (ref.clipId && clips[0]) {
     // No neighboring recognized word can justify removing a long unmeasured lead-in or tail at a clip boundary.
     const { sourceIn, sourceOut } = clips[0];
@@ -255,8 +259,9 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   const pageAt = (t: number) => scanPageAt(sources.pages(), ref.mediaId, 0, t);
   // `leave` is what the editor hears, and the clip plays the recording at its speed: at 2x, 0.4 s heard is 0.8 s of the
   // recording. The quiet the edges stay in is measured in the recording, so the trim is placed there.
-  const speed = clip.speed ?? 1, leave = ref.leave ?? PAUSE_BEAT; // Callers inside Scarlet may omit it; the agent's tools require it.
-  const cut = pauseCutRange(before, after, pageAt, leave * speed);
+  // Callers inside Scarlet may omit `leave`; the agent's tools require it.
+  const speed = clip.speed ?? 1, pace = sources.pace ?? DEFAULT_PACE, leave = ref.leave ?? pace.after + pace.before;
+  const cut = pauseCutRange(before, after, pageAt, leave * speed, pace);
   const plays = cut.plays / speed;
   if ((cut.end - cut.start) / speed < .04) throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, which leaves nothing to trim down to ${leave.toFixed(2)} s.`);
   const on = onClip(clip);
@@ -366,7 +371,14 @@ interface DialoguePlanRequest {
   anchor?: Task["context"];
   /** Submitted cuts, by index, left out of this plan because their edges were disputed. The rest keep their indices. */
   setAside?: ReadonlySet<number>;
+  /**
+   * What happens to a cut the model decided when Scarlet can't place its join cleanly: "ask" holds it for the editor
+   * with the evidence, "cut" applies it as placed and reports the evidence to the model. Its skill says which.
+   */
+  unsureJoins?: UnsureJoins;
 }
+export type UnsureJoins = "ask" | "cut";
+const CROSSES_SCOPE = "The measured edge would cross the selected range or footage marked to keep. The requested edges are staged for review.";
 
 /** The removals whose ranges meet a disputed stretch: those either side of a piece it keeps, or those inside a join. */
 const owners = (removals: ResolvedCut[], at: TimeRange) =>
@@ -474,14 +486,14 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   if (removals.length) await sources.measure(audibleSourcePoints(tl, removals.flatMap(c => [c.start, c.end])));
   // Every change Scarlet makes to the plan goes back to the agent with its evidence.
   const report: GateLine[] = [];
-  const checkJoin = dialogueJoinChecker(tl, project, sources.pages());
+  const checkJoin = dialogueJoinChecker(tl, project, sources.pages(), sources.pace);
   const decisions = removals.map(c => {
     const decided: PlannedDecision = { start: c.start, end: c.end, reason: c.reason, review: c.decision === "review", kind: c.kind,
       originalRange: undefined, ...(c.check && { check: c.check }), ...(c.summary && { summary: c.summary }) };
     const adjust = (next: PlannedDecision, found: string) => {
       const reach = next.originalRange ?? next;
       if (reach.start < scope.start || reach.end > scope.end || kept.some(k => reach.start < k.end && reach.end > k.start)) {
-        const evidence = "The measured edge would cross the selected range or footage marked to keep. The requested edges are staged for review.";
+        const evidence = CROSSES_SCOPE;
         next = { ...decided, review: true, held: evidence };
         found = `The measured range is ${r2(reach.start)}–${r2(reach.end)} s. ${evidence}`;
       }
@@ -542,6 +554,15 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       originalRange: join.status === "adjusted" || join.status === "partial"
         ? { start: Math.min(c.start, join.start), end: Math.max(c.end, join.end) } : undefined,
       ...(join.reason && { held: join.reason }) }, join.reason ?? "");
+  });
+  // A cut the model decided that Scarlet held only for how its join measured applies as placed when the model said
+  // so. A hold for the selection or footage marked to keep stays: that is the editor's, not a measurement.
+  if (req.unsureJoins === "cut") decisions.forEach((d, i) => {
+    const c = removals[i]!;
+    if (c.decision !== "cut" || !d.review || !d.held || d.held === CROSSES_SCOPE) return;
+    decisions[i] = { ...d, review: false, held: undefined, originalRange: undefined };
+    const line = report.findLast(l => l.cut === c.input);
+    if (line) Object.assign(line, { outcome: "cut", evidence: `Applied as placed, as unsureJoins asked: ${line.evidence}` });
   });
   // The submitted ranges don't overlap, but an edge Scarlet moved can reach into the range beside it: two cuts that
   // meet at one instant, and the first one's end moved out into the pause the second removes. The engine rejects
