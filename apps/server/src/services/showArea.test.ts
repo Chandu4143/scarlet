@@ -23,7 +23,7 @@ beforeAll(async () => {
   for (const [id, filter] of [["camera", "null"], ["screen", `${window(40, "lt(t,600)")},${window(120, "gte(t,600)")}`]] as const) {
     await runCapture(resolveFfmpeg(), ["-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=1:d=1200", "-vf", filter,
       "-c:v", "libx264", "-threads", "1", "-g", "5", join(ctx.paths.media(projectId), `${id}.mp4`)]);
-    recordings[id] = ctx.repos.projects.putMedia(projectId, { id, kind: "video", name: id, path: `${id}.mp4`, hasAudio: false, duration: 1200, fps: 1, width: 320, height: 180 }, "ready") as VideoMedia;
+    recordings[id] = { ...ctx.repos.projects.putMedia(projectId, { id, kind: "video", name: id, path: `${id}.mp4`, hasAudio: false, duration: 1200, fps: 1, width: 320, height: 180 }, "ready"), projectId };
   }
 }, 120_000);
 afterAll(async () => { await workspace?.ctx.close(); if (directory) await rm(directory, { recursive: true, force: true }); });
@@ -59,6 +59,7 @@ function asker(): Task {
 it("looks at one frame of a recording with no area before the rest, and stops once the whole picture may show", async () => {
   const { ctx } = workspace, camera = recordings.camera!;
   const seconds = [100, 400, 700, 1000];
+  expect(await showArea(ctx, camera, { waitMs: 60_000 })).toMatchObject({ done: true, areas: [], unset: [[0, 1200]] });
   const answers = answering(camera, () => [0, 0, 1, 1]);
   try {
     const task = asker();
