@@ -160,8 +160,9 @@ it("draws no diamond for a caption on the timeline, which marks only what needs 
   await act(async () => {});
   expect(container.querySelector(".timeline-ruler")?.textContent).not.toBe("");
   expect(container.querySelector(".timeline-markers, .timeline-marker")).toBeNull();
-  // Nothing in the timeline but the timeline itself takes the keyboard's focus.
-  expect([...container.querySelectorAll(".timeline-track button")]).toEqual([]);
+  const controls = container.querySelectorAll(".timeline-track > [aria-label='Timeline zoom'] button");
+  expect([...controls].map(button => button.getAttribute("aria-label"))).toEqual(["Zoom out", "Zoom in", "Fit timeline"]);
+  expect([...container.querySelectorAll(".timeline-track button")]).toEqual([...controls]);
 });
 
 it("loads full steps only for live requests and upgrades a queued request when work begins", async () => {
