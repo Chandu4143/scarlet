@@ -163,13 +163,14 @@ const LONGEST_WORD = 1.5;
 function restarts(spoken: Heard[]) {
   const found = [];
   for (const r of findRestarts(spoken.map(w => w.text), spoken.map(w => w.start), spoken.map(w => w.end))) {
-    const attempt = spoken.slice(r.at, r.next), a = spoken.slice(r.at, r.at + r.length), b = spoken.slice(r.next, r.next + r.length);
-    const before = spoken.slice(Math.max(0, r.at - 5), r.at), after = spoken.slice(r.next + r.length, r.next + r.length + 7);
+    const again = r.again ?? r.length;
+    const attempt = spoken.slice(r.at, r.next), a = spoken.slice(r.at, r.at + r.length), b = spoken.slice(r.next, r.next + again);
+    const before = spoken.slice(Math.max(0, r.at - 5), r.at), after = spoken.slice(r.next + again, r.next + again + 7);
     const anchor = [...a, ...b].map(w => [w.track, w.mediaId, round(w.source), w.text]);
     const id = createHash("sha256").update(JSON.stringify(["restart", anchor])).digest("hex").slice(0, 20);
     const between = attempt.slice(r.length).map(w => w.said).join(" ");
     found.push({ id, phrase: a.map(w => w.said).join(" "), first: span(attempt), second: span(b),
-      occurrences: { first: occurrence(attempt, spoken[r.at - 1], b[0]), second: occurrence(b, attempt.at(-1), spoken[r.next + r.length]) },
+      occurrences: { first: occurrence(attempt, spoken[r.at - 1], b[0]), second: occurrence(b, attempt.at(-1), spoken[r.next + again]) },
       before: before.map(w => w.said).join(" "), after: after.map(w => w.said).join(" "),
       precedingEnd: before.length ? round(before.at(-1)!.end) : undefined, followingStart: after.length ? round(after[0]!.start) : undefined,
       atJoin: attempt.at(-1)!.clip !== b[0]!.clip, restart: true as const, ...(between && { between }) });
