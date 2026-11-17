@@ -3170,10 +3170,24 @@ it("says what the recording holds between two words, in the transcript and in wh
     const levels = Array.from({ length: points }, (_, i) => [...words, ...missed].some(w => w.start <= from + (i + .5) * (to - from) / points && from + (i + .5) * (to - from) / points < w.end) ? .2 : .001);
     return { mediaId, from, to, peaks: levels, rms: levels, speechActivity: words.map(w => ({ start: w.start, end: w.end })) };
   };
+  // Read on its own, the stretch says what the transcript missed.
+  const heard = [{ text: "You", start: 2, end: 2.4 }, { text: "can", start: 2.5, end: 2.9 }, { text: "see,", start: 3.1, end: 3.5 },
+    { text: "you", start: 4.2, end: 4.35 }, { text: "can", start: 4.35, end: 4.5 }, { text: "see", start: 4.6, end: 5 }];
+  let reads = 0;
   mock.state.extra = (req, res) => {
-    if (!req.path.endsWith("/dialogue-cuts")) return false;
+    let result;
+    if (req.path.endsWith("/dialogue-detections")) {
+      const { from, to, keptSide } = req.body as { from: number; to: number; keptSide?: { cachedOnly?: boolean } };
+      expect(keptSide).toBeDefined();
+      if (keptSide?.cachedOnly) result = { segments: [], acoustic: [], keptSideUnavailable: true };
+      else {
+        reads++;
+        result = { acoustic: [], segments: [{ words: heard.filter(w => from <= w.start && w.end <= to) }] };
+      }
+    } else if (req.path.endsWith("/dialogue-cuts")) result = { changes: [] };
+    else return false;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ changes: [] }));
+    res.end(JSON.stringify(result));
     return true;
   };
   const apply = async (...cuts: object[]) => {
@@ -3185,11 +3199,17 @@ it("says what the recording holds between two words, in the transcript and in wh
     const read = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1" } }) as CallToolResult);
     expect(read.split("\n").slice(1)).toEqual(["#0 2.00-2.40 You", "#1 2.50-2.90 can",
       "  · 1.70 s gap, 0.70 s of it sound at speaking level that no word explains (3.10–3.50, 4.20–4.50)", "#2 4.60-5.00 see", "#3 5.05-5.30 all"]);
-    // Trimmed as a pause by the word it follows, the sound in it comes out too, and the gate says so.
-    const trimmed = await apply({ kind: "pause", reason: "Wait before “see”.", mediaId: "m1", afterWord: 1, leave: .25, decision: "cut" });
-    expect(trimmed.gate.decisions).toEqual([expect.objectContaining({ outcome: "cut",
-      evidence: "This pause holds 0.70 s of sound at speaking level that no word explains (3.10–3.50, 4.20–4.50 s in m1). It comes out with the pause." })]);
-    expect(trimmed).not.toHaveProperty("unexplainedSound");
+    // Trimmed as a pause by the word it follows, the sound in it would come out too: a pause trim removes quiet only,
+    // so it is left out with what sounds there.
+    const refused = await apply({ kind: "pause", reason: "Wait before “see”.", mediaId: "m1", afterWord: 1, leave: .25, decision: "cut" });
+    expect(refused.needsRevision).toBe(true);
+    expect(refused.disputedEdges).toEqual([{ cuts: [0], reason: "cuts[0]: This pause holds 0.70 s of sound at speaking level that no word explains " +
+      "(3.10–3.50, 4.20–4.50 s in m1, 3.10–3.50, 4.20–4.50 s on version restart). A pause trim removes quiet only, so this one was not saved. " +
+      "Read on its own, 2.00–5.50 s in m1 (2.00–5.50 s on version restart) says “You can see, you can see”, where the transcript has “can see”. " +
+      "Decide on those words as you would on any: a take said again is a retake to cut, and words that belong play as they are. " +
+      "To remove sound there, give the range in timeline seconds as the kind of cut it is." }]);
+    expect(reads).toBe(1);
+    expect(mock.state.timeline.version).toBe(tl.version);
     // Cut in seconds up to the quiet before the second “you can”, that take's start still plays before “see”.
     const partly = await apply({ kind: "pause", reason: "Wait before “see”.", start: 3, end: 4.1, decision: "cut" });
     expect(partly.unexplainedSound).toEqual([{ at: 4.2, mediaId: "m1", seconds: .3, after: "can", before: "see", sourceSeconds: [4.2, 4.5] }]);

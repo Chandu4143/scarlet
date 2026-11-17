@@ -6,6 +6,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- A dialogue pass no longer trims a pause that has words in it the transcript missed, such as the “five point five” in “Opus 5.5” or a line you said twice. Scarlet reads what was said there and decides on the words.
+- Numbers are timed where you say them, so the pause before one no longer looks empty.
+- A cut that Scarlet later put back no longer stays in an edit's list or on the timeline.
 - An edit’s token breakdown shows Est Cost using the model’s published API prices.
 - Click − or + in the player or press those keys to change playback speed in 0.25× steps. Use [ and ] to zoom the timeline.
 - Before a dialogue pass finishes, Scarlet rereads the cuts it made outside its dialogue cut tool that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.

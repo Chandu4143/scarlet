@@ -343,6 +343,8 @@ export function unplacedGaps(segments: readonly TranscriptSegment[], timings: Re
 
 /** Whisper's word times run 100-300 ms off: an estimate this close to a stretch of sound names it. */
 const ESTIMATE_REACH = 0.25;
+/** The shortest a number is said in: "two" or "six" runs about this long. */
+const UNTRIED_SECONDS = 0.15;
 
 /**
  * Keep a run's words, already fitted into their gap, on the sound in that gap. Each word goes with the stretch of sound
@@ -351,9 +353,17 @@ const ESTIMATE_REACH = 0.25;
  * end, and words between keep their estimates. A word near no sound was not heard there, so it takes no time, right
  * after the word before it, and holds up no pause. Whisper's estimate stays the guide: it is often right about where a
  * word starts and wrong about how long it lasts (one "right" ran 8.5 s over a pause).
+ *
+ * A number or symbol was never tried: the aligner can't spell it, so nothing says it wasn't heard. It was said somewhere
+ * in the gap, on sound long enough to say it. It goes with such a stretch however far its estimate sits from one, and
+ * not with a sliver. Left where Whisper put them, a "5.5" took the 80 ms onset of the next word and a "56" took no time,
+ * each beside a second of "five point five" and "fifty six" that then read as a pause, and a pass trimmed the first
+ * as one (2026-11-16).
  */
 function keepOnSound(words: readonly TranscriptWord[], run: Placement[], sound: readonly TimeRange[], gap: TimeRange) {
-  const spoken = words.map(w => !!wordLabels(w.text));
+  const labels = words.map(w => wordLabels(w.text));
+  const spoken = labels.map(l => !!l), untried = labels.map(l => l?.[0] === WILDCARD);
+  const holdsUntried = (k: number) => sound[k]!.end - sound[k]!.start >= UNTRIED_SECONDS;
   // The stretch each spoken word goes with, in order: never one before the stretch of the word before it.
   const heard: Array<number | undefined> = [];
   let floor = 0;
@@ -361,10 +371,15 @@ function keepOnSound(words: readonly TranscriptWord[], run: Placement[], sound: 
     if (!spoken[i]) return;
     const overlap = (k: number) => Math.min(sound[k]!.end, t.end) - Math.max(sound[k]!.start, t.start);
     const distance = (k: number) => Math.max(sound[k]!.start - t.end, t.start - sound[k]!.end, 0);
+    // An untried word passes over slivers while a longer stretch is still to come.
+    let longEnough = false;
+    if (untried[i]) for (let k = floor; k < sound.length; k++) longEnough ||= holdsUntried(k);
+    const fits = (k: number) => !longEnough || holdsUntried(k);
+    const reach = untried[i] ? Infinity : ESTIMATE_REACH;
     let best: number | undefined;
-    for (let k = floor; k < sound.length; k++) if (overlap(k) > 0 && (best === undefined || overlap(k) > overlap(best))) best = k;
+    for (let k = floor; k < sound.length; k++) if (fits(k) && overlap(k) > 0 && (best === undefined || overlap(k) > overlap(best))) best = k;
     if (best === undefined) {
-      for (let k = floor; k < sound.length; k++) if (distance(k) <= ESTIMATE_REACH && (best === undefined || distance(k) < distance(best))) best = k;
+      for (let k = floor; k < sound.length; k++) if (fits(k) && distance(k) <= reach && (best === undefined || distance(k) < distance(best))) best = k;
     }
     heard[i] = best;
     if (best !== undefined) floor = best;

@@ -119,6 +119,38 @@ describe("reviewing one thread on the working interview timeline", () => {
     expect(result.map(e => [e.label, e.check])).toEqual([["False start", reasons[0]!.check], ["Repeated line", undefined]]);
   });
 
+  it("drops a cut whose footage a later save put back, and moves its reason to look to the cut that is there now", () => {
+    // A pause trim took out “five point five”; a later cut was made beside it; a save of the whole timeline then put the
+    // words back without naming the trim. The flag was raised on the last version, about the join that is left.
+    const keep = (version: string, ranges: Array<{ start: number; end: number }>) => ({ ...timelineFromKeepRanges("project", "interview", ranges), version });
+    const base = keep("base", [{ start: 0, end: 100 }]);
+    const trimmed = keep("v1", [{ start: 0, end: 10 }, { start: 11, end: 100 }]);
+    const both = keep("v2", [{ start: 0, end: 10 }, { start: 11, end: 20 }, { start: 21, end: 100 }]);
+    const restored = keep("v3", [{ start: 0, end: 20 }, { start: 21, end: 100 }]);
+    const versions = new Map([base, trimmed, both, restored].map(tl => [tl.version, tl]));
+    const lineage = [{ version: "base", parent: null }, { version: "v1", parent: "base" }, { version: "v2", parent: "v1" }, { version: "v3", parent: "v2" }];
+    const cut = (id: string, from: string, to: string, start: number, end: number, summary: string, createdAt: string) => ({ ...change, id, fromVersion: from, toVersion: to,
+      createdAt, ops: [{ op: "rippleDelete", start, end }], ranges: [{ start, end: start }], cutReasons: [{ start, end, reason: summary, summary, kind: "pause" }] });
+    const trim = { ...cut("trim", "base", "v1", 10, 11, "Tightened the pause", "2026-01-01T00:00:00Z"),
+      flags: [{ spot: 0, check: "Listen to ‘and and’.", taskId: "pass", at: "2026-01-01T00:05:00Z", location: { version: "v3", range: { start: 19, end: 20.5 } } }] };
+    const beside = cut("beside", "v1", "v2", 19, 20, "Cut the wait", "2026-01-01T00:01:00Z");
+    const pass = Task.parse({ id: "pass", projectId: "project", kind: "edit", agent: "codex", instruction: "pass", state: "done",
+      createdBy: { type: "human", name: "Editor" }, createdAt: "2026-01-01T00:00:00Z", context: { threadId: "request" } });
+    const of = (changes: object[]) => buildThreads({ changes: changes.map(item => Change.parse(item)), notes: [], tasks: [pass] })[0]!;
+    const listed = threadTimeline(of([trim, beside]), restored, lineage, version => versions.get(version), 30);
+    expect(listed.map(e => [e.changeId, e.at, e.check])).toEqual([["beside", 20, "Listen to ‘and and’."]]);
+    // Keeping it answers the flag that was raised, under that flag's own identity.
+    expect(listed[0]).toMatchObject({ reviewRef: { changeId: "trim", spot: 0 }, beforeCut: { version: "v1", removed: { start: 19, end: 20 } } });
+    // With no cut left at the flagged place, the flag stays as a passage to check, not as a cut.
+    const whole = keep("v3", [{ start: 0, end: 100 }]);
+    const alone = threadTimeline(of([trim]), whole, [{ version: "base", parent: null }, { version: "v1", parent: "base" }, { version: "v3", parent: "v1" }],
+      version => version === "v3" ? whole : versions.get(version), 30);
+    expect(alone).toHaveLength(1);
+    expect(alone[0]).toMatchObject({ changeId: "trim", kind: "other", check: "Listen to ‘and and’." });
+    expect(alone[0]).not.toHaveProperty("beforeCut");
+    expect(alone[0]).not.toHaveProperty("at");
+  });
+
   it("reads a cut named by the footage around its join as a cut, with the footage it removed", () => {
     // Named as the tool asks: the playback either side of the join, which is footage that stayed.
     const gulp = { ...change, toVersion: head.version, ops: [{ op: "rippleDelete", start: 584.05, end: 585.6 }],

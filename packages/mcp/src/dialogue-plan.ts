@@ -235,6 +235,9 @@ function playedOnce(clips: readonly MediaClip[], word: TranscriptWord, what: str
   return playing[0];
 }
 
+/** Seconds read either side of a pause's two words when the pause holds speech, so the reading has the words around it. */
+const HEARD_CONTEXT = 0.5;
+
 export class NoPauseToTrim extends Error {}
 /** One cut of a batch that Scarlet could not turn into a range to remove. The batch's other cuts are unaffected. */
 export class CutNotPlaced extends Error {}
@@ -269,12 +272,29 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   const on = onClip(clip);
   const fps = (await sources.project()).settings.fps;
   const place = (source: number, room?: TimeRange) => round3(edgeOnFrame(on(source), room, fps, on));
-  // The transcript has no word here, which is not the same as nothing being said. What comes out with the pause goes
-  // back to the agent: a pause that held a missed "see" and a second "you can" was trimmed with half the restart left in.
+  // The transcript has no word here, which is not the same as nothing being said: a pause held a missed "see" and a
+  // second "you can", and another the "five point five" of a "5.5" the transcript had timed at 80 ms. What sounds in
+  // the range goes back to the agent, in this version's seconds as well, since that is how it would cut or keep it.
   const held = await sources.sound?.(ref.mediaId, { start: cut.start, end: cut.end }).catch(() => undefined);
+  const spans = (at: (t: number) => number) => held!.runs.map(r => `${at(r.start).toFixed(2)}–${at(r.end).toFixed(2)}`).join(", ");
   const notes = held?.runs.length ? [`This pause holds ${held.seconds.toFixed(2)} s of sound at speaking level that no word explains (${
-    held.runs.map(r => `${r.start.toFixed(2)}–${r.end.toFixed(2)}`).join(", ")} s in ${ref.mediaId}). It comes out with the pause.`] : [];
+    spans(t => t)} s in ${ref.mediaId}, ${spans(on)} s on version ${tl.version}).`] : [];
+  // A note says only that sound is there, and the agent can't hear it. Read on its own, the stretch from the word before
+  // to the word after says what it is: Whisper had written “great. I'm” where the recording says “great, but it hasn't all
+  // been great. I'm”, a restart it smoothed away, and a pass that couldn't trim the pause left both takes in (2026-11-16).
+  let heard: string | undefined;
+  if (notes.length && sources.readKeptWords) {
+    const project = await sources.project();
+    const asset = project.media.find(m => m.id === ref.mediaId);
+    const from = Math.max(clip.sourceIn, before.start - HEARD_CONTEXT), to = Math.min(clip.sourceOut, after.end + HEARD_CONTEXT);
+    const words = await sources.readKeptWords(ref.mediaId, dialogueAudioStream(clip) ?? (asset && dialogueAudioStream(asset)) ?? 0, from, to)
+      .catch(() => undefined);
+    const said = words?.map(w => w.text.trim()).filter(Boolean).join(" ");
+    if (said) heard = `Read on its own, ${from.toFixed(2)}–${to.toFixed(2)} s in ${ref.mediaId} (${on(from).toFixed(2)}–${on(to).toFixed(2)} s on version ${
+      tl.version}) says “${said}”, where the transcript has “${before.text.trim()} ${after.text.trim()}”.`;
+  }
   return { start: place(cut.start, cut.room.start), end: place(cut.end, cut.room.end), words: `pause after “${before.text.trim()}”`, problems: cut.problems, notes,
+    holdsSound: notes.length > 0, ...(heard && { heard }),
     source: { start: round3(cut.start), end: round3(cut.end) }, plays: round3(plays) };
 }
 
@@ -408,6 +428,16 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       unplaced.push({ reason: `cuts[${i}]: ${err.message}`, cuts: [i] });
     });
     if (!resolved) return undefined;
+    // A pause is quiet, and trimming one takes out quiet. Sound at speaking level in it is words the transcript missed
+    // or mistimed, and whether they stay is a decision about words, which nobody made by asking for a shorter pause.
+    // Applied with a note, as it once was, a trim after “Opus” took out the “5.5” of “Opus 5.5” (2026-11-16).
+    if ("holdsSound" in resolved && resolved.holdsSound) {
+      unplaced.push({ reason: `cuts[${i}]: ${resolved.notes.join(" ")} A pause trim removes quiet only, so this one was not saved.` +
+        (resolved.heard ? ` ${resolved.heard} Decide on those words as you would on any: a take said again is a retake to cut, ` +
+          `and words that belong play as they are.` : ` Nothing more could be read from it.`) +
+        ` To remove sound there, give the range in timeline seconds as the kind of cut it is.`, cuts: [i] });
+      return undefined;
+    }
     // A word range whose edges found no measured quiet goes to the editor. When the same words play from another
     // saying of them with quiet at both edges, the agent can pick that one and the cut can apply as decided: on one
     // pass, two of eight such held cuts had one.

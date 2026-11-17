@@ -245,6 +245,24 @@ describe("grouping and fallback", () => {
       expect(times(later)).toEqual([["two", 1.45, 1.75], ["too", 1.75, 2.4]]);
     });
 
+    it("puts a number the aligner can't spell on sound long enough to say it, however far its estimate sits", () => {
+      // “Opus 5.5 and”: the estimate sat on the 80 ms onset of “and”, beside a second of “five point five”.
+      const sliver = applyTimings(run([["5.5", 8.92, 9]]), placed(1), undefined, 0, () => [{ start: 0.5, end: 1.4 }, { start: 8.92, end: 9 }]);
+      expect(times(sliver)).toEqual([["5.5", 0.5, 1.4]]);
+      // “second place 56 percent”: the estimate ended 0.6 s before “fifty six”.
+      const far = applyTimings(run([["56", 0.5, 0.6]]), placed(1), undefined, 0, () => [{ start: 1.2, end: 1.8 }]);
+      expect(times(far)).toEqual([["56", 1.2, 1.8]]);
+      // A word the aligner tried and didn't hear stays unheard at that distance.
+      const tried = applyTimings(run([["two", 0.5, 0.6]]), placed(1), undefined, 0, () => [{ start: 1.2, end: 1.8 }]);
+      expect(times(tried)).toEqual([["two", 0.5, 0.5]]);
+      // With nothing longer in the gap, a number keeps the short sound its estimate is on.
+      const short = applyTimings(run([["6", 8.9, 9]]), placed(1), undefined, 0, () => [{ start: 8.9, end: 9 }]);
+      expect(times(short)).toEqual([["6", 8.9, 9]]);
+      // Two numbers in one gap keep their order, each on its own stretch.
+      const two = applyTimings(run([["12", 0.5, 0.6], ["40", 8.9, 9]]), placed(2), undefined, 0, () => [{ start: 1, end: 1.5 }, { start: 3, end: 3.6 }, { start: 8.92, end: 9 }]);
+      expect(times(two)).toEqual([["12", 1, 1.5], ["40", 3, 3.6]]);
+    });
+
     it("gives a word over no sound no time, right after the word before, so it holds up no pause", () => {
       const out = applyTimings(run([["two", 0.5, 9], ["...", 9, 9]]), placed(2), undefined, 0, () => []);
       expect(times(out)).toEqual([["two", 0.5, 0.5], ["...", 9, 9]]);
