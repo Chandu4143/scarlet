@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { AGENT_LABEL, type AgentAvailability, type AgentHost, type AgentId, type ModelOptions } from "@scarlet/shared";
-import { api, errorMessage } from "../lib/client";
+import { api, errorMessage, IS_MOCK } from "../lib/client";
+import { desktop } from "../lib/desktop";
 import { changedDuringLoad } from "./changedDuringLoad";
 
 interface HostsState {
@@ -9,7 +10,9 @@ interface HostsState {
   customClaudeModels: string[];
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;
+  refreshingModels: boolean;
   load(): Promise<void>;
+  refreshModels(): Promise<void>;
   apply(host: AgentHost): void;
 }
 
@@ -22,6 +25,7 @@ let shown = 0;
 const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 let retries = 0;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingRefresh: Promise<void> | undefined;
 
 export const useHostsStore = create<HostsState>((set, get) => ({
   hosts: [],
@@ -29,6 +33,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   customClaudeModels: [],
   status: "idle",
   error: null,
+  refreshingModels: false,
   async load() {
     clearTimeout(retryTimer);
     retryTimer = undefined;
@@ -50,6 +55,27 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     } finally {
       read.end();
     }
+  },
+  refreshModels() {
+    if (pendingRefresh) return pendingRefresh;
+    set({ refreshingModels: true });
+    pendingRefresh = (async () => {
+      let hostError: string | null = null;
+      if (!IS_MOCK) {
+        const host = await desktop.hostRefreshAgents();
+        hostError = host.error;
+        const { customOpenaiModels, customClaudeModels } = await desktop.info();
+        set({ customOpenaiModels: customOpenaiModels ?? [], customClaudeModels: customClaudeModels ?? [] });
+      }
+      // A provider can fail while other providers publish new models.
+      await get().load();
+      const error = hostError ?? get().error;
+      if (error) throw new Error(error);
+    })().finally(() => {
+      pendingRefresh = undefined;
+      set({ refreshingModels: false });
+    });
+    return pendingRefresh;
   },
   apply(host) {
     reports.set(host.id, host);
