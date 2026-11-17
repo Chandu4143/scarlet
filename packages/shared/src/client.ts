@@ -8,7 +8,7 @@ import { requireSecureEngineUrl } from "./engineTransport.js";
 import type { TranscriptSearchResult } from "./transcriptSearch.js";
 import type { ThreadEdit } from "./threadTimeline.js";
 import type { StorageCleanup, StorageProject } from "./storage.js";
-import type { AcousticWordsRequest, DialogueRangeRequest, DialogueScanRequest, DialogueWindowRequest, DialogueDetections, SourceAudioRequest, SoundPictureRequest, SoundPictureLayout, SheetRequest, InspectionReviewRequest, InspectionResult, PictureActivityRequest, PictureActivityWindow, RepeatAuditRequest, RepeatAuditResult } from "./inspection.js";
+import type { AcousticWordsRequest, DialogueRangeRequest, DialogueScanRequest, DialogueWindowRequest, DialogueDetections, SourceAudioRequest, SoundPictureRequest, SoundPictureLayout, SheetRequest, TimelinePicturesRequest, InspectionReviewRequest, InspectionResult, PictureActivityRequest, PictureActivityWindow, RepeatAuditRequest, RepeatAuditResult } from "./inspection.js";
 import type { Author, Change, CutAssessment, CutReview, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript, TranscriptWord } from "@scarlet/timeline";
 import type {
   ActivityEntry,
@@ -300,6 +300,10 @@ export class ScarletClient {
 
   contactSheet(projectId: string, request: z.input<typeof SheetRequest>, signal?: AbortSignal) {
     return this.request<InspectionResult>("POST", `/projects/${encodeURIComponent(projectId)}/contact-sheet`, request, { signal });
+  }
+  /** Frames of an edit at the given timeline seconds, with unsaved `ops` applied to the version first. */
+  timelinePictures(projectId: string, request: z.input<typeof TimelinePicturesRequest>, signal?: AbortSignal) {
+    return this.request<{ pictures: Array<{ time: number; jpeg: string }> }>("POST", `/projects/${encodeURIComponent(projectId)}/timeline-pictures`, request, { signal });
   }
   /** How much of each source window's picture changes, and when. Older engines have no such route. */
   pictureActivity(projectId: string, request: z.input<typeof PictureActivityRequest>, signal?: AbortSignal) {
