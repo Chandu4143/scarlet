@@ -347,13 +347,8 @@ function isPill({ dots }: MarkLayout) {
   return dots.some(dot => (dot.n ?? dot.time) !== (first.n ?? first.time));
 }
 
-/** Each edit draws as its numbered circle. Circles that would touch at this zoom share one pill with their run of
- *  numbers, so there are never more markers than fit and none hides another. A run reaches at most RUN_REACH: the next
- *  edit starts a run of its own, moved along just clear of the one before if it would touch it. The open edit keeps its
- *  own circle the same way. Only circles of one
- *  group share: a call's and an edit's each keep their own. Before the track is measured, nothing is shared.
- *  `groupSpan` is the stretch the runs are worked out for, which a zoom on its way gives so its pills don't change on
- *  the way there; positions are always for `span`. */
+/** Group nearby edits of one kind at the intended zoom. The open edit keeps its own label and RUN_REACH divides long
+ *  sequences into ranges worth zooming into. Their screen positions still follow the current visible span. */
 function groupMarks(frames: [string, TimelineDot[]][], from: number, span: number, width: number, groupSpan: number) {
   const position = (time: number) => (time - from) / span * 100;
   // How far apart two times are, in pixels, at the zoom the runs are for.
@@ -410,11 +405,10 @@ function groupMarks(frames: [string, TimelineDot[]][], from: number, span: numbe
   }
   // Calls and edits have separate numbering, but their labels share the same strip. Position their text together,
   // keeping the real times in each run for frame previews, opening an edit and zooming into a group.
-  return [...circles.values()].flatMap(row => row.map(({ layout }) => ({
-    ...layout,
-    at: position(mid(layout)),
-    width: layout.width + (layout.label && dotState(layout.dots) === "kept" ? 10 : 0),
-  }))).sort((a, b) => a.at - b.at);
+  return [...circles.values()].flatMap(row => row.map(({ layout }) => {
+    const state = dotState(layout.dots);
+    return { ...layout, state, at: position(mid(layout)), width: layout.width + (layout.label && state === "kept" ? 10 : 0) };
+  })).sort((a, b) => a.at - b.at);
 }
 
 export function layoutMarks(marks: TimelineDot[], from: number, span: number, width: number, groupSpan = span) {
@@ -700,7 +694,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       const landed = !isNew ? undefined : arrived.some(dot => dot.landed === "cut") ? "cut" : "edit";
       const landedAt = Math.max(...arrived.map(dot => dot.landedAt ?? now));
       const delay = isNew ? elapsed(`${key}|${landedAt}`, landedAt) : 0;
-      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
+      const node = <i key={key} aria-hidden="true" data-state={mark.state} data-landed={landed}
         className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
         style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 },
           ...landed && delay > 0 && { animationDelay: `${(landed === "cut" ? 260 : 0) - delay}ms` } }}>
