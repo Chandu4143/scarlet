@@ -2210,7 +2210,13 @@ it("assembles a cut's preview window from cached playback sections and encodes o
   const frames = Number((await runCapture("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0",
     "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", file])).stdout.toString().trim());
   expect(frames).toBe(11 * 30);
-  // The sound runs the length of the window across the copied and the encoded section.
+  // The sound runs the length of the window across the copied and the encoded section: the file says so, and decoding
+  // it gives the whole window and no more than its packets hold. How much of each section's encoder lead-in a decode
+  // drops differs between ffmpeg builds (1,792 samples over on one, 2,432 on another), so the count isn't held to a tolerance.
+  const audio = JSON.parse((await runCapture("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration,nb_frames",
+    "-of", "json", file])).stdout.toString()).streams[0] as { duration: string; nb_frames: string };
+  expect(Number(audio.duration)).toBeCloseTo(11, 2);
   const sound = await runCapture("ffmpeg", ["-v", "error", "-i", file, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"]);
-  expect(Math.abs(sound.stdout.length / 2 - 11 * 48000)).toBeLessThan(48000 * 0.05);
+  expect(sound.stdout.length / 2).toBeGreaterThanOrEqual(11 * 48000 - 1024);
+  expect(sound.stdout.length / 2).toBeLessThanOrEqual(Number(audio.nb_frames) * 1024);
 }, 60_000);
