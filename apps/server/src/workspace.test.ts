@@ -3718,6 +3718,35 @@ it("holds a pass until each join that divides a sentence is repaired or kept wit
   expect(await finish()).toMatchObject({ state: "done", repeatAudit: { remaining: 0 } });
 });
 
+it("lists a divided sentence at a join the pass made itself, and not at one the dialogue cut tool placed", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id });
+  const check = (version: string) => api("POST", projectsPath() + `/tasks/${pass.id}/repeat-audit`, { version });
+  await micSpeech();
+  // “And I ran it twice, three times and it held. So we kept, uh, the fast one for now.”, a word every 0.4 s.
+  const words = "And I ran it twice, three times and it held. So we kept, uh, the fast one for now.".split(" ").map((text, i) => ({ text, start: 1 + i * .4, end: 1.3 + i * .4 }));
+  const transcript = ctx.repos.transcripts.put({ id: "mic-words", projectId: project.id, mediaId: "mic", language: "en", provider: "whispercpp",
+    segments: [{ id: "seg", start: 1, end: 9, text: words.map(w => w.text).join(" "), words }], createdAt: new Date().toISOString() });
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20, transcriptId: transcript.id }, "ready");
+  const laid = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Lay in the take", ops: [
+    { op: "addClip", trackId: "a1", clip: { id: "take", kind: "media", mediaId: "mic", sourceIn: 0, sourceOut: 10, timelineIn: 0 } },
+  ] }).change.toVersion;
+  // The dialogue cut tool takes “twice,” out: the pass named that word, and the tool placed the join.
+  const cut = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: pass.id, fromVersion: laid, description: "Keep the corrected number",
+    cuts: [{ start: 2.55, end: 2.95, review: false, kind: "retake", reason: "He took the number back." }] });
+  expect(cut.status).toBe(201);
+  const afterCut = (await cut.json()).changes[0].toVersion;
+  const quiet = await (await check(afterCut)).json();
+  expect(quiet.fragments).toBeUndefined();
+  // A ripple of the pass's own takes “uh, the” out and leaves “kept, ‖ fast one”: that join is listed, the tool's still isn't.
+  const rippled = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Drop the filler",
+    ops: [{ op: "rippleDelete", start: 5.75, end: 6.55 }] }).change.toVersion;
+  const found = await (await check(rippled)).json();
+  expect(found.fragments).toMatchObject([{ before: expect.stringMatching(/So we kept,$/), after: "fast one for now.", removedStart: "uh, the", split: ["out", "in"] }]);
+});
+
 it("settles a join that divides a sentence once the pass keeps it with the sentence as it reads", async () => {
   const { ctx } = workspace;
   const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();

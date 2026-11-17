@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { closesSentence, joinFragment, type SaidWord } from "./joinFragments.js";
+import { closesSentence, joinFragment, joinsPlacedByCuts, versionJoins, type SaidWord } from "./joinFragments.js";
 
 /**
  * A join written as it reads: the words in [brackets] are the ones it took out. Each word lasts a third of a second,
@@ -79,5 +79,37 @@ describe("joinFragment", () => {
     // The piece before the join starts at “Four”; the one after ends with “nine”.
     const found = joinFragment(words, 5 * .4 - .05, 6 * .4 + .35, 3 * .4 - .05, 8 * .4 + .35);
     expect(found).toMatchObject({ before: "Four five", after: "eight nine", removedStart: "six seven", lastWord: 4, firstWord: 7, split: ["out", "in"] });
+  });
+});
+
+describe("joinsPlacedByCuts", () => {
+  /** A version as pieces of one recording laid end to end on a track, each [from, to] in the recording. */
+  const version = (...pieces: Array<[number, number]>) => {
+    let at = 0;
+    return { tracks: [{ clips: pieces.map(([sourceIn, sourceOut], i) => {
+      const clip = { kind: "media", mediaId: "mic", timelineIn: at, sourceIn, sourceOut, id: String(i) };
+      at += sourceOut - sourceIn;
+      return clip;
+    }) }] };
+  };
+
+  it("reads a version's joins, and not a split that plays straight on", () => {
+    expect(versionJoins(version([0, 10], [10, 20], [25, 40]))).toEqual([{ mediaId: "mic", out: 20, in: 25 }]);
+  });
+
+  it("gives a join to the change that made it, for as long as later changes leave it where it is", () => {
+    const whole = version([0, 100]);
+    const cut = version([0, 20], [25, 100]);                         // the cut tool takes 20–25 out
+    const rewritten = version([0, 20], [25, 50], [58, 100]);         // a saved timeline takes 50–58 out
+    const faded = version([0, 20.033], [24.967, 50], [58, 100]);     // a crossfade is laid over the first join
+    const moved = version([0, 19.4], [24.967, 50], [58, 100]);       // then a ripple moves that join's edge
+    const history = (...versions: Array<[ReturnType<typeof version>, boolean]>) => versions.map(([v, byCutTool]) => ({ joins: versionJoins(v), byCutTool }));
+    expect(joinsPlacedByCuts(history([whole, false], [cut, true]))).toEqual([{ mediaId: "mic", out: 20, in: 25 }]);
+    // The rewrite's join is its own. The cut's stays the cut's through the rewrite and the crossfade.
+    expect(joinsPlacedByCuts(history([whole, false], [cut, true], [rewritten, false], [faded, false]))).toEqual([{ mediaId: "mic", out: 20.033, in: 24.967 }]);
+    // Moved by more than a crossfade, it is the join of the change that moved it.
+    expect(joinsPlacedByCuts(history([whole, false], [cut, true], [rewritten, false], [faded, false], [moved, false]))).toEqual([]);
+    // A video built in one save has no join the cut tool placed.
+    expect(joinsPlacedByCuts(history([rewritten, false]))).toEqual([]);
   });
 });
