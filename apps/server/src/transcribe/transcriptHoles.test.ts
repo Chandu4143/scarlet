@@ -83,6 +83,10 @@ it("gives a word back the end or start of its own sound that a hole read again, 
   expect(withHoleWords(said, [seg(["3", 1304.9, 1305.3])]).map(s => s.text)).toEqual(["expensive, $7.63.", "Now, Argon,"]);
   expect(withHoleWords(said, [seg(["$7.63", 1304.9, 1305.8])]).map(s => s.text)).toEqual(["expensive, $7.63.", "$7.63", "Now, Argon,"]);
   expect(withHoleWords(said, [seg(["3", 1305.4, 1305.8])]).map(s => s.text)).toEqual(["expensive, $7.63.", "3", "Now, Argon,"]);
+  // A found word the aligner put over words already there was not heard there.
+  const opening = [seg(["When", 8.16, 8.34], ["I", 8.34, 8.42], ["woke", 8.42, 8.66], ["up", 8.66, 8.78], ["this", 8.78, 8.96], ["morning,", 8.96, 9.28])];
+  expect(withHoleWords(opening, [seg(["...beating", 8.16, 9.38])])).toEqual(opening);
+  expect(withHoleWords(opening, [seg(["Five.", 5.4, 6.7], ["...beating", 8.16, 9.38])]).map(s => s.text)).toEqual(["Five.", "When I woke up this morning,"]);
 });
 
 it("reads the holes once, places what it heard, and returns the transcript unchanged when they held no speech", async () => {

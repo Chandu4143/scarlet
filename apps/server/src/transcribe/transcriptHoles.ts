@@ -267,8 +267,11 @@ export function withHoleWords(segments: TranscriptSegment[], found: TranscriptSe
     const p = normalizeTranscriptToken(piece.text), w = normalizeTranscriptToken(whole.text);
     return !!p && w.length > p.length && (end ? w.endsWith(p) : w.startsWith(p));
   };
+  // The aligner can place a found word outside its hole, over words already there: "…beating", read in a hole of
+  // music, landed on "When I woke up". It was heard in the hole, not there.
+  const covered = (w: TranscriptWord) => existing.reduce((sum, e) => sum + Math.max(0, Math.min(e.end, w.end) - Math.max(e.start, w.start)), 0);
   found = found.flatMap(f => {
-    let words = f.words;
+    let words = f.words.filter(w => covered(w) <= (w.end - w.start) / 2);
     const before = words[0] && existing.filter(w => w.end <= words[0]!.start + 0.05).at(-1);
     if (before && part(words[0]!, before, true) && words[0]!.start - before.end < READ_TWICE_GAP) {
       before.end = Math.max(before.end, words[0]!.end);
@@ -281,7 +284,7 @@ export function withHoleWords(segments: TranscriptSegment[], found: TranscriptSe
       home.get(after)!.start = Math.min(home.get(after)!.start, after.start);
       words = words.slice(0, -1);
     }
-    if (words === f.words) return [f];
+    if (words.length === f.words.length) return [f];
     return words.length ? [{ ...f, start: words[0]!.start, end: words.at(-1)!.end, text: words.map(w => w.text).join(" "), words }] : [];
   });
   for (const f of found) {

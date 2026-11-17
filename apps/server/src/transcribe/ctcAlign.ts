@@ -172,6 +172,13 @@ export function groupLabels(words: readonly AlignWord[], letters = CTC_LETTERS, 
  */
 export function ctcAlign(logProbs: Float32Array, from: number, to: number, tokens: readonly number[], classes = CLASSES,
   needed = tokens.length): Array<[number, number]> | null {
+  return ctcPath(logProbs, from, to, tokens, classes, needed)?.spans ?? null;
+}
+
+/** ctcAlign's path, with its log probability: how well the labels explain the frames, comparable between label
+ * sequences over the same frames. */
+export function ctcPath(logProbs: Float32Array, from: number, to: number, tokens: readonly number[], classes = CLASSES,
+  needed = tokens.length): { spans: Array<[number, number]>; score: number } | null {
   const T = to - from, L = tokens.length, S = 2 * L + 1;
   // Labels past `needed` are optional context: the path may stop after any of them, and only the needed ones get spans.
   needed = Math.min(Math.max(1, needed), L);
@@ -219,6 +226,7 @@ export function ctcAlign(logProbs: Float32Array, from: number, to: number, token
   let s = S - 1;
   for (let end = S - 2; end >= finish - 2; end--) if (prev[end]! > prev[s]!) s = end;
   if (prev[s] === -Infinity) return null;
+  const score = prev[s]!;
   const spans: Array<[number, number]> = new Array(L);
   for (let t = T - 1; t >= 0; t--) {
     if (s % 2) {
@@ -229,7 +237,7 @@ export function ctcAlign(logProbs: Float32Array, from: number, to: number, token
     }
     if (t) s -= back[t * S + s]!;
   }
-  return needed < L ? spans.slice(0, needed) : spans;
+  return { spans: needed < L ? spans.slice(0, needed) : spans, score };
 }
 
 /** Peak probability of a label within its aligned frames. */
@@ -257,32 +265,35 @@ export interface Emissions {
  */
 export function alignGroup(em: Emissions, words: readonly AlignWord[], start: number, end: number, alphabet = CTC_LETTERS,
   next: readonly AlignWord[] = []): Array<WordTiming | undefined> {
-  // A number can be said more than one way. Each other way is tried in turn and kept when its letters are heard better.
+  // A number can be said more than one way. Each other way is tried in turn and kept when it explains the run's sound
+  // better: a shorter reading's letters can each be heard well while the rest of the number goes unexplained.
   const reading = words.map(() => 0);
-  let out = alignReading(em, words, start, end, alphabet, next, reading);
+  let best = alignReading(em, words, start, end, alphabet, next, reading);
   words.forEach((w, i) => {
     const ways = wordReadings(w.text, alphabet)?.length ?? 0;
     for (let r = 1; r < ways; r++) {
       const tried = alignReading(em, words, start, end, alphabet, next, reading.with(i, r));
-      if ((tried[i]?.score ?? -1) > (out[i]?.score ?? -1)) { reading[i] = r; out = tried; }
+      if (tried.path > best.path) { reading[i] = r; best = tried; }
     }
   });
-  return out;
+  return best.timings;
 }
 
 function alignReading(em: Emissions, words: readonly AlignWord[], start: number, end: number, alphabet: string,
-  next: readonly AlignWord[], reading: readonly number[]): Array<WordTiming | undefined> {
-  const out: Array<WordTiming | undefined> = new Array(words.length).fill(undefined);
+  next: readonly AlignWord[], reading: readonly number[]): { timings: Array<WordTiming | undefined>; path: number } {
+  const timings: Array<WordTiming | undefined> = new Array(words.length).fill(undefined);
+  const none = { timings, path: -Infinity };
   const classes = 5 + alphabet.length;
   const { tokens, owner, spoken, spelled } = groupLabels(words, alphabet, reading);
   // Mostly unspellable text (another language, numbers) gives the aligner too little to anchor on.
-  if (!spelled || spelled < 0.6 * spoken) return out;
+  if (!spelled || spelled < 0.6 * spoken) return none;
   const from = Math.max(0, Math.floor((start - em.origin) / FRAME_SECONDS));
   const to = Math.min(em.frames, Math.ceil((end - em.origin) / FRAME_SECONDS));
-  if (to <= from) return out;
+  if (to <= from) return none;
   const context = groupLabels(next, alphabet).tokens;
-  const spans = ctcAlign(em.logProbs, from, to, [...tokens, ...context], classes, tokens.length);
-  if (!spans) return out;
+  const found = ctcPath(em.logProbs, from, to, [...tokens, ...context], classes, tokens.length);
+  if (!found) return none;
+  const { spans } = found;
   const time = (frame: number) => em.origin + frame * FRAME_SECONDS;
   let k = 0, previousEnd = -Infinity;
   while (k < tokens.length) {
@@ -299,10 +310,10 @@ function alignReading(em: Emissions, words: readonly AlignWord[], start: number,
     // A letter is emitted shortly after its sound begins. The lead never reaches back past zero, where the caller's
     // audio starts: a transcript can't hold a negative time.
     const end = Math.min(spans[k]![1] + 1, spans[k - 1]![1] + 1 + MAX_TAIL_FRAMES);
-    out[word] = { start: Math.max(0, previousEnd, time(spans[first]![0]) - ONSET_LEAD), end: time(end), score: spread ? 0 : total / letters };
+    timings[word] = { start: Math.max(0, previousEnd, time(spans[first]![0]) - ONSET_LEAD), end: time(end), score: spread ? 0 : total / letters };
     previousEnd = time(end);
   }
-  return out;
+  return { timings, path: found.score };
 }
 
 /**

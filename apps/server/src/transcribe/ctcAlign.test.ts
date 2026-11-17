@@ -145,7 +145,7 @@ describe("word timing", () => {
     const [, price, now] = alignGroup(em(frames, 0), words, 0, frames.length * 0.02);
     expect(price!.start).toBeCloseTo(frames.indexOf("SEVEN") * 0.02 - 0.02);
     expect(price!.end).toBeCloseTo((frames.indexOf("CENTS") + 7) * 0.02);
-    expect(price!.score).toBeCloseTo(0.9);
+    expect(price!.score).toBeGreaterThan(0.7);
     expect(now!.start).toBeCloseTo(frames.indexOf("NOW") * 0.02 - 0.02);
     // A pause between a number's words is no gap in its letters.
     const slow = "_SEVEN_|" + "_".repeat(40) + "|_SIXTY_|_THREE_|_";
