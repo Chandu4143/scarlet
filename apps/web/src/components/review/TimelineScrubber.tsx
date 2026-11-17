@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type RefObject } from "react";
 import { createStore, useStore } from "zustand";
 import { filmstripBatches, type TimeRange } from "@scarlet/timeline";
 import { api } from "../../lib/client";
@@ -12,7 +12,6 @@ import { TimelineWaveform, type WaveformMedia } from "./TimelineWaveform";
 import { ScrubPreview, type HoverVideo } from "../player/ScrubPreview";
 import { QueuedImg, useStillTurn } from "./QueuedImg";
 import { TimelineRuler } from "./TimelineRuler";
-import { Icon } from "../ui/primitives";
 import { timelinePosition, useTimelineZoom } from "./useTimelineZoom";
 import { FloatingScrubLoupe, type ScrubLens } from "./FloatingScrubLoupe";
 import { LOUPE_PX_PER_FRAME, rangeEdges, useRangeSelect } from "./TimelineRange";
@@ -447,54 +446,19 @@ function dotState(dots: TimelineDot[]) {
   return numbered.length && numbered.every(d => d.state === "kept") ? "kept" : undefined;
 }
 
-function ZoomPopover({ children, onKey }: { children: ReactNode; onKey(event: KeyboardEvent): void }) {
-  const id = useId();
-  const controls = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    const dismissOutside = (event: Event) => {
-      if (!controls.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus({ preventScroll: true });
-    };
-    document.addEventListener("pointerdown", dismissOutside, true);
-    document.addEventListener("focusin", dismissOutside);
-    document.addEventListener("keydown", dismissOnEscape, true);
-    return () => {
-      document.removeEventListener("pointerdown", dismissOutside, true);
-      document.removeEventListener("focusin", dismissOutside);
-      document.removeEventListener("keydown", dismissOnEscape, true);
-    };
-  }, [open]);
-  return <div ref={controls} className="timeline-view-controls" onKeyDown={e => {
-    if (open) { onKey(e.nativeEvent); e.stopPropagation(); }
-  }}>
-    <button ref={trigger} type="button" className="timeline-view-trigger" aria-label="Timeline controls"
-      title="Timeline controls · scroll or pinch to zoom" aria-expanded={open} aria-controls={open ? id : undefined}
-      onClick={e => { e.currentTarget.focus({ preventScroll: true }); setOpen(value => !value); }}>
-      <Icon name="zoom" size={15} />
-    </button>
-    {open && <div id={id} className="timeline-tools" data-escape-owner>{children}</div>}
-  </div>;
-}
-
 const noRange = () => {};
 
 /** Only the slider value, label and playhead change on an ordinary playback tick. */
-function TimelineSlider({ playhead, start, end, from, span, selectPosition, drag, skippedRanges, loupe, children, ...props }: ComponentProps<"div"> & {
+function TimelineSlider({ playhead, start, end, from, span, width, zoomSpace, selectPosition, drag, skippedRanges, loupe, children, ...props }: ComponentProps<"div"> & {
   playhead?: number; start: number; end: number; from: number; span: number; selectPosition(time: number): void;
+  width: number; zoomSpace: number;
   drag: RefObject<unknown>; skippedRanges?: TimelineScrubberProps["skippedRanges"]; loupe: boolean;
 }) {
   const position = usePlayerStore(s => timelinePosition(playhead ?? s.time, start, end));
   const percent = span ? (position - from) / span * 100 : 0;
   const stamp = playbackClock(position);
+  const rulerWidth = width - zoomSpace;
+  const stampAnchor = rulerWidth > 0 ? Math.min(100, percent * width / rulerWidth) : percent;
   // Navigation can glide. At a cut, even a glide already in flight must land with the first frame after the join.
   const motion = useRef({ position, glideUntil: 0 });
   const previous = motion.current.position;
@@ -526,7 +490,7 @@ function TimelineSlider({ playhead, start, end, from, span, selectPosition, drag
     {children}
     {position >= from && position <= from + span && <>
       {!loupe && <span aria-hidden="true" className={gliding ? "timeline-playhead-time is-gliding" : "timeline-playhead-time"}
-        style={{ left: `min(${percent}%, calc(100% - var(--timeline-tools-space)))`, transform: `translateX(-${percent}%)` }}>{stamp}</span>}
+        style={{ left: `min(${percent}%, calc(100% - ${zoomSpace}px))`, transform: `translateX(-${stampAnchor}%)` }}>{stamp}</span>}
       <div aria-hidden="true" className={gliding ? "timeline-playhead is-gliding" : "timeline-playhead"} style={{ left: `${percent}%` }} />
     </>}
   </div>;
@@ -577,15 +541,23 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const total = Number.isFinite(duration) ? Math.max(0, duration) : 0;
   const end = start + total;
   const slider = useRef<HTMLDivElement>(null);
+  const zoomRow = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  const [zoomWidth, setZoomWidth] = useState(0);
   useLayoutEffect(() => {
     const el = slider.current!;
-    const measure = () => setWidth(el.clientWidth);
+    const controls = zoomRow.current!;
+    const measure = () => {
+      setWidth(el.clientWidth);
+      setZoomWidth(controls.offsetWidth);
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
+    observer.observe(controls);
     return () => observer.disconnect();
   }, []);
+  const zoomSpace = zoomWidth ? zoomWidth + 6 : 0;
   const track = useRef<HTMLDivElement>(null);
   const [lens, setLens] = useState<ScrubLens>();
   const drag = useRef<{
@@ -783,7 +755,8 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const sheet = useMemo(() => previewStrip ? { fps: previewStrip.fps, url: (frames: number[]) => stripUrl(previewStrip, frames) } : undefined, [previewStrip]);
   const marking = useRangeSelect({ slider, drag, from, span, start, end, fps, edges, frameAt, sheet, pictureAspect, range, onRange: onRange ?? noRange, onSeek,
     onScrubStart, onPress: selectPosition, beforeGesture: stopZoom });
-  const zoomControls = <div className="timeline-zoom-row" role="group" aria-label="Timeline zoom">
+  const zoomControls = <div ref={zoomRow} className="timeline-zoom-row" role="group" aria-label="Timeline zoom"
+    title="Scroll or pinch over the timeline to zoom">
     <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="[" title="Zoom out ([)" disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
     <span className="timeline-zoom-level">{Number(zoom.toFixed(1))}×</span>
     <button type="button" className="timeline-zoom-step" aria-label="Zoom in" aria-keyshortcuts="]" title="Zoom in (])" disabled={intendedSpan <= minSpan} onClick={() => zoomBy(2)}>+</button>
@@ -792,7 +765,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   return <div className="timeline-panel" onKeyDown={e => handleZoomKey(e.nativeEvent)}>
     <div ref={track} className={marking.marking ? "timeline-track is-marking" : "timeline-track"}><ScrubPreview suspended={!!lens} start={from} duration={span} pictureAspect={pictureAspect} frameAt={frameAt} hoverVideo={hoverVideo} note={markNote || undefined} pin={waiting?.time}>
     <TimelineSlider ref={slider} className="timeline-slider" playhead={playhead} start={start} end={end} from={from} span={span}
-      drag={drag} skippedRanges={skippedRanges} loupe={!!lens} selectPosition={selectPosition} tabIndex={total ? 0 : -1} aria-disabled={!total}
+      width={width} zoomSpace={zoomSpace} drag={drag} skippedRanges={skippedRanges} loupe={!!lens} selectPosition={selectPosition} tabIndex={total ? 0 : -1} aria-disabled={!total}
       aria-label="Position in the video" aria-description="Drag up from the picture or waveform to scrub one frame at a time."
       onPointerDown={e => {
         if (!total || e.button !== 0 || !e.isPrimary || drag.current) return;
@@ -820,7 +793,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         gesture.paint ??= requestAnimationFrame(seek);
       }}
       onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish}>
-      <TimelineRuler start={from} duration={span} width={width} />
+      <TimelineRuler start={from} duration={span} width={width} endInset={zoomSpace} />
       {onRange && total > 0 && <div aria-hidden="true" className="timeline-range-zone" title="Drag to mark a range for your message" />}
       <div className="timeline-lanes">
         {mediaWindows.map((sample, i) => {
@@ -863,7 +836,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         frameAt={frameAt} sheet={sheet} pictureAspect={pictureAspect} />}
     </TimelineSlider>
   </ScrubPreview>
+    {zoomControls}
   </div>
-  <ZoomPopover onKey={handleZoomKey}>{zoomControls}</ZoomPopover>
   </div>;
 }

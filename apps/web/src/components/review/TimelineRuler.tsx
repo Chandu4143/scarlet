@@ -3,8 +3,8 @@ import { clock } from "../../lib/format";
 
 const intervals = [.1, .25, .5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
-export const TimelineRuler = memo(function TimelineRuler({ start, duration, width }: {
-  start: number; duration: number; width: number;
+export const TimelineRuler = memo(function TimelineRuler({ start, duration, width, endInset }: {
+  start: number; duration: number; width: number; endInset: number;
 }) {
   if (duration <= 0 || width <= 0) return null;
   // Leave about a thumb's width per label, regardless of the length of the edit.
@@ -18,8 +18,9 @@ export const TimelineRuler = memo(function TimelineRuler({ start, duration, widt
     // As the player, the cards and the chat write a time: "0:02", not "00:02".
     const stamp = clock(time);
     const fraction = step < 1 ? (time % 1).toFixed(2).slice(1) : "";
+    if ((1 - offset) * width < endInset) break;
     ticks.push(<span key={i} className="ruler-major" style={{ left: `${offset * 100}%` }}>
-      {(1 - offset) * width >= 76 && <span>{stamp}{fraction}</span>}
+      {(1 - offset) * width >= 76 + endInset && <span>{stamp}{fraction}</span>}
     </span>);
   }
   return <div className="timeline-ruler" aria-hidden="true">{ticks}</div>;
