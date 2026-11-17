@@ -57,12 +57,13 @@ export class VersionsRepo {
     this.cachedBytes -= entry.bytes;
   }
 
-  private remember(key: string, row: VersionRow) {
-    const json = JSON.stringify(row.timeline);
+  private remember(key: string, row: VersionRow, json = JSON.stringify(row.timeline)) {
     const { timeline: _timeline, ...rest } = row;
     // JavaScript strings take up to two bytes a character.
     const bytes = (key.length + json.length) * 2;
     if (bytes > VersionsRepo.entryLimit) return;
+    // The caller can still edit its copy of the author after this version has been stored.
+    if (rest.author) rest.author = { ...rest.author };
     this.db.afterCommit(() => {
       this.forget(key);
       this.validated.set(key, { json, row: rest, bytes });
@@ -125,7 +126,8 @@ export class VersionsRepo {
       .get(projectId, JSON.stringify(mediaId));
   }
 
-  insert(row: VersionRow): VersionRow {
+  insert(row: VersionRow, validated = false): VersionRow {
+    const json = JSON.stringify(row.timeline);
     const result = this.db
       .prepare(
         `INSERT INTO timeline_versions (version, project_id, parent, json, author, change_id, description, created_at, timeline_name, duration)
@@ -135,7 +137,7 @@ export class VersionsRepo {
         row.version,
         row.projectId,
         row.parent,
-        JSON.stringify(row.timeline),
+        json,
         row.author ? JSON.stringify(row.author) : null,
         row.changeId,
         row.description ?? null,
@@ -143,7 +145,9 @@ export class VersionsRepo {
         row.timeline.name,
         timelineDuration(row.timeline),
       );
-    return result.changes ? row : this.get(row.projectId, row.version)!;
+    if (!result.changes) return this.get(row.projectId, row.version)!;
+    if (validated) this.remember(JSON.stringify([row.projectId, row.version]), row, json);
+    return row;
   }
 
   setChangeId(projectId: string, version: string, changeId: string) {

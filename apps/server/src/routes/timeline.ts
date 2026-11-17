@@ -7,7 +7,7 @@ import type { Ctx } from "../context.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
-import { ensureHead, resolveTimeline } from "../services/timeline.js";
+import { ensureHead, ensureProjectHead, resolveTimeline } from "../services/timeline.js";
 import { jsonBody, requireProject, requireProjectHeader } from "./util.js";
 import { actorFor, logActivity, quote } from "../services/activity.js";
 import { applyChoicesWhenDone } from "../services/changes.js";
@@ -40,7 +40,8 @@ export function timelineRoutes(ctx: Ctx) {
     const body = await jsonBody(c, z.object({ name: z.string().trim().min(1).max(80), from: z.string().optional(),
       expectedHead: z.string(), expectedBranch: z.string() }));
     return c.json(ctx.db.transaction(() => {
-      const { project, head } = ensureHead(ctx, c.req.param("id"));
+      const project = ensureProjectHead(ctx, c.req.param("id"));
+      const { head } = project;
       if (head !== body.expectedHead || project.branch !== body.expectedBranch) throw conflict("cut_changed", "The edit changed. Check history and try again.");
       if (body.from) {
         if (!ctx.repos.versions.exists(project.id, body.from)) throw notFound("version");
@@ -79,7 +80,8 @@ export function timelineRoutes(ctx: Ctx) {
   });
 
   r.post("/projects/:id/versions/:v/checkout", (c) => ctx.db.transaction(() => {
-    const { project, head } = ensureHead(ctx, c.req.param("id"));
+    const project = ensureProjectHead(ctx, c.req.param("id"));
+    const { head } = project;
     const target = c.req.param("v");
     if (!ctx.repos.versions.exists(project.id, target)) throw notFound(`version ${target}`);
     if (target === head) throw conflict("already_head", "that version is already the head");

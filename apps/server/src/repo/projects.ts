@@ -100,10 +100,10 @@ export class ProjectsRepo {
     return duration;
   }
 
-  private rowToProject(row: ProjectRow): Project {
+  withMedia(header: Omit<Project, "media">): Project {
     return {
-      ...projectHeader(row),
-      media: this.listMedia(row.id).map(({ status: _s, error: _e, ...asset }) => asset),
+      ...header,
+      media: this.listMedia(header.id).map(({ status: _s, error: _e, ...asset }) => asset),
     };
   }
 
@@ -113,8 +113,8 @@ export class ProjectsRepo {
   }
 
   get(id: string): Project | null {
-    const row = this.db.prepare(`${WITH_SOURCE} WHERE p.id = ? AND p.deleted_at IS NULL`).get(id) as ProjectRow | undefined;
-    return row ? this.rowToProject(row) : null;
+    const header = this.header(id);
+    return header ? this.withMedia(header) : null;
   }
 
   /** Move to the trash (kept TRASH_DAYS, then purged). */

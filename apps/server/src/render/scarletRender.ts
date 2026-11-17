@@ -9,7 +9,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import * as R from "@scarlet/render";
 import { originalPlaybackType } from "../files.js";
-import { sha256, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { clipRange, planTransitions, rangesOverlap, sha256, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import type { ProbeResult, RenderAdapter, RenderOptions, WaveformCache, WaveformData } from "./adapter.js";
 
 function hwaccel(opts: RenderOptions): R.HwAccel {
@@ -19,10 +19,12 @@ function hwaccel(opts: RenderOptions): R.HwAccel {
 
 /** A stored hash identifies the current bytes only while its filesystem stamp matches.
  * Give unverified originals a file-local cache identity so they cannot reuse a different source’s picture. */
-async function cacheInputs(project: Project, timeline: Timeline, root: string): Promise<Project> {
+async function cacheInputs(project: Project, timeline: Timeline, root: string, range?: TimeRange): Promise<Project> {
+  // A transition can show an incoming or outgoing source outside its clip’s ordinary time span.
+  const picture = range ? planTransitions(timeline, new Map(project.media.map(asset => [asset.id, asset])), project.settings.fps).timeline : timeline;
   const used = new Set<string>();
-  for (const track of timeline.tracks) for (const clip of track.clips) {
-    if (clip.kind === "media" && clip.enabled !== false) used.add(clip.mediaId);
+  for (const track of picture.tracks) for (const clip of track.clips) {
+    if (clip.kind === "media" && clip.enabled !== false && (!range || rangesOverlap(clipRange(clip), range))) used.add(clip.mediaId);
   }
   const media = await Promise.all(project.media.filter(asset => used.has(asset.id)).map(async asset => {
     const file = join(root, asset.path);
@@ -100,7 +102,12 @@ export const scarletRenderAdapter: RenderAdapter = {
   },
 
   async renderFullCached(project, timeline, cacheDir, outputPath, opts) {
-    const inputs = await cacheInputs(project, timeline, opts.mediaRoot);
+    const inputs = await cacheInputs(project, timeline, opts.mediaRoot, opts.exportRange);
+    if (opts.exportRange) {
+      // Segment boundaries and the audio mix plan use media kinds across the timeline.
+      const verified = new Map(inputs.media.map(asset => [asset.id, asset]));
+      inputs.media = project.media.map(asset => verified.get(asset.id) ?? asset);
+    }
     const { encoder, rendered, warnings } = await R.renderFullCached(inputs, timeline, cacheDir, outputPath, {
       exportHeight: opts.exportHeight,
       exportRange: opts.exportRange,

@@ -341,7 +341,7 @@ export class RenderQueue {
   }
 
   private projectFor(input: Pick<RenderInput, "projectId" | "kind" | "range" | "version"> & { projectSettings?: Project["settings"] }) {
-    if (input.kind !== "playback" || !input.range) return this.ctx.repos.projects.get(input.projectId);
+    if ((input.kind !== "playback" && input.kind !== "segment") || !input.range) return this.ctx.repos.projects.get(input.projectId);
     const header = this.ctx.repos.projects.header(input.projectId);
     if (!header) return null;
     const entry = this.version(header, input.version);

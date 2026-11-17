@@ -21,6 +21,36 @@ const failure = async (request: Promise<unknown>) => request.then(() => { throw 
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("workspace edit lists", () => {
+  it("batches independent reads per project and revalidates a later request", async () => {
+    const { client, calls } = engine(c => c.method === "POST"
+      ? json({ version: "v1", lists: { one: [], two: [{ changeId: "change" }] } })
+      : json({ version: "v2", edits: [] }));
+    const [one, two, missing, other] = await Promise.all([
+      client.threadEdits("p", "one"), client.threadEdits("p", "two"),
+      failure(client.threadEdits("p", "missing")), client.threadEdits("q", "one"),
+    ]);
+    expect(one).toEqual({ version: "v1", edits: [] });
+    expect(two.edits).toEqual([{ changeId: "change" }]);
+    expect(missing.status).toBe(404);
+    expect(other.version).toBe("v2");
+    expect(calls.map(c => [c.path, c.body])).toEqual([
+      ["/projects/p/thread-edits", { threads: ["one", "two", "missing"] }], ["/projects/q/threads/one/edits", undefined],
+    ]);
+    expect((await client.threadEdits("p", "one")).version).toBe("v2");
+    expect(calls.at(-1)!.path).toBe("/projects/p/threads/one/edits");
+  });
+
+  it("uses individual reads on engines that predate the bulk route", async () => {
+    const { client, calls } = engine(c => c.method === "POST" ? engineError(404, "not_found", "no route for POST /api" + c.path)
+      : json({ version: "head", edits: [] }));
+    expect(await Promise.all([client.threadEdits("p", "a"), client.threadEdits("p", "b")])).toEqual([
+      { version: "head", edits: [] }, { version: "head", edits: [] },
+    ]);
+    expect(calls.map(c => c.path)).toEqual(["/projects/p/thread-edits", "/projects/p/threads/a/edits", "/projects/p/threads/b/edits"]);
+  });
+});
+
 describe("a request", () => {
   it("refuses cleartext or ambiguous credential destinations before any network request", async () => {
     const fetch = vi.fn();

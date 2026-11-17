@@ -2,12 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createProject, type Project } from "@scarlet/timeline";
+import { Change, createProject, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
 import { ATTEMPT_HEADER, TASK_HEADER, type ProjectSummary, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { OpenAIProvider } from "../transcribe/openai.js";
 import { appendTaskEvent, createTask, saveTask, taskPrompt } from "../services/tasks.js";
+import { storeVersion } from "../services/timeline.js";
 import { sourcePreviews } from "../services/sourcePreviews.js";
 import { recoverTasks } from "../services/taskRecovery.js";
 
@@ -34,6 +35,49 @@ function api(method: string, path: string, body?: unknown, headers?: Record<stri
   return workspace.app.request("/api" + path, { method, body: JSON.stringify(body),
     headers: { Authorization: `Bearer ${accessToken(workspace.ctx)}`, ...(body !== undefined && { "Content-Type": "application/json" }), ...headers } });
 }
+
+it("reads live project metadata without loading timelines or counting project activity", async () => {
+  const { ctx } = workspace;
+  const path = "/projects/" + project.id;
+  ctx.repos.projects.putMedia(project.id, { id: "camera", name: "Camera", kind: "video", path: "camera.mov" }, "ready");
+  const { version } = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 12 }]), { parent: null });
+  const timeline = vi.spyOn(ctx.repos.versions, "get");
+  const summary = vi.spyOn(ctx.repos.projects, "summaries");
+  const media = vi.spyOn(ctx.repos.projects, "listMedia");
+  const header = () => api("GET", path + "?view=header").then(r => r.json());
+  expect(await header()).toEqual({ project: { id: project.id, head: null, settings: project.settings } });
+  expect(media).not.toHaveBeenCalled();
+  ctx.repos.projects.update(project.id, { head: version });
+  media.mockClear();
+  expect((await header()).project.head).toBe(version);
+  expect(media).not.toHaveBeenCalled();
+  expect(await (await api("GET", path + "?view=project")).json()).toEqual({ project: ctx.repos.projects.get(project.id) });
+  expect(timeline).not.toHaveBeenCalled();
+  expect(summary).not.toHaveBeenCalled();
+  ctx.repos.projects.softDelete(project.id);
+  for (const view of ["project", "header"]) expect((await api("GET", path + "?view=" + view)).status).toBe(404);
+});
+
+it("projects simultaneous edit lists from one history read and returns just the requested threads", async () => {
+  const { ctx } = workspace;
+  const { version } = storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 120 }]), { parent: null });
+  ctx.repos.projects.update(project.id, { head: version });
+  for (const [i, threadId] of ["one", "__proto__", "three"].entries()) {
+    ctx.repos.changes.put(Change.parse({ id: "change" + i, threadId, projectId: project.id, state: "approved",
+      fromVersion: version, toVersion: version, ranges: [{ start: i, end: i + 1 }], description: "Edit " + i,
+      author: { type: "agent", name: "Scarlet" }, createdAt: "2026-01-01T00:00:00Z" }));
+  }
+  const path = "/projects/" + project.id;
+  const one = await (await api("GET", path + "/threads/one/edits")).json();
+  const special = await (await api("GET", path + "/threads/__proto__/edits")).json();
+  const readHistory = vi.spyOn(ctx.repos.projects, "threads");
+  const result = await api("POST", path + "/thread-edits", { threads: ["one", "__proto__", "missing", "one"] });
+  expect(result.status).toBe(200);
+  expect(readHistory).toHaveBeenCalledTimes(1);
+  expect(await result.json()).toEqual({ version, lists: { one: one.edits, ["__proto__"]: special.edits } });
+  expect(one.edits[0].changeId).toBe("change0");
+  expect(special.edits[0].changeId).toBe("change1");
+});
 
 it("stops editing across the project and continues interrupted requests ahead of the queue", async () => {
   const { ctx } = workspace;

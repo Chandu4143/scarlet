@@ -181,6 +181,7 @@ describe("project_get", () => {
     expect(body.settings).toMatchObject({ width: 1920, height: 1080 });
     expect(body.media[0]).toMatchObject({ id: "m1", kind: "video", name: "talk.mp4", hasTranscript: true });
     expect(t).not.toContain("\n");
+    expect(mock.requests.find(q => q.path === "/projects/prj_test")?.query.get("view")).toBe("workspace");
   });
 });
 
@@ -463,6 +464,7 @@ describe("timeline_propose", () => {
       mock.state.timeline = emptyTimeline(mock.state.project.id);
       const first = await c.callTool({ name: "timeline_get", arguments: {} });
       expect(first.isError).toBeFalsy();
+      expect(mock.requests.find(q => q.path === "/projects/prj_test")?.query.get("view")).toBe("header");
       const result = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested",
         description: "First marker", reason: "The editor asked to name this version New cut.", ops: [{ op: "setTimeline", patch: { name: "New cut" } }],
       } });
@@ -864,6 +866,9 @@ describe("transcript tools", () => {
       instruction: "Cut dialogue", context: { recordTranscriptDigests: true }, createdBy: { type: "human", name: "Editor" } });
     const editor = await connect(task.id, undefined, task);
     try {
+      const search = await editor.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "welcome" } });
+      expect(search.isError).toBeFalsy();
+      expect(mock.requests.some(req => req.query.has("wordSnapshot"))).toBe(false);
       for (const fromWord of [0, 5]) {
         const result = await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord } });
         expect(result.isError).toBeFalsy();
@@ -898,6 +903,24 @@ describe("transcript tools", () => {
     const fuzzy = textOf(await client.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "welcomes back to a show", match: "fuzzy" } }) as CallToolResult);
     expect(fuzzy).toMatch(/#5 \[3\.60-5\.30\] 0\.\d+/);
   });
+  it("searches a complete word list when an older engine sends matches without the order they name", async () => {
+    const before = mock.state.extra;
+    mock.state.extra = (req, res) => {
+      if (!req.query.has("search")) return false;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ segmentCount: 1, wordCount: 10, matches: [] }));
+      return true;
+    };
+    const editor = await connect();
+    try {
+      const query = () => editor.callTool({ name: "transcript_search", arguments: { mediaId: "m1", query: "welcome back" } });
+      expect(textOf(await query() as CallToolResult)).toContain("2 exact match(es)");
+      expect(textOf(await query() as CallToolResult)).toContain("#2 [1.10-1.80]");
+      const reads = mock.requests.filter(r => r.path.endsWith("/media/m1/transcript"));
+      expect(reads.map(r => r.query.has("search"))).toEqual([true, false]);
+    } finally { await editor.close(); mock.state.extra = before; }
+  });
+
   it("reads cached words and empty ranges without starting transcription", async () => {
     const r = (await client.callTool({ name: "transcript_get", arguments: { mediaId: "m1", from: 0, to: 2 } })) as CallToolResult;
     expect(textOf(r)).toContain("#0 0.20-0.50 Hello");
@@ -3990,7 +4013,7 @@ it("reads the words again while they are placed only once alignment has saved mo
   }
 });
 
-it("refuses a word reference read from a list that has changed since, instead of cutting beside other words", async () => {
+it.each(["transcript_get", "transcript_search"])("refuses a word reference %s showed before the list changed", async tool => {
   const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform, transcripts: mock.state.transcripts };
   const tl = emptyTimeline(mock.state.project.id);
   tl.version = "reread";
@@ -3998,6 +4021,14 @@ it("refuses a word reference read from a list that has changed since, instead of
   mock.state.timeline = tl;
   mock.state.waveform = spokenWaveform;
   mock.state.extra = (req, res) => {
+    if (req.path.endsWith("/media/m1/transcript") && req.query.has("wordSnapshot")) {
+      const known = req.query.get("wordSnapshot");
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ segmentCount: 1, wordCount: 10,
+        matches: [{ wordIndex: 4, start: 2.2, end: 2.4, context: "[ Um, ]" }],
+        wordSnapshot: { id: "estimated", ...(known !== "estimated" && { texts: estimated.segments[0]!.words.map(w => w.text) }) } }));
+      return true;
+    }
     if (!req.path.endsWith("/dialogue-cuts")) return false;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ changes: [] }));
@@ -4007,9 +4038,16 @@ it("refuses a word reference read from a list that has changed since, instead of
   const editor = await connect(undefined, undefined, undefined, 0);
   try {
     // The model reads the words while they are still being placed, and their indices may still change.
-    const read = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1" } }) as CallToolResult);
-    expect(read).toContain("#4 2.20-2.40 Um,");
-    expect(read).not.toContain("indices are final");
+    const read = () => editor.callTool({ name: tool, arguments: tool === "transcript_search" ? { mediaId: "m1", query: "Um" } : { mediaId: "m1" } });
+    const first = textOf(await read() as CallToolResult);
+    if (tool === "transcript_search") {
+      expect(first).toContain("#4 [2.20-2.40] [ Um, ]");
+      expect(textOf(await read() as CallToolResult)).toBe(first);
+      expect(mock.requests.filter(r => r.query.has("wordSnapshot")).map(r => r.query.get("wordSnapshot"))).toEqual(["", "estimated"]);
+    } else {
+      expect(first).toContain("#4 2.20-2.40 Um,");
+      expect(first).not.toContain("indices are final");
+    }
     // Alignment ends, and the reread of a stretch without words finds “so” after “back.”: every later word moves on one.
     const [segment] = transcript.segments;
     mock.state.transcripts = { m1: { ...transcript, segments: [{ ...segment!, words: [...segment!.words.slice(0, 4), { text: "so", start: 1.95, end: 2.1 }, ...segment!.words.slice(4)] }] } };

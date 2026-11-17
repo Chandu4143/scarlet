@@ -29,7 +29,7 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, RESTART_WITHIN_SECONDS, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
@@ -323,7 +323,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- helpers --------------------------------------------------------------
 
-  const getProject = () => client.project(ctx.projectId);
+  const getProject = () => client.projectInfo(ctx.projectId);
+  const getHeader = () => client.projectHeader(ctx.projectId);
 
   /** For a `.catch`: note the failure on stderr and in the call's result, and answer with `fallback`. */
   const without = <T>(what: string, fallback: T) => (err: unknown) => { unavailable(what, err); noteUnmeasured(what, err); return fallback; };
@@ -438,7 +439,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     try {
       const prepared = await client.prepareMedia(ctx.projectId, mediaId, "transcript");
       if (prepared.state === "ready") return { ready: true };
-      const { task } = await client.task(prepared.taskId);
+      const { task } = await client.task(prepared.taskId, "none");
       return { ready: false, note: transcriptionNote(task.progress) };
     } catch (err) {
       unavailableOnce(`failed to read how far the transcript of ${mediaId} is`, err);
@@ -507,6 +508,22 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const recordedTranscripts = new Map<string, string>();
   /** Which save of a transcript this is. The engine saves it again at every turn of alignment, with a new time. */
   const transcriptSave = (t: Pick<Transcript, "id" | "createdAt" | "aligning">) => JSON.stringify([t.id, t.createdAt, t.aligning?.through]);
+  async function cacheTranscriptWords(mediaId: string, t: Transcript | null) {
+    const words = t?.segments.length ? flattenWords(t) : null;
+    if (ctx.task?.context.recordTranscriptDigests && words) {
+      const sha256 = wordDigest(words);
+      if (recordedTranscripts.get(mediaId) !== sha256) {
+        const result = await postEvent({ type: "log", text: "", data: { kind: "eval_transcript", mediaId, count: words.length, sha256 } });
+        if (result.posted) recordedTranscripts.set(mediaId, sha256);
+      }
+    }
+    if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now(), saved: transcriptSave(t!) });
+    else if (words) {
+      aligningWords.delete(mediaId);
+      wordLists.set(mediaId, words);
+    }
+    return words;
+  }
   function readWords(mediaId: string, prepareMissing: boolean): Promise<TranscriptWord[] | null> {
     const ready = wordLists.get(mediaId);
     if (ready) return Promise.resolve(ready);
@@ -524,22 +541,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         if (!same) return undefined;
         partial!.at = Date.now();
         return partial!.words;
-      }).then(kept => kept ?? getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(async t => {
-        const words = t?.segments.length ? flattenWords(t) : null;
-        if (ctx.task?.context.recordTranscriptDigests && words) {
-          const sha256 = wordDigest(words);
-          if (recordedTranscripts.get(mediaId) !== sha256) {
-            const result = await postEvent({ type: "log", text: "", data: { kind: "eval_transcript", mediaId, count: words.length, sha256 } });
-            if (result.posted) recordedTranscripts.set(mediaId, sha256);
-          }
-        }
-        if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now(), saved: transcriptSave(t!) });
-        else if (words) {
-          aligningWords.delete(mediaId);
-          wordLists.set(mediaId, words);
-        }
-        return words;
-      }));
+      }).then(kept => kept ?? getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(t => cacheTranscriptWords(mediaId, t)));
       readingWords.set(key, job);
       void job.catch(() => {}).finally(() => readingWords.delete(key));
     }
@@ -567,37 +569,41 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    * The model can hold indices from any list it was shown, so each is kept until it is told its indices moved and reads
    * again (`staleWords`), and a reference whose words differ between them is refused.
    */
-  const wordsShown = new Map<string, Array<{ print: string; words: readonly TranscriptWord[] }>>();
+  type WordSnapshot = { print: string; texts: readonly string[]; searchId?: string };
+  const wordsShown = new Map<string, WordSnapshot[]>();
   const staleWords = new Set<string>();
-  const wordPrints = new WeakMap<readonly TranscriptWord[], string>();
-  const wordsPrint = (words: readonly TranscriptWord[]) => {
-    let print = wordPrints.get(words);
-    if (!print) wordPrints.set(words, print = `${words.length}:${createHash("sha1").update(words.map(w => w.text).join("\u0000")).digest("hex")}`);
-    return print;
-  };
-  /** Note the list a tool showed the model word indices from. */
-  const showWords = (mediaId: string, words: readonly TranscriptWord[] | null | undefined) => {
-    if (!words) return;
-    const print = wordsPrint(words);
+  const snapshots = new WeakMap<readonly TranscriptWord[], WordSnapshot>();
+  const snapshotOf = (texts: readonly string[], searchId?: string): WordSnapshot =>
+    ({ texts, searchId, print: `${texts.length}:${createHash("sha1").update(texts.join("\u0000")).digest("hex")}` });
+  function wordSnapshot(words: readonly TranscriptWord[]) {
+    let snapshot = snapshots.get(words);
+    if (!snapshot) snapshots.set(words, snapshot = snapshotOf(words.map(w => w.text)));
+    return snapshot;
+  }
+  function showSnapshot(mediaId: string, snapshot: WordSnapshot) {
     const shown = wordsShown.get(mediaId) ?? [];
     // Words found since moved the indices on: which input each index was heard on is read again.
-    if (shown.at(-1)?.print !== print) inputLabels.delete(mediaId);
+    if (shown.at(-1)?.print !== snapshot.print) inputLabels.delete(mediaId);
     // Told its indices moved, the model has read again: the lists before this one are behind it.
-    const kept = staleWords.delete(mediaId) ? [] : shown.filter(s => s.print !== print).slice(-4);
-    wordsShown.set(mediaId, [...kept, { print, words }]);
+    const kept = staleWords.delete(mediaId) ? [] : shown.filter(s => s.print !== snapshot.print).slice(-4);
+    wordsShown.set(mediaId, [...kept, snapshot]);
+  }
+  /** Note the list a tool showed the model word indices from. */
+  const showWords = (mediaId: string, words: readonly TranscriptWord[] | null | undefined) => {
+    if (words) showSnapshot(mediaId, wordSnapshot(words));
   };
   function sameWordsAsRead(mediaId: string, words: readonly TranscriptWord[], from?: number, to?: number) {
     const shown = wordsShown.get(mediaId);
     if (!shown?.length) return;
-    const print = wordsPrint(words), latest = shown.at(-1)!;
+    const current = wordSnapshot(words), latest = shown.at(-1)!;
     // The words a reference names, as each list shown reads them: one that reads them otherwise could be the one it came from.
-    const named = (list: readonly TranscriptWord[]) => from === undefined ? "" : list.slice(from, (to ?? from) + 1).map(w => w.text).join("\u0000");
-    const other = latest.print !== print ? latest : from === undefined ? undefined
-      : shown.find(s => s.print !== print && named(s.words) !== named(words));
+    const named = (list: readonly string[]) => from === undefined ? "" : list.slice(from, (to ?? from) + 1).join("\u0000");
+    const other = latest.print !== current.print ? latest : from === undefined ? undefined
+      : shown.find(s => s.print !== current.print && named(s.texts) !== named(current.texts));
     if (!other) return;
     staleWords.add(mediaId);
     throw new Error(`The transcript of ${mediaId} changed since you read it: Scarlet placed its words on the audio and found words it had missed ` +
-      `(${other.words.length} words then, ${words.length} now), so word indices from that read name other words now. Nothing was placed or saved. ` +
+      `(${other.texts.length} words then, ${words.length} now), so word indices from that read name other words now. Nothing was placed or saved. ` +
       "Read the passage again (transcript_get, timeline_transcript or dialogue_scan) and give the indices it shows.");
   }
 
@@ -720,10 +726,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return found;
   }
 
-  async function measureAround(points: Array<{ mediaId: string; t: number }>, knownMedia?: ProjectDetail["project"]["media"]) {
-    const media = knownMedia ?? (await client.media(ctx.projectId)).media;
+  // Parallel edge checks can share a current inventory until the read completes.
+  type Inventory = ProjectDetail["project"]["media"];
+  let measuringMedia: Promise<Map<string, Inventory[number]>> | undefined;
+  const indexMedia = (assets: Inventory) => new Map(assets.map(asset => [asset.id, asset]));
+  async function measureAround(points: Array<{ mediaId: string; t: number }>, knownMedia?: Inventory) {
+    if (!points.length) return;
+    const media = knownMedia ? indexMedia(knownMedia) : await (measuringMedia ??= client.media(ctx.projectId)
+      .then(({ media }) => indexMedia(media)).finally(() => { measuringMedia = undefined; }));
     await Promise.all(points.map(({ mediaId, t }) => {
-      const asset = media.find(m => m.id === mediaId);
+      const asset = media.get(mediaId);
       // A source with no sound has no levels to read: the engine refuses it, and the join check leaves it out anyway.
       if (!asset?.duration || asset.hasAudio === false || asset.kind === "image" || (dialogueAudioStream(asset) ?? 0) !== 0) return;
       // A second either side, as far as the recording goes: a window can't reach before its start or past its end.
@@ -893,7 +905,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    */
   async function ripplesOnFrames(ops: TimelineOp[], before: Timeline | null, onWholeFrames: FrameAdjustment[]): Promise<TimelineOp[]> {
     if (!ops.some(op => op.op === "rippleDelete")) return ops;
-    const fps = (await getProject()).project.settings.fps;
+    const fps = (await getHeader()).project.settings.fps;
     const base = before ? timelineDuration(before) : Infinity;
     // Each removal across every track brings the end of the edit earlier for the ones after it. Once any other op has
     // run, where the edit ends is not known here, and the base's end stands. It stands for a task's edit throughout:
@@ -1065,7 +1077,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     "Get the project: settings (fps, width x height, aspect), every media asset (id, name, kind, duration s, fps, size, hasAudio, hasTranscript, provenance of generated assets, and for a graphic Scarlet drew the page it was drawn from, relative to the project's folder), the head version, the edit's duration, and a per-track summary. For an assigned task, editContext contains the editor’s recorded selection, change or cut index, and note IDs when supplied. Media ids are what transcript, waveform and clip tools take as mediaId. For clip-level detail use timeline_get.",
     {},
     async () => {
-      const detail: ProjectDetail = await getProject();
+      const detail = await client.workspace(ctx.projectId);
       const media = detail.project.media.map((m) => ({
         id: m.id, name: m.name, kind: m.kind, duration: m.duration, fps: m.fps, width: m.width, height: m.height,
         hasAudio: m.hasAudio, hasTranscript: Boolean(m.transcriptId), ...(m.provenance && { provenance: m.provenance }), ...(m.graphic && { graphic: m.graphic }),
@@ -1130,7 +1142,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const reviewPassages = new Set<string>();
   async function pinPictures(requests: PictureRequest[]) {
     if (!requests.some(r => !r.mediaId && (!r.version || r.version === "head"))) return requests;
-    const { project } = await getProject();
+    const { project } = await getHeader();
     if (!project.head) throw new Error("The timeline has no footage yet.");
     return requests.map(r => !r.mediaId && (!r.version || r.version === "head") ? { ...r, version: project.head! } : r);
   }
@@ -1406,6 +1418,45 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     },
   );
 
+  const phraseIndexes = new WeakMap<TranscriptWord[], ReturnType<typeof indexTranscriptWords>>();
+  async function exactMatches(mediaId: string, query: string, contextWords: number) {
+    let words: TranscriptWord[] | null;
+    const hasRead = () => wordLists.has(mediaId) || aligningWords.has(mediaId) || readingWords.has(JSON.stringify([mediaId, true]));
+    if (ctx.task?.context.recordTranscriptDigests || hasRead()) {
+      // A cached read tracks alignment; evaluation runs also record the complete timed list they used.
+      words = await transcriptWords(mediaId);
+    } else {
+      const known = wordsShown.get(mediaId)?.at(-1);
+      const result = await readPrepared(mediaId, "transcript", () => client.searchTranscript(mediaId, query, contextWords, known?.searchId ?? ""))
+        .catch(err => {
+          if (err instanceof ScarletApiError && err.code === "no_audio") return null;
+          throw err;
+        });
+      if (!result) return null;
+      if ("matches" in result) {
+        if (!result.segmentCount) return null;
+        const found = result.wordSnapshot;
+        if (found) {
+          const snapshot = found.texts ? snapshotOf(found.texts, found.id) : known;
+          if (snapshot?.searchId === found.id && snapshot.texts.length === result.wordCount) {
+            showSnapshot(mediaId, snapshot);
+            return result;
+          }
+        }
+        // Older search results lack the order of the words they refer to. Search the full list we can remember.
+        words = await transcriptWords(mediaId);
+      } else {
+        // Older engines and very long queries return the original transcript.
+        words = await (hasRead() ? transcriptWords(mediaId) : cacheTranscriptWords(mediaId, result));
+      }
+    }
+    if (!words) return null;
+    showWords(mediaId, words);
+    let find = phraseIndexes.get(words);
+    if (!find) phraseIndexes.set(words, find = indexTranscriptWords(words));
+    return { wordCount: words.length, matches: find(query, contextWords) };
+  }
+
   tool(
     "transcript_search",
     "Search a media asset's transcript. exact: case- and punctuation-insensitive phrase match. fuzzy: token similarity (0..1) that tolerates paraphrase and ASR spelling, for finding every take of a line. Returns each match with source seconds, its first word index and surrounding words.",
@@ -1417,11 +1468,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       contextWords: z.number().int().min(0).max(30).default(6),
     },
     async ({ mediaId, query, match, minScore, contextWords }) => {
-      const words = await transcriptWords(mediaId);
-      if (!words) return text(`No transcribed speech to search for media ${mediaId}.`);
-      showWords(mediaId, words);
-      const matches = match === "fuzzy" ? fuzzySearchTranscript(words, query, { contextWords, minScore }) : searchTranscript(words, query, contextWords);
-      if (!matches.length) return text(`No ${match} matches for "${query}" in ${mediaId} (${words.length} words searched).`);
+      const words = match === "fuzzy" ? await transcriptWords(mediaId) : null;
+      if (words) showWords(mediaId, words);
+      const result = match === "exact" ? await exactMatches(mediaId, query, contextWords) :
+        words && { wordCount: words.length, matches: fuzzySearchTranscript(words, query, { contextWords, minScore }) };
+      if (!result) return text(`No transcribed speech to search for media ${mediaId}.`);
+      const { matches, wordCount } = result;
+      if (!matches.length) return text(`No ${match} matches for "${query}" in ${mediaId} (${wordCount} words searched).`);
       const lines = matches.map((m) => `#${m.wordIndex} [${m.start.toFixed(2)}-${m.end.toFixed(2)}]${"score" in m ? ` ${m.score}` : ""}${m.speaker ? ` ${m.speaker}:` : ""} ${m.context}`);
       return text(`${matches.length} ${match} match(es) for "${query}" in ${mediaId}:\n${lines.join("\n")}`);
     },
@@ -1505,15 +1558,15 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         const media = project.media.find(m => m.id === id);
         if (!media) throw new Error(`Media ${id} is not in this project. Use project_get for media ids.`);
         const count = Math.floor((media.duration ?? 0) * syncRate);
-        const values: number[] = [];
-        if (media.hasAudio === false || !count) return values;
+        if (media.hasAudio === false || !(count > 0)) return new Float64Array();
+        const values = new Float64Array(count);
         for (let start = 0; start < count; start += 10000) {
           const end = Math.min(start + 10000, count);
-          const wave = await readPrepared(id, "waveform", () => client.waveform(id, start / syncRate, end / syncRate, end - start, true));
+          const wave = await readPrepared(id, "waveform", () => client.waveformPeaks(id, start / syncRate, end / syncRate, end - start));
           if (wave.peaks.length !== end - start) {
             throw new Error(`The waveform of ${id} covered ${wave.peaks.length} of ${end - start} samples from ${(start / syncRate).toFixed(1)} s. Retry; a truncated source needs a sync point from the editor.`);
           }
-          values.push(...wave.peaks);
+          values.set(wave.peaks, start);
         }
         return values;
       }
@@ -2425,7 +2478,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const { change } = await client.changeRecord(changeId);
       if (await localPausesMode() && ![ctx.taskId, ctx.task?.resumeRootId].some(id => id && id === change.taskId) &&
           !ctx.task?.changeIds.includes(changeId)) {
-        const prior = change.taskId && (await client.task(change.taskId)).task;
+        const prior = change.taskId && (await client.task(change.taskId, "none")).task;
         if (!prior || (prior.resumeRootId ?? prior.id) !== (ctx.task?.resumeRootId ?? ctx.taskId))
           throw new Error("Choose a staged pause from this request.");
       }
@@ -2647,7 +2700,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       }
       const tl = await getTimeline(authoring?.version ?? version);
       if (format === "full") return json(tl);
-      const project = await getProject();
+      const project = await getHeader();
       return text(summarizeTimeline(tl, project.project.settings.fps));
     },
   );
@@ -2727,7 +2780,7 @@ ${OPS_DOC}`,
         if (!v.ops.length) throw new Error("ops is empty");
         if (before && (range || (selectedRange(ctx.task?.context) && v.ops.every(o => o.op === "rippleDelete" && !o.trackIds)))) {
           body.range = cutScope(before, await cutAnchor(before), range);
-          const aligned = boundedRippleOps(v.ops, body.range, (await getProject()).project.settings.fps, timelineDuration(before));
+          const aligned = boundedRippleOps(v.ops, body.range, (await getHeader()).project.settings.fps, timelineDuration(before));
           const drift = rippleDrift();
           for (const [i, op] of aligned.entries()) {
             const asked = v.ops[i]!;
@@ -3035,8 +3088,8 @@ ${OPS_DOC}`,
     },
     async ({ intent, mediaId, keep, layer, audioMediaId, crossfade, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
-      const detail = await getProject();
-      const before = base ? await getTimeline(base) : detail.timeline ?? await headTimelineOrNull();
+      const detail = base ? { ...await getProject(), timeline: await getTimeline(base) } : await client.workspace(ctx.projectId);
+      const before = detail.timeline ?? await headTimelineOrNull();
       const media = detail.project.media.find((m) => m.id === mediaId);
       if (!media) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
       const audio = audioMediaId ? detail.project.media.find(m => m.id === audioMediaId) : media;
@@ -3354,7 +3407,7 @@ ${OPS_DOC}`,
   // -- motion graphics -----------------------------------------------------
 
   registerGraphics({ tool, client, projectId: ctx.projectId, task: ctx.task, author: ctx.author, caps,
-    readArtifact: async path => readArtifact(await artifactDir(), path), getProject });
+    readArtifact: async path => readArtifact(await artifactDir(), path), getProject: getHeader });
 
   tool(
     "export_otio",
@@ -3363,7 +3416,7 @@ ${OPS_DOC}`,
     async ({ version, path }) => {
       let v = version;
       if (!v || v === "head") {
-        const detail = await getProject();
+        const detail = await getHeader();
         if (!detail.project.head) throw new Error("project has no head version to export");
         v = detail.project.head;
       }

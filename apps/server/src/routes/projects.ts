@@ -5,6 +5,7 @@ import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
 import { holdProjectEditing, resumeProjectEditing, resumeProjectTranscriptions } from "../services/taskRecovery.js";
 import { Hono } from "hono";
+import { z } from "zod/v3";
 import { EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
 import { makeShorts, planShorts } from "../services/shorts.js";
 import { createProject, hasInitialTimeline } from "@scarlet/timeline";
@@ -59,7 +60,13 @@ export function projectRoutes(ctx: Ctx) {
 
   r.get("/projects/:id", (c) => {
     const id = c.req.param("id");
-    if (c.req.query("view") === "workspace") {
+    const view = c.req.query("view");
+    if (view === "header") {
+      const { head, settings } = requireProjectHeader(ctx, id);
+      return c.json({ project: { id, head, settings } });
+    }
+    if (view === "project") return c.json({ project: requireProject(ctx, id) });
+    if (view === "workspace") {
       const snapshot = ctx.db.transaction(() => {
         const header = requireProjectHeader(ctx, id);
         const project = { ...header, media: ctx.repos.projects.listMedia(id) };
@@ -82,16 +89,31 @@ export function projectRoutes(ctx: Ctx) {
     return thread;
   }
 
-  r.get("/projects/:id/threads/:threadId/edits", c => {
-    const result = ctx.db.transaction(() => {
-      const project = requireProjectHeader(ctx, c.req.param("id"));
-      const thread = projectThread(project.id, c.req.param("threadId"));
-      const read = (version: string) => ctx.repos.versions.get(project.id, version)?.timeline;
+  function editLists(projectId: string, ids: string[]) {
+    return ctx.db.transaction(() => {
+      const project = requireProjectHeader(ctx, projectId);
+      const wanted = new Set(ids);
+      const threads = ctx.repos.projects.threads(projectId).filter(thread => wanted.has(thread.id));
+      const read = (version: string) => ctx.repos.versions.get(projectId, version)?.timeline;
       const head = project.head && read(project.head);
-      return { version: project.head, edits: head
-        ? threadTimeline(thread, head, ctx.repos.versions.links(project.id), read, project.settings.fps, requireProject(ctx, project.id).media) : [] };
+      const links = head ? ctx.repos.versions.links(projectId) : [];
+      const media = head ? ctx.repos.projects.listMedia(projectId) : [];
+      const lists = Object.fromEntries(threads.map(thread => [thread.id, head
+        ? threadTimeline(thread, head, links, read, project.settings.fps, media) : []]));
+      return { version: project.head, lists };
     })();
-    return c.json(result);
+  }
+
+  r.get("/projects/:id/threads/:threadId/edits", c => {
+    const id = c.req.param("threadId");
+    const { version, lists } = editLists(c.req.param("id"), [id]);
+    if (!Object.hasOwn(lists, id)) throw notFound("thread");
+    return c.json({ version, edits: lists[id] });
+  });
+
+  r.post("/projects/:id/thread-edits", async c => {
+    const { threads } = await jsonBody(c, z.object({ threads: z.array(z.string()).min(1).max(64) }));
+    return c.json(editLists(c.req.param("id"), threads));
   });
 
   r.post("/projects/:id/threads/:threadId/disposition", async c => {

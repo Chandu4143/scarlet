@@ -1,4 +1,4 @@
-import { applyReviewRemovals, clipDuration, crossfadeJoins, sourceToTimeline, timelineDuration, timelineToSource, type MediaAsset, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
+import { applyReviewRemovals, clipDuration, clipEnd, intervalCandidates, crossfadeJoins, sourceToTimeline, timelineDuration, timelineToSource, type MediaAsset, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
 import { JOIN_WORD_SECONDS, normalizeTranscriptToken } from "@scarlet/shared";
 import { audibleClipsByTrack, dbfs, isTag, round3 } from "./analysis.js";
 import { REPEAT_WITHIN } from "./dialogue-leftovers.js";
@@ -153,9 +153,8 @@ export function soundBesideEdge(pages: JoinPage[], mediaId: string, stream: numb
   }
 }
 
-function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number): Edge {
+function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number): Edge {
   const sources: SourceEdge[] = [];
-  const nearby = clips.filter(c => c.timelineIn <= at + reach && c.timelineIn + clipDuration(c) >= at - reach);
   for (const clip of nearby) {
     const lo = clip.timelineIn, hi = lo + clipDuration(clip);
     if (at <= lo + 1e-6 || at >= hi - 1e-6) continue; // An existing clip edge doesn't bisect this clip.
@@ -582,25 +581,35 @@ export function checkResumeQuote(tl: Timeline, project: Project, end: number, pa
  * Only narrow a retake by more than a fragment. The caller still owns its meaning, visual review and approval.
  */
 export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange): JoinCheck {
+  return dialogueJoinChecker(tl, project, pages)(range, namedWords);
+}
+
+/** Reuse the audible clip and stream indexes while checking a batch on one version. */
+export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinPage[]) {
   const { clips, streams } = dialogueClips(tl, project);
-  const fps = project.settings.fps;
-  const left: Edge = range.start > 1e-6 ? checkEdge(range.start, 1, clips, pages, fps, streams, namedWords?.start) : { at: range.start };
-  const right: Edge = range.end < timelineDuration(tl) - 1e-6 ? checkEdge(range.end, -1, clips, pages, fps, streams, namedWords?.end) : { at: range.end };
-  const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
-  if (!left.note && !right.note && problems) return { ...range, status: "review", reason: problems,
-    ...([left, right].every(e => !e.problem || e.unmeasured) && { unmeasured: true }) };
-  if (!left.note && !right.note) return { start: left.at, end: right.at, status: "unchanged", reason: "The recording is quiet at both boundaries." };
-  if (right.at-left.at < Math.max(.10, 2/fps))
-    return { ...range, status: "review", reason: "Preserving the neighboring words leaves too little of this retake to trim." };
-  const notes = [left.note, right.note].filter(Boolean);
-  // One edge between words that run together leaves the other in silence, where the ear resets. With both there, a
-  // short removal comes out of the middle of running speech, as with word references (wordCutRange).
-  if (left.dip && right.dip) return { start: left.at, end: right.at, status: "review",
-    reason: `No pause on either side: ${notes.join(", ")}. Audition the join.` };
-  const snapped = !problems && [left, right].every(e => !e.note || e.snapped);
-  return { start: left.at, end: right.at, status: problems ? "partial" : snapped ? "snapped" : "adjusted",
-    reason: [(snapped ? (left.dip || right.dip ? "Placed on the recording: " : "Snapped to the recording's silence: ") : "Adjusted retake boundaries: ")+notes.join(", ")+".", problems,
-      snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
+  const near = intervalCandidates(clips, c => c.timelineIn, clipEnd);
+  const fps = project.settings.fps, duration = timelineDuration(tl);
+  const edge = (at: number, direction: 1 | -1, named?: number) =>
+    checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named);
+  return (range: TimeRange, namedWords?: TimeRange): JoinCheck => {
+    const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start) : { at: range.start };
+    const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end) : { at: range.end };
+    const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
+    if (!left.note && !right.note && problems) return { ...range, status: "review", reason: problems,
+      ...([left, right].every(e => !e.problem || e.unmeasured) && { unmeasured: true }) };
+    if (!left.note && !right.note) return { start: left.at, end: right.at, status: "unchanged", reason: "The recording is quiet at both boundaries." };
+    if (right.at-left.at < Math.max(.10, 2/fps))
+      return { ...range, status: "review", reason: "Preserving the neighboring words leaves too little of this retake to trim." };
+    const notes = [left.note, right.note].filter(Boolean);
+    // One edge between words that run together leaves the other in silence, where the ear resets. With both there, a
+    // short removal comes out of the middle of running speech, as with word references (wordCutRange).
+    if (left.dip && right.dip) return { start: left.at, end: right.at, status: "review",
+      reason: `No pause on either side: ${notes.join(", ")}. Audition the join.` };
+    const snapped = !problems && [left, right].every(e => !e.note || e.snapped);
+    return { start: left.at, end: right.at, status: problems ? "partial" : snapped ? "snapped" : "adjusted",
+      reason: [(snapped ? (left.dip || right.dip ? "Placed on the recording: " : "Snapped to the recording's silence: ") : "Adjusted retake boundaries: ")+notes.join(", ")+".", problems,
+        snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
+  };
 }
 
 

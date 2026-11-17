@@ -1543,6 +1543,7 @@ it("keeps conversation events ordered and reserves the complete log for the defa
   task = appendTaskEvent(ctx, task, { type: "log", text: "Comparing the recordings.", data: { kind: "editor_progress" } }).task;
   for (const type of ["log", "question", "answer", "tool"] as const) task = appendTaskEvent(ctx, task, { type, text: type }).task;
   const url = "/tasks/" + task.id;
+  expect(await (await api("GET", url + "?events=none")).json()).toMatchObject({ task: { id: task.id }, checksTaskAttempts: true, events: [] });
   expect((await (await api("GET", url + "?events=conversation")).json()).events.map((e: { text: string }) => e.text)).toEqual(["Comparing the recordings.", "question", "answer"]);
   expect((await (await api("GET", url)).json()).events.map((e: { text: string }) => e.text)).toEqual(["Comparing the recordings.", "log", "question", "answer", "tool"]);
   const other = ctx.repos.projects.insert(createProject("Other project"));

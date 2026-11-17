@@ -25,7 +25,7 @@ interface PerceptionDeps {
   peekTimeline(version: string): Promise<Timeline>;
   /** The portion of an edited transcript actually returned to the agent. */
   readPassage(version: string, range: { start: number; end: number }): void;
-  getProject(): Promise<ProjectDetail>;
+  getProject(): Promise<Pick<ProjectDetail, "project">>;
   /** A media's words in transcript_get order (index = stable word index), or null without a transcript. */
   /** With `through`, only words whose times are final up to that source second: it rejects while alignment hasn't reached it. */
   transcriptWords(mediaId: string, prepareMissing?: boolean, through?: number): Promise<TranscriptWord[] | null>;
