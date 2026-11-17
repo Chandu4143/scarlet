@@ -11082,7 +11082,7 @@ it("shows the whole timeline on any press on a request's band", async () => {
   const band = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".unit-msg")!;
   // The band of the request already marked, then an earlier one's.
   for (const changeId of ["chg_later", "chg_approved_2"]) {
-    for (let i = 0; i < 3; i++) await press("+");
+    for (let i = 0; i < 3; i++) await press("]");
     expect(ruler()).not.toBe(whole);
     await click(band(changeId));
     await act(async () => {});
