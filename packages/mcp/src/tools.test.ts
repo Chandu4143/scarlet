@@ -281,6 +281,21 @@ describe("timeline_framing", () => {
     } finally { await c.close(); }
   });
 
+  it("says where an edit leaves a picture on screen for a few frames between two others", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const tight = { scale: 1.18, x: 0, y: -0.06 };
+      const camera = (id: string, from: number, to: number, at: number, transform?: object) =>
+        ({ op: "addClip", trackId: "v3", clip: { id, kind: "media", mediaId: "m1", sourceIn: from, sourceOut: to, timelineIn: at, volume: 0, ...(transform && { transform }) } });
+      // The wide camera ends three frames before the punch-in, so the screen and inset show through for 0.1 s.
+      const result = JSON.parse(textOf(await ok(c, "timeline_propose", { ops: [{ op: "addTrack", track: { id: "v3", kind: "video", name: "Full camera", clips: [] } },
+        camera("wide", 0, 9.9, 0), camera("punch", 10, 30, 10, tight)], description: "Punched in on the camera", reason: "He makes the main point here." })).split("\n")[0]!);
+      expect(result.briefPictures).toEqual([{ from: 9.9, to: 10, seconds: 0.1, shows: ["cam", "s0"], before: ["wide"], after: ["punch"] }]);
+      expect(result.briefNext).toContain("run the shot before or after over it");
+    } finally { await c.close(); }
+  });
+
   it("says where a crop made with timeline_propose leaves the background showing", async () => {
     const c = await connect();
     try {
