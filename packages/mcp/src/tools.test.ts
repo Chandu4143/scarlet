@@ -1032,7 +1032,7 @@ describe("screen_text", () => {
 });
 
 describe("faces", () => {
-  const span = (track: number, start: number) => ({ track, start, end: start + 1, box: [0.4, 0.3, 0.58, 0.72], yaw: 0, confidence: 0.94 });
+  const span = (track: number, start: number) => ({ track, start, end: start + 1, box: [0.4, 0.3, 0.58, 0.72], eyes: [0.49, 0.44], yaw: 0, confidence: 0.94 });
   it("lists where the faces are as compact JSON in source seconds and fractions, says how much is read, and pages", async () => {
     const c = await connect();
     const spans = [...Array.from({ length: 203 }, (_, i) => span(1, i)), span(2, 10), span(2, 50)].sort((a, b) => a.start - b.start || a.track - b.track);
