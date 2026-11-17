@@ -36,17 +36,31 @@ describe("native retake boundaries", () => {
     const placed = checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.003)]);
     expect(placed).toMatchObject({ status: "snapped", start: 1.5, end: 3.5 });
     expect(placed.reason).toContain("start moved 0.07 s earlier onto the trough between the words in the recording (-50 dBFS");
-    // A trough no lower than a sibilant's hiss is nowhere to cut.
-    expect(checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.005)]).status).toBe("review");
+    // A low point at -45 dBFS, 27 dB under the words either side, takes an edge within 50 ms of it (2026-11-16). One
+    // further off is told of, not taken: the stop before a final “s” reads the same.
+    expect(checkDialogueJoin(tl, p, { start: 1.54, end: 3.5 }, [at(.0056)])).toMatchObject({ status: "snapped", start: 1.5 });
+    const told = checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.0056)]);
+    expect(told).toMatchObject({ status: "review", start: 1.57, inSound: ["start"] });
+    expect(told.reason).toContain("The nearest quiet or low point is 0.05 s earlier at 1.515 s (-45 dBFS), with no word between");
+    // Given there, the edge is on it.
+    expect(checkDialogueJoin(tl, p, { start: 1.515, end: 3.5 }, [at(.0056)])).toMatchObject({ status: "snapped" });
+    // A trough no lower than a sibilant's hiss is nowhere to cut. The check says where the sound parts either way,
+    // and which words moving there keeps or takes out.
+    const held = checkDialogueJoin(tl, p, { start: 1.57, end: 3.5 }, [at(.008)]);
+    expect(held).toMatchObject({ status: "review", inSound: ["start"] });
+    expect(held.reason).toBe("The start is in sound at -18 dBFS. The nearest quiet or low point is 0.58 s earlier at 0.995 s (-60 dBFS), " +
+      "also removes “this” / “game”. Give the edge there, or name the words to remove.");
     // The trough is where the sound parts, not a licence to change which words go: an edge asked for after “let”
     // (1.7 s) has that trough a fifth of a second back, across the whole word, and stays where it was asked.
     expect(checkDialogueJoin(tl, p, { start: 1.7, end: 3.5 }, [at(.003)])).toMatchObject({ status: "review", start: 1.7 });
-    // A word reference reads the edge from the words' timings, which reach only a little way into the kept “game”: it
-    // sees the trough's wall, not its floor, and leaves the edge to the check above rather than saving it there.
+    // A word reference searches near where the transcript parts the words first. That window reaches only a little way
+    // into the kept “game” and sees the trough's wall; the span between the two words' sounds holds its floor, at -50
+    // dBFS, and the start goes there.
     const page = at(.003);
     const cut = wordCutRange(said, 2, 5, () => page.edges);
-    expect(cut.dips).toEqual([]);
-    expect(cut.problems.join(" ")).toContain("No measured silence between “game” and “let”");
+    expect(cut.dips).toEqual(["No pause between “game” and “let”: the start is at the lowest level between them (-50 dBFS)."]);
+    expect(cut.start).toBeCloseTo(1.5, 1);
+    expect(cut.problems).toEqual([]);
   });
   it("only moves inward, past complete edge words, onto project frames in quiet audio", () => {
     const { p, tl } = fixture();
