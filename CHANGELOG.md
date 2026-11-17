@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
+- An edit’s token breakdown shows Est Cost using the model’s published API prices.
 - Click − or + in the player or press those keys to change playback speed in 0.25× steps. Use [ and ] to zoom the timeline.
 - Before a dialogue pass finishes, Scarlet rereads the cuts it made outside its dialogue cut tool that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.
 - A photo or a title card that doesn’t move is ready in seconds, where Scarlet used to draw every frame of it.
