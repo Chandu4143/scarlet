@@ -79,7 +79,8 @@ export function showAreaFindings(before: Timeline | null, after: Timeline, media
         if (!held) {
           if (!part) continue;
           const stretch = known.unset.find(([from, to]) => source >= from - 1e-6 && source < to + 1e-6) ?? [0, assets.get(clip.mediaId)?.duration ?? source];
-          const key = `${clip.mediaId}:${stretch[0]}`;
+          // One look for every five minutes of a long stretch: a recording with no area yet is one stretch, and its windows change.
+          const key = `${clip.mediaId}:${stretch[0]}:${Math.floor(source / 300)}`;
           if (!noArea.has(key)) noArea.set(key, { mediaId: clip.mediaId, from: r3(stretch[0]), to: r3(stretch[1]), look: r3(source), at: r3(at) });
           continue;
         }

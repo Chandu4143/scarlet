@@ -96,11 +96,11 @@ export function perceptionRoutes(ctx: Ctx) {
   // wait for the answers. Only a running request asks: its agent and model do the looking.
   r.post("/projects/:projectId/media/:mediaId/show-area/ask", async c => {
     const media = videoFor(c);
-    const body = await c.req.json().catch(() => null) as { seconds?: unknown; taskId?: unknown } | null;
+    const body = await c.req.json().catch(() => null) as { seconds?: unknown; taskId?: unknown; again?: unknown } | null;
     if (!body || !Array.isArray(body.seconds) || body.seconds.some(n => typeof n !== "number") || typeof body.taskId !== "string") {
       throw badRequest("bad_request", "Send seconds: [source second] and taskId.");
     }
-    const asked = await askAreas(ctx, media, { seconds: body.seconds as number[], taskId: body.taskId, waitMs: areaWait(c) });
+    const asked = await askAreas(ctx, media, { seconds: body.seconds as number[], taskId: body.taskId, waitMs: areaWait(c), again: body.again === true });
     return c.json({ ...asked, ...await showArea(ctx, media, { waitMs: 5000 }) });
   });
 

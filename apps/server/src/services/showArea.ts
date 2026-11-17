@@ -141,10 +141,10 @@ const ASKS_AT_ONCE = 12;
 /**
  * Ask what viewers may see at these source seconds of a recording: a short run of its own for each, with the asking
  * request's agent and model, beside that request and outside the project's queue. Each looks at one full-size frame and
- * saves an area. Waits for them up to `waitMs`. A second an area already holds for, or one in a stretch another run is
- * already looking at, starts none.
+ * saves an area. Waits for them up to `waitMs`. A second an area already holds for starts none unless asked `again`, and
+ * neither does one in a stretch another run is already looking at.
  */
-export async function askAreas(ctx: Ctx, media: VideoMedia, opts: { seconds: number[]; taskId: string; waitMs: number }): Promise<{ asked: number; answered: number; waiting: number }> {
+export async function askAreas(ctx: Ctx, media: VideoMedia, opts: { seconds: number[]; taskId: string; waitMs: number; again?: boolean }): Promise<{ asked: number; answered: number; waiting: number }> {
   const asker = ctx.repos.tasks.get(opts.taskId);
   if (!asker || asker.projectId !== media.projectId || asker.agent === "api" || asker.kind === "area_check") return { asked: 0, answered: 0, waiting: 0 };
   const state = await showArea(ctx, media, { waitMs: Math.min(opts.waitMs, 240_000) });
@@ -154,13 +154,15 @@ export async function askAreas(ctx: Ctx, media: VideoMedia, opts: { seconds: num
     .filter(task => task.context.areaCheck?.mediaId === media.id);
   const watched = [...live];
   let asked = 0;
-  const taken: Array<[number, number]> = live.flatMap(task => { const s = stretchOf(task.context.areaCheck!.at); return s ? [s] : []; });
+  // One look serves the frames near it in a stretch: a second within a few minutes of one being looked at starts none.
+  const NEAR = 150;
+  const taken: number[] = live.map(task => task.context.areaCheck!.at);
   for (const second of opts.seconds) {
     if (asked >= ASKS_AT_ONCE) break;
-    if (!(second >= 0 && second <= (media.duration ?? 0)) || areaAt(state.areas, second)) continue;
-    const stretch = stretchOf(second) ?? [second, second];
-    if (taken.some(([from, to]) => from === stretch[0] && to === stretch[1])) continue;
-    taken.push(stretch as [number, number]);
+    if (!(second >= 0 && second <= (media.duration ?? 0)) || (!opts.again && areaAt(state.areas, second))) continue;
+    const stretch = stretchOf(second);
+    if (taken.some(other => Math.abs(other - second) < NEAR && (!stretch || (other >= stretch[0] && other < stretch[1])))) continue;
+    taken.push(second);
     const at = Math.round(second * 100) / 100;
     watched.push(createTask(ctx, { projectId: media.projectId, kind: "area_check", agent: asker.agent, model: asker.model, effort: asker.effort, fast: asker.fast,
       serviceTier: asker.serviceTier, instruction: `What viewers may see of ${media.name ?? media.id} at ${at} s`, context: { checksTaskId: asker.id, areaCheck: { mediaId: media.id, at } },

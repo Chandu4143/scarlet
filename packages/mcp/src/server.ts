@@ -1290,17 +1290,30 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     { ...cutReviewShape, ...audioOption("Attach a short WAV of each side") },
     args => inspect(() => client.reviewCut(ctx.projectId, { ...args, includeAudio: hearing && args.includeAudio === true })));
 
+  // Only the run that looks at one frame gives an area. A pass given the same power answered for a whole recording at
+  // once, from scripts and small frames: 230 areas in ten calls, one inside the editor's box of eleven (2026-11-16).
+  const givesAreas = !ctx.taskId || ctx.task?.kind === "area_check";
   tool(
     "screen_area",
-    "What of a recording's picture viewers may see. A screen recording usually holds more than the window being presented: the desktop, a taskbar, a recording app, a call beside it. `set` gives an area for the frame at a SOURCE second (`at`), as [left, top, right, bottom] in percent of the picture: everything outside it stays out of the video. Scarlet finds the straight edges under the box on that frame and holds the area for every stretch of the recording where those edges are still in place, so one area serves a window for as long as it stays where it is, and comes back when the window does. The result lists each area with the source seconds it holds for (`holds`) and any side with no line under it on its frame (`noLine`: that side is not needed for the area to hold), and `unset`: the stretches no area holds for, with the seconds of each the current edit plays (`onPicture`) and a second to look at (`look`)." + (caps.images ? " With it come pictures of the first few unset stretches the edit plays, at `look`, with percent lines drawn over them: give each an area in your next call. `pictures` sets how many (default 4, 0 for none)." : " media_frame shows a frame at `look`.") + " The whole picture, [0, 0, 100, 100], is an area like any other, for a recording where all of it may show. An area given again at the same second replaces the one there; `remove` takes areas out by their `at`. Every save is checked against these. Where an edit frames part of a picture that has no area yet, Scarlet has that frame looked at and an area saved before it checks, so a save can take a little longer the first time a recording is framed. An edit that frames footage past its area is not saved, and its refusal names each place. A side given within a percent of a line in the picture is put on that line. timeline_framing keeps its frames inside the area on record when no `within` is given. A recording is read once for its edges; until that is done the result says so and `holds` are empty: call again.",
+    "What of a recording's picture viewers may see. A screen recording usually holds more than the window being presented: the desktop, a taskbar, a recording app, a call beside it. An area is a box given on the frame at a SOURCE second, as [left, top, right, bottom] in percent of the picture: everything outside it stays out of the video. Scarlet finds the straight edges under the box on that frame and holds the area for every stretch of the recording where those edges are still in place, so one area serves a window for as long as it stays where it is, and comes back when the window does. The result lists each area with the source seconds it holds for (`holds`) and any side with no line under it on its frame (`noLine`: that side is not needed for the area to hold), and `unset`: the stretches no area holds for, with the seconds of each the current edit plays (`onPicture`) and a second to look at (`look`)." +
+      (givesAreas
+        ? " `set` gives an area for the frame at `at`; one given again at the same second replaces the one there, and `remove` takes areas out by their `at`. A side given within a percent of a line in the picture is put on that line. The whole picture, [0, 0, 100, 100], is an area like any other, for a recording where all of it may show."
+        : " Areas come from a look at one full-size frame at a time, which Scarlet starts itself: where an edit frames part of a picture that has no area yet, it has that frame looked at before it checks the save, so a save can take longer the first time a recording is framed. `ask` has the frames at those source seconds looked at now, for a stretch you are about to frame or an area that is wrong for its footage (a frame is given to the area looked at nearest to it in time); it waits for the answers.") +
+      (caps.images && givesAreas ? " With the result come pictures of the first few unset stretches the edit plays, at `look`, with percent lines drawn over them. `pictures` sets how many (default 4, 0 for none)." : "") +
+      " Every save is checked against these: an edit that frames footage past its area is not saved, and its refusal names each place. timeline_framing keeps its frames inside the area on record when no `within` is given. A recording is read once for its edges; until that is done the result says so and `holds` are empty: call again.",
     {
       mediaId: z.string().describe("Media asset id"),
-      set: z.array(z.object({ at: z.number().min(0).describe("Source second of the frame the area was read on"), area: percentBox })).max(60).optional(),
-      remove: z.array(z.number().min(0)).max(60).optional().describe("The `at` of each area to take out"),
-      ...(caps.images && { pictures: z.number().int().min(0).max(6).optional() }),
+      ...(givesAreas ? {
+        set: z.array(z.object({ at: z.number().min(0).describe("Source second of the frame the area was read on"), area: percentBox })).max(60).optional(),
+        remove: z.array(z.number().min(0)).max(60).optional().describe("The `at` of each area to take out"),
+        ...(caps.images && { pictures: z.number().int().min(0).max(6).optional() }),
+      } : {
+        ask: z.array(z.number().min(0)).max(12).optional().describe("Source seconds of frames to have looked at"),
+      }),
     },
-    async ({ mediaId, set, remove, ...rest }) => {
-      const pictures = caps.images ? (rest as { pictures?: number }).pictures ?? 4 : 0;
+    async ({ mediaId, ...rest }) => {
+      const { set, remove, ask } = rest as { set?: Array<{ at: number; area: number[] }>; remove?: number[]; ask?: number[] };
+      const pictures = caps.images && givesAreas ? (rest as { pictures?: number }).pictures ?? 4 : 0;
       const { project } = await getProject();
       const asset = project.media.find(m => m.id === mediaId);
       if (!asset) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
@@ -1311,7 +1324,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const path = `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${wait}`;
       const state = set?.length || remove?.length
         ? await client.post<RecordingAreas & { error?: string }>(path, { set: set?.map(a => ({ at: a.at, area: a.area.map(n => n / 100) })), remove })
+        : ask?.length && ctx.taskId
+        ? await client.post<RecordingAreas & { error?: string; asked: number; waiting: number }>(path.replace("/show-area?", "/show-area/ask?"), { seconds: ask, taskId: ctx.taskId, again: true })
         : await client.get<RecordingAreas & { error?: string }>(path);
+      const stillLooking = (state as { waiting?: number }).waiting;
       const r1 = (n: number) => Math.round(n * 10) / 10;
       const areas = state.areas.map(a => ({ at: a.at, area: a.area.map(n => Math.round(n * 1000) / 10), holds: a.holds.map(([from, to]) => [r1(from), r1(to)]),
         heldSeconds: Math.round(a.holds.reduce((n, [from, to]) => n + to - from, 0)), ...(a.noLine.length && { noLine: a.noLine }) }));
@@ -1342,7 +1358,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         } catch { return undefined; }
       }));
       const seen = images.filter((i): i is NonNullable<typeof i> => !!i);
-      const body = { mediaId, areas, unset: unset.slice(0, 60), ...(unset.length > 60 && { moreUnset: unset.length - 60 }),
+      const body = { mediaId, ...(stillLooking && { stillLooking: `${stillLooking} frame${stillLooking === 1 ? " is" : "s are"} still being looked at: call again for their areas` }), areas, unset: unset.slice(0, 60), ...(unset.length > 60 && { moreUnset: unset.length - 60 }),
         ...(seen.length && { pictures: seen.map(i => `source ${i.look} s`) }) };
       if (!seen.length) return json(body);
       return { content: [{ type: "text" as const, text: JSON.stringify(body) }, ...seen.map(i => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))] };
