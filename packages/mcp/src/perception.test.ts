@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyTimeline, makeMediaClip, makeTrack, type Timeline, type TimeRange, type TranscriptWord } from "@scarlet/timeline";
 import { fuzzySearchTranscript, normalizeTranscriptToken } from "@scarlet/shared";
-import { auditJoin, formatTimelineTranscript, newJoins, round, sourceRangeToTimeline, sourceToTimeline, timelineJoins, timelineWords, type Reading } from "./timeline-perception.js";
+import { auditJoin, formatTimelineTranscript, heardOnlyVerbatim, newJoins, round, sourceRangeToTimeline, sourceToTimeline, timelineJoins, timelineWords, type Reading } from "./timeline-perception.js";
 import { pictureEntranceReader } from "./picture-entrance.js";
 import { captionSourceClips } from "./analysis.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
@@ -62,6 +62,37 @@ describe("timeline perception", () => {
       expect(listed[1]).toContain("#4 Today"); // The source index survives the cut and the page offset.
       expect(listed[3]).toContain("#0 we");
     }
+  });
+
+  it("shows where the verbatim reading hears a restart the transcript tidied away", () => {
+    const tl = emptyTimeline("p");
+    tl.version = "v3";
+    tl.tracks[1]!.clips = [makeMediaClip("mic", 10, 20, 0)];
+    // The transcript reads the figure once; the scan hears it twice, a stutter, and an "uh".
+    const mic = words([["this", 10.2, 10.4], ["model", 10.5, 10.8], ["up", 11, 11.2], ["to", 11.3, 11.4], ["1,286", 11.5, 12.6],
+      ["tokens", 13.2, 13.5], ["per", 13.6, 13.7], ["second.", 13.8, 14.2], ["And", 15, 15.2], ["I", 15.3, 15.4], ["think", 15.5, 15.8]]);
+    const scan = words([["this", 10.2, 10.4], ["model", 10.5, 10.8], ["up", 11, 11.2], ["to", 11.3, 11.4], ["1,286,", 11.5, 12],
+      ["up", 12.2, 12.4], ["to", 12.5, 12.6], ["1,286", 12.7, 13.1], ["tokens", 13.2, 13.5], ["per", 13.6, 13.7], ["second.", 13.8, 14.2],
+      ["uh,", 14.4, 14.7], ["And", 15, 15.2], ["I,", 15.3, 15.4], ["I", 15.45, 15.5], ["think", 15.5, 15.8]]);
+    const said = timelineWords(tl, new Map([["mic", mic]])), heard = timelineWords(tl, new Map([["mic", scan]]));
+    const found = heardOnlyVerbatim(said, heard, w => scan[w.index]!);
+    expect(found.map(f => [f.text, f.start, f.source.start, f.source.end])).toEqual([["up to 1,286", 2.2, 12.2, 13.1], ["I", 5.45, 15.45, 15.5]]);
+    expect(found[0]!.context).toBe("model up to 1,286, up to 1,286 tokens per second. uh,");
+    const text = formatTimelineTranscript(said, [], { detail: "lines", fps: 30, heard: found }).split("\n");
+    expect(text).toEqual([
+      "mediaId mic",
+      "0.20 #0 this model up to 1,286",
+      "  + heard 2.20-3.10 mic 12.20-13.10, not in the transcript: “up to 1,286” in “model up to 1,286, up to 1,286 tokens per second. uh,”",
+      "3.20 #5 tokens per second.",
+      "5.00 #8 And I",
+      "  + heard 5.45-5.50 mic 15.45-15.50, not in the transcript: “I” in “second. uh, And I, I think”",
+      "5.50 #10 think",
+    ]);
+    // A word the two readings spell differently is not one the transcript left out.
+    const respelled = words([["this", 10.2, 10.4], ["model", 10.5, 10.8], ["up", 11, 11.2], ["to", 11.3, 11.4], ["twelve", 11.5, 12.6],
+      ["tokens", 13.2, 13.5]]);
+    expect(heardOnlyVerbatim(timelineWords(tl, new Map([["mic", respelled]])), timelineWords(tl, new Map([["mic", mic.slice(0, 6)]])),
+      w => mic[w.index]!)).toEqual([]);
   });
 });
 
