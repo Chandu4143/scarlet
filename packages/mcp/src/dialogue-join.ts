@@ -200,7 +200,11 @@ export function soundBesideEdge(pages: JoinPage[], mediaId: string, stream: numb
   }
 }
 
-function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number, pace: JoinPace = DEFAULT_PACE): Edge {
+/**
+ * `paced`: the edge belongs to a range given in seconds with the pause its join should play (`leave`), so an edge in
+ * quiet goes where `pace` puts it in that quiet, as a word reference's edge does, instead of staying where it was typed.
+ */
+function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number, pace: JoinPace = DEFAULT_PACE, paced = false): Edge {
   const sources: SourceEdge[] = [];
   for (const clip of nearby) {
     const lo = clip.timelineIn, hi = lo + clipDuration(clip);
@@ -234,11 +238,30 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
     }
     return Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? { start: lo, end: hi } : undefined;
   };
+  /** Move a quiet frame to the padded position in its run, on the frame grid, without crossing a clip edge. */
+  const padInRun = (t: number, side: "start" | "end") => {
+    const run = runAt(t);
+    if (!run) return t;
+    const target = padEdge(run, side, pace);
+    let best = t;
+    for (let f = Math.ceil((run.start + quietMargin) * fps - 1e-7); f / fps <= run.end - quietMargin + 1e-7; f++) {
+      if (Math.abs(f / fps - target) < Math.abs(best - target)) best = f / fps;
+    }
+    return !crossesClip(t, best) && sound(best) === "quiet" ? best : t;
+  };
   // A removal that ends on the first sound of the word it resumes with was asked to (voiceIn): the word plays whole.
   if (direction === -1 && sources.length && sources.every(s => onWordOnset(s.page, s.at))) return { at };
   // The measured audio decides. A quiet gap is a clean edge even if a stretched word timing spans it. The engine saves
   // a removal on whole frames, rounded inward, and the inward frame can be the first sound of the word beside it.
   if (sound(at) === "quiet") {
+    // Seconds typed from word timings sit wherever those timings put them: two joins a pass placed that way played
+    // 0.45 s and 0.4 s of quiet after the last word where its skill asked for 0.14 s (2026-11-17). Given the pause,
+    // the edge goes where it puts it in this quiet, which takes out or keeps only quiet.
+    if (paced) {
+      const placed = padInRun(at, direction === 1 ? "start" : "end"), move = Math.abs(placed - at);
+      if (move > 1e-6) return { at: placed, snapped: true, note: (direction === 1 ? "start" : "end") + " moved " + move.toFixed(2) + " s " +
+        (placed > at ? "later" : "earlier") + " in its quiet, for the pause leave asks" };
+    }
     // The frame the engine would round to: later for a start, earlier for an end. When it is quiet too, the edge stays as given.
     const inward = (direction === 1 ? Math.ceil((at - FRAME_TOLERANCE) * fps) : Math.floor((at + FRAME_TOLERANCE) * fps)) / fps;
     const run = runAt(at);
@@ -254,17 +277,6 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
   if (sources.some(s => soundAt(s.page, s.at) !== "quiet" && (!s.page.voice.length || !s.page.words.length)))
     return { ...fail("The scan lacks the voice activity or word timings to place this edge."), unmeasured: true };
 
-  /** Move a quiet frame to the padded position in its run, on the frame grid, without crossing a clip edge. */
-  const padInRun = (t: number, side: "start" | "end") => {
-    const run = runAt(t);
-    if (!run) return t;
-    const target = padEdge(run, side, pace);
-    let best = t;
-    for (let f = Math.ceil((run.start + quietMargin) * fps - 1e-7); f / fps <= run.end - quietMargin + 1e-7; f++) {
-      if (Math.abs(f / fps - target) < Math.abs(best - target)) best = f / fps;
-    }
-    return !crossesClip(t, best) && sound(best) === "quiet" ? best : t;
-  };
   const lowest = Math.ceil((at - reach) * fps - 1e-7), highest = Math.floor((at + reach) * fps + 1e-7);
   const frames: number[] = [];
   for (let frame = lowest; frame <= highest; frame++) if (Math.abs(frame / fps - at) > 1e-7) frames.push(frame / fps);
@@ -670,8 +682,9 @@ export function checkResumeQuote(tl: Timeline, project: Project, end: number, pa
 /**
  * Only narrow a retake by more than a fragment. The caller still owns its meaning, visual review and approval.
  */
-export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange, pace: JoinPace = DEFAULT_PACE): JoinCheck {
-  return dialogueJoinChecker(tl, project, pages, pace)(range, namedWords);
+/** `air`: the room tone a range in seconds asked its join to leave (`leave`, `voiceIn`); its edges in quiet go there. */
+export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange, pace: JoinPace = DEFAULT_PACE, air?: JoinPace): JoinCheck {
+  return dialogueJoinChecker(tl, project, pages, pace)(range, namedWords, air);
 }
 
 /** Reuse the audible clip and stream indexes while checking a batch on one version. */
@@ -679,11 +692,11 @@ export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinP
   const { clips, streams } = dialogueClips(tl, project);
   const near = intervalCandidates(clips, c => c.timelineIn, clipEnd);
   const fps = project.settings.fps, duration = timelineDuration(tl);
-  const edge = (at: number, direction: 1 | -1, named?: number) =>
-    checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named, pace);
-  return (range: TimeRange, namedWords?: TimeRange): JoinCheck => {
-    const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start) : { at: range.start };
-    const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end) : { at: range.end };
+  const edge = (at: number, direction: 1 | -1, named?: number, air?: JoinPace) =>
+    checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named, air ?? pace, !!air);
+  return (range: TimeRange, namedWords?: TimeRange, air?: JoinPace): JoinCheck => {
+    const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start, air) : { at: range.start };
+    const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end, air) : { at: range.end };
     const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
     const inSound = ([["start", left], ["end", right]] as const).filter(([, e]) => e.inSound).map(([side]) => side);
     const inWord = ([["start", left], ["end", right]] as const).filter(([, e]) => e.inWord).map(([side]) => side);
