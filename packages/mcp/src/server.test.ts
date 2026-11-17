@@ -4362,7 +4362,7 @@ it("lets any model read and audit the edited timeline: playback transcript, join
   try {
     const read = textOf(await editor.callTool({ name: "timeline_transcript", arguments: {} }) as CallToolResult);
     expect(read).toContain("Version trimmed, 0.00–4.40 of 4.40 s timeline: 9 words, 1 joins.");
-    expect(read).toContain("0.20 #0 Hello everyone welcome back.\n‖ join 1 at 1.90 (0:01.27) m1 1.90→3.50 “back.” | “welcome”\n2.00 #5 welcome back to the show.");
+    expect(read).toContain("0.20 #0 Hello everyone welcome back.\n‖ join 1 at 1.90 (0:01.27) m1 1.90→3.50 “back.” | “welcome” took “Um,”\n2.00 #5 welcome back to the show.");
 
     const audit = JSON.parse(textOf(await editor.callTool({ name: "timeline_join_audit", arguments: {} }) as CallToolResult));
     expect(audit).toMatchObject({ version: "trimmed", joins: 1, clean: 1 });

@@ -68,6 +68,37 @@ describe("dialogue plan", () => {
     if (plan.outcome === "ready") expect(plan.decisions[0]!.held).toBe("The words named run on into the ones beside them at the start and end: no pause or low point where they part, a join in running speech. As placed the join plays “… ready ‖ again …”.");
   });
 
+  it("meets an earlier join a cut stops a few frames short of, so no flash plays between them", async () => {
+    // An earlier save joined mic 2.5 s to 3.0 s at 2.5 on the timeline. A cut of the quiet before that join stops 50 ms short of it.
+    const { tl, sources } = laidOut([take(0, 2.5, 0), take(3, 5, 2.5)]);
+    const plan = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 2.3, end: 2.45, kind: "pause" })] }, sources);
+    expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: 2.3, end: 2.5, review: false }] });
+    if (plan.outcome === "ready") expect(dialogueGate(plan).decisions[0]!.evidence).toContain("The end met the join at 2.5 s: the 50 ms between would have played as a flash");
+    // With a crossfade the two sounds overlap around the cut; the join is the middle of the overlap.
+    const faded = laidOut([take(0, 2.5, 0), take(3, 5, 2.5), { track: 1, clip: makeMediaClip("mic", 0, 2.533, 0) }, { track: 1, clip: makeMediaClip("mic", 2.967, 5, 2.467) }]);
+    faded.tl.tracks[1]!.clips = faded.tl.tracks[1]!.clips.slice(-2);
+    expect(await planDialogueCuts({ tl: faded.tl, localPauses: false, cuts: [cut({ start: 2.3, end: 2.45, kind: "pause" })] }, faded.sources))
+      .toMatchObject({ outcome: "ready", decisions: [{ start: 2.3, end: 2.5 }] });
+    // Further off than a few frames, the footage between is the agent's to keep.
+    const apart = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 2.27, end: 2.35, kind: "pause" })] }, sources);
+    expect(apart).toMatchObject({ outcome: "ready", decisions: [{ start: 2.27, end: 2.35 }] });
+  });
+
+  it("returns a pause trim whose words either side are the same, the gap of a restart", async () => {
+    const { tl, sources } = fixture();
+    // “count every single”, 1.5 s, “single pastry”: the trim leaves a quarter second and plays “single” twice.
+    const said = [{ text: "count", start: .5, end: .8 }, { text: "every", start: .8, end: 1.1 }, { text: "single", start: 1.1, end: 1.5 },
+      { text: "single", start: 3, end: 3.4 }, { text: "pastry", start: 3.4, end: 3.9 }];
+    const rms = Array.from({ length: 250 }, (_, i) => said.some(w => w.start <= (i + .5) / 50 && (i + .5) / 50 < w.end) ? .1 : .001);
+    sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, rms, peaks: rms, speechActivity: said }) }];
+    sources.words = async () => said;
+    const trim = (keepRepeat?: string) => planDialogueCuts({ tl, localPauses: false,
+      cuts: [cut({ kind: "pause", mediaId: "mic", afterWord: 2, leave: .25, keepRepeat })] }, sources);
+    expect(await trim()).toMatchObject({ outcome: "needsRevision", disputedEdges: [{ cuts: [0], repeat: { words: "single" },
+      reason: expect.stringContaining("The pause trim plays “single” twice") }] });
+    expect(await trim("single")).toMatchObject({ outcome: "ready", decisions: [{ review: false }] });
+  });
+
   it("returns an edit that leaves a single word doubled immediately after the cut", async () => {
     const { tl, sources } = fixture();
     const heard = ["Okay.", "Take", "two.", "the", "the", "answer."].map((text, i) => ({ text, start: .5 * i, end: .5 * i + .15 }));
