@@ -52,4 +52,11 @@ describe("where each area holds", () => {
     const { areas } = assignAreas(6, 27.5, [area(0, [0.1, 0.1, 0.8, 0.7], ["bottom"])], fitsAt);
     expect(areas[0]!.holds).toEqual([[0, 7.5], [22.5, 27.5]]);
   });
+  it("gives a frame two boxes fit to the one given nearest in time", () => {
+    // A pane inside the window shares its right and bottom edges; its left has no line.
+    const pane = area(25, [0.4, 0.1, 0.8, 0.9], ["left"]);
+    const { areas } = assignAreas(6, 27.5, [area(0, box), pane], fitsAt);
+    expect(areas[0]!.holds).toEqual([[0, 7.5]]);
+    expect(areas[1]!.holds).toEqual([[22.5, 27.5]]);
+  });
 });

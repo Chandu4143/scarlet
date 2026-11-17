@@ -85,9 +85,10 @@ export interface HeldArea extends ShowArea {
 export interface ShowAreas { areas: HeldArea[]; unset: Array<[number, number]> }
 
 /**
- * Which area holds on each frame. A frame goes to the box whose needed edges are all lines there: the surest fit, and
- * of equals the one given nearest in time. A box that needs no edge holds only on its own frame, unless it is the whole
- * picture, which holds wherever no other box does.
+ * Which area holds on each frame. A frame goes to a box whose needed edges are all lines there, and of several the one
+ * given nearest in time: two windows can share edges, and a browser behind an app keeps most of its own in view, so the
+ * surest fit is often the wrong window (one page's box took 790 s of an app's time that way). A box with fewer than two
+ * edges to find again holds only on its own frame, unless it is the whole picture, which holds wherever no other does.
  */
 export function assignAreas(frames: number, duration: number, areas: readonly ShowArea[], fitsAt: (frame: number, area: AreaBox) => Record<AreaSide, number>,
   step = SHOW_EDGE_STEP): ShowAreas {
@@ -102,17 +103,14 @@ export function assignAreas(frames: number, duration: number, areas: readonly Sh
   for (let i = 0; i < frames; i++) {
     const second = i * step, from = Math.max(0, second - step / 2), to = Math.min(duration, second + step / 2);
     if (to <= from) continue;
-    let best: { index: number; fit: number } | undefined, whole: number | undefined;
+    let best: { index: number; fit: number; near: number } | undefined, whole: number | undefined;
     areas.forEach((a, index) => {
       const near = Math.abs(a.at - second);
-      if (!needs[index]!.length) {
-        if (wholePicture(a.area)) { if (whole === undefined || near < Math.abs(areas[whole]!.at - second)) whole = index; }
-        else if (near <= step / 2 && !best) best = { index, fit: 0 };
-        return;
-      }
+      if (wholePicture(a.area)) { if (whole === undefined || near < Math.abs(areas[whole]!.at - second)) whole = index; return; }
+      if (needs[index]!.length < 2) { if (near <= step / 2 && !best) best = { index, fit: 0, near }; return; }
       const fits = fitsAt(i, a.area), fit = Math.min(...needs[index]!.map(side => fits[side]));
       if (fit < AREA_HOLDS_AT) return;
-      if (!best || fit > best.fit || (fit === best.fit && near < Math.abs(areas[best.index]!.at - second))) best = { index, fit };
+      if (!best || near < best.near || (near === best.near && fit > best.fit)) best = { index, fit, near };
     });
     const index = best?.index ?? whole;
     if (index === undefined) push(unset, from, to);
