@@ -184,6 +184,17 @@ describe("native retake boundaries", () => {
     expect(pause.start).toBeCloseTo(2.2 + AIR_AFTER_SPEECH);
     expect(pause.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
   });
+  it("places a join's room tone by the pace it is given, and splits a pause by it", () => {
+    const at = () => ({ ...page.edges!, valleys: [{ start: 2.5, end: 2.9 }] });
+    const pace = { after: .05, before: .05 };
+    const cut = wordCutRange(words, 1, 1, at, undefined, pace);
+    expect(cut.start).toBeCloseTo(1.44 + .05);
+    expect(cut.end).toBeCloseTo(3.4 - .05);
+    // A leave of 0.4 s split evenly, as the pace splits its room tone.
+    const pause = pauseCutRange(words[1]!, words[2]!, at, .4, pace);
+    expect(pause.start).toBeCloseTo(2.2 + .2);
+    expect(pause.end).toBeCloseTo(3.4 - .2);
+  });
   it("trims nothing from a pause asked to play at its full length, whatever sounds in the middle of it", () => {
     // A breath at 2.7–2.9 s splits the quiet between “first” and “next” in two. Each edge used to be pulled into the
     // quiet run beside its word, so a pause asked to stay 1.2 s long still lost the breath and the quiet around it.

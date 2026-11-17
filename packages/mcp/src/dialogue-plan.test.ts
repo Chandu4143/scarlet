@@ -380,6 +380,18 @@ describe("dialogue plan", () => {
     expect(gate.decisions).toEqual([expect.objectContaining({ cut: 0, asked: "cut", outcome: "review", from: [1.15, 3.6] })]);
   });
 
+  it("applies a cut it can't join cleanly as placed, with its evidence, when the model asks it to", async () => {
+    const { tl, sources } = fixture();
+    const plan = await planDialogueCuts({ tl, localPauses: false, unsureJoins: "cut", cuts: [cut({ start: 1.15, end: 3.6 })] }, sources);
+    if (plan.outcome !== "ready") throw new Error(plan.outcome);
+    const [retake] = plan.decisions;
+    expect(retake).toMatchObject({ review: false, kind: "retake" });
+    expect(retake!.start).toBeGreaterThan(1.44);
+    expect(retake!.end).toBeLessThan(3.4);
+    expect(dialogueGate(plan).decisions).toEqual([expect.objectContaining({ cut: 0, asked: "cut", outcome: "cut",
+      evidence: expect.stringMatching(/^Applied as placed, as unsureJoins asked: /) })]);
+  });
+
   it("keeps a staged repair inside its original range when an edge moves outward into a pause", async () => {
     const { tl, sources } = fixture();
     // The start clips "first" by 10 ms with quiet just before it; the end sits in "next", too far to snap.

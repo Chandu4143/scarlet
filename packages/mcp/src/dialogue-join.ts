@@ -65,11 +65,20 @@ const reach = .75, wordMargin = .02, quietMargin = .03;
  */
 export const AIR_AFTER_SPEECH = .15;
 export const AIR_BEFORE_SPEECH = .10;
+/**
+ * The room tone a join leaves: `after` the last kept word and `before` speech resumes, in the recording's seconds. A
+ * skill sets it as a pace; Scarlet's defaults are AIR_AFTER_SPEECH and AIR_BEFORE_SPEECH.
+ */
+export interface JoinPace { after: number; before: number }
+export const DEFAULT_PACE: JoinPace = { after: AIR_AFTER_SPEECH, before: AIR_BEFORE_SPEECH };
+/** A pause of `leave` seconds, split between the two sides of a join as `pace` splits its room tone. */
+export const splitLeave = (leave: number, pace: JoinPace = DEFAULT_PACE): JoinPace =>
+  ({ after: leave * pace.after / (pace.after + pace.before), before: leave * pace.before / (pace.after + pace.before) });
 
 /**
  * Where an edge sits in quiet run `run`. A `start` edge follows kept speech; an `end` edge precedes it.
  */
-export function padEdge(run: TimeRange, side: "start" | "end", air: { after: number; before: number } = { after: AIR_AFTER_SPEECH, before: AIR_BEFORE_SPEECH }): number {
+export function padEdge(run: TimeRange, side: "start" | "end", air: JoinPace = DEFAULT_PACE): number {
   const { after, before } = air;
   const length = run.end - run.start;
   const target = length < after + before
@@ -153,7 +162,7 @@ export function soundBesideEdge(pages: JoinPage[], mediaId: string, stream: numb
   }
 }
 
-function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number): Edge {
+function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number, pace: JoinPace = DEFAULT_PACE): Edge {
   const sources: SourceEdge[] = [];
   for (const clip of nearby) {
     const lo = clip.timelineIn, hi = lo + clipDuration(clip);
@@ -209,7 +218,7 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
   const padInRun = (t: number, side: "start" | "end") => {
     const run = runAt(t);
     if (!run) return t;
-    const target = padEdge(run, side);
+    const target = padEdge(run, side, pace);
     let best = t;
     for (let f = Math.ceil((run.start + quietMargin) * fps - 1e-7); f / fps <= run.end - quietMargin + 1e-7; f++) {
       if (Math.abs(f / fps - target) < Math.abs(best - target)) best = f / fps;
@@ -580,17 +589,17 @@ export function checkResumeQuote(tl: Timeline, project: Project, end: number, pa
 /**
  * Only narrow a retake by more than a fragment. The caller still owns its meaning, visual review and approval.
  */
-export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange): JoinCheck {
-  return dialogueJoinChecker(tl, project, pages)(range, namedWords);
+export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange, pace: JoinPace = DEFAULT_PACE): JoinCheck {
+  return dialogueJoinChecker(tl, project, pages, pace)(range, namedWords);
 }
 
 /** Reuse the audible clip and stream indexes while checking a batch on one version. */
-export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinPage[]) {
+export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinPage[], pace: JoinPace = DEFAULT_PACE) {
   const { clips, streams } = dialogueClips(tl, project);
   const near = intervalCandidates(clips, c => c.timelineIn, clipEnd);
   const fps = project.settings.fps, duration = timelineDuration(tl);
   const edge = (at: number, direction: 1 | -1, named?: number) =>
-    checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named);
+    checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named, pace);
   return (range: TimeRange, namedWords?: TimeRange): JoinCheck => {
     const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start) : { at: range.start };
     const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end) : { at: range.end };
@@ -981,10 +990,10 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
  * the default edge padding. `pageAt` returns measured evidence covering a source time. Without a kept
  * neighbor the edge runs to the start or end of the material.
  */
-export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number): WordCut {
+export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number, pace: JoinPace = DEFAULT_PACE): WordCut {
   const first = words[from]!, last = words[to]!;
   // The pause the join should play, word to word, in the recording's seconds: split as the default padding is.
-  const air = leave === undefined ? undefined : { after: leave * AIR_AFTER_SPEECH / (AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH), before: leave * AIR_BEFORE_SPEECH / (AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH) };
+  const air = leave === undefined ? pace : splitLeave(leave, pace);
   const problems: string[] = [], dips: string[] = [], retimed: string[] = [];
   // The kept word beside each edge, where the recording says it is.
   const heard = (kept: Word | undefined, neighbour: Word | undefined, side: "start" | "end") => {
@@ -1071,8 +1080,8 @@ export const PAUSE_BEAT = AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH;
  * inside the measured quiet beside its word: where a word's sound runs past its timing, the pause plays that much
  * longer rather than clip it. Sound in the middle of the pause, such as typing or a breath, goes with it.
  */
-export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => JoinPage["edges"] | undefined, leave = PAUSE_BEAT): TimeRange & { problems: string[]; plays: number; room: WordCut["room"] } {
-  const share = AIR_AFTER_SPEECH / PAUSE_BEAT;
+export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => JoinPage["edges"] | undefined, leave = PAUSE_BEAT, pace: JoinPace = DEFAULT_PACE): TimeRange & { problems: string[]; plays: number; room: WordCut["room"] } {
+  const share = pace.after / (pace.after + pace.before);
   const problems: string[] = [];
   const long = (q: TimeRange) => q.end - q.start >= 2 * quietMargin;
   const between = (page: JoinPage["edges"] | undefined) => (page ? gaps(page) : []).filter(q => long(q) && q.end > before.end - keptSlack && q.start < after.start + keptSlack);
