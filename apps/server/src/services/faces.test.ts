@@ -36,6 +36,9 @@ describe("finding faces", () => {
     expect(found[0]!.score).toBeCloseTo(0.95);
     [136 / 640, 56 / 360, 200 / 640, 120 / 360].forEach((v, i) => expect(found[0]!.box[i]).toBeCloseTo(v, 4));
     expect(found[0]!.yaw).toBe(0);
+    // The eyes 16 pixels either side of x 168, at y 84.8 (0.3 of a cell down row 5): their midpoint.
+    expect(found[0]!.eyes[0]).toBeCloseTo(168 / 640, 4);
+    expect(found[0]!.eyes[1]).toBeCloseTo(84.8 / 360, 4);
   });
 
   it("says roughly where a face looks from where its nose sits between its eyes", () => {
@@ -64,7 +67,7 @@ function frames(from: number, to: number, faces: (at: number) => Face[]): FaceSa
   for (let at = from; at < to - 1e-9; at += 0.5) out.push(faceSample(at, faces(at)));
   return out;
 }
-const at = (x: number, yaw = 0, y = 0.3, w = 0.15): Face => ({ box: [x, y, x + w, y + w * 16 / 9 * 0.9], score: 0.93, yaw });
+const at = (x: number, yaw = 0, y = 0.3, w = 0.15): Face => ({ box: [x, y, x + w, y + w * 16 / 9 * 0.9], score: 0.93, yaw, eyes: [x + w / 2, y + w * 16 / 9 * 0.36] });
 
 describe("face tracks", () => {
   it("makes a face that barely moves one span, across the windows it was read in", () => {
@@ -74,12 +77,17 @@ describe("face tracks", () => {
     expect(spans[0]).toMatchObject({ track: 1, start: 0, end: 120, yaw: 0, confidence: 0.93 });
     expect(spans[0]!.box[0]).toBeCloseTo(0.41, 2);
     expect(spans[0]!.box[2]).toBeCloseTo(0.58, 2);
+    // Its eyes where they usually are, not where the box that holds the sway would put them.
+    expect(spans[0]!.eyes[0]).toBeCloseTo(0.495, 2);
+    expect(spans[0]!.eyes[1]).toBeCloseTo(0.396, 3);
     expect(tracks).toEqual([expect.objectContaining({ track: 1, start: 0, end: 120, seconds: 120 })]);
+    expect(tracks[0]!.eyes).toEqual(spans[0]!.eyes);
   });
 
   it("starts a span when the face moves off its box, and keeps its track", () => {
     const { tracks, spans } = faceTracks([{ start: 0, end: 20, samples: frames(0, 20, t => [at(t < 10 ? 0.2 : 0.3)]) }]);
     expect(spans.map(s => [s.track, s.start, s.end])).toEqual([[1, 0, 10], [1, 10, 20]]);
+    expect(spans.map(s => s.eyes[0])).toEqual([0.275, 0.375]);
     expect(tracks).toHaveLength(1);
   });
 
@@ -133,6 +141,7 @@ describe("face tracks", () => {
   });
 
   it("keeps a frame's faces compactly", () => {
-    expect(faceSample(1.23456, [{ box: [0.12345, 0.2, 0.3, 0.4], score: 0.9345, yaw: -12 }])).toEqual({ at: 1.235, faces: [[0.123, 0.2, 0.3, 0.4, 0.93, -12]] });
+    expect(faceSample(1.23456, [{ box: [0.12345, 0.2, 0.3, 0.4], score: 0.9345, yaw: -12, eyes: [0.21156, 0.28] }]))
+      .toEqual({ at: 1.235, faces: [[0.123, 0.2, 0.3, 0.4, 0.93, -12, 0.212, 0.28]] });
   });
 });
