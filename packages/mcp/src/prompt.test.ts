@@ -24,6 +24,16 @@ it("reads an editor's style after the guide it builds on, and has it win where t
   const prompt = buildSystemPrompt({ project: "A project.", skills: [guide, style] });
   expect(prompt.indexOf("## dialogue-pass")).toBeLessThan(prompt.indexOf("## my-style"));
   expect(prompt).toContain("This builds on dialogue-pass, above. Where the two differ, follow this one.");
+  // A style can build on several guides: each is read first, and the ones that aren't in the prompt go unmentioned.
+  const framing = skill({ id: "skl_fs", name: "frame-screen", content: "---\nname: frame-screen\ndescription: Frame the screen.\n---\nFill the video." });
+  const both = skill({ id: "skl_all", name: "my-edit", content: "---\nname: my-edit\ndescription: Mine.\nextends: dialogue-pass, frame-screen, punch-in\n---\nMy camera sits bottom right." });
+  expect(buildSystemPrompt({ project: "A project.", skills: [guide, framing, both] }))
+    .toContain("This builds on dialogue-pass and frame-screen, above. Where it and one of them differ, follow this one.");
+  // A guide can be called in the text where it applies, with no header: it reads the same, and says how it is called.
+  const inline = skill({ id: "skl_in", name: "my-demo", content: "---\nname: my-demo\ndescription: Mine.\n---\n## Show the demo\n\n/frame-screen, with these changes: my camera sits bottom right." });
+  const called = buildSystemPrompt({ project: "A project.", skills: [framing, inline] });
+  expect(called.indexOf("## frame-screen")).toBeLessThan(called.indexOf("## my-demo"));
+  expect(called).toContain("This builds on frame-screen, above, and calls each as /name where it applies, with what it changes beside the call. Where the two differ, follow this one.");
   // Alone, it says nothing about a guide that isn't there.
   expect(buildSystemPrompt({ project: "A project.", skills: [style] })).not.toContain("builds on");
 });
