@@ -2,7 +2,9 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
+import type { AgentHost } from "@scarlet/shared";
+import { api } from "../../lib/client";
 import { buildDb, PRJ } from "../../lib/mock/fixtures";
 import { desktop, type AgentLoginStatus, type HostStatus } from "../../lib/desktop";
 import { ProjectLayout } from "../shell/ProjectLayout";
@@ -15,6 +17,110 @@ import { useUiStore } from "../../stores/ui";
 import { AgentChip } from "./AgentChip";
 import { Dropdown } from "../shell/WorkspaceNavigation";
 import { ModelSettings } from "../shell/ModelSettings";
+
+function modelHost(models: string[]): AgentHost {
+  return { ...buildDb().hosts[0]!, online: true, agents: [{
+    id: "codex", installed: true, loggedIn: true, models,
+    modelOptions: { "gpt-6.1-sol": { efforts: [{ id: "high" }], speeds: [{ id: "priority" }] } },
+  }] };
+}
+
+function setupModelRefresh(initial: AgentHost) {
+  const oldHosts = useHostsStore.getState();
+  const oldUi = useUiStore.getState();
+  const oldPrefs = useModelPreferences.getState();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("__TAURI_INTERNALS__", {});
+  const hostStatus: HostStatus = { hostId: initial.id, agents: initial.agents, connected: true, configured: true,
+    name: initial.name, running: [], serverUrl: null, error: null, mcpCommand: null };
+  vi.spyOn(desktop, "hostStatus").mockResolvedValue(hostStatus);
+  vi.spyOn(desktop, "onHostStatus").mockResolvedValue(() => {});
+  vi.spyOn(desktop, "info").mockResolvedValue({ version: "test", platform: "macos", arch: "arm64",
+    configFile: "", dataDir: "", workDir: "", logDir: "", customOpenaiModels: ["studio-model"] });
+  const discover = vi.spyOn(desktop, "hostRefreshAgents").mockResolvedValue(hostStatus);
+  const readHosts = vi.spyOn(api, "hosts").mockResolvedValue({ hosts: [initial] });
+  useHostsStore.setState({ hosts: [initial], status: "ready", error: null, customOpenaiModels: [], customClaudeModels: [] });
+  useUiStore.setState({ agentSetupOpen: false, agent: { agent: "codex", model: "gpt-6.1-sol", effort: "high", serviceTier: "priority" } });
+  useModelPreferences.setState({ hidden: ["codex:gpt-6-luna"], favorites: ["codex:gpt-6.1-sol"] });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  onTestFinished(async () => {
+    await act(() => root.unmount());
+    useHostsStore.setState(oldHosts, true);
+    useUiStore.setState(oldUi, true);
+    useModelPreferences.setState(oldPrefs, true);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+  return { container, root, hostStatus, discover, readHosts };
+}
+
+function refreshButton(container: Element) {
+  const button = [...container.querySelectorAll("button")].find(b => b.textContent === "Refresh models");
+  expect(button).toBeDefined();
+  return button!;
+}
+
+it("refreshes the open picker and shares one discovery with Settings while preserving model preferences", async () => {
+  const oldModels = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"];
+  const { container, root, hostStatus, discover, readHosts } = setupModelRefresh(modelHost(oldModels));
+  readHosts.mockResolvedValue({ hosts: [modelHost(["gpt-6.1-sol", "gpt-6-luna", "gpt-6.2-sol", "studio-model"])] });
+  let finishDiscovery!: (value: HostStatus) => void;
+  discover.mockReturnValueOnce(new Promise(resolve => { finishDiscovery = resolve; }));
+  await act(() => root.render(<MemoryRouter><AgentChip /><ModelSettings /></MemoryRouter>));
+  const trigger = container.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!;
+  await act(() => trigger.click());
+  const picker = container.querySelector('[aria-label="Model selector"]')!;
+  const refreshPicker = refreshButton(picker);
+  const refreshSettings = refreshButton(container.querySelector("section")!);
+  try {
+    await act(() => { refreshPicker.click(); refreshPicker.click(); refreshSettings.click(); });
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(readHosts).not.toHaveBeenCalled();
+    expect(refreshPicker.disabled).toBe(true);
+    expect(refreshSettings.disabled).toBe(true);
+    expect(picker.querySelector('[aria-label="Codex · gpt-6-astra"]')).toBeTruthy();
+  } finally {
+    await act(() => finishDiscovery(hostStatus));
+  }
+  expect(readHosts).toHaveBeenCalledTimes(1);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(picker.querySelector('[role="status"]')?.textContent).toContain("Models refreshed");
+  expect(refreshPicker.disabled).toBe(false);
+  expect(refreshSettings.disabled).toBe(false);
+  expect(picker.querySelector('[aria-label="Codex · gpt-6.2-sol"]')).toBeTruthy();
+  expect(picker.querySelector('[aria-label="Codex · studio-model · Custom"]')).toBeTruthy();
+  expect(picker.querySelector('[aria-label="Codex · gpt-6-astra"]')).toBeNull();
+  expect(picker.querySelector('[aria-label="Codex · gpt-6-luna"]')).toBeNull();
+  expect(picker.querySelector('[aria-label="Favorite Codex · gpt-6.1-sol"]')?.getAttribute("aria-pressed")).toBe("true");
+  expect(picker.querySelector('[aria-label="Codex · gpt-6.1-sol"]')?.getAttribute("aria-checked")).toBe("true");
+  expect(useUiStore.getState().agent).toEqual({ agent: "codex", model: "gpt-6.1-sol", effort: "high", serviceTier: "priority" });
+});
+
+it("refreshes an empty catalog directly and lets the editor retry a failed discovery from the picker", async () => {
+  const { container, root, discover, readHosts, hostStatus } = setupModelRefresh(modelHost([]));
+  discover.mockResolvedValueOnce({ ...hostStatus, error: "Codex timed out. Try refreshing again." });
+  await act(() => root.render(<MemoryRouter initialEntries={["/p/test"]}>
+    <Dropdown label="More" button="⋯">{() => <AgentChip variant="menu" />}</Dropdown>
+  </MemoryRouter>));
+  await act(() => container.querySelector<HTMLButtonElement>('[aria-label="More"]')!.click());
+  const row = container.querySelector<HTMLButtonElement>('[role="menuitem"][aria-label="Refresh models"]')!;
+  await act(() => row.click());
+  const picker = container.querySelector('[aria-label="Model selector"]')!;
+  expect(discover).toHaveBeenCalledTimes(1);
+  expect(useUiStore.getState().agentSetupOpen).toBe(false);
+  expect(picker.querySelector('[role="alert"]')?.textContent).toContain("Codex timed out. Try refreshing again.");
+  expect(picker.textContent).not.toContain("Models refreshed");
+
+  readHosts.mockResolvedValue({ hosts: [modelHost(["gpt-6.2-sol"])] });
+  await act(() => refreshButton(picker).click());
+  expect(row.getAttribute("aria-expanded")).toBe("true");
+  expect(container.querySelector('[role="menu"]')).toBeTruthy();
+  expect(discover).toHaveBeenCalledTimes(2);
+  expect(picker.querySelector('[role="alert"]')).toBeNull();
+  expect(picker.querySelector('[role="status"]')?.textContent).toContain("Models refreshed");
+  expect(picker.querySelector('[aria-label="Codex · gpt-6.2-sol"]')).toBeTruthy();
+});
 
 it("shows the model name and effort dial and returns focus after keyboard navigation", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -218,8 +324,8 @@ it("says the model list couldn't be read, with Refresh to try again, when a sign
   const root = createRoot(container);
   try {
     await act(() => root.render(<MemoryRouter><AgentChip /><ModelSettings /></MemoryRouter>));
-    const chip = container.querySelector<HTMLAnchorElement>('a[href="/settings#models"]')!;
-    expect([chip.textContent?.trim(), chip.title]).toEqual(["Refresh models", "Couldn’t read the model list. Refresh models in Settings to try again."]);
+    const chip = container.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
+    expect([chip.textContent?.trim(), chip.title]).toEqual(["Refresh models", "Couldn’t read the model list. Refresh models to try again."]);
     expect(container.textContent).toContain("Couldn’t read the model list. Refresh models to try again, and update Claude Code or Codex if it still fails.");
     expect(container.textContent).not.toContain("current-generation");
   } finally {
