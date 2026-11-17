@@ -13,7 +13,7 @@ import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
 import { audibleSourcePoints, cutsReach, dialogueGate, dialogueScanPage, planDialogueCuts, resolveCutRange, SPEECH_BESIDE_EDGE, type DialoguePlanSources } from "./dialogue-plan.js";
 import { inspectDialogueSuggestion, MAX_WHOLE_PICTURE_SHEETS, type DialogueInspection } from "./dialogue-review.js";
 import { Lanes, ReviewInspections, urgencyRank, type InspectionRequest } from "./review-prep.js";
-import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, DIP_DBFS, PAUSE_BEAT, checkKeptWords, checkDialogueJoin, NoCachedSpeech, checkResumeQuote, clipEdgeSound, dialogueAudioStream, dialogueClips, dialogueCutPreview, dialogueJoinWords, joinAudio, joinEvidence, quietFrameNote, type JoinPage } from "./dialogue-join.js";
+import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, DIP_DBFS, LEAST_VOICE_IN, PAUSE_BEAT, checkKeptWords, checkDialogueJoin, NoCachedSpeech, checkResumeQuote, clipEdgeSound, dialogueAudioStream, dialogueClips, dialogueCutPreview, dialogueJoinWords, joinAudio, joinEvidence, quietFrameNote, type JoinPage } from "./dialogue-join.js";
 import { DialogueScanBatch, FIRST_CUT_BATCH_SIZE } from "./dialogue-scan-batch.js";
 import { resolveOutgoingPause } from "./outgoing-pause.js";
 import { DialogueEvidence, matchFillers } from "./dialogue-decisions.js";
@@ -1911,11 +1911,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const PauseRef = {
     afterWord: z.number().int().nonnegative().optional().describe("Pause reference, with mediaId: the transcript_get index of the word the pause follows. Scarlet trims the pause between it and the next word, both edges in the measured quiet."),
     leave: z.number().finite().min(0.05).max(10).optional().describe(`Seconds of pause that should still play, word to word, as the editor hears it. Required with afterWord: how long a pause plays is yours to judge, by the delivery around it and the pace the skill asks for. Optional with fromWord/toWord: the pause the join plays, which is pace's after and before together when omitted (${PAUSE_BEAT} s by default).`),
+    voiceIn: z.number().finite().min(LEAST_VOICE_IN).max(2).optional().describe(`With a word or pause reference: seconds of quiet between the cut and the next word, as the editor hears it, which is how soon the voice comes in once the picture cuts. pace's before when omitted (${AIR_BEFORE_SPEECH} s by default), and 0 puts the cut on the word's first sound, kept whole. A voice takes about 0.04 s more to reach speaking level, so 0.03 plays as about two frames from the cut to the voice. The rest of the pause plays before the cut. Yours to judge at each cut, by the delivery, what the line begins and the pace the skill and the editor ask for.`),
   };
   const paceInput = z.object({
     after: z.number().finite().min(0.01).max(2).describe("Seconds of room tone after the last kept word, as the editor hears it"),
     before: z.number().finite().min(0.01).max(2).describe("Seconds of room tone before speech resumes, as the editor hears it"),
-  }).optional().describe(`The room tone a join leaves either side when Scarlet places its edges in the quiet: the pause a word cut plays when it gives no leave, how a leave is split between the two sides, and where an edge moved off sound settles. A pace for every join of this call, from the skill and the editor. Omitted: ${AIR_AFTER_SPEECH} s after and ${AIR_BEFORE_SPEECH} s before.`);
+  }).optional().describe(`The room tone a join leaves either side when Scarlet places its edges in the quiet: the pause a word cut plays when it gives no leave, the quiet a leave keeps between the cut and the next word (the rest of it plays before the cut), and where an edge moved off sound settles. A pace for every join of this call, from the skill and the editor. Omitted: ${AIR_AFTER_SPEECH} s after and ${AIR_BEFORE_SPEECH} s before.`);
   const unsureJoinsInput = z.enum(["ask", "cut"]).optional().describe("A cut you decided whose join Scarlet can't place cleanly: no measured quiet at an edge, an edge that has to move more than a few frames, both edges inside running speech, or a production aside with no silence at its edges. ask (the default) stages it for the editor with what Scarlet measured; cut applies it where Scarlet placed it and reports the evidence to you. Your skill says which.");
   let checkedVersion: string | undefined;
   const checkedRepeats = new Map<string, RepeatEvidence>();
@@ -1973,7 +1974,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       silencesFrom: z.number().finite().min(0.5).max(30).optional().describe(`List in silences, and count in remaining, each wordless stretch at least this many seconds long. From the pace the skill asks for; ${SILENCE_LEFT_SECONDS} s when omitted.`) },
     async ({ version, keep, offset, silencesFrom }) => json(await checkRepeats(version, keep, offset, silencesFrom)));
 
-  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with leave: the seconds it should still play). Measured word edges leave the room tone of pace after kept speech and before it resumes, or the pause you give as leave, split the same way. For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
+  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with leave: the seconds it should still play). Measured word edges leave the room tone of pace after kept speech and before it resumes, and a pause you give as leave plays before the cut but for pace's before (or the voiceIn you give). For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
   const crossfadeFrames = CrossfadeFrames.optional()
     .describe("Total audio-only overlap at the new dialogue joins, in project frames. Zero or omitted makes a straight cut.");
   const repeatedPhrase = z.string().trim().min(1);
