@@ -1,6 +1,6 @@
 import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
-import { BRIEF_PICTURES_NEXT, newBriefPictures } from "./brief-pictures.js";
+import { BRIEF_PICTURES_NEXT, flashesOntoCuts, MET_CUT_NEXT, newBriefPictures, type MetCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
 import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
@@ -945,6 +945,21 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         throw new Error("Give reason for the change so the editor can see why you made it.");
       }
     }
+    // A picture the edit leaves on screen for a flash between two others goes onto the cut beside it, reported as metCut.
+    let metCut: MetCut[] = [];
+    if (ctx.author.type === "agent" && before && (body.timeline || body.ops)) {
+      const asked = body.timeline ?? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })();
+      if (asked) {
+        const had = new Set(before.tracks.flatMap(t => t.clips.map(c => c.id)));
+        const named = new Set((body.ops ?? []).flatMap(op => op.op === "addClip" && op.clip.id ? [op.clip.id] : []));
+        const { project } = await getProject();
+        const closed = flashesOntoCuts(before, asked, project.media, project.settings, id => !!body.timeline || had.has(id) || named.has(id));
+        if (closed.ops.length) {
+          body = body.timeline ? { ...body, timeline: applyOps(body.timeline, closed.ops) } : { ...body, ops: [...body.ops!, ...closed.ops] };
+          metCut = closed.met;
+        }
+      }
+    }
     const req: ProposeChangeRequest = {
       ...body,
       fromVersion: before && before.version !== "draft" ? before.version : undefined,
@@ -982,6 +997,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(unframed.length && { unframedBeside: unframed, next: UNFRAMED_NEXT }),
       ...(bare.length && { backgroundShows: bare, backgroundNext: BACKGROUND_NEXT }),
       ...(brief.length && { briefPictures: brief.slice(0, 20), briefNext: BRIEF_PICTURES_NEXT }),
+      ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
     };
     return json(result);
   }
