@@ -49,6 +49,21 @@ coaching, and automatic removals in historical runs. Results are split by tier:
 - **Hand-analysis method.** `--kept-side` reads the loudest 50 ms on the kept side. "Per-cut edges" counts both
   edges of every listed cut, the way the original hand analysis did.
 
+**Showable area** (`showable.ts`, `showableMeasure.ts`). Whether a cut keeps a screen recording inside what the
+editor means viewers to see: the window being presented, without the desktop, other apps or a call beside it.
+
+- **Labels.** The editor confirms a box on a frame of the recording, once for each window layout. The file is
+  `{"schema":1,"recording":"<media id>","labels":[{"at":<second>,"area":{"left":0.08,"top":0.1,"right":0.84,"bottom":0.89}}]}`,
+  edges as fractions of the picture. List an edge under `soft` when the picture has no line there. Keep the
+  file with the case, never in the repository.
+- **Holds.** `--recording <file>` reads one frame every five seconds and records the stretches each box holds for:
+  every edge it needs is still a line where it was. A window that moves or resizes ends the hold, and that
+  time stays unlabelled until a box is confirmed for it.
+- **Score.** `--timeline <json>` looks at a version every half second. Of the labelled screen time on picture,
+  `outsideShare` shows anything more than 1% of the picture past its box and `farOutsideShare` more than 5%.
+  `worst` lists the moments to look at. A box can hold by chance on a different window with edges in the same
+  places, so check `worst` against frames before trusting a change in the score.
+
 **Pacing** (`pacing` in `metrics.ts`). What each version still plays, read from the transcript's words on that
 version's timeline: the source, the applied cut, the proposed cut and the reference.
 

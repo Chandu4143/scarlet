@@ -283,9 +283,22 @@
   background: rgb(16 16 16 / 86%);
 }
 .monitor-controls button:enabled { color: #f4f0e8; }
-.playback-speed { display: flex; align-items: center; }
-.playback-speed .btn-icon { width: 26px; height: 28px; }
-.playback-speed output { width: 5ch; text-align: center; color: #f4f0e8; font: 11px var(--font-mono); }
+.playback-speed-trigger {
+  width: auto; height: 28px; padding: 0 7px; gap: 4px; font: 12px/1 var(--font-mono);
+}
+.playback-speed-trigger[aria-expanded="true"] { background: var(--color-raised); }
+.playback-speed button:focus-visible { outline-offset: -2px; }
+.playback-speed-panel {
+  position: absolute; bottom: calc(100% + 4px); right: 0; display: flex; align-items: center;
+  width: max-content; max-width: calc(100cqw - 12px); padding: 3px; border: 1px solid #4b4a48; border-radius: 7px;
+  background: #1c1c1b; box-shadow: 0 3px 12px #0005;
+}
+.playback-speed-panel .btn-icon { width: 28px; min-width: 0; height: 28px; font-size: 16px; }
+.playback-speed-panel .btn-icon:disabled { color: #969693; opacity: 1; }
+.playback-speed-panel output { flex: none; width: 5ch; text-align: center; color: #f4f0e8; font: 12px/1 var(--font-mono); }
+@container (max-width: 280px) {
+  .playback-speed-panel { top: calc(100% + 4px); bottom: auto; }
+}
 .mic-ready {
   background: var(--color-raised);
   color: var(--color-accent-soft);
@@ -336,6 +349,75 @@
 .media-thumb { flex: none; width: 68px; height: 40px; border-radius: 5px; }
 .media-glyph { display: grid; place-items: center; background: var(--color-raised); color: var(--color-muted); }
 .settings-page { max-width: 930px; }
+.transcription-preferences { container-type: inline-size; }
+.transcription-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 32%);
+  align-items: center;
+  gap: 20px;
+  padding: 18px 20px 16px;
+}
+.transcription-heading { display: flex; align-items: center; gap: 12px; }
+.transcription-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-raised);
+}
+.transcription-heading h2 { font-size: 18px; line-height: 1.25; font-weight: 600; letter-spacing: -.025em; }
+.transcription-heading p { margin-top: 3px; font-size: 12px; color: var(--color-muted); }
+.transcription-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 18px;
+  padding: 11px 13px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-raised) 57%, var(--color-panel));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.transcription-status > [role="status"] { flex: 1 1 225px; }
+.transcription-privacy { display: flex; align-items: center; gap: 7px; color: var(--color-muted); }
+.transcription-privacy svg, .transcription-setup-row > svg { flex: none; color: var(--color-dim); }
+.transcription-setup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-line);
+  border-radius: 0 0 12px 12px;
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.transcription-setup-row::-webkit-details-marker { display: none; }
+.transcription-setup-row:hover { background: var(--color-raised); }
+.transcription-setup[open] > summary { border-radius: 0; }
+.transcription-setup[open] > summary > svg { transform: rotate(90deg); }
+.transcription-instructions {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  max-width: 75ch;
+  padding: 0 20px 18px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.transcription-instructions .underline { color: var(--color-fg); text-underline-offset: 3px; }
+.transcription-preferences > [role="status"], .transcription-preferences > [role="alert"] { margin: 0 20px 12px; }
+@container (max-width: 570px) {
+  .transcription-header { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .transcription-status { flex-direction: column; align-items: flex-start; }
+  .transcription-status > [role="status"] { flex: none; }
+}
 .about-settings { display: grid; gap: 20px; }
 .about-build {
   display: flex;

@@ -16,8 +16,27 @@ describe("restarts", () => {
       .toEqual([["there's this like white", "i don't know what that is"]]);
     expect(phrases(said("very fast and in fact you can load it locally and in fact you can load it locally if you have a gpu")))
       .toEqual([["and in fact you can load it locally", ""]]);
-    // One word slipped into the second saying: the words after it still come back.
-    expect(phrases(said("a model that just outputs something so that outputs something so wild"))).toEqual([["outputs something so", "that"]]);
+    // One word left out of the second saying: the whole first attempt comes back.
+    expect(said("a model that just outputs something so that outputs something so wild").found).toEqual([{ at: 2, length: 5, next: 7, again: 4 }]);
+  });
+
+  it("finds a first attempt said again with one word added or dropped, on three words that match", () => {
+    expect(said("so we can see exactly how mechanical watch how a mechanical watch works").found).toEqual([{ at: 5, length: 3, next: 8, again: 4 }]);
+    expect(said("we see how a mechanical watch how mechanical watch works").found).toEqual([{ at: 2, length: 4, next: 6, again: 3 }]);
+    // Two words that match are ordinary speech, and so is a phrase that goes on to say something else.
+    expect(said("the red the blue car").found).toEqual([]);
+    expect(said("we went to the shop and we to the beach").found).toEqual([]);
+  });
+
+  it("compares a contraction as the word it starts with", () => {
+    expect(phrases(said("give me a detailed prompt and have and then I will basically and then I'll copy paste the prompt")))
+      .toEqual([["and then i", "will basically"]]);
+    expect(said("it's a really good model it is a really good model").found).toEqual([{ at: 0, length: 5, next: 5, again: 6 }]);
+  });
+
+  it("finds a restart inside the first attempt of a longer match", () => {
+    expect(phrases(said("has it read a line of code sam altman hasn't read a sam altman hasn't read a line of code in a year")))
+      .toEqual([["read a line of code", "sam altman hasn't read a sam altman hasn't"], ["sam altman hasn't read a", ""]]);
   });
 
   it("pairs a third saying with the second, and takes the longest phrase a word starts", () => {

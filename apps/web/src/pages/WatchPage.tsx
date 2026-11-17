@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { ThreadEdit } from "@scarlet/shared";
@@ -71,6 +71,52 @@ function stepPlaybackRate(direction: -1 | 1) {
   const rate = usePlayerStore.getState().rate;
   const next = Math.min(MAX_RATE, Math.max(MIN_RATE, rate + direction * RATE_STEP));
   if (next !== rate) player.setRate(next);
+}
+
+function PlaybackSpeed({ playable }: { playable: boolean }) {
+  const rate = usePlayerStore(s => s.rate);
+  const [open, setOpen] = useState(false);
+  const control = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: Event) => {
+      if (!control.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isComposing(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      trigger.current?.focus({ preventScroll: true });
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("focusin", dismissOutside);
+    document.addEventListener("keydown", dismissEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("focusin", dismissOutside);
+      document.removeEventListener("keydown", dismissEscape, true);
+    };
+  }, [open]);
+
+  return <div ref={control} className="playback-speed" onClick={e => {
+    // A pointer adjustment hands Space back to the player. Keyboard users keep their place.
+    if (e.detail > 0 && e.target instanceof Element) e.target.closest("button")?.blur();
+  }}>
+    <button type="button" className="btn-icon playback-speed-trigger" ref={trigger}
+      aria-label={`Playback speed, ${rate}×`} title="Playback speed" aria-expanded={open} aria-controls={open ? panelId : undefined}
+      onClick={() => setOpen(shown => !shown)}>{rate}×<Icon name="down" size={10} /></button>
+    {open && <div className="playback-speed-panel" id={panelId} role="group" aria-label="Playback speed" data-escape-owner>
+      <button type="button" className="btn-icon" aria-label="Decrease playback speed" aria-keyshortcuts="-" title="Decrease playback speed (−)"
+        disabled={!playable || rate <= MIN_RATE} onClick={() => stepPlaybackRate(-1)}>−</button>
+      <output>{rate}×</output>
+      <button type="button" className="btn-icon" aria-label="Increase playback speed" aria-keyshortcuts="plus =" title="Increase playback speed (+)"
+        disabled={!playable || rate >= MAX_RATE} onClick={() => stepPlaybackRate(1)}>+</button>
+    </div>}
+  </div>;
 }
 
 export function ImportPreview({ projectId, preparing, onMedia }: { projectId: string; preparing?: MediaAsset; onMedia(): void }) {
@@ -259,7 +305,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const videoDuration = usePlayerStore((s) => s.duration);
   const playing = usePlayerStore((s) => s.playing);
   const playbackReady = usePlayerStore((s) => s.playbackReady);
-  const rate = usePlayerStore((s) => s.rate);
   const [params] = useSearchParams();
   const { hash } = useLocation();
   const navigate = useNavigate();
@@ -718,14 +763,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             <PlayerTime end={duration} coarse />
           </MonitorPlayback>}
           {(source || cut || change || draftVersion) && <div className="monitor-controls">
-            <div className="playback-speed" role="group" aria-label="Playback speed"
-              onClick={e => { if (e.detail > 0 && e.target instanceof HTMLButtonElement) e.target.blur(); }}>
-              <button type="button" className="btn-icon" aria-label="Decrease playback speed" aria-keyshortcuts="-" title="Decrease playback speed (−)"
-                disabled={!playable || rate <= MIN_RATE} onClick={() => stepPlaybackRate(-1)}>−</button>
-              <output>{rate}×</output>
-              <button type="button" className="btn-icon" aria-label="Increase playback speed" aria-keyshortcuts="plus =" title="Increase playback speed (+)"
-                disabled={!playable || rate >= MAX_RATE} onClick={() => stepPlaybackRate(1)}>+</button>
-            </div>
+            <PlaybackSpeed playable={playable} />
             <button className="btn-icon" onClick={e => { if (e.detail) e.currentTarget.blur(); void toggleFullscreen(); }} aria-label={expanded ? "Exit full screen" : "Full screen"} title={expanded ? "Exit full screen" : "Full screen"}>
               <Icon name="fullscreen" size={15} />
             </button>

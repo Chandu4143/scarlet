@@ -4,6 +4,14 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 17, 2026
+
+- Edit numbers sit above the footage, and clicking the zoom percentage on the ruler fits the whole timeline.
+- Click the speed beside Full screen to open the player’s − and + controls.
+- Cuts Scarlet places by time now leave only the pause your skill asks for after your last word, instead of whatever quiet was there.
+- A screen demo that ends or starts a frame or two off the camera's cut now changes on that cut, so your camera no longer flashes full frame between them.
+- Speech transcription settings show your preferred model, when Scarlet uses bundled Whisper, and how to set up CrisperWhisper.
+
 ## November 16, 2026
 
 - When Scarlet removes a restart, it no longer takes a word or two of the sentence you kept along with it, as in “this is absolutely … detail” where “beautiful” went with the stumble after it.

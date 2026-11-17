@@ -233,6 +233,22 @@ it("joins whisper's tokens into words: pieces onto the word before, punctuation 
   expect(parseWhisperJson({})).toEqual([]);
 });
 
+it("leaves out a last line that only writes the end of the line before again, after it was said", () => {
+  const token = (text: string, from: number, to: number) => ({ text, offsets: { from, to }, p: 0.9 });
+  const line = (from: number, to: number, ...words: Array<[string, number, number]>) =>
+    ({ offsets: { from, to }, text: words.map(w => w[0]).join(""), tokens: words.map(w => token(...w)) });
+  const said = line(116_900, 120_780, [" behind", 117_000, 117_500], [" it", 117_500, 117_600], [" at", 117_600, 117_700], [" $3.26.", 117_700, 120_700]);
+  const copy = line(122_920, 123_380, [" $3.26.", 122_920, 123_380]);
+  expect(parseWhisperJson({ transcription: [said, copy] }).map(s => s.text)).toEqual(["behind it at $3.26."]);
+  // Said again before the window's end, or as more than a few words, it is speech.
+  expect(parseWhisperJson({ transcription: [said, copy, line(124_000, 125_000, [" Next", 124_000, 124_500])] })).toHaveLength(3);
+  const sentence = line(130_000, 132_000, [" it", 130_000, 130_100], [" at", 130_100, 130_200], [" $3.26", 130_200, 131_000], [" now", 131_000, 131_200], [" today.", 131_200, 132_000]);
+  const again = line(133_000, 135_000, [" it", 133_000, 133_100], [" at", 133_100, 133_200], [" $3.26", 133_200, 134_000], [" now", 134_000, 134_200], [" today.", 134_200, 135_000]);
+  expect(parseWhisperJson({ transcription: [sentence, again] })).toHaveLength(2);
+  // A copy that starts before its line ends is Whisper's overlap, read on its own merits elsewhere.
+  expect(parseWhisperJson({ transcription: [said, line(120_000, 121_000, [" $3.26.", 120_000, 121_000])] })).toHaveLength(2);
+});
+
 it("decodes a recording's audio for whisper, keeps the decode only where the caller asked, and reads a dialogue window as it is", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scarlet-whisper-"));
   try {

@@ -342,6 +342,12 @@ export function reviewReasons(change: Pick<Change, "cutReasons" | "ops" | "descr
   return reviewNotes(items, cuts).map(notes => [...new Set(notes.map(r => r.reason).filter(Boolean))]);
 }
 
+/** What Scarlet measured when it held each review spot's cut, kept apart from the agent's reasons. */
+export function reviewHeldNotes(change: Pick<Change, "cutReasons">, cuts: ReviewSpots) {
+  if (!change.cutReasons?.some(cut => cut.held)) return cuts.map(() => undefined);
+  return reviewNotes(change.cutReasons, cuts).map(notes => [...new Set(notes.map(note => note.held).filter(Boolean))].join(" ") || undefined);
+}
+
 /** Find the short chat summaries on a review spot's original footage, including coalesced removals. */
 export function reviewCutSummaries(change: Pick<Change, "cutReasons">, cuts: ReviewSpots) {
   if (!change.cutReasons?.some(cut => cut.summary)) return cuts.map(() => undefined);
