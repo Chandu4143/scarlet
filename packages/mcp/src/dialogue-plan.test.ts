@@ -583,6 +583,50 @@ describe("dialogue plan", () => {
     await expect(plan({ mediaId: "mic", afterWord: 1, leave: .25 })).rejects.toThrow("does not play “first” and “next” (#1, #2) one after the other");
   });
 
+  it("sets a pause it can't trim aside with why, and saves the rest of the batch", async () => {
+    // Levels in 10 ms steps: speech at .12, a breath at .02 (over the quiet bar, under speaking level), room at .001.
+    const heard = (said: typeof words, level: (t: number) => number, talk: TimeRange[]) => {
+      const { tl, sources } = fixture();
+      const rms = Array.from({ length: 500 }, (_, i) => level((i + .5) / 100));
+      sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, rms, peaks: rms, speechActivity: talk }) }];
+      sources.words = async () => said;
+      return { tl, sources };
+    };
+    const during = (talk: TimeRange[], t: number) => talk.some(v => v.start <= t && t < v.end);
+    const pause = (c: Partial<DialogueCutInput>) => cut({ kind: "pause", mediaId: "mic", ...c });
+
+    // The quiet between “finish” and “first” is 1.41–1.52 s. Clear of each word it holds one frame of a 30 fps
+    // version, 1.467 s, so both edges of a trim to 0.07 s land on it.
+    const tight = [{ start: 1, end: 1.4, text: "finish" }, { start: 1.53, end: 1.9, text: "first" }, { start: 3, end: 3.4, text: "next" }, { start: 3.9, end: 4.2, text: "last" }];
+    const tightTalk = [{ start: .98, end: 1.41 }, { start: 1.52, end: 1.92 }, { start: 3, end: 3.42 }, { start: 3.9, end: 4.22 }];
+    const one = heard(tight, t => during(tightTalk, t) ? .12 : .001, tightTalk);
+    await expect(planDialogueCuts({ tl: one.tl, localPauses: false, cuts: [pause({ afterWord: 0, leave: .07 })] }, one.sources))
+      .rejects.toThrow("would take out 50 ms: the quiet between the words holds no whole frame of version");
+    // Beside another cut it is named and set aside, where the empty range it made once refused them both.
+    const batch = [pause({ afterWord: 0, leave: .07 }), pause({ afterWord: 1, leave: .25 })];
+    const named = await planDialogueCuts({ tl: one.tl, localPauses: false, cuts: batch }, one.sources);
+    expect(named).toMatchObject({ outcome: "needsRevision", disputedEdges: [{ cuts: [0] }] });
+    if (named.outcome === "needsRevision") expect(named.disputedEdges[0]!.reason).toMatch(/^cuts\[0\]: The pause between “finish” and “first” \(#0, #1\) plays 0\.13 s.*It plays as it is\. It was left out of this save; the other cuts are unaffected\.$/u);
+    const rest = await planDialogueCuts({ tl: one.tl, localPauses: false, cuts: batch, setAside: new Set([0]) }, one.sources);
+    expect(rest).toMatchObject({ outcome: "ready", decisions: [{ review: false }] });
+    if (rest.outcome === "ready") expect(rest.removals.map(r => r.input)).toEqual([1]);
+
+    // Half a second between “finish” and “first”: 0.09 s of quiet, then a breath that runs up to “first”. A trim stays
+    // in the quiet, so it can't reach 0.1 s, and the refusal says that instead of “plays 0.50 s, which leaves nothing
+    // to trim down to 0.10 s”.
+    const breathy = [{ start: 1, end: 1.4, text: "finish" }, { start: 1.9, end: 2.3, text: "first" }, { start: 3, end: 3.4, text: "next" }];
+    const breathTalk = [{ start: .98, end: 1.41 }, { start: 1.9, end: 2.32 }, { start: 3, end: 3.42 }];
+    const two = heard(breathy, t => during(breathTalk, t) ? .12 : t >= 1.5 && t < 1.9 ? .02 : .001, breathTalk);
+    const refused = planDialogueCuts({ tl: two.tl, localPauses: false, cuts: [pause({ afterWord: 0, leave: .1 })] }, two.sources);
+    await expect(refused).rejects.toThrow("plays 0.50 s, but a trim stays inside the measured quiet beside the two words");
+    await expect(refused).rejects.toThrow("give the range in timeline seconds: the wait is 1.40–1.90 s on version");
+    await expect(refused).rejects.not.toThrow("leaves nothing to trim");
+    // A pause that already plays as short as asked is set aside the same way beside another cut.
+    const fits = await planDialogueCuts({ tl: two.tl, localPauses: false, cuts: [pause({ afterWord: 0, leave: .6 }), pause({ afterWord: 1, leave: .25 })] }, two.sources);
+    expect(fits).toMatchObject({ outcome: "needsRevision", disputedEdges: [{ cuts: [0] }] });
+    if (fits.outcome === "needsRevision") expect(fits.disputedEdges[0]!.reason).toContain("plays 0.50 s, which leaves nothing to trim down to 0.60 s");
+  });
+
   it("tells the agent when a held word range has a saying of the same words with quiet at both edges", async () => {
     // “go a, b a, b end”, with a pause only after each “a”. Taking the first “a b” leaves no quiet before it; taking
     // “b a” leaves the same “go a b end” to play and has the pauses at both its edges.

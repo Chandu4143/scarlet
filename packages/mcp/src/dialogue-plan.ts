@@ -246,6 +246,10 @@ function playedOnce(clips: readonly MediaClip[], word: TranscriptWord, what: str
 /** Seconds read either side of a pause's two words when the pause holds speech, so the reading has the words around it. */
 const HEARD_CONTEXT = 0.5;
 
+/**
+ * A pause reference Scarlet found nothing to take out of: the pause already plays as short as asked, the quiet it could
+ * trim in is shorter than the wait, or what would come out is less than a frame. The pause plays as it is.
+ */
 export class NoPauseToTrim extends Error {}
 /** One cut of a batch that Scarlet could not turn into a range to remove. The batch's other cuts are unaffected. */
 export class CutNotPlaced extends Error {}
@@ -276,10 +280,26 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   const speed = clip.speed ?? 1, pace = sources.pace ?? DEFAULT_PACE, leave = ref.leave ?? pace.after + pace.before;
   const cut = pauseCutRange(before, after, pageAt, leave * speed, { after: pace.after * speed, before: pace.before * speed }, ref.voiceIn === undefined ? undefined : ref.voiceIn * speed);
   const plays = cut.plays / speed;
-  if ((cut.end - cut.start) / speed < .04) throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, which leaves nothing to trim down to ${leave.toFixed(2)} s.`);
   const on = onClip(clip);
+  if ((cut.end - cut.start) / speed < .04) {
+    // Already as short as asked, to within what a trim can take out.
+    if (plays - leave < .04) throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, which leaves nothing to trim down to ${leave.toFixed(2)} s.`);
+    // Longer than asked, and still nothing to take out: each edge stays inside the measured quiet beside its word, and
+    // the rest of the wait is sound under speaking level that reaches a word, most often the breath before the next
+    // line. Said as "plays 0.50 s, which leaves nothing to trim down to 0.10 s", it read as a contradiction and gave
+    // the model nothing to do about a wait it was right to want shorter.
+    throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, but a trim stays inside the measured quiet beside the two words, and that quiet ` +
+      `is too short to bring it down to ${leave.toFixed(2)} s: the rest of the wait is sound, such as a breath, that runs up to a word. ` +
+      `It plays as it is. To take that sound out with the wait, give the range in timeline seconds: the wait is ${on(before.end).toFixed(2)}–${on(after.start).toFixed(2)} s on version ${tl.version}.`);
+  }
   const fps = (await sources.project()).settings.fps;
   const place = (source: number, room?: TimeRange) => round3(edgeOnFrame(on(source), room, fps, on));
+  // A removal is saved on whole frames inside the quiet its edges sit in. Where that quiet holds one frame, both edges
+  // land on it and nothing is left to remove: sent on, the empty range refused the whole batch as "is empty. Submit
+  // distinct nonoverlapping ranges", for a range Scarlet placed itself.
+  const start = place(cut.start, cut.room.start), end = place(cut.end, cut.room.end);
+  if (end <= start) throw new NoPauseToTrim(`The pause between ${said} plays ${plays.toFixed(2)} s, and trimming it to ${leave.toFixed(2)} s would take out ` +
+    `${Math.round((cut.end - cut.start) / speed * 1000)} ms: the quiet between the words holds no whole frame of version ${tl.version} to remove. It plays as it is.`);
   // The transcript has no word here, which is not the same as nothing being said: a pause held a missed "see" and a
   // second "you can", and another the "five point five" of a "5.5" the transcript had timed at 80 ms. What sounds in
   // the range goes back to the agent, in this version's seconds as well, since that is how it would cut or keep it.
@@ -301,7 +321,7 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
     if (said) heard = `Read on its own, ${from.toFixed(2)}–${to.toFixed(2)} s in ${ref.mediaId} (${on(from).toFixed(2)}–${on(to).toFixed(2)} s on version ${
       tl.version}) says “${said}”, where the transcript has “${before.text.trim()} ${after.text.trim()}”.`;
   }
-  return { start: place(cut.start, cut.room.start), end: place(cut.end, cut.room.end), words: `pause after “${before.text.trim()}”`, problems: cut.problems, notes,
+  return { start, end, words: `pause after “${before.text.trim()}”`, problems: cut.problems, notes,
     holdsSound: notes.length > 0, ...(heard && { heard }),
     source: { start: round3(cut.start), end: round3(cut.end) }, plays: round3(plays) };
 }
@@ -436,8 +456,12 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const { occurrence: _occurrence, mediaId: _m, fromWord: _f, toWord: _t, afterWord, leave: _l, voiceIn: _v, ...rest } = c;
     if (afterWord !== undefined && c.kind !== "pause") throw new Error(`cuts[${i}]: afterWord names a pause. Give a ${c.kind} as its removed words or in seconds.`);
     const resolved = await resolveCutRange(tl, c, `cuts[${i}]`, sources, false, duration).catch(err => {
-      if (!(err instanceof CutNotPlaced)) throw err;
-      unplaced.push({ reason: `cuts[${i}]: ${err.message}`, cuts: [i] });
+      // A pause with nothing to trim is a finding about that pause alone, as a cut that can't be placed is: beside
+      // other cuts it is set aside with its reason and they save. Asked for on its own it is still refused, which is
+      // how a caller placing one pause learns to leave the recording playing there (first-cut-ranges.ts).
+      const noTrim = err instanceof NoPauseToTrim && requested.some((other, k) => k !== i && !req.setAside?.has(k));
+      if (!(err instanceof CutNotPlaced) && !noTrim) throw err;
+      unplaced.push({ reason: `cuts[${i}]: ${err.message}${noTrim ? " It was left out of this save; the other cuts are unaffected." : ""}`, cuts: [i] });
     });
     if (!resolved) return undefined;
     // A pause is quiet, and trimming one takes out quiet. Sound at speaking level in it is words the transcript missed
