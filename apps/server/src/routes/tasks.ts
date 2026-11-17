@@ -47,6 +47,7 @@ export function taskRoutes(ctx: Ctx) {
     if (body.kind === "skill_from_change") throw badRequest("use_skill_from_change", "Create this task from an approved change with /skills/from-change");
     if (body.kind === "skill_edit") throw badRequest("use_skill_edit", "Ask for a change to a skill with /skills/:skillId/edit");
     if (body.kind === "learning_check") throw badRequest("not_a_request", "Scarlet starts this check itself, with each request.");
+    if (body.kind === "area_check") throw badRequest("not_a_request", "Scarlet starts this check itself, when a save needs it.");
     const { mediaId, version } = body.context ?? {};
     if (mediaId && !ctx.db.prepare("SELECT 1 FROM media WHERE id = ? AND project_id = ?").get(mediaId, project.id)) {
       throw badRequest("unknown_media", "The selected footage does not belong to this project.");
@@ -98,7 +99,7 @@ export function taskRoutes(ctx: Ctx) {
     const project = requireProjectHeader(ctx, c.req.param("id"));
     const state = c.req.query("state");
     // A skill edit and a learning check only borrow the project to run in. Neither is part of its conversation.
-    const tasks = ctx.repos.tasks.select("project_id = ? AND kind NOT IN ('skill_edit', 'learning_check')" + (state ? " AND state = ?" : ""),
+    const tasks = ctx.repos.tasks.select("project_id = ? AND kind NOT IN ('skill_edit', 'learning_check', 'area_check')" + (state ? " AND state = ?" : ""),
       state ? [project.id, TaskState.parse(state)] : [project.id], "created_at DESC");
     const conversation = c.req.query("events") === "conversation"
       ? ctx.repos.taskEvents.conversations(tasks.filter(t => t.kind !== "transcribe").map(t => t.id)) : undefined;

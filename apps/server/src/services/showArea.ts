@@ -11,6 +11,8 @@ import { AREA_HOLDS_AT, AREA_SIDES, SHOW_EDGE_HEIGHT, SHOW_EDGE_STEP, SHOW_EDGE_
   type AreaBox, type AreaSide, type HeldArea, type ShowArea } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { badRequest, notFound } from "../errors.js";
+import { areaAt } from "@scarlet/shared";
+import { FINISHED_TASK, createTask } from "./tasks.js";
 import { rememberLast, withFrames, type VideoMedia } from "./pictureReading.js";
 
 export interface ShowAreaState {
@@ -107,6 +109,19 @@ export async function editShowAreas(ctx: Ctx, media: VideoMedia, edit: ShowAreaE
     }
     const box = area.map(n => Math.round(n * 10000) / 10000) as AreaBox;
     const bits = await frameEdges(ctx, media, at);
+    // A side given within a percent of a line goes onto the line: a box read from a picture is good to about half a
+    // percent, and the line is what the area is held by. A side with no line near stays where it was given.
+    if (bits) AREA_SIDES.forEach((side, i) => {
+      if (box[i]! <= 0.002 || box[i]! >= 0.998) return;
+      let best = box[i]!, most = sideFits(bits, box)[side];
+      for (let step = -5; step <= 5; step++) {
+        const moved = [...box] as AreaBox;
+        moved[i] = Math.round((box[i]! + step * 0.002) * 10000) / 10000;
+        const fit = sideFits(bits, moved)[side];
+        if (fit > most || (fit === most && Math.abs(moved[i]! - box[i]!) < Math.abs(best - box[i]!))) { most = fit; best = moved[i]!; }
+      }
+      if (most >= AREA_HOLDS_AT) box[i] = best;
+    });
     const fits = bits && sideFits(bits, box);
     const noLine: AreaSide[] = fits ? AREA_SIDES.filter(side => fits[side] < AREA_HOLDS_AT) : [];
     rows.push({ at: Math.round(at * 1000) / 1000, area: box, noLine });
@@ -118,4 +133,44 @@ export async function editShowAreas(ctx: Ctx, media: VideoMedia, edit: ShowAreaE
       ctx.db.prepare("INSERT INTO show_areas (media_id, at, json, created_at) VALUES (?, ?, ?, ?)").run(media.id, row.at, JSON.stringify(row), new Date().toISOString());
     }
   })();
+}
+
+/** How many frames one ask looks at. A recording with more unset stretches than this is asked about again by the next save. */
+const ASKS_AT_ONCE = 12;
+
+/**
+ * Ask what viewers may see at these source seconds of a recording: a short run of its own for each, with the asking
+ * request's agent and model, beside that request and outside the project's queue. Each looks at one full-size frame and
+ * saves an area. Waits for them up to `waitMs`. A second an area already holds for, or one in a stretch another run is
+ * already looking at, starts none.
+ */
+export async function askAreas(ctx: Ctx, media: VideoMedia, opts: { seconds: number[]; taskId: string; waitMs: number }): Promise<{ asked: number; answered: number; waiting: number }> {
+  const asker = ctx.repos.tasks.get(opts.taskId);
+  if (!asker || asker.projectId !== media.projectId || asker.agent === "api" || asker.kind === "area_check") return { asked: 0, answered: 0, waiting: 0 };
+  const state = await showArea(ctx, media, { waitMs: Math.min(opts.waitMs, 240_000) });
+  if (!state.done) return { asked: 0, answered: 0, waiting: 0 };
+  const stretchOf = (second: number) => state.unset.find(([from, to]) => second >= from - 1e-6 && second < to + 1e-6);
+  const live = ctx.repos.tasks.select("project_id = ? AND kind = 'area_check' AND state NOT IN ('done', 'failed', 'cancelled')", [media.projectId])
+    .filter(task => task.context.areaCheck?.mediaId === media.id);
+  const watched = [...live];
+  let asked = 0;
+  const taken: Array<[number, number]> = live.flatMap(task => { const s = stretchOf(task.context.areaCheck!.at); return s ? [s] : []; });
+  for (const second of opts.seconds) {
+    if (asked >= ASKS_AT_ONCE) break;
+    if (!(second >= 0 && second <= (media.duration ?? 0)) || areaAt(state.areas, second)) continue;
+    const stretch = stretchOf(second) ?? [second, second];
+    if (taken.some(([from, to]) => from === stretch[0] && to === stretch[1])) continue;
+    taken.push(stretch as [number, number]);
+    const at = Math.round(second * 100) / 100;
+    watched.push(createTask(ctx, { projectId: media.projectId, kind: "area_check", agent: asker.agent, model: asker.model, effort: asker.effort, fast: asker.fast,
+      serviceTier: asker.serviceTier, instruction: `What viewers may see of ${media.name ?? media.id} at ${at} s`, context: { checksTaskId: asker.id, areaCheck: { mediaId: media.id, at } },
+      createdBy: asker.createdBy }));
+    asked++;
+  }
+  if (asked) ctx.log(`[show-area] ${media.id}: asked about ${asked} frame${asked === 1 ? "" : "s"} for ${asker.id}`);
+  const deadline = Date.now() + opts.waitMs;
+  const open = () => watched.filter(task => !FINISHED_TASK.has(ctx.repos.tasks.get(task.id)?.state ?? "done"));
+  while (open().length && Date.now() < deadline) await new Promise(done => setTimeout(done, 500));
+  const waiting = open().length;
+  return { asked, answered: watched.length - waiting, waiting };
 }

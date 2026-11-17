@@ -682,6 +682,7 @@ export const TaskKind = z.enum([
   "skill_from_change", // write a SKILL.md capturing an approved change
   "skill_edit", // revise one skill as the editor described; not part of a project's conversation
   "learning_check", // read one request for a standing rule to offer; started with the request, beside it
+  "area_check", // look at one frame of a recording and say what of it viewers may see; started when a save needs it
   "transcribe", // server-side job, not dispatched to hosts
 ]);
 export type TaskKind = z.infer<typeof TaskKind>;
@@ -754,6 +755,8 @@ export const Task = z.object({
       learningId: Id.optional(),
       /** The request a learning_check task reads. A rule it offers is that request's. */
       checksTaskId: Id.optional(),
+      /** The frame an area_check task looks at: a recording and a source second. */
+      areaCheck: z.object({ mediaId: Id, at: Seconds }).optional(),
       time: Seconds.optional(),
       end: Seconds.optional(),
       clipIds: z.array(Id).optional(),
@@ -920,9 +923,14 @@ export function isLearningCheck(task: Pick<Task, "kind">): boolean {
   return task.kind === "learning_check";
 }
 
-/** A run that edits no video, so it stays out of the project's conversation and queue: a skill edit or a learning check. */
+/** The look at one frame for what viewers may see. It runs beside the request that needs it and edits no video. */
+export function isAreaCheck(task: Pick<Task, "kind">): boolean {
+  return task.kind === "area_check";
+}
+
+/** A run that edits no video, so it stays out of the project's conversation and queue: a skill edit, a learning check or an area check. */
 export function isAsideTask(task: Pick<Task, "kind">): boolean {
-  return isSkillEdit(task) || isLearningCheck(task);
+  return isSkillEdit(task) || isLearningCheck(task) || isAreaCheck(task);
 }
 
 export const TaskSkillDraft = z.object({

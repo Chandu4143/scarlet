@@ -104,6 +104,8 @@ const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
+/** An area check looks at one frame and says what of it viewers may see, and nothing else. */
+const AREA_CHECK_TOOLS: ReadonlySet<string> = new Set(["media_frame", "screen_area"]);
 const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
@@ -314,6 +316,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         ? "Scarlet exposes the tools for revising one of the editor’s skills; an empty MCP resource list is normal."
         : ctx.task?.kind === "learning_check"
         ? "Scarlet exposes the tools for reading the editor’s skills and offering a rule for one; an empty MCP resource list is normal."
+        : ctx.task?.kind === "area_check"
+        ? "Scarlet exposes the tools for looking at one frame of a recording and saving what of it viewers may see; an empty MCP resource list is normal."
         : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand.",
     },
   );
@@ -937,7 +941,25 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     if (!ids.size) return;
     const known = new Map<string, RecordingAreas>();
     await Promise.all([...ids].map(async id => { const areas = await recordingAreas(id).catch(() => undefined); if (areas) known.set(id, areas); }));
-    const refusal = showAreaRefusal(showAreaFindings(before, laid, project.media, project.settings, id => known.get(id)));
+    let found = showAreaFindings(before, laid, project.media, project.settings, id => known.get(id));
+    // Footage with no area on record is looked at now, a frame for each stretch, by short runs beside this one. An
+    // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
+    // time one tool call has.
+    const deadline = Date.now() + Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 30)) * 1000;
+    for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
+      const bySource = new Map<string, number[]>();
+      for (const n of found.noArea) bySource.set(n.mediaId, [...(bySource.get(n.mediaId) ?? []), n.look]);
+      const wait = Math.round((deadline - Date.now()) / 1000);
+      const answers = await Promise.all([...bySource].map(async ([id, seconds]) => {
+        const state = await client.post<RecordingAreas & { asked: number; answered: number }>(
+          `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(id)}/show-area/ask?wait=${wait}`, { seconds, taskId: ctx.taskId }).catch(() => undefined);
+        if (state) known.set(id, state);
+        return state?.answered ?? 0;
+      }));
+      if (!answers.some(Boolean)) break;
+      found = showAreaFindings(before, laid, project.media, project.settings, id => known.get(id));
+    }
+    const refusal = showAreaRefusal(found);
     if (refusal) throw new Error(refusal);
   }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
@@ -1028,6 +1050,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // Every request is read for a standing rule by a learning check, which has that tool and the skills. The run that
     // edits doesn't offer rules as well, so the editor never gets the same rule twice in two wordings.
     if (ctx.task?.kind === "learning_check" ? !LEARNING_CHECK_TOOLS.has(name) : name === "learning_suggest") return;
+    if (ctx.task?.kind === "area_check" && !AREA_CHECK_TOOLS.has(name)) return;
     server.registerTool(name, { description, inputSchema: shape, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
       const calls = running.get(name) ?? new Set<Promise<unknown>>();
       running.set(name, calls);
@@ -1269,7 +1292,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "screen_area",
-    "What of a recording's picture viewers may see. A screen recording usually holds more than the window being presented: the desktop, a taskbar, a recording app, a call beside it. `set` gives an area for the frame at a SOURCE second (`at`), as [left, top, right, bottom] in percent of the picture: everything outside it stays out of the video. Scarlet finds the straight edges under the box on that frame and holds the area for every stretch of the recording where those edges are still in place, so one area serves a window for as long as it stays where it is, and comes back when the window does. The result lists each area with the source seconds it holds for (`holds`) and any side with no line under it on its frame (`noLine`: that side is not needed for the area to hold), and `unset`: the stretches no area holds for, with the seconds of each the current edit plays (`onPicture`) and a second to look at (`look`)." + (caps.images ? " With it come pictures of the first few unset stretches the edit plays, at `look`, with percent lines drawn over them: give each an area in your next call. `pictures` sets how many (default 4, 0 for none)." : " media_frame shows a frame at `look`.") + " The whole picture, [0, 0, 100, 100], is an area like any other, for a recording where all of it may show. An area given again at the same second replaces the one there; `remove` takes areas out by their `at`. Every save is checked against these: an edit that frames footage past its area, or frames part of a picture that has none, is not saved, and its refusal names each place. timeline_framing keeps its frames inside the area on record when no `within` is given. A recording is read once for its edges; until that is done the result says so and `holds` are empty: call again.",
+    "What of a recording's picture viewers may see. A screen recording usually holds more than the window being presented: the desktop, a taskbar, a recording app, a call beside it. `set` gives an area for the frame at a SOURCE second (`at`), as [left, top, right, bottom] in percent of the picture: everything outside it stays out of the video. Scarlet finds the straight edges under the box on that frame and holds the area for every stretch of the recording where those edges are still in place, so one area serves a window for as long as it stays where it is, and comes back when the window does. The result lists each area with the source seconds it holds for (`holds`) and any side with no line under it on its frame (`noLine`: that side is not needed for the area to hold), and `unset`: the stretches no area holds for, with the seconds of each the current edit plays (`onPicture`) and a second to look at (`look`)." + (caps.images ? " With it come pictures of the first few unset stretches the edit plays, at `look`, with percent lines drawn over them: give each an area in your next call. `pictures` sets how many (default 4, 0 for none)." : " media_frame shows a frame at `look`.") + " The whole picture, [0, 0, 100, 100], is an area like any other, for a recording where all of it may show. An area given again at the same second replaces the one there; `remove` takes areas out by their `at`. Every save is checked against these. Where an edit frames part of a picture that has no area yet, Scarlet has that frame looked at and an area saved before it checks, so a save can take a little longer the first time a recording is framed. An edit that frames footage past its area is not saved, and its refusal names each place. A side given within a percent of a line in the picture is put on that line. timeline_framing keeps its frames inside the area on record when no `within` is given. A recording is read once for its edges; until that is done the result says so and `holds` are empty: call again.",
     {
       mediaId: z.string().describe("Media asset id"),
       set: z.array(z.object({ at: z.number().min(0).describe("Source second of the frame the area was read on"), area: percentBox })).max(60).optional(),
