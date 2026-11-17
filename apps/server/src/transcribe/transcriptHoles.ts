@@ -250,9 +250,40 @@ export function heardInHoles(read: TranscriptSegment[], pieces: HolePiece[], seg
   return found;
 }
 
-/** The transcript with the found words in it, in the order said. Words found inside a segment's own span join that segment. */
+/** A found word this close to the word beside its hole can be that word's own sound. */
+const READ_TWICE_GAP = 0.5;
+
+/**
+ * The transcript with the found words in it, in the order said. Words found inside a segment's own span join that segment.
+ * The aligner can't spell a number, so it can end "$7.63" before the "three" is said: the hole after it then reads "3",
+ * and the line reads "$7.63. 3," as if the 3 were said again. A found word that is only the end of the word before its
+ * hole, or the start of the word after it, is that word's sound read twice: the word takes in its time instead.
+ */
 export function withHoleWords(segments: TranscriptSegment[], found: TranscriptSegment[]): TranscriptSegment[] {
-  const out = segments.map(s => ({ ...s, words: [...s.words] }));
+  const out = segments.map(s => ({ ...s, words: s.words.map(w => ({ ...w })) }));
+  const home = new Map(out.flatMap(s => s.words.map(w => [w, s] as const)));
+  const existing = [...home.keys()].filter(spoken).sort((a, b) => a.start - b.start);
+  const part = (piece: TranscriptWord, whole: TranscriptWord, end: boolean) => {
+    const p = normalizeTranscriptToken(piece.text), w = normalizeTranscriptToken(whole.text);
+    return !!p && w.length > p.length && (end ? w.endsWith(p) : w.startsWith(p));
+  };
+  found = found.flatMap(f => {
+    let words = f.words;
+    const before = words[0] && existing.filter(w => w.end <= words[0]!.start + 0.05).at(-1);
+    if (before && part(words[0]!, before, true) && words[0]!.start - before.end < READ_TWICE_GAP) {
+      before.end = Math.max(before.end, words[0]!.end);
+      home.get(before)!.end = Math.max(home.get(before)!.end, before.end);
+      words = words.slice(1);
+    }
+    const after = words.length ? existing.find(w => w.start >= words.at(-1)!.end - 0.05) : undefined;
+    if (after && part(words.at(-1)!, after, false) && after.start - words.at(-1)!.end < READ_TWICE_GAP) {
+      after.start = Math.min(after.start, words.at(-1)!.start);
+      home.get(after)!.start = Math.min(home.get(after)!.start, after.start);
+      words = words.slice(0, -1);
+    }
+    if (words === f.words) return [f];
+    return words.length ? [{ ...f, start: words[0]!.start, end: words.at(-1)!.end, text: words.map(w => w.text).join(" "), words }] : [];
+  });
   for (const f of found) {
     const host = out.find(s => s.words.some(w => w.end <= f.start + 1e-6) && s.words.some(w => w.start >= f.end - 1e-6));
     if (host) {

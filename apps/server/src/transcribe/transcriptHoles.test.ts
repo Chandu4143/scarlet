@@ -67,6 +67,24 @@ it("adds found words inside the segment they interrupt and as their own segment 
   expect(inside[0]).toMatchObject({ text: "it which matters", words: [{ text: "it" }, { text: "which" }, { text: "matters" }] });
 });
 
+it("gives a word back the end or start of its own sound that a hole read again, and keeps a word said again whole", () => {
+  // From a recording: the aligner ended "$7.63." before the "three", and the hole after it read "3, now."
+  const said = [seg(["expensive,", 1302.84, 1303.46], ["$7.63.", 1303.46, 1304.76]), seg(["Now,", 1309.48, 1309.7], ["Argon,", 1309.7, 1310.2])];
+  const filled = withHoleWords(said, [seg(["3,", 1304.88, 1305.54], ["now.", 1305.92, 1306.2])]);
+  expect(filled.map(s => s.text)).toEqual(["expensive, $7.63.", "now.", "Now, Argon,"]);
+  expect(filled[0]).toMatchObject({ end: 1305.54, words: [{}, { text: "$7.63.", start: 1303.46, end: 1305.54 }] });
+  expect(said[0]!.words[1]!.end).toBe(1304.76);
+  // The start of the word after the hole, read again, goes to that word.
+  const onset = withHoleWords([seg(["it", 1, 1.5]), seg(["Argon", 6, 6.6])], [seg(["which", 4.2, 4.6], ["Ar", 5.6, 5.8])]);
+  expect(onset.map(s => s.text)).toEqual(["it", "which", "Argon"]);
+  expect(onset[2]).toMatchObject({ start: 5.6, words: [{ start: 5.6, end: 6.6 }] });
+  // A found segment that was nothing but that sound leaves no segment. A word said again whole, or one that only
+  // shares letters with a word far from it, stays.
+  expect(withHoleWords(said, [seg(["3", 1304.9, 1305.3])]).map(s => s.text)).toEqual(["expensive, $7.63.", "Now, Argon,"]);
+  expect(withHoleWords(said, [seg(["$7.63", 1304.9, 1305.8])]).map(s => s.text)).toEqual(["expensive, $7.63.", "$7.63", "Now, Argon,"]);
+  expect(withHoleWords(said, [seg(["3", 1305.4, 1305.8])]).map(s => s.text)).toEqual(["expensive, $7.63.", "3", "Now, Argon,"]);
+});
+
 it("reads the holes once, places what it heard, and returns the transcript unchanged when they held no speech", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scarlet-holes-"));
   try {
