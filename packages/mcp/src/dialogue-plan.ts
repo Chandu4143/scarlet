@@ -527,6 +527,11 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   // Every change Scarlet makes to the plan goes back to the agent with its evidence.
   const report: GateLine[] = [];
   const checkJoin = dialogueJoinChecker(tl, project, sources.pages(), sources.pace);
+  // An edge Scarlet could not move out of sound. The held cut is the model's to settle: an edge inside a word that is
+  // sounding there is never applied as placed, and dialogue_review_save neither asks the editor about it nor cuts it
+  // there. Of eighteen calls one pass handed the editor, fifteen were held this way, asked about as "listen for the end
+  // of …", and most were a word or a few frames off (2026-11-16).
+  const inSound = new Map<number, { reason: string; inWord: boolean }>();
   const decisions = removals.map(c => {
     const decided: PlannedDecision = { start: c.start, end: c.end, reason: c.reason, review: c.decision === "review", kind: c.kind,
       originalRange: undefined, ...(c.check && { check: c.check }), ...(c.summary && { summary: c.summary }) };
@@ -555,6 +560,15 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const join = checkJoin({ start: c.start, end: c.end }, c.spoken);
     // Without a measurement at the edge there is nothing to act on. The agent's own evidence stands.
     if (join.unmeasured) return base;
+    // An edge left in sound: what Scarlet measured goes with the held cut, for the model's review. Named words say what
+    // goes, so the quiet or low points that keep or take another word are no help there; a pass offered them resent
+    // cuts that broke the sentence (2026-11-16).
+    if (join.inSound?.length && c.kind !== "pause") {
+      const named = c.words !== undefined && !join.inWord?.length;
+      inSound.set(c.input, { inWord: !!join.inWord?.length, reason: named
+        ? `The words named run on into the ones beside them at the ${join.inSound.join(" and ")}: no pause or low point where they part, a join in running speech.`
+        : join.reason ?? "" });
+    }
     // Both edges in quiet: one whose frame would round onto sound goes on a quiet frame, which the engine's rounding
     // keeps. A move of under a frame that would meet a neighbor, the selection's edge or footage marked to keep stays.
     if (join.status === "unchanged") {
@@ -595,11 +609,20 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
         ? { start: Math.min(c.start, join.start), end: Math.max(c.end, join.end) } : undefined,
       ...(join.reason && { held: join.reason }) }, join.reason ?? "");
   });
+  // What a held edge left in sound plays, with what was measured there, for the model's review.
+  await Promise.all(removals.map(async (c, i) => {
+    const found = inSound.get(c.input), d = decisions[i]!;
+    if (!found || !d.review) return;
+    const plays = await joinPlays(tl, project, { start: d.start, end: d.end }, mediaId => sources.words(mediaId, undefined, false));
+    d.held = [found.reason, plays && `As placed the join plays “${plays}”.`].filter(Boolean).join(" ").slice(0, 800);
+  }));
   // A cut the model decided that Scarlet held only for how its join measured applies as placed when the model said
-  // so. A hold for the selection or footage marked to keep stays: that is the editor's, not a measurement.
+  // so. A hold for the selection or footage marked to keep stays: that is the editor's, not a measurement. So does an
+  // edge inside a word that is sounding there: offered the way round, one pass sent 21 of its 33 saves with
+  // unsureJoins cut and applied ten such edges (2026-11-16).
   if (req.unsureJoins === "cut") decisions.forEach((d, i) => {
     const c = removals[i]!;
-    if (c.decision !== "cut" || !d.review || !d.held || d.held === CROSSES_SCOPE) return;
+    if (c.decision !== "cut" || !d.review || !d.held || d.held === CROSSES_SCOPE || inSound.get(c.input)?.inWord) return;
     decisions[i] = { ...d, review: false, held: undefined, originalRange: undefined };
     const line = report.findLast(l => l.cut === c.input);
     if (line) Object.assign(line, { outcome: "cut", evidence: `Applied as placed, as unsureJoins asked: ${line.evidence}` });
@@ -786,4 +809,57 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
 export function dialogueGate(plan: Extract<DialoguePlan, { outcome: "ready" }>) {
   const report = [...plan.gate.values()].sort((a, b) => a.cut - b.cut);
   return { unchangedCuts: plan.removals.length - report.length, decisions: report };
+}
+
+/** The transcript words the edit plays within `reach` seconds of a range, and inside it, in playback order. */
+export async function timelineWordsNear(tl: Timeline, project: Pick<Project, "media">, range: TimeRange,
+  words: (mediaId: string) => Promise<readonly TranscriptWord[] | null>, reach: number) {
+  const heard: Array<{ at: number; text: string }> = [];
+  for (const clip of audibleMediaClips(tl)) {
+    const lo = clip.timelineIn, hi = lo + clipDuration(clip);
+    if (hi <= range.start - reach || lo >= range.end + reach) continue;
+    if (!project.media.some(m => m.id === clip.mediaId && (m.kind === "audio" || m.hasAudio))) continue;
+    for (const w of await words(clip.mediaId).catch(() => null) ?? []) {
+      const middle = (w.start + w.end) / 2;
+      if (middle < clip.sourceIn || middle >= clip.sourceOut || !w.text.trim()) continue;
+      const at = lo + (middle - clip.sourceIn) / (clip.speed ?? 1);
+      if (at < range.start - reach || at > range.end + reach) continue;
+      // The same recording on two tracks plays each word once.
+      if (!heard.some(h => Math.abs(h.at - at) < 1e-3 && h.text === w.text.trim())) heard.push({ at, text: w.text.trim() });
+    }
+  }
+  return heard.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * The transcript words a join plays either side of a removal, as the viewer hears them: the last few kept before it,
+ * ‖ for the cut, and the first few kept after it, across whichever clips play them. A cut that took "it a very simple"
+ * out of "I gave it a very simple prompt" read as a restart in the transcript; this is what it plays: "I gave ‖
+ * prompt" (2026-11-16).
+ */
+export async function joinPlays(tl: Timeline, project: Pick<Project, "media">, range: TimeRange,
+  words: (mediaId: string) => Promise<readonly TranscriptWord[] | null>, count = 6) {
+  const heard = await timelineWordsNear(tl, project, range, words, 6);
+  const before = heard.filter(h => h.at <= range.start).slice(-count).map(h => h.text);
+  const after = heard.filter(h => h.at >= range.end).slice(0, count).map(h => h.text);
+  return before.length || after.length ? `${before.length ? "… " + before.join(" ") : ""} ‖ ${after.length ? after.join(" ") + " …" : ""}`.trim() : "";
+}
+
+/** How far from a staged cut, in timeline seconds, the words a call's note quotes may start. */
+export const NOTE_QUOTE_REACH = 3;
+/**
+ * Phrases of two words or more a call's note quotes that neither start inside the cut nor within NOTE_QUOTE_REACH of
+ * it, where the edit plays them. `heard` is the edit's words near the cut, in playback order. A note is the editor's
+ * only account of a call: one pass's note on a cut of "it a very simple" told the editor to keep "the completed ‘is it
+ * able to build’ question", a restart four seconds on (2026-11-16).
+ */
+export function quotesAwayFromCut(note: string, heard: ReadonlyArray<{ at: number; text: string }>, range: TimeRange, reach = NOTE_QUOTE_REACH) {
+  const tokens = heard.map(h => ({ at: h.at, token: normalizeTranscriptToken(h.text) })).filter(t => t.token);
+  const quoted = [...note.matchAll(/[‘“"]([^‘“"”]+?)[’”"](?=[\s.,;:!?)]|$)/gu)].map(m => m[1]!.trim());
+  return quoted.filter(q => {
+    const phrase = q.split(/\s+/u).map(normalizeTranscriptToken).filter(Boolean);
+    if (phrase.length < 2) return false;
+    return !tokens.some((t, i) => t.at >= range.start - reach && t.at <= range.end + reach &&
+      phrase.every((p, k) => tokens[i + k]?.token === p));
+  });
 }

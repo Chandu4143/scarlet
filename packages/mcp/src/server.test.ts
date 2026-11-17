@@ -2072,6 +2072,72 @@ it("reports distinct prepared picture passages and confirmed review saves during
   }
 });
 
+it("sends a call's note back when it quotes words its cut neither removes nor plays beside", async () => {
+  const original = { extra: mock.state.extra, timeline: mock.state.timeline };
+  const editor = await connect();
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "noted";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 6, 0)];
+  mock.state.timeline = tl;
+  mock.state.extra = (req, res) => {
+    let result;
+    if (req.path === "/projects/prj_test/changes/cut") result = { change: { projectId: "prj_test" } };
+    else if (req.path.endsWith("/cut-assessments")) result = { total: 1, assessed: 1, needsDecision: 1 };
+    else return false;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(result));
+    return true;
+  };
+  try {
+    const save = (reason: string) => editor.callTool({ name: "dialogue_review_save", arguments: { changeId: "cut", fromVersion: tl.version, toVersion: tl.version,
+      assessments: [{ index: 0, start: 1.05, end: 2.4, verdict: "ask", reason }] } }) as Promise<CallToolResult>;
+    const away = await save("Keep ‘the next words that are not here’ and listen for the join.");
+    expect(away.isError).toBe(true);
+    expect(textOf(away)).toContain("Cut 0: the note quotes “the next words that are not here”, which this cut neither removes nor plays within 3 s of it.");
+    expect(mock.requests.some(r => r.path.endsWith("/cut-assessments"))).toBe(false);
+    expect((await save("The two takes overlap.")).isError).toBeFalsy();
+  } finally {
+    await editor.close();
+    Object.assign(mock.state, original);
+  }
+});
+
+it("never asks the editor about, or cuts as placed, a staged cut whose edge is inside a sounding word", async () => {
+  const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform };
+  const editor = await connect();
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "clipped";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 6, 0)];
+  mock.state.timeline = tl;
+  // Speech all through: nowhere quiet for the edge to go.
+  mock.state.waveform = (mediaId, from, to, points) => ({ mediaId, from, to, peaks: Array(points).fill(.2), rms: Array(points).fill(.2),
+    speechActivity: [{ start: from, end: to }] });
+  mock.state.extra = (req, res) => {
+    let result;
+    if (req.path === "/projects/prj_test/changes/cut") result = { change: { projectId: "prj_test" } };
+    else if (req.path.endsWith("/cut-assessments")) result = { total: 1, assessed: 1, needsDecision: 0 };
+    else return false;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(result));
+    return true;
+  };
+  try {
+    // The staged cut starts in the middle of “welcome”, which sounds there.
+    const save = (verdict: "ask" | "cut" | "keep") => editor.callTool({ name: "dialogue_review_save", arguments: { changeId: "cut", fromVersion: tl.version, toVersion: tl.version,
+      assessments: [{ index: 0, start: 1.25, end: 3.5, verdict, reason: "The second take is cleaner." }] } }) as Promise<CallToolResult>;
+    for (const verdict of ["ask", "cut"] as const) {
+      const refused = await save(verdict);
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toContain(`Cut 0 (${verdict}): A boundary falls inside “welcome”.`);
+    }
+    expect(mock.requests.some(r => r.path.endsWith("/cut-assessments"))).toBe(false);
+    expect((await save("keep")).isError).toBeFalsy();
+  } finally {
+    await editor.close();
+    Object.assign(mock.state, original);
+  }
+});
+
 it("checks a join under a picture that has no sound, without asking the engine for its levels", async () => {
   const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform, media: mock.state.project.media };
   const isolated = await connect();
@@ -3068,7 +3134,7 @@ it("reports the pauses and doubled words a saved part still plays, and trims a p
     const first = await apply(tail);
     // With no length asked for, every pause above the rhythm of speech is listed: which ones matter is the agent's call.
     expect(first.keptPauses).toEqual([{ at: 1.4, mediaId: "m1", seconds: .6, after: "note.", before: "You", afterWord: 1 }, { at: 3.4, mediaId: "m1", seconds: .9, after: "have", before: "signatures.", afterWord: 4 }]);
-    expect(first.repeatedWords).toEqual([{ at: 2.5, mediaId: "m1", text: "have have", fromWord: 3, toWord: 3 }]);
+    expect(first.repeatedWords).toEqual([{ at: 2.5, mediaId: "m1", text: "have have", fromWord: 3, toWord: 3, pause: .1 }]);
     // Saved again without touching them, they are not listed a second time: a save lists what is new.
     const again = await apply(tail);
     expect(again).not.toHaveProperty("keptPauses");
