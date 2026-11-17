@@ -485,6 +485,10 @@ export function openDb(path: string): Db {
   ensureReadIndexes(db);
   ensureLookupIndexes(db);
   ensureGraphics(db);
+  db.exec(`CREATE TABLE IF NOT EXISTS show_areas (
+    media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE, at REAL NOT NULL, json TEXT NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY (media_id, at)
+  );`);
   ensureProjectSource(db);
   ensureProjectRowRevision(db);
   ensureColumn(db, "projects", "editing_paused", "ALTER TABLE projects ADD COLUMN editing_paused INTEGER NOT NULL DEFAULT 0;");

@@ -33,6 +33,7 @@ const toolActivity: Record<string, string> = {
   timeline_propose: "Proposing edit",
   timeline_crossfade_audio: "Smoothing dialogue",
   timeline_framing: "Framing the picture",
+  screen_area: "Marking what viewers may see",
   timeline_first_cut: "Building first edit",
   captions_generate: "Generating captions",
   change_get: "Reviewing change",
