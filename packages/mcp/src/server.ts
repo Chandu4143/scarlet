@@ -846,11 +846,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   type ToolOutcome = "ok" | "failed" | "refused" | "preparing" | "degraded";
-  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number) {
+  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number, result?: ToolResult) {
     if (!ctx.taskId || !startedAt || diagnosticSessionClosed) return;
     const path = `/projects/${apiPathId(ctx.projectId)}/tasks/${apiPathId(ctx.taskId)}/tool-diagnostic`;
     const signal = AbortSignal.timeout(2000);
-    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses }, { signal })
+    // How much went back to the model, as sizes: what fills a run's context is the results it reads.
+    const resultChars = result?.content.reduce((sum, item) => sum + (item.type === "text" ? item.text.length : 0), 0);
+    const resultMedia = result?.content.filter(item => item.type !== "text").length;
+    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses, ...(result && { resultChars }), ...(resultMedia && { resultMedia }) }, { signal })
       .catch((err: unknown) => {
         // Let outstanding reports finish when the tool session closes, but quiet failures during teardown.
         if (!diagnosticSessionClosed && !(err instanceof ScarletApiError && err.status === 404))
@@ -1036,7 +1039,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         // Preserve the project's existing refusal receipt separately from the operational log.
         const refusal = toolRefusal(result);
         if (refusal && !result.isError) outcome = "refused";
-        logToolResult(name, outcome, Math.round(performance.now() - began), misses);
+        logToolResult(name, outcome, Math.round(performance.now() - began), misses, result);
         if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
         return result;
       } finally {
@@ -1426,6 +1429,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- waveform -------------------------------------------------------------
 
+  /** The most buckets one waveform read returns. */
+  const WAVEFORM_MAX_POINTS = 4000;
   /** One recording's levels over a range. The result is drawn at the number of buckets asked of it. */
   async function readWaveform(mediaId: string, from: number, asked: number, opts: { points: number; thresholdDb: number; minSilence: number; suggestCuts: boolean }) {
     const { points, thresholdDb, minSilence, suggestCuts } = opts;
@@ -1467,20 +1472,24 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       mediaIds: RecordingList.optional().describe("Several recordings to read over the same range in one call, instead of mediaId"),
       from: z.number().min(0).describe("Range start, source seconds"),
       to: z.number().min(0).describe("Range end, source seconds"),
-      points: z.number().int().min(10).max(4000).default(400).describe("Number of buckets; 400 over 60 s = 0.15 s resolution"),
+      points: z.number().int().min(10).default(400).describe(`Number of buckets, up to ${WAVEFORM_MAX_POINTS}: a larger request returns ${WAVEFORM_MAX_POINTS} and says so. 400 over 60 s = 0.15 s resolution; the recording is measured every 0.02 s, so more than 50 a second adds nothing`),
       thresholdDb: z.number().max(0).default(-26).describe("Peak level in dBFS below which a bucket counts as silent"),
       suggestCuts: z.boolean().default(false),
       minSilence: z.number().min(0).default(0.25).describe("Minimum silence duration to report, seconds"),
     },
-    async ({ mediaId, mediaIds, from, to, points, ...opts }) => {
+    async ({ mediaId, mediaIds, from, to, points: askedPoints, ...opts }) => {
       const several = recordingsAsked(mediaId, mediaIds);
       if (to <= from) throw new Error("`to` must be greater than `from`.");
-      if (!several) return json((await readWaveform(mediaId!, from, to, { points, ...opts }))(points));
+      // A request past the limit is answered at the limit, and told so. Refused, thirty parallel reads at 6000 points
+      // all failed and were all sent again (2026-11-16).
+      const points = Math.min(askedPoints, WAVEFORM_MAX_POINTS);
+      const capped = askedPoints > points ? { pointsCapped: { asked: askedPoints, returned: points } } : {};
+      if (!several) return json({ ...capped, ...(await readWaveform(mediaId!, from, to, { points, ...opts }))(points) });
       const reads = await eachRecording(several, id => readWaveform(id, from, to, { points, ...opts }));
       const budget = caps.resultChars ?? DEFAULT_RESULT_CHARS;
       // The buckets are what grows with a list: fewer of them on each recording until the whole list fits.
       for (let buckets = points; ; ) {
-        const body = JSON.stringify({ reads: reads.map(r => "read" in r ? r.read(buckets) : r) });
+        const body = JSON.stringify({ ...capped, reads: reads.map(r => "read" in r ? r.read(buckets) : r) });
         if (body.length <= budget || buckets <= 10) return text(body);
         buckets = Math.max(10, Math.floor(buckets * budget / body.length * .9));
       }
@@ -2121,12 +2130,20 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // seven times a pass (2026-11-16).
       let setAside: { cuts: number[]; disputedEdges: unknown[]; next: string } | undefined;
       if (plan.outcome === "needsRevision") {
-        const disputed = new Set(plan.disputedEdges.flatMap(d => d.cuts));
-        const rest = disputed.size && cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
-          ? await planDialogueCuts({ ...request, setAside: disputed }, { ...planSources, crossfadeFrames }).catch(() => undefined) : undefined;
+        // A cut Scarlet could not place is named before any edge is measured, so the rest can raise a dispute of its
+        // own once it is set aside. Each round sets aside what the last one named.
+        const disputed = new Set<number>(), edges = [...plan.disputedEdges];
+        let rest: Awaited<ReturnType<typeof planDialogueCuts>> | undefined = plan;
+        for (let round = 0; round < 3 && rest?.outcome === "needsRevision"; round++) {
+          const named: number[] = rest.disputedEdges.flatMap(d => d.cuts).filter(i => !disputed.has(i));
+          if (round) edges.push(...rest.disputedEdges);
+          for (const i of named) disputed.add(i);
+          rest = named.length && cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
+            ? await planDialogueCuts({ ...request, setAside: disputed }, { ...planSources, crossfadeFrames }).catch(() => undefined) : undefined;
+        }
         if (rest?.outcome === "ready") {
-          setAside = { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: plan.disputedEdges.map(({ cuts: _cuts, ...edge }) => edge),
-            next: `These cuts were not saved; the rest of the batch was. ${refusalNext(plan.disputedEdges)} Resubmit only these on continueFrom.` };
+          setAside = { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: edges.map(({ cuts: _cuts, ...edge }) => edge),
+            next: `These cuts were not saved; the rest of the batch was. ${refusalNext(edges)} Resubmit only these on continueFrom.` };
           plan = rest;
         }
       }

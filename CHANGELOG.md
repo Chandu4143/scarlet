@@ -7,6 +7,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 16, 2026
 
 - Before a dialogue pass finishes, Scarlet rereads the cuts it made outside its dialogue cut tool that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.
+- A photo or a title card that doesn’t move is ready in seconds, where Scarlet used to draw every frame of it.
 - Scarlet zooms a screen recording to fill the video around what you’re showing, eases from one thing to the next across your cuts, and keeps your camera off the lines you read, moving it to another corner when it has to. A zoom no longer leaves empty bars at the sides.
 - An edit's card no longer has an Undo edit button. To put an edit back, open it and ask in the message box.
 - When Scarlet wants you to check part of an edit, its card has an amber Check tag that plays just that part, the timeline marks that part in amber, and an edit that changed nothing there no longer says Added.
