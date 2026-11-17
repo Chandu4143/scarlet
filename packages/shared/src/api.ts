@@ -1142,8 +1142,7 @@ const TokenCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 /**
  * Tokens one agent run reported, normalized across CLIs. `inputTokens` excludes
  * cache reads and writes. `reasoningTokens` is the part of `outputTokens` spent on
- * reasoning, where the CLI reports it. Scarlet tracks tokens, not cost: runs use
- * the editor's subscription.
+ * reasoning, where the CLI reports it.
  */
 export const AgentUsage = z.object({
   model: z.string().min(1).max(200).optional(),
@@ -1173,6 +1172,8 @@ export const UsageTotals = z.object({
   reasoningTokens: z.number().int().nonnegative(),
   /** Input, output and cache tokens together. */
   totalTokens: z.number().int().nonnegative(),
+  /** Standard API list-price equivalent for the task's reported usage. Null if any reported tokens cannot be priced. */
+  estimatedApiCostUsd: z.number().nonnegative().nullable().optional(),
   firstAt: z.string().nullable(),
   lastAt: z.string().nullable(),
 });

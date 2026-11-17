@@ -56,27 +56,35 @@ it("records each run and totals an edit with its follow-ups, by agent and across
   expect((await api.usage("day")).groups).toEqual([expect.objectContaining({ key: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), runs: 4 })]);
 });
 
-it("tells open windows the task's new totals after each run", async () => {
+it("prices each run at its model's API rates and tells open windows the new totals", async () => {
   const project = (await api.createProject({ name: "Live" })).project.id;
-  const { task } = await api.createTask(project, { instruction: "x", kind: "edit", agent: "claude" });
+  const { task } = await api.createTask(project, { instruction: "x", kind: "edit", agent: "codex" });
   const seen: WsEvent[] = [];
   const listen = (event: WsEvent) => void seen.push(event);
   workspace.ctx.bus.on("ws", listen);
   try {
-    await api.recordTaskUsage(task.id, { model: "claude-opus-5-5", inputTokens: 10, outputTokens: 5, startedAt: "2026-11-05T10:00:00.000Z" });
-    await api.recordTaskUsage(task.id, { model: "claude-opus-5-6", inputTokens: 1, cacheReadTokens: 100, startedAt: "2026-11-05T10:05:00.000Z" });
-    await api.recordTaskUsage(task.id, { inputTokens: 1, cacheReadTokens: 100, startedAt: "2026-11-05T10:05:00.000Z" });
+    await api.recordTaskUsage(task.id, { model: "gpt-5.4", inputTokens: 10, outputTokens: 5, reasoningTokens: 2,
+      startedAt: "2026-11-05T10:00:00.000Z" });
+    await api.recordTaskUsage(task.id, { model: "gpt-6.1-sol", inputTokens: 1, cacheReadTokens: 100, cacheWriteTokens: 20,
+      startedAt: "2026-11-05T10:05:00.000Z" });
+    await api.recordTaskUsage(task.id, { inputTokens: 1, cacheReadTokens: 200, cacheWriteTokens: 20,
+      startedAt: "2026-11-05T10:05:00.000Z" });
+    expect((await api.projectUsage(project, "task")).groups).toEqual([
+      expect.objectContaining({ key: task.id, totalTokens: 236, models: ["gpt-5.4", "gpt-6.1-sol"], estimatedApiCostUsd: expect.closeTo(0.000172, 12) }),
+    ]);
+    await api.recordTaskUsage(task.id, { model: "halo-alpha", outputTokens: 1, startedAt: "2026-11-05T10:06:00.000Z" });
   } finally {
     workspace.ctx.bus.off("ws", listen);
   }
   const updates = seen.filter(e => e.type === "task.usage");
-  expect(updates.map(e => e.type === "task.usage" && [e.projectId, e.taskId, e.usage.runs, e.usage.totalTokens, e.usage.models])).toEqual([
-    [project, task.id, 1, 15, ["claude-opus-5-5"]],
-    [project, task.id, 2, 116, ["claude-opus-5-5", "claude-opus-5-6"]],
-    [project, task.id, 2, 116, ["claude-opus-5-5", "claude-opus-5-6"]],
+  expect(updates.map(e => [e.projectId, e.taskId, e.usage.runs, e.usage.totalTokens, e.usage.models, e.usage.estimatedApiCostUsd])).toEqual([
+    [project, task.id, 1, 15, ["gpt-5.4"], expect.closeTo(0.0001, 12)],
+    [project, task.id, 2, 136, ["gpt-5.4", "gpt-6.1-sol"], expect.closeTo(0.000162, 12)],
+    [project, task.id, 2, 236, ["gpt-5.4", "gpt-6.1-sol"], expect.closeTo(0.000172, 12)],
+    [project, task.id, 3, 237, ["gpt-5.4", "gpt-6.1-sol", "halo-alpha"], null],
   ]);
   expect((await api.projectUsage(project, "task")).groups).toEqual([
-    expect.objectContaining({ key: task.id, totalTokens: 116, models: ["claude-opus-5-5", "claude-opus-5-6"] }),
+    expect.objectContaining({ key: task.id, totalTokens: 237, estimatedApiCostUsd: null }),
   ]);
 });
 
