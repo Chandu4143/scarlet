@@ -159,7 +159,7 @@ export function timelineWords(tl: Timeline, transcripts: Map<string, TranscriptW
  * `joins` was taken from, a join keeps its number among them, the one timeline_join_audit gives it.
  */
 export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJoin[],
-  opts: { detail: "lines" | "words"; fps: number; pause?: number; all?: TimelineJoin[] }) {
+  opts: { detail: "lines" | "words"; fps: number; pause?: number; all?: TimelineJoin[]; removed?: (join: TimelineJoin) => string | undefined }) {
   const pause = opts.pause ?? .6;
   const lines: string[] = [];
   let j = 0, line: TimelineWord[] = [];
@@ -176,7 +176,8 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
     const jump = t.out.mediaId === t.in.mediaId ? `${t.out.mediaId} ${t.out.source.toFixed(2)}→${t.in.source.toFixed(2)}`
       : `${t.out.mediaId} ${t.out.source.toFixed(2)}→${t.in.mediaId} ${t.in.source.toFixed(2)}`;
     const either = `“${before?.text ?? "…"}” | “${after?.text ?? "…"}”`;
-    return `‖ join ${allNumbers ? allNumbers.get(join) ?? 0 : index + 1} at ${join.at.toFixed(2)} (${formatTimecode(join.at, opts.fps)}) ${jump}${t.gap ? ` gap ${t.gap} s` : ""}${t.overlap ? ` crossfade ${t.overlap} s` : ""} ${either}`;
+    const took = opts.removed?.(join);
+    return `‖ join ${allNumbers ? allNumbers.get(join) ?? 0 : index + 1} at ${join.at.toFixed(2)} (${formatTimecode(join.at, opts.fps)}) ${jump}${t.gap ? ` gap ${t.gap} s` : ""}${t.overlap ? ` crossfade ${t.overlap} s` : ""} ${either}${took ? ` took ${took}` : ""}`;
   };
   let previous: TimelineWord | undefined;
   for (const w of words) {
@@ -354,3 +355,21 @@ export function round(t: number, digits = 3) {
   const f = 10 ** digits;
   return Math.round(t * f) / f;
 }
+
+/**
+ * The words a join takes out of one recording, as its line in timeline_transcript quotes them: up to eight, or the
+ * first and last four of a longer run. Read beside the words either side, they show a cut that took a word the
+ * sentence needs or kept the wrong take: one pass played "test it, ‖ is the best" and "coming in at a 42, ‖ par with",
+ * and its own reads of the edit showed only the words either side (2026-11-16).
+ */
+export function joinTook(join: TimelineJoin, transcripts: ReadonlyMap<string, readonly TranscriptWord[]>) {
+  const t = join.tracks[0]!;
+  if (t.out.mediaId !== t.in.mediaId || t.in.source <= t.out.source + .01) return undefined;
+  const gone = (transcripts.get(t.out.mediaId) ?? []).filter(w => {
+    const middle = (w.start + w.end) / 2;
+    return w.end > w.start && w.text.trim() && middle >= t.out.source && middle < t.in.source;
+  }).map(w => w.text.trim());
+  if (!gone.length) return "no words";
+  return gone.length <= 8 ? `“${gone.join(" ")}”` : `“${gone.slice(0, 4).join(" ")} … ${gone.slice(-4).join(" ")}” (${gone.length} words)`;
+}
+
