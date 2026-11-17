@@ -28,7 +28,7 @@ I cut tight. At a join, leave one to two tenths of a second from the last word t
 
 Cut silent typing, searching and loading to the result, and hold the result long enough to see what changed. Flag any silence of two seconds or more that you keep in full, with what the viewer sees or hears during it.
 
-Use a two-frame audio crossfade at dialogue joins and a straight picture cut. Bring my voice in promptly when the picture cuts back to me, especially in the first 40 seconds: about a tenth of a second from the picture cut to my first word on a straight pickup, closer to an eighth later on. Keep a longer beat for a demonstration, a reaction or a purposeful breath, and keep my timing where my voice already enters naturally. Protect the first consonant and the release of the outgoing word through the crossfade.
+Use a two-frame audio crossfade at dialogue joins and a straight picture cut. Bring my voice in the moment the picture cuts: about two frames from the cut to my voice, as my published cuts do, whether the line starts a sentence or carries one on, and right on the first sound of a word that starts softly. Whatever pause the join keeps plays before the cut. Hold the cut a few frames longer only where the line opens something new, such as a new topic, a demo or a reaction to what just appeared, or where a breath is part of how I say it. Keep a longer beat for a demonstration, a reaction or a purposeful breath, and keep my timing where my voice already enters naturally. Protect the first consonant and the release of the outgoing word through the crossfade.
 
 ## Show the demo
 

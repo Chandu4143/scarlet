@@ -10,7 +10,7 @@ On a single-camera talking head, move between the wide framing and a tighter one
 
 ## Where to punch in
 
-- Where two pieces of the same shot meet at a cut, change the framing across the cut: wide to tight or tight to wide, so it reads as a new angle instead of a jump. Cuts that come close together can share the tight framing.
+- Where two pieces of the same shot meet at a cut, change the framing across the cut: wide to tight or tight to wide, so it reads as a new angle instead of a jump. Cuts that come close together can share the tight framing. Where the cut took out a long wait, the speaker often comes back in a different position and with less energy: give that incoming line the tighter framing, so the cut moves toward them, not away.
 - Push in on a line that deserves weight, such as a punchline, a key claim, a reveal or a strong reaction, and come back out when that thought ends.
 - Hold each framing for at least a few seconds. Punching in on every sentence turns into a rhythm the viewer notices.
 

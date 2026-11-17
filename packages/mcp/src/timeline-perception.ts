@@ -7,7 +7,7 @@ import { clipDuration, formatTimecode, type MediaClip, type Project, type TimeRa
 import type { PictureEntrance } from "./picture-entrance.js";
 import { normalizeTranscriptToken } from "@scarlet/shared";
 import { captionSourceClips, dbfs, isTag, wordsByMidpoint } from "./analysis.js";
-import { QUIET_PEAK, quietRms } from "./gap-sound.js";
+import { QUIET_PEAK, quietBuckets, quietRms } from "./gap-sound.js";
 
 // ---------------------------------------------------------------------------
 // Joins and time mapping
@@ -222,6 +222,11 @@ export interface Reading { from: number; to: number; peaks: number[]; rms?: numb
 const MIN_AIR_AFTER = .06;
 /** Less air than this before kept speech resumes usually clips the onset. */
 const MIN_AIR_BEFORE = .04;
+/**
+ * An incoming edge with no air can be a cut placed on the word's first sound (voiceIn 0): the recording is quiet for
+ * ONSET_QUIET just before the edge, within ONSET_SLACK of it, so nothing of the word was cut off.
+ */
+const ONSET_QUIET = .03, ONSET_SLACK = .02;
 /** A room-tone step this large between two quiet edges is audible as a change of room. */
 const ROOM_TONE_JUMP_DB = 6;
 /** Room tone below this level (a gated or very quiet mic) is inaudible, so a step between two such floors is not reported. */
@@ -248,6 +253,10 @@ export interface JoinAudit {
   airBefore?: number;
   /** Incoming minus outgoing level over the 60 ms either side, dB. */
   jumpDb?: number;
+  /** The incoming edge is on the first sound after a silence in its recording: the word plays whole from the cut. */
+  voiceOnCut?: true;
+  /** Seconds of the same recording taken out between the two sides. */
+  removed?: number;
   verdict: string;
 }
 
@@ -258,11 +267,12 @@ function bucketing(r: Reading) {
   const voiced = (s: number, e: number) => (r.speechActivity ?? []).some(v => v.start < e - 1e-6 && v.end > s + 1e-6);
   const quietBelow = quietRms(r.rms ?? [], step);
   const low = (i: number) => i >= 0 && i < n && (r.rms?.[i] ?? 0) <= quietBelow && r.peaks[i]! <= QUIET_PEAK;
+  const still = r.rms ? quietBuckets(r.rms, r.peaks, r.from, step, r.speechActivity ?? [], quietBelow) : undefined;
   return {
     step,
     level: (i: number) => (i >= 0 && i < n ? dbfs(r.rms?.[i] ?? r.peaks[i]!) : undefined),
     low,
-    quiet: (i: number) => low(i) && !voiced(r.from + i * step, r.from + (i + 1) * step),
+    quiet: (i: number) => still ? !!still[i] : low(i) && !voiced(r.from + i * step, r.from + (i + 1) * step),
     index: (t: number) => Math.floor((t - r.from) / step + 1e-6),
     voiced,
   };
@@ -283,6 +293,13 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
   for (let i = oEdge - 1; o.quiet(i); i--) airAfter += o.step;
   let airBefore = 0;
   for (let i = nEdge; n.quiet(i); i++) airBefore += n.step;
+  // What the recording holds just before the incoming edge, which the cut took out: silence there means the edge is
+  // where the sound begins.
+  let lead = nEdge - 1;
+  while (lead >= 0 && !n.quiet(lead) && (nEdge - lead) * n.step <= ONSET_SLACK + 1e-6) lead--;
+  let quietBeforeEdge = 0;
+  for (let i = lead; n.quiet(i); i--) quietBeforeEdge += n.step;
+  const voiceOnCut = airBefore < MIN_AIR_BEFORE && quietBeforeEdge >= ONSET_QUIET - 1e-6;
   let outQuiet = 0, inQuiet = 0;
   for (let i = oEdge - 1; o.low(i); i--) outQuiet += o.step;
   for (let i = nEdge; n.low(i); i++) inQuiet += n.step;
@@ -298,7 +315,7 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
     list?.find(w => w.start + wordMargin < t && t < w.end - wordMargin);
   // The recording decides: a word spanning a measured pause at the edge is a stretched timing, not a clipped word.
   const spanOut = straddles(words.out, side.out.source), spanIn = straddles(words.in, side.in.source);
-  const clippedOut = airAfter < STRETCHED_WORD_AIR ? spanOut : undefined, clippedIn = airBefore < STRETCHED_WORD_AIR ? spanIn : undefined;
+  const clippedOut = airAfter < STRETCHED_WORD_AIR ? spanOut : undefined, clippedIn = airBefore < STRETCHED_WORD_AIR && !voiceOnCut ? spanIn : undefined;
   const speed = side.outClip?.speed ?? 1;
   const center = side.outClip?.joinSource ?? side.out.source - (side.overlap ?? 0) / 2 * speed;
   const lastWord = words.out?.findLast(w => w.end > w.start && w.end <= center + 1e-6 && w.start >= (side.outClip?.sourceIn ?? 0)
@@ -313,7 +330,8 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
   if (clippedIn) issues.push(`starts inside ${name(clippedIn)}`);
   if (!clippedOut && airAfter < 1e-6) issues.push(voiceOut ? "outgoing edge on speech" : "outgoing edge on sound");
   else if (!clippedOut && airAfter < MIN_AIR_AFTER) issues.push(`only ${airAfter.toFixed(2)} s after ${name(lastWord) || "the last sound"}`);
-  if (!clippedIn && airBefore < 1e-6) issues.push(voiceIn ? "incoming edge on speech" : "incoming edge on sound");
+  if (voiceOnCut) { /* The word starts on the cut and plays whole. */ }
+  else if (!clippedIn && airBefore < 1e-6) issues.push(voiceIn ? "incoming edge on speech" : "incoming edge on sound");
   else if (!clippedIn && airBefore < MIN_AIR_BEFORE) issues.push(`only ${airBefore.toFixed(2)} s before ${name(firstWord) || "the next sound"}`);
   // Room tone is only comparable when both 60 ms windows are quiet.
   if (airAfter >= .06 - 1e-6 && airBefore >= .06 - 1e-6 && Math.abs(jumpDb) >= ROOM_TONE_JUMP_DB &&
@@ -326,8 +344,9 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
     in: { mediaId: side.in.mediaId, source: round(side.in.source), voice: voiceIn, ...(clippedIn && { clipped: clippedIn.text.trim() }),
       ...(firstWord && { firstWord: firstWord.text.trim() }), ...(inn.rms?.length && { levelQuiet: round(inQuiet, 2) }), ...(spanIn && !clippedIn && { stretchedWord: spanIn.text.trim() }) },
     levels: before.join(" ") + " | " + after.join(" "),
-    airAfter: round(airAfter, 2), airBefore: round(airBefore, 2), jumpDb,
-    verdict: issues.length ? "check: " + issues.join("; ") : "clean",
+    airAfter: round(airAfter, 2), airBefore: round(airBefore, 2), jumpDb, ...(voiceOnCut && { voiceOnCut }),
+    ...(side.out.mediaId === side.in.mediaId && side.in.source - side.out.source > .05 && { removed: round(side.in.source - side.out.source, 2) }),
+    verdict: issues.length ? "check: " + issues.join("; ") : voiceOnCut ? "clean: the voice starts on the cut" : "clean",
   };
 }
 

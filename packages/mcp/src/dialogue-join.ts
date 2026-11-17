@@ -3,7 +3,7 @@ import { JOIN_WORD_SECONDS, normalizeTranscriptToken } from "@scarlet/shared";
 import { audibleClipsByTrack, dbfs, isTag, round3 } from "./analysis.js";
 import { REPEAT_WITHIN } from "./dialogue-leftovers.js";
 import { partialRepeatAtJoin, type FragmentSide } from "./dialogue-fragment-repeat.js";
-import { QUIET_PEAK, QUIET_RMS, quietRms } from "./gap-sound.js";
+import { QUIET_RMS, quietBuckets, quietRms } from "./gap-sound.js";
 import { MAX_CROSSFADE, timelineJoins, type JoinSide } from "./timeline-perception.js";
 
 type Word = Pick<TranscriptWord, "text" | "start" | "end">;
@@ -36,12 +36,10 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
   if (step > 0.031) return; // A coarse waveform cannot locate an edge between syllables.
   const quiet: TimeRange[] = [], valleys: TimeRange[] = [];
   const quietBelow = quietRms(wf.rms, step);
-  let voice = 0;
+  const still = quietBuckets(wf.rms, wf.peaks, wf.from, step, wf.speechActivity, quietBelow);
   for (let i = 0; i < wf.rms.length; i++) {
     const start = wf.from + i * step, end = wf.from + (i + 1) * step;
-    while (voice < wf.speechActivity.length && wf.speechActivity[voice]!.end <= start) voice++;
-    if (wf.rms[i]! <= quietBelow && wf.peaks[i]! <= QUIET_PEAK && (wf.speechActivity[voice]?.start ?? Infinity) >= end)
-      appendInterval(quiet, start, end);
+    if (still[i]) appendInterval(quiet, start, end);
     // A speech detector can stay active through a real inter-word gap. Offer a deep
     // level trough there for audition, but keep that disagreement explicit.
     // Deep against this recording's floor too: a breath 10 dB over a very quiet room is under any fixed level.
@@ -60,20 +58,56 @@ const reach = .75, wordMargin = .02, quietMargin = .03;
  * AIR_BEFORE_SPEECH before kept speech resumes (a natural entrance, no clipped breath onset).
  * A run shorter than both splits proportionally. An edge the model already put in silence stays put:
  * pacing is the model's call, and timeline_join_audit reports the air either side. How long a join's pause plays is
- * pacing too, so the model can say it per cut (`leave`), by the pace its skill and the editor ask for; the split
- * between the two sides stays in these proportions.
+ * pacing too, so the model can say it per cut (`leave`), and how soon the voice comes in after the cut (`voiceIn`),
+ * by the pace its skill and the editor ask for.
+ * A pause plays on the outgoing side of the cut: the air before the voice is the same short length whatever the
+ * pause (splitLeave). It was a share of the pause, 0.10 s of the default beat, and a word takes another 0.03 to 0.05 s
+ * to reach speaking level after the quiet ends: on a 105-cut pass the voice came in a median 0.12 s after the picture
+ * cut, and 0.21 s after a tenth of them, where the model had asked for a longer pause. The editor heard the wait after
+ * each cut (2026-11-16).
  */
-export const AIR_AFTER_SPEECH = .15;
-export const AIR_BEFORE_SPEECH = .10;
+export const AIR_AFTER_SPEECH = .20;
+export const AIR_BEFORE_SPEECH = .05;
 /**
  * The room tone a join leaves: `after` the last kept word and `before` speech resumes, in the recording's seconds. A
  * skill sets it as a pace; Scarlet's defaults are AIR_AFTER_SPEECH and AIR_BEFORE_SPEECH.
  */
 export interface JoinPace { after: number; before: number }
 export const DEFAULT_PACE: JoinPace = { after: AIR_AFTER_SPEECH, before: AIR_BEFORE_SPEECH };
-/** A pause of `leave` seconds, split between the two sides of a join as `pace` splits its room tone. */
-export const splitLeave = (leave: number, pace: JoinPace = DEFAULT_PACE): JoinPace =>
-  ({ after: leave * pace.after / (pace.after + pace.before), before: leave * pace.before / (pace.after + pace.before) });
+/**
+ * The air either side of a join that plays `leave` seconds word to word. `voiceIn` of them, or the pace's `before`,
+ * sit between the cut and the voice, and the rest plays before the cut. A pause shorter than twice that is halved.
+ */
+export const splitLeave = (leave: number, pace: JoinPace = DEFAULT_PACE, voiceIn = pace.before): JoinPace => {
+  const before = Math.min(voiceIn, leave / 2);
+  return { after: leave - before, before };
+};
+
+/**
+ * A cut that asks for less than quietMargin before the voice is asked to land on the word: its edge goes to the end of
+ * the quiet before the word, on the frame nearest it, and may sit this far into the word's first sound while that
+ * sound is still under speaking level. A soft start (“This”) takes a tenth of a second to rise, and an editor cutting
+ * by ear put the cut on its first frame; a hard one (“But”) is at level at once, and the edge stays before it.
+ */
+const ONSET_REACH = .02;
+/** The least a cut can ask for before the voice: none, the cut on the word's first sound. */
+export const LEAST_VOICE_IN = 0;
+/** The latest an edge may sit beside the sound that ends quiet run `run`: its end, or a little into a soft start. */
+function onsetLimit(page: JoinPage["edges"] | undefined, runEnd: number): number {
+  const levels = page?.levels;
+  if (!levels) return runEnd;
+  let limit = runEnd;
+  for (let i = Math.floor((runEnd - levels.from) / levels.step + 1e-6); i >= 0 && i < levels.db.length; i++) {
+    const from = levels.from + i * levels.step;
+    if (from >= runEnd + ONSET_REACH - 1e-9 || levels.db[i]! > SPEECH_DBFS) break;
+    limit = Math.min(runEnd + ONSET_REACH, from + levels.step);
+  }
+  return limit;
+}
+/** Whether an edge at `t` that starts a clip is on the first sound after a measured silence: nothing of the word is cut off. */
+function onWordOnset(page: NonNullable<JoinPage["edges"]>, t: number): boolean {
+  return gaps(page).some(q => q.end - q.start >= 2 * quietMargin && q.end - quietMargin < t && t <= onsetLimit(page, q.end) + 1e-6);
+}
 
 /**
  * Where an edge sits in quiet run `run`. A `start` edge follows kept speech; an `end` edge precedes it.
@@ -196,6 +230,8 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
     }
     return Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? { start: lo, end: hi } : undefined;
   };
+  // A removal that ends on the first sound of the word it resumes with was asked to (voiceIn): the word plays whole.
+  if (direction === -1 && sources.length && sources.every(s => onWordOnset(s.page, s.at))) return { at };
   // The measured audio decides. A quiet gap is a clean edge even if a stretched word timing spans it. The engine saves
   // a removal on whole frames, rounded inward, and the inward frame can be the first sound of the word beside it.
   if (sound(at) === "quiet") {
@@ -752,6 +788,8 @@ export function clipEdgeSound(pages: JoinPage[], mediaId: string, stream: number
 function soundUnderEdge(pages: JoinPage[], mediaId: string, stream: number, t: number, side: "in" | "out") {
   const page = pageAt(pages, mediaId, stream, t);
   if (!page || soundAt(page, t) !== "sound") return;
+  // A clip that starts on the first sound after a silence plays that sound whole.
+  if (side === "in" && onWordOnset(page, t)) return;
   // Room tone under the edge, too brief to be a run of silence: the instant between two words said in one breath.
   const levels = page.levels, here = levels && levels.db[Math.floor((t - levels.from) / levels.step)];
   if (here !== undefined && here <= DIP_DBFS) return;
@@ -990,10 +1028,10 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
  * the default edge padding. `pageAt` returns measured evidence covering a source time. Without a kept
  * neighbor the edge runs to the start or end of the material.
  */
-export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number, pace: JoinPace = DEFAULT_PACE): WordCut {
+export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number, pace: JoinPace = DEFAULT_PACE, voiceIn?: number): WordCut {
   const first = words[from]!, last = words[to]!;
-  // The pause the join should play, word to word, in the recording's seconds: split as the default padding is.
-  const air = leave === undefined ? pace : splitLeave(leave, pace);
+  // The pause the join should play, word to word, and how much of it follows the cut, in the recording's seconds.
+  const air = leave === undefined ? { after: pace.after, before: voiceIn ?? pace.before } : splitLeave(leave, pace, voiceIn);
   const problems: string[] = [], dips: string[] = [], retimed: string[] = [];
   // The kept word beside each edge, where the recording says it is.
   const heard = (kept: Word | undefined, neighbour: Word | undefined, side: "start" | "end") => {
@@ -1033,6 +1071,11 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
     const run = (page && !pageReaches(page, beside) ? nearest(inGap(pageAt(beside))) : undefined) ?? seen;
     if (run) {
       used[side] = seen ?? run;
+      // Asked for less than the margin before the voice, the edge goes to the end of the quiet, where the word starts.
+      if (side === "end" && air && air.before < quietMargin) {
+        room[side] = { start: run.start + quietMargin, end: onsetLimit(pageAt(run.end) ?? page, run.end) };
+        return Math.max(run.start + quietMargin, run.end - air.before);
+      }
       room[side] = { start: run.start + quietMargin, end: run.end - quietMargin };
       return padEdge(run, side, air);
     }
@@ -1076,12 +1119,12 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
 export const PAUSE_BEAT = AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH;
 /**
  * The source range that trims the pause between two neighboring words down to `leave` seconds, word to word. The
- * beat is split as edge padding is, more after the outgoing word than before the incoming one, and each edge stays
+ * beat plays after the outgoing word but for `voiceIn` before the incoming one (splitLeave), and each edge stays
  * inside the measured quiet beside its word: where a word's sound runs past its timing, the pause plays that much
  * longer rather than clip it. Sound in the middle of the pause, such as typing or a breath, goes with it.
  */
-export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => JoinPage["edges"] | undefined, leave = PAUSE_BEAT, pace: JoinPace = DEFAULT_PACE): TimeRange & { problems: string[]; plays: number; room: WordCut["room"] } {
-  const share = pace.after / (pace.after + pace.before);
+export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => JoinPage["edges"] | undefined, leave = PAUSE_BEAT, pace: JoinPace = DEFAULT_PACE, voiceIn?: number): TimeRange & { problems: string[]; plays: number; room: WordCut["room"] } {
+  const air = splitLeave(leave, pace, voiceIn);
   const problems: string[] = [];
   const long = (q: TimeRange) => q.end - q.start >= 2 * quietMargin;
   const between = (page: JoinPage["edges"] | undefined) => (page ? gaps(page) : []).filter(q => long(q) && q.end > before.end - keptSlack && q.start < after.start + keptSlack);
@@ -1089,14 +1132,18 @@ export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => 
   const first = besideWord(between(pageAt(Math.min(before.end + .1, (before.end + after.start) / 2))), "start");
   const last = besideWord(between(pageAt(Math.max(after.start - .1, (before.end + after.start) / 2))), "end");
   const inside = (run: TimeRange, t: number) => Math.min(Math.max(t, run.start + quietMargin), run.end - quietMargin);
-  let start = before.end + leave * share, end = after.start - leave * (1 - share);
+  let start = before.end + air.after, end = after.start - air.before;
   // Asked to play its whole length or more, the pause has nothing to trim. With a breath or a click in the middle the
   // quiet runs either side would each pull an edge in, and the pause lost the sound between them.
   if (start >= end - 1e-6) return { start, end: start, problems, plays: Math.max(0, after.start - before.end), room: {} };
   if (first) start = inside(first, start);
   else problems.push(`No measured silence after “${plain(before)}”. The pause's start uses the word timing.`);
-  if (last) end = inside(last, end);
+  // Asked for less than the margin before the voice, the end goes to the end of the quiet, where the word starts.
+  const onWord = !!last && air.before < quietMargin;
+  if (onWord) end = Math.max(last.start + quietMargin, last.end - air.before);
+  else if (last) end = inside(last, end);
   else problems.push(`No measured silence before “${plain(after)}”. The pause's end uses the word timing.`);
   const within = (run: TimeRange | undefined) => run && { start: run.start + quietMargin, end: run.end - quietMargin };
-  return { start, end, problems, plays: Math.max(0, after.start - before.end), room: { start: within(first), end: within(last) } };
+  return { start, end, problems, plays: Math.max(0, after.start - before.end),
+    room: { start: within(first), end: onWord ? { start: last.start + quietMargin, end: onsetLimit(pageAt(last.end), last.end) } : within(last) } };
 }

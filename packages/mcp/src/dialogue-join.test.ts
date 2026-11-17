@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createProject, emptyTimeline, makeMediaClip, type MediaAsset } from "@scarlet/timeline";
-import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, checkDialogueJoin, clipEdgeSound, edgeOnFrame, quietFrameNote, soundBesideEdge, joinAudio, joinEvidence, padEdge, pauseCutRange, wordCutRange, type JoinPage } from "./dialogue-join.js";
+import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, checkDialogueJoin, clipEdgeSound, edgeOnFrame, quietFrameNote, soundBesideEdge, splitLeave, joinAudio, joinEvidence, padEdge, pauseCutRange, wordCutRange, type JoinPage } from "./dialogue-join.js";
 
 const words = [
   { start: 1, end: 1.38, text: "finish" }, { start: 1.8, end: 2.2, text: "first" },
@@ -128,19 +128,19 @@ describe("native retake boundaries", () => {
   it("checks the recording at an edge the transcript calls a word gap", () => {
     const { p, tl } = fixture();
     // The transcript ends “finish” at 1.38, but the voice runs to 1.44. A cut at 1.40 would clip its tail.
-    // The edge lands in the pause 0.15 s after the voice ends (1.59), on the nearest frame.
+    // The edge lands in the pause 0.2 s after the voice ends (1.64), on the nearest frame.
     const tail = checkDialogueJoin(tl,p,{start:1.40,end:2.8},[page]);
-    expect(tail).toMatchObject({ status: "snapped", start: 1.6, end: 2.8 });
+    expect(tail).toMatchObject({ status: "snapped", start: expect.closeTo(49/30, 5), end: 2.8 });
     expect(tail.reason).toMatch(/into the pause/);
     expect(checkDialogueJoin(tl,p,{start:tail.start,end:tail.end},[page]).status).toBe("unchanged");
   });
   it("trims a fragment of the removed take onto the silence before it", () => {
     const { p, tl } = fixture();
     // The removal should start before “first”, but begins 50 ms after its onset. The nearest silent frame
-    // (53/30) is only a fragment trim, so it still snaps, and the edge then sits 0.15 s after “finish”.
+    // (53/30) is only a fragment trim, so it still snaps, and the edge then sits 0.2 s after “finish”.
     const fragment = checkDialogueJoin(tl,p,{start:1.85,end:2.8},[page]);
     expect(fragment.status).toBe("snapped");
-    expect(fragment.start).toBeCloseTo(48/30);
+    expect(fragment.start).toBeCloseTo(49/30);
     expect(fragment.reason).toMatch(/earlier.*first/);
   });
   it("trusts measured silence over a stretched word timing", () => {
@@ -160,16 +160,16 @@ describe("native retake boundaries", () => {
   it("pads an edge it places: air after kept speech, air before speech resumes, split when the pause is short", () => {
     expect(padEdge({ start: 1, end: 2 }, "start")).toBeCloseTo(1 + AIR_AFTER_SPEECH);
     expect(padEdge({ start: 1, end: 2 }, "end")).toBeCloseTo(2 - AIR_BEFORE_SPEECH);
-    // 0.2 s is shorter than both; both edges take the same proportional point.
-    expect(padEdge({ start: 1, end: 1.2 }, "start")).toBeCloseTo(1.12);
-    expect(padEdge({ start: 1, end: 1.2 }, "end")).toBeCloseTo(1.12);
+    // 0.2 s is shorter than the two together; both edges take the same proportional point.
+    expect(padEdge({ start: 1, end: 1.2 }, "start")).toBeCloseTo(1.16);
+    expect(padEdge({ start: 1, end: 1.2 }, "end")).toBeCloseTo(1.16);
     // An edge already in silence is the model's pacing and stays where it is.
     const { p, tl } = fixture();
     expect(checkDialogueJoin(tl,p,{start:1.7,end:2.8},[page])).toMatchObject({ status: "unchanged", start: 1.7 });
-    // Moving an end edge out of “next” leaves 0.10 s before it resumes.
+    // Moving an end edge out of “next” leaves 0.05 s before it resumes, on the nearest frame.
     const end = checkDialogueJoin(tl,p,{start:2.4,end:3.45},[page]);
     expect(end.status).toBe("snapped");
-    expect(end.end).toBeCloseTo(3.3);
+    expect(end.end).toBeCloseTo(101/30);
   });
   it("puts an edge beside the kept word when a deep trough lies inside the quiet run", () => {
     // The room goes almost silent from 2.5 to 2.9 s, inside the quiet that runs from “first” to “next”. The trough is
@@ -184,16 +184,16 @@ describe("native retake boundaries", () => {
     expect(pause.start).toBeCloseTo(2.2 + AIR_AFTER_SPEECH);
     expect(pause.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
   });
-  it("places a join's room tone by the pace it is given, and splits a pause by it", () => {
+  it("places a join's room tone by the pace it is given, and keeps its quiet before the voice whatever the pause", () => {
     const at = () => ({ ...page.edges!, valleys: [{ start: 2.5, end: 2.9 }] });
     const pace = { after: .05, before: .05 };
     const cut = wordCutRange(words, 1, 1, at, undefined, pace);
     expect(cut.start).toBeCloseTo(1.44 + .05);
     expect(cut.end).toBeCloseTo(3.4 - .05);
-    // A leave of 0.4 s split evenly, as the pace splits its room tone.
+    // A leave of 0.4 s keeps the pace's 0.05 s before the voice. The rest of the pause plays before the cut.
     const pause = pauseCutRange(words[1]!, words[2]!, at, .4, pace);
-    expect(pause.start).toBeCloseTo(2.2 + .2);
-    expect(pause.end).toBeCloseTo(3.4 - .2);
+    expect(pause.start).toBeCloseTo(2.2 + .35);
+    expect(pause.end).toBeCloseTo(3.4 - .05);
   });
   it("trims nothing from a pause asked to play at its full length, whatever sounds in the middle of it", () => {
     // A breath at 2.7–2.9 s splits the quiet between “first” and “next” in two. Each edge used to be pulled into the
@@ -334,6 +334,47 @@ describe("native retake boundaries", () => {
     expect(soundBesideEdge(pages, "mic", 0, 1.05, "in", .06)).toBeCloseTo(.03);
   });
 
+  it("puts a cut that asks for no air before the voice on the word's first sound", () => {
+    const at = () => page.edges;
+    // “next” is at speaking level the moment it starts (3.4 s): the edge goes to the end of the quiet and no further.
+    const hard = wordCutRange(words, 1, 1, at, .3, undefined, 0);
+    expect([hard.start, hard.end, hard.room.end!.end]).toEqual([expect.closeTo(1.44 + .3), expect.closeTo(3.4), expect.closeTo(3.4)]);
+    expect(edgeOnFrame(hard.end, hard.room.end, 24, t => t)).toBeCloseTo(81 / 24);
+    // A soft start takes 60 ms to reach that level. The edge may sit on its first 20 ms, so the nearest frame can be the word's first.
+    const rising = levels.map((level, i) => i >= 170 && i < 173 ? .005 : level);
+    const soft = joinEvidence(words, { from: 0, to: 5, peaks: rising, rms: rising, speechActivity: voice });
+    const onSoft = wordCutRange(words, 1, 1, () => soft, .3, undefined, 0);
+    expect([onSoft.end, onSoft.room.end!.end]).toEqual([expect.closeTo(3.4), expect.closeTo(3.42)]);
+    expect(edgeOnFrame(onSoft.end, onSoft.room.end, 24, t => t)).toBeCloseTo(82 / 24);
+    // A pause named by the word it follows goes the same way.
+    const pause = pauseCutRange(words[1]!, words[2]!, at, .3, undefined, 0);
+    expect([pause.start, pause.end, pause.room.end!.end]).toEqual([expect.closeTo(2.5), expect.closeTo(3.4), expect.closeTo(3.4)]);
+    // The checks read such an edge as the word's start, not a cut through sound.
+    const { p, tl } = fixture();
+    expect(checkDialogueJoin(tl, p, { start: 2.6, end: 3.4 }, [page])).toMatchObject({ status: "unchanged", end: 3.4 });
+    expect(clipEdgeSound([page], "mic", 0, 3.4, "in")).toBeUndefined();
+    expect(clipEdgeSound([{ ...page, edges: soft }], "mic", 0, 3.42, "in")).toBeUndefined();
+  });
+
+  it("follows the quiet past a detector that starts before the word does, as far as the level stays in the room", () => {
+    // The detector calls “next” from 2.9 s. The recording is at room level until the word starts at 3.4 s.
+    const early = voice.map(v => v.start === 3.4 ? { ...v, start: 2.9 } : v);
+    const run = (rms: number[]) => joinEvidence(words, { from: 0, to: 5, peaks: rms, rms, speechActivity: early })!.quiet.at(-2);
+    expect(run(levels)).toEqual({ start: expect.closeTo(2.26), end: expect.closeTo(3.4) });
+    // A lone tick in that stretch is not the word. A sound that rises out of the room is: a soft start ends the quiet.
+    expect(run(levels.map((l, i) => i === 160 ? .004 : l))!.end).toBeCloseTo(3.4);
+    expect(run(levels.map((l, i) => i >= 165 && i < 170 ? .005 : l))!.end).toBeCloseTo(3.3);
+    // A breath before the word, then ticks in the quiet that follows it: the quiet beside the word is one silence, and
+    // the edge goes after the breath.
+    const fine = Array.from({ length: 500 }, (_, i) => voice.some(v => v.start <= i/100 && i/100 < v.end) ? .12 : i >= 290 && i < 320 ? .004 : i === 327 || i === 333 ? .003 : .0004);
+    const breath = joinEvidence(words, { from: 0, to: 5, peaks: fine, rms: fine, speechActivity: [...voice.slice(0, 2), { start: 2.9, end: 3.2 }, voice[2]!] })!;
+    expect(breath.quiet.at(-2)).toEqual({ start: expect.closeTo(3.2), end: expect.closeTo(3.4) });
+    expect(wordCutRange(words, 1, 1, () => breath).end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH, 1);
+    // The edge goes beside the word, not half a second before it.
+    const cut = wordCutRange(words, 1, 1, () => joinEvidence(words, { from: 0, to: 5, peaks: levels, rms: levels, speechActivity: early }));
+    expect(cut.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
+  });
+
   it("resolves a word range to padded edges in the measured gaps beside it", () => {
     const at = () => page.edges;
     // Remove “first”: kept “finish” ends at 1.44 by the recording, “next” resumes at 3.4.
@@ -342,10 +383,20 @@ describe("native retake boundaries", () => {
     expect(cut.text).toBe("first");
     expect(cut.start).toBeCloseTo(1.44 + AIR_AFTER_SPEECH);
     expect(cut.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
-    // The agent can say how long the join's pause plays instead: 0.3 s, split as the default padding is.
+    // The agent can say how long the join's pause plays instead: 0.3 s, all but the air before the voice on the outgoing word's side.
     const roomy = wordCutRange(words, 1, 1, at, .3);
-    expect(roomy.start).toBeCloseTo(1.44 + .18);
-    expect(roomy.end).toBeCloseTo(3.4 - .12);
+    expect(roomy.start).toBeCloseTo(1.44 + .25);
+    expect(roomy.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
+    // And how soon the voice comes in after the cut: the rest of the pause plays before it.
+    const prompt = wordCutRange(words, 1, 1, at, .3, undefined, .03), held = wordCutRange(words, 1, 1, at, .3, undefined, .12);
+    expect([prompt.start, prompt.end]).toEqual([expect.closeTo(1.44 + .27), expect.closeTo(3.4 - .03)]);
+    expect([held.start, held.end]).toEqual([expect.closeTo(1.44 + .18), expect.closeTo(3.4 - .12)]);
+    // Given alone, it changes that side only.
+    const alone = wordCutRange(words, 1, 1, at, undefined, undefined, .12);
+    expect([alone.start, alone.end]).toEqual([expect.closeTo(1.44 + AIR_AFTER_SPEECH), expect.closeTo(3.4 - .12)]);
+    // A pause shorter than twice the air before the voice is halved.
+    expect(splitLeave(.06)).toEqual({ after: .03, before: .03 });
+    expect(splitLeave(.4, undefined, .3)).toEqual({ after: .2, before: .2 });
     // Without a kept neighbor the cut runs to the start or end of the material.
     expect(wordCutRange(words, 0, 0, at).start).toBe(0);
     expect(wordCutRange(words, 2, 2, at).end).toBe(Infinity);

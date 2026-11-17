@@ -86,6 +86,14 @@ describe("join audit", () => {
     expect(audit.out).toMatchObject({ lastWord: "kept", lastWordEnd: 3.7, wordEndToJoin: .1, levelQuiet: .3 });
   });
 
+  it("calls an incoming edge on the first sound after a silence clean, and says how much of the recording came out", () => {
+    // The recording is silent until 6 s, where the incoming clip starts and the word does: the word plays whole.
+    const audit = auditJoin(1, 4, side, reading(3, 4.3, [[3, 3.8]]), reading(5.7, 7, [[6, 7]]));
+    expect(audit).toMatchObject({ airBefore: 0, voiceOnCut: true, removed: 2, verdict: "clean: the voice starts on the cut" });
+    // Sound on both sides of the edge is a cut through it.
+    expect(auditJoin(1, 4, side, reading(3, 4.3, [[3, 3.8]]), reading(5.7, 7, [[5.9, 7]]))).toMatchObject({ verdict: expect.stringContaining("incoming edge on speech") });
+  });
+
   it("calls a join with air on both sides and matching room tone clean", () => {
     const audit = auditJoin(1, 4, side, reading(3, 4.3, [[3, 3.8]]), reading(5.7, 7, [[6.12, 7]]));
     expect(audit.verdict).toBe("clean");
