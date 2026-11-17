@@ -64,14 +64,6 @@ it("follows a drag across the stretch it began in", async () => {
   expect(picks).toEqual([1500]);
 });
 
-it("points its controls' button at the controls only while they are open", async () => {
-  await show();
-  const button = container.querySelector<HTMLButtonElement>('[aria-label="Timeline controls"]')!;
-  expect(button.getAttribute("aria-controls")).toBeNull();
-  await act(async () => button.click());
-  expect(document.getElementById(button.getAttribute("aria-controls")!)).not.toBeNull();
-});
-
 it("reveals a typed timestamp outside the zoomed window without seeking the player", async () => {
   const render = (times: number[]) => act(async () => root.render(
     <TimelineScrubber duration={3000} playhead={100} frameAt={() => undefined} onSeek={t => seeks.push(t)}

@@ -312,40 +312,48 @@ it("writes the ruler's times as the player does, counting the hours past one", a
   expect(stamps()).toEqual(["0:00", "15:00", "30:00", "45:00", "1:00:00", "1:15:00"]);
 });
 
-it("zooms from the timeline controls and draws no edit points, zoomed or not", async () => {
+it("keeps zoom controls on the timeline and draws no edit points, zoomed or not", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(132);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
   const source = data.media[0]!.id;
   const timeline = { ...data.timeline!, tracks: [{ ...data.timeline!.tracks[0]!, kind: "video" as const, hidden: false,
     clips: [mc("a", source, 0, 1, 50), mc("b", source, 0, 2, 51)] }] };
-  const seek = vi.fn();
+  const seek = vi.fn(), scrub = vi.fn(), selectRange = vi.fn();
   const render = () => show(<TimelineScrubber duration={200} playhead={150}
-    waveform={{ timeline, media: [] }} frameAt={() => undefined} onSeek={seek} />);
+    waveform={{ timeline, media: [] }} frameAt={() => undefined} onSeek={seek} onScrubStart={scrub} onRange={selectRange} />);
   const rail = () => container.querySelector(".timeline-cuts, .timeline-cut, .timeline-cut-group");
   await render();
   expect(rail()).toBeNull();
-  const trigger = labeled("Timeline controls");
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
-  expect(labeled("Zoom in")).toBeNull();
-  await click(trigger);
-  expect(labeled("Zoom out").disabled).toBe(true);
-  expect(button("Show edit points")).toBeUndefined();
-  await click(labeled("Zoom in"));
-  expect(rail()).toBeNull();
+  const controls = container.querySelector(".timeline-track > [aria-label='Timeline zoom']");
   const zoomIn = labeled("Zoom in");
+  expect(controls?.contains(zoomIn)).toBe(true);
+  expect(labeled("Timeline controls")).toBeNull();
+  expect(labeled("Zoom out").disabled).toBe(true);
+  expect(labeled("Fit timeline").disabled).toBe(true);
+  expect(button("Show edit points")).toBeUndefined();
+  const ruler = container.querySelector(".timeline-ruler")!;
+  expect(ruler.textContent).toContain("2:00");
+  expect(ruler.textContent).not.toContain("2:30");
+  expect(ruler.querySelector('.ruler-major[style*="75%"]')).toBeTruthy();
+  await act(() => zoomIn.dispatchEvent(new PointerEvent("pointerdown", { button: 0, isPrimary: true, bubbles: true })));
+  await click(zoomIn);
+  expect(rail()).toBeNull();
   await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true, cancelable: true })));
   expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("4×");
   await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true, cancelable: true })));
   expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("2×");
   await click(labeled("Fit timeline"));
+  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("1×");
   expect(seek).not.toHaveBeenCalled();
-  await act(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-  expect(labeled("Zoom in")).toBeNull();
-  expect(document.activeElement).toBe(trigger);
-  await click(trigger);
+  expect(scrub).not.toHaveBeenCalled();
+  expect(selectRange).not.toHaveBeenCalled();
+  const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  await act(() => zoomIn.dispatchEvent(escape));
+  expect(escape.defaultPrevented).toBe(false);
   await act(() => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(labeled("Zoom in")).toBe(zoomIn);
   expect(container.textContent).not.toContain("edit points");
 });
 
@@ -462,7 +470,6 @@ it("draws crowded edits as one pill that zooms to its run on a press, and a dot 
   expect(seek).not.toHaveBeenCalled();
   expect(markers().map(m => m.textContent)).toEqual(["1", "2", "3", "4"]);
   // Back on the whole video, a press on a dot opens its edit; beside a marker a press scrubs as before.
-  await click(container.querySelector<HTMLElement>(".timeline-view-trigger")!);
   await click(labeled("Fit timeline"));
   vi.spyOn(strip(), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await point("pointermove", 620);
@@ -524,7 +531,6 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
   vi.spyOn(track, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 0, 400, 120));
   const slider = labeled("Position in the video");
   const playheadX = () => slider.querySelector<HTMLElement>(".timeline-playhead")?.style.left;
-  await click(labeled("Timeline controls"));
   const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
   vi.useFakeTimers();
   try {
@@ -1311,7 +1317,6 @@ it("adds a second zoom step to the one under way, and turns a zoom back from whe
   await render(50);
   const slider = container.querySelector(".timeline-slider");
   const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
-  await click(labeled("Timeline controls"));
   await click(labeled("Zoom in"));
   expect(level()).toBe("1×");
   await advance(130);
