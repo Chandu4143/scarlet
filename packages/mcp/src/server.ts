@@ -3,6 +3,7 @@ import { PictureBatches, type PictureRequest, type PreparedPictures } from "./pi
 import { BRIEF_PICTURES_NEXT, flashesOntoCuts, MET_CUT_NEXT, newBriefPictures, type MetCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
 import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
+import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
 import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
 /**
@@ -104,6 +105,8 @@ const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
+/** An area check looks at one frame and says what of it viewers may see, and nothing else. */
+const AREA_CHECK_TOOLS: ReadonlySet<string> = new Set(["media_frame", "screen_area"]);
 const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
@@ -314,6 +317,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         ? "Scarlet exposes the tools for revising one of the editor’s skills; an empty MCP resource list is normal."
         : ctx.task?.kind === "learning_check"
         ? "Scarlet exposes the tools for reading the editor’s skills and offering a rule for one; an empty MCP resource list is normal."
+        : ctx.task?.kind === "area_check"
+        ? "Scarlet exposes the tools for looking at one frame of a recording and saving what of it viewers may see; an empty MCP resource list is normal."
         : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand.",
     },
   );
@@ -935,6 +940,43 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return { ...op, ...aligned };
     });
   }
+  /** A recording's areas viewers may see and where each holds. A first ask reads the recording's edges, within one tool call where it can. */
+  const recordingAreas = (mediaId: string, waitSeconds = Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 20))) =>
+    client.get<RecordingAreas & { error?: string }>(`/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${waitSeconds}`);
+  /**
+   * Every save an agent makes goes through here: one that frames footage past the area viewers may see, or on part of a
+   * picture no area was given for, is refused with each place named. A pass framed 399 screen clips in one save and
+   * showed another app beside the demo for a third of their time (2026-11-16); asked for the window on a frame, the
+   * same model boxed it to a fifth of a percent.
+   */
+  async function insideShowAreas(before: Timeline | null, laid: Timeline) {
+    const { project } = await getProject();
+    const ids = new Set<string>();
+    showAreaFindings(before, laid, project.media, project.settings, id => { ids.add(id); return undefined; });
+    if (!ids.size) return;
+    const known = new Map<string, RecordingAreas>();
+    await Promise.all([...ids].map(async id => { const areas = await recordingAreas(id).catch(() => undefined); if (areas) known.set(id, areas); }));
+    let found = showAreaFindings(before, laid, project.media, project.settings, id => known.get(id));
+    // Footage with no area on record is looked at now, a frame for each stretch, by short runs beside this one. An
+    // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
+    // time one tool call has.
+    const deadline = Date.now() + Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 30)) * 1000;
+    for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
+      const bySource = new Map<string, number[]>();
+      for (const n of found.noArea) bySource.set(n.mediaId, [...(bySource.get(n.mediaId) ?? []), n.look]);
+      const wait = Math.round((deadline - Date.now()) / 1000);
+      const answers = await Promise.all([...bySource].map(async ([id, seconds]) => {
+        const state = await client.post<RecordingAreas & { asked: number; answered: number }>(
+          `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(id)}/show-area/ask?wait=${wait}`, { seconds, taskId: ctx.taskId }).catch(() => undefined);
+        if (state) known.set(id, state);
+        return state?.answered ?? 0;
+      }));
+      if (!answers.some(Boolean)) break;
+      found = showAreaFindings(before, laid, project.media, project.settings, id => known.get(id));
+    }
+    const refusal = showAreaRefusal(found);
+    if (refusal) throw new Error(refusal);
+  }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
     if (ctx.author.type === "agent") {
       const edits = body.timelineEdits ?? [];
@@ -959,6 +1001,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
           metCut = closed.met;
         }
       }
+    }
+    if (ctx.author.type === "agent") {
+      const laid = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
+      if (laid) await insideShowAreas(before, laid);
     }
     const req: ProposeChangeRequest = {
       ...body,
@@ -1037,6 +1083,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // Every request is read for a standing rule by a learning check, which has that tool and the skills. The run that
     // edits doesn't offer rules as well, so the editor never gets the same rule twice in two wordings.
     if (ctx.task?.kind === "learning_check" ? !LEARNING_CHECK_TOOLS.has(name) : name === "learning_suggest") return;
+    if (ctx.task?.kind === "area_check" && !AREA_CHECK_TOOLS.has(name)) return;
     server.registerTool(name, { description, inputSchema: shape, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
       const calls = running.get(name) ?? new Set<Promise<unknown>>();
       running.set(name, calls);
@@ -1275,6 +1322,81 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     "Compare one chronological cut or changed spot on the original and proposed versions. Reports new black frames, freezes and abrupt mix-level changes (dB)." + (caps.images ? " Includes labeled composite frames." : "") + " Read total to review the next index. For how a dialogue join sounds, use timeline_join_audit.",
     { ...cutReviewShape, ...audioOption("Attach a short WAV of each side") },
     args => inspect(() => client.reviewCut(ctx.projectId, { ...args, includeAudio: hearing && args.includeAudio === true })));
+
+  // Only the run that looks at one frame gives an area. A pass given the same power answered for a whole recording at
+  // once, from scripts and small frames: 230 areas in ten calls, one inside the editor's box of eleven (2026-11-16).
+  const givesAreas = !ctx.taskId || ctx.task?.kind === "area_check";
+  tool(
+    "screen_area",
+    "What of a recording's picture viewers may see. A screen recording usually holds more than the window being presented: the desktop, a taskbar, a recording app, a call beside it. An area is a box given on the frame at a SOURCE second, as [left, top, right, bottom] in percent of the picture: everything outside it stays out of the video. Scarlet finds the straight edges under the box on that frame and holds the area for every stretch of the recording where those edges are still in place, so one area serves a window for as long as it stays where it is, and comes back when the window does. The result lists each area with the source seconds it holds for (`holds`) and any side with no line under it on its frame (`noLine`: that side is not needed for the area to hold), and `unset`: the stretches no area holds for, with the seconds of each the current edit plays (`onPicture`) and a second to look at (`look`)." +
+      (givesAreas
+        ? " `set` gives an area for the frame at `at`; one given again at the same second replaces the one there, and `remove` takes areas out by their `at`. A side given within a percent of a line in the picture is put on that line. The whole picture, [0, 0, 100, 100], is an area like any other, for a recording where all of it may show."
+        : " Areas come from a look at one full-size frame at a time, which Scarlet starts itself: where an edit frames part of a picture that has no area yet, it has that frame looked at before it checks the save, so a save can take longer the first time a recording is framed. `ask` has the frames at those source seconds looked at now, for a stretch you are about to frame or an area that is wrong for its footage (a frame is given to the area looked at nearest to it in time); it waits for the answers. A recording whose area is the whole picture, as a camera's is, needs no ask: all of it may show.") +
+      (caps.images && givesAreas ? " With the result come pictures of the first few unset stretches the edit plays, at `look`, with percent lines drawn over them. `pictures` sets how many (default 4, 0 for none)." : "") +
+      " Every save is checked against these: an edit that frames footage past its area is not saved, and its refusal names each place. timeline_framing keeps its frames inside the area on record when no `within` is given. A recording is read once for its edges; until that is done the result says so and `holds` are empty: call again.",
+    {
+      mediaId: z.string().describe("Media asset id"),
+      ...(givesAreas ? {
+        set: z.array(z.object({ at: z.number().min(0).describe("Source second of the frame the area was read on"), area: percentBox })).max(60).optional(),
+        remove: z.array(z.number().min(0)).max(60).optional().describe("The `at` of each area to take out"),
+        ...(caps.images && { pictures: z.number().int().min(0).max(6).optional() }),
+      } : {
+        ask: z.array(z.number().min(0)).max(12).optional().describe("Source seconds of frames to have looked at"),
+      }),
+    },
+    async ({ mediaId, ...rest }) => {
+      const { set, remove, ask } = rest as { set?: Array<{ at: number; area: number[] }>; remove?: number[]; ask?: number[] };
+      const pictures = caps.images && givesAreas ? (rest as { pictures?: number }).pictures ?? 4 : 0;
+      const { project } = await getProject();
+      const asset = project.media.find(m => m.id === mediaId);
+      if (!asset) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
+      if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has a picture to show.`);
+      const bad = set?.findIndex(a => !(a.area[2]! - a.area[0]! >= 5 && a.area[3]! - a.area[1]! >= 5));
+      if (bad !== undefined && bad >= 0) throw new Error(`set[${bad}].area is [left, top, right, bottom] in percent, at least 5 percent each way.`);
+      const wait = Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 20));
+      const path = `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${wait}`;
+      const state = set?.length || remove?.length
+        ? await client.post<RecordingAreas & { error?: string }>(path, { set: set?.map(a => ({ at: a.at, area: a.area.map(n => n / 100) })), remove })
+        : ask?.length && ctx.taskId
+        ? await client.post<RecordingAreas & { error?: string; asked: number; waiting: number }>(path.replace("/show-area?", "/show-area/ask?"), { seconds: ask, taskId: ctx.taskId, again: true })
+        : await client.get<RecordingAreas & { error?: string }>(path);
+      const stillLooking = (state as { waiting?: number }).waiting;
+      const r1 = (n: number) => Math.round(n * 10) / 10;
+      const areas = state.areas.map(a => ({ at: a.at, area: a.area.map(n => Math.round(n * 1000) / 10), holds: a.holds.map(([from, to]) => [r1(from), r1(to)]),
+        heldSeconds: Math.round(a.holds.reduce((n, [from, to]) => n + to - from, 0)), ...(a.noLine.length && { noLine: a.noLine }) }));
+      if (!state.done) {
+        return json({ mediaId, reading: state.error ? `The recording's edges could not be read: ${state.error}` : "The recording's edges are still being read: call again for where each area holds and what is unset.", areas });
+      }
+      // What the edit as it stands plays of each unset stretch: those are the ones a save will ask about.
+      const timeline = await getTimeline(lastTimeline?.version).catch(() => null);
+      const plays = (timeline?.tracks ?? []).filter(t => t.kind === "video" && !t.hidden).flatMap(t => t.clips)
+        .filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false && c.mediaId === mediaId);
+      const unset = state.unset.map(([from, to]) => {
+        const parts = plays.map(c => [Math.max(from, c.sourceIn), Math.min(to, c.sourceOut), c.speed ?? 1] as const).filter(([a, b]) => b > a);
+        const onPicture = parts.reduce((n, [a, b, speed]) => n + (b - a) / speed, 0);
+        const first = parts.sort((x, y) => (y[1] - y[0]) - (x[1] - x[0]))[0];
+        return { from: r1(from), to: r1(to), onPicture: r1(onPicture), look: r1(first ? (first[0] + first[1]) / 2 : (from + to) / 2) };
+      });
+      const shown = [...unset].sort((a, b) => b.onPicture - a.onPicture || (b.to - b.from) - (a.to - a.from)).slice(0, pictures);
+      const images = await Promise.all(shown.map(async u => {
+        try {
+          const res = await client.withResource("media", mediaId, async resource => {
+            const headers: Record<string, string> = {};
+            if (client.token) headers.Authorization = `Bearer ${client.token}`;
+            const response = await fetchImpl(client.url(`${resource}/frame?t=${u.look}&w=1280&grid=1`), { headers });
+            if (!response.ok) throw new Error(response.statusText);
+            return response;
+          });
+          return { look: u.look, data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: res.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
+        } catch { return undefined; }
+      }));
+      const seen = images.filter((i): i is NonNullable<typeof i> => !!i);
+      const body = { mediaId, ...(stillLooking && { stillLooking: `${stillLooking} frame${stillLooking === 1 ? " is" : "s are"} still being looked at: call again for their areas` }), areas, unset: unset.slice(0, 60), ...(unset.length > 60 && { moreUnset: unset.length - 60 }),
+        ...(seen.length && { pictures: seen.map(i => `source ${i.look} s`) }) };
+      if (!seen.length) return json(body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(body) }, ...seen.map(i => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))] };
+    },
+  );
 
   tool(
     "media_frame",
@@ -3011,9 +3133,19 @@ ${OPS_DOC}`,
       const percent = (box: readonly number[]) => box.map(n => Math.round(n * 1000) / 10);
       // Where each framing puts the inset: the corner it names, or for `clear` the one worked out below.
       const corners: Array<Corner | undefined> = framings.map(f => f.inset === "clear" ? undefined : f.inset);
+      // A framing with no `within` takes the area viewers may see at its footage, where one is on record (screen_area).
+      let withinOnRecord: Array<Box | undefined> = [];
       const place = () => framingOps(before, project.media, project.settings,
-        framings.map((f, i) => ({ at: f.at, show: fraction(f.show), within: f.within && fraction(f.within), over: f.over, ...(f.ease && { ease: f.ease }), inset: corners[i] })), { mediaId, trackId, to });
+        framings.map((f, i) => ({ at: f.at, show: fraction(f.show), within: f.within ? fraction(f.within) : withinOnRecord[i], over: f.over, ...(f.ease && { ease: f.ease }), inset: corners[i] })), { mediaId, trackId, to });
       let plan = place();
+      const areasOnRecord = await recordingAreas(mediaId, 5).catch(() => undefined);
+      if (areasOnRecord?.done && areasOnRecord.areas.length) {
+        withinOnRecord = framings.map((f, i) => {
+          const at = plan.frames[i]?.sourceTime;
+          return f.within || at === undefined ? undefined : areasOnRecord.areas.find(a => a.holds.some(([from, to]) => at >= from - 1e-6 && at < to + 1e-6))?.area;
+        });
+        if (withinOnRecord.some(Boolean)) plan = place();
+      }
 
       // What the recording's text says about each frame, where it has been read. A frame whose inset is to sit clear of
       // text waits a little for a reading; nothing else here waits for one.

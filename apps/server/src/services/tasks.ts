@@ -496,6 +496,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     skills: assistantSkills(ctx.repos.skills.select("1=1", [], "name ASC"), c.skillIds, true),
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,
+    areaCheck: task.kind === "area_check" ? task.context.areaCheck : undefined,
     workDir: opts.workDir,
     timeLimitMinutes: opts.timeLimitMinutes,
     capabilities: { ...agentCapabilities(task.agent), plan: plans },

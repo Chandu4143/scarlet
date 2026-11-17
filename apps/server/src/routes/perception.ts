@@ -8,6 +8,7 @@ import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { measuredLoudness } from "../render/loudness.js";
 import { faces } from "../services/faces.js";
 import { screenText } from "../services/screenText.js";
+import { askAreas, editShowAreas, showArea, type ShowAreaEdit } from "../services/showArea.js";
 import { optionalNumberParam, requireMedia } from "./util.js";
 
 function requireSourceRange(from: number | undefined, to: number | undefined) {
@@ -70,6 +71,38 @@ export function perceptionRoutes(ctx: Ctx) {
 
   // Where the faces are in a range of a video, found once and kept. A range not read yet is read now, as screen text is.
   r.get("/projects/:projectId/media/:mediaId/faces", readPicture("faces", (media, range, opts) => faces(ctx, media, range, opts)));
+
+  // What of a video's picture viewers may see: the areas given for it and where each holds. A first ask reads the
+  // recording's edges and waits up to `wait` seconds (default 30); `done` is false until they are read.
+  const areaWait = (c: Context<AppEnv>) => Math.max(0, Math.min(240, optionalNumberParam(c.req.query("wait"), "wait") ?? 30)) * 1000;
+  const videoFor = (c: Context<AppEnv>) => {
+    const media = requireMedia(ctx, c.req.param("mediaId") ?? "", c.req.param("projectId") ?? "");
+    if (media.kind !== "video") throw badRequest("no_picture", "Only a video has a picture to show.");
+    if (!media.duration) throw conflict("not_ready", "The recording is still being prepared. Ask again in a moment.");
+    return media;
+  };
+  r.get("/projects/:projectId/media/:mediaId/show-area", async c => c.json(await showArea(ctx, videoFor(c), { waitMs: areaWait(c) })));
+  r.post("/projects/:projectId/media/:mediaId/show-area", async c => {
+    const media = videoFor(c);
+    const body = await c.req.json().catch(() => null) as ShowAreaEdit | null;
+    if (!body || (body.set !== undefined && !Array.isArray(body.set)) || (body.remove !== undefined && !Array.isArray(body.remove))) {
+      throw badRequest("bad_request", "Send set: [{ at, area }] and/or remove: [at].");
+    }
+    await editShowAreas(ctx, media, body);
+    return c.json(await showArea(ctx, media, { waitMs: areaWait(c) }));
+  });
+
+  // Have the frames at these source seconds looked at for what viewers may see, each by a short run of its own, and
+  // wait for the answers. Only a running request asks: its agent and model do the looking.
+  r.post("/projects/:projectId/media/:mediaId/show-area/ask", async c => {
+    const media = videoFor(c);
+    const body = await c.req.json().catch(() => null) as { seconds?: unknown; taskId?: unknown; again?: unknown } | null;
+    if (!body || !Array.isArray(body.seconds) || body.seconds.some(n => typeof n !== "number") || typeof body.taskId !== "string") {
+      throw badRequest("bad_request", "Send seconds: [source second] and taskId.");
+    }
+    const asked = await askAreas(ctx, media, { seconds: body.seconds as number[], taskId: body.taskId, waitMs: areaWait(c), again: body.again === true });
+    return c.json({ ...asked, ...await showArea(ctx, media, { waitMs: 5000 }) });
+  });
 
   return r;
 }
