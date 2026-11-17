@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { ThreadEdit } from "@scarlet/shared";
 import { isPlayableMedia, timelineDuration, type Change, type MediaAsset, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
-import { arrowSeekTime, handleCutArrow, useHotkeys } from "../lib/hotkeys";
+import { arrowSeekTime, handleCutArrow, isComposing, useHotkeys } from "../lib/hotkeys";
 import { canPlayOriginal, isPreparingMedia } from "../lib/upload";
 import { isLink } from "../lib/pendingImports";
 import { useUploader, useImportCount } from "../components/media/UploadDropzone";
@@ -17,7 +17,6 @@ import { usePlayerStore } from "../stores/player";
 import { selectRender, useProjectStore } from "../stores/project";
 import { editTargetAt, markedRangeOf, useUiStore, type AgentContext, type MarkedRange } from "../stores/ui";
 import { Icon } from "../components/ui/primitives";
-import { PreferenceSelect } from "../components/ui/PreferenceSelect";
 import { CachedVideo } from "../components/player/CachedVideo";
 import { MonitorPlayback, PlayerTime } from "../components/player/MonitorPlayback";
 import { usePictureWait } from "../components/player/usePictureWait";
@@ -64,7 +63,15 @@ interface ThreadTimelineView {
   choose(edit: ThreadEdit): void;
   clear(): void;
 }
-const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(value => ({ value, label: `${value}×` }));
+const MIN_RATE = 0.5;
+const MAX_RATE = 2;
+const RATE_STEP = 0.25;
+
+function stepPlaybackRate(direction: -1 | 1) {
+  const rate = usePlayerStore.getState().rate;
+  const next = Math.min(MAX_RATE, Math.max(MIN_RATE, rate + direction * RATE_STEP));
+  if (next !== rate) player.setRate(next);
+}
 
 export function ImportPreview({ projectId, preparing, onMedia }: { projectId: string; preparing?: MediaAsset; onMedia(): void }) {
   const { localImport, items } = useUploader(projectId);
@@ -580,7 +587,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     if (draft || cut) player.prepare();
     // The way back from Settings carries the speed the editor was watching at, with their place.
     const speed = Number(params.get("speed"));
-    if (RATES.some(rate => rate.value === speed)) player.setRate(speed);
+    if (speed >= MIN_RATE && speed <= MAX_RATE && Number.isInteger(speed / RATE_STEP)) player.setRate(speed);
     const next = new URLSearchParams(params);
     next.delete("note");
     next.delete("t");
@@ -597,6 +604,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       e.preventDefault();
       // Held down, Space is one press: its repeats would flutter between play and pause.
       if (playable && !e.repeat) player.toggle();
+    } else if (e.key === "+" || e.key === "=" || e.key === "-") {
+      if (!playable || isComposing(e)) return;
+      e.preventDefault();
+      stepPlaybackRate(e.key === "-" ? -1 : 1);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       e.preventDefault();
       if (!playable || duration <= 0) return;
@@ -707,9 +718,14 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             <PlayerTime end={duration} coarse />
           </MonitorPlayback>}
           {(source || cut || change || draftVersion) && <div className="monitor-controls">
-            {/* Picking a speed hands the keys back to the page, so the arrows go on stepping through edits. */}
-            <PreferenceSelect compact label="Playback speed" options={RATES} value={rate} valueLabel={`${rate}×`} disabled={!playable}
-              onChange={value => player.setRate(value)} onClose={() => (document.activeElement as HTMLElement | null)?.blur()} />
+            <div className="playback-speed" role="group" aria-label="Playback speed"
+              onClick={e => { if (e.detail > 0 && e.target instanceof HTMLButtonElement) e.target.blur(); }}>
+              <button type="button" className="btn-icon" aria-label="Decrease playback speed" aria-keyshortcuts="-" title="Decrease playback speed (−)"
+                disabled={!playable || rate <= MIN_RATE} onClick={() => stepPlaybackRate(-1)}>−</button>
+              <output>{rate}×</output>
+              <button type="button" className="btn-icon" aria-label="Increase playback speed" aria-keyshortcuts="plus =" title="Increase playback speed (+)"
+                disabled={!playable || rate >= MAX_RATE} onClick={() => stepPlaybackRate(1)}>+</button>
+            </div>
             <button className="btn-icon" onClick={e => { if (e.detail) e.currentTarget.blur(); void toggleFullscreen(); }} aria-label={expanded ? "Exit full screen" : "Full screen"} title={expanded ? "Exit full screen" : "Full screen"}>
               <Icon name="fullscreen" size={15} />
             </button>

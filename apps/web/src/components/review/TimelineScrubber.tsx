@@ -698,8 +698,8 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const zoom = span ? total / span : 1;
   const handleZoomKey = (e: KeyboardEvent) => {
     if (!total || ignorePageShortcut(e, track.current)) return;
-    if (e.key === "+" || e.key === "=") zoomBy(2);
-    else if (e.key === "-") zoomBy(.5);
+    if (e.key === "]") zoomBy(2);
+    else if (e.key === "[") zoomBy(.5);
     else if (e.key === "0") fitRange();
     else return;
     e.preventDefault();
@@ -753,9 +753,9 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const marking = useRangeSelect({ slider, drag, from, span, start, end, fps, edges, frameAt, sheet, pictureAspect, range, onRange: onRange ?? noRange, onSeek,
     onScrubStart, onPress: selectPosition, beforeGesture: stopZoom });
   const zoomControls = <div className="timeline-zoom-row" role="group" aria-label="Timeline zoom">
-    <button type="button" className="timeline-zoom-step" aria-label="Zoom out" title="Zoom out (−)" disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
+    <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="[" title="Zoom out ([)" disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
     <span className="timeline-zoom-level">{Number(zoom.toFixed(1))}×</span>
-    <button type="button" className="timeline-zoom-step" aria-label="Zoom in" title="Zoom in (+)" disabled={intendedSpan <= minSpan} onClick={() => zoomBy(2)}>+</button>
+    <button type="button" className="timeline-zoom-step" aria-label="Zoom in" aria-keyshortcuts="]" title="Zoom in (])" disabled={intendedSpan <= minSpan} onClick={() => zoomBy(2)}>+</button>
     <button type="button" className="timeline-fit" aria-label="Fit timeline" title="Show full timeline (0)" disabled={intendedSpan >= total} onClick={() => fitRange()}>Fit</button>
   </div>;
   return <div className="timeline-panel" onKeyDown={e => handleZoomKey(e.nativeEvent)}>
