@@ -276,6 +276,13 @@ export function inspectionRoutes(ctx: Ctx) {
     return c.json(await dialogue.checkpoints(projectId, media, from, to));
   });
 
+  // The verbatim words a pass's scan pages saved, without reading any more: the transcript tidies a restart away.
+  r.post("/projects/:id/dialogue-verbatim", async c => {
+    const { mediaId, from, to } = await jsonBody(c, DialogueRangeRequest);
+    const projectId = c.req.param("id");
+    return c.json(await dialogue.savedWords(projectId, requireMedia(ctx, mediaId, projectId), from, to));
+  });
+
   r.post("/projects/:id/source-audio", async c => {
     const { mediaId, from, to, voice } = await jsonBody(c, SourceAudioRequest);
     const projectId = c.req.param("id");

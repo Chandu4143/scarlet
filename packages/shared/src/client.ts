@@ -371,6 +371,10 @@ export class ScarletClient {
   dialogueCheckpoints(projectId: string, request: z.input<typeof DialogueRangeRequest>) {
     return this.post<Array<{ start: number; end: number }>>(`/projects/${encodeURIComponent(projectId)}/dialogue-checkpoints`, request);
   }
+  /** The verbatim words the saved scan pages read between from and to, in source seconds, and the stretches they cover. */
+  dialogueVerbatimWords(projectId: string, request: z.input<typeof DialogueRangeRequest>) {
+    return this.post<{ words: TranscriptWord[]; covered: Array<{ start: number; end: number }> }>(`/projects/${encodeURIComponent(projectId)}/dialogue-verbatim`, request);
+  }
   soundPicture(projectId: string, request: z.input<typeof SoundPictureRequest>) {
     return this.post<{ jpeg: string; layout: SoundPictureLayout }>(`/projects/${encodeURIComponent(projectId)}/sound-picture`, request);
   }
