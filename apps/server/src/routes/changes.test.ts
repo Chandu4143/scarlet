@@ -119,3 +119,12 @@ it("returns a proposal that was saved even when its spots can't be checked", asy
   check.mockRestore();
   expect((await (await api("GET", `/changes/${change.id}`)).json()).change.spotAssignment).toEqual({ fps: 30, owners: [0, 1, 2, 3] });
 });
+
+it("rejects unchanged content while accepting a rename on the same footage", async () => {
+  const path = `/projects/${project.id}/changes`;
+  const { timeline } = await (await api("GET", `/projects/${project.id}/timeline`)).json();
+  const unchanged = await api("POST", path, { timeline: { ...timeline, version: "draft", parent: null }, description: "Same edit" });
+  expect((await unchanged.json()).error.code).toBe("no_change");
+  const renamed = await api("POST", path, { timeline: { ...timeline, name: "Interview" }, description: "Rename" });
+  expect((await renamed.json()).timeline.name).toBe("Interview");
+});

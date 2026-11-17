@@ -214,6 +214,22 @@ describe("audio lane", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("releases a finished attempt's own reservation without releasing a newer attempt on the same recording", async () => {
+    const lane = new AudioLane();
+    const first: AudioWork = { mediaId: "a", kind: "transcript" };
+    const next: AudioWork = { ...first };
+    await lane.run(first, undefined, async () => {}, { more: true });
+    await lane.run(next, undefined, async () => {}, { more: true });
+    const waiting = vi.fn(async () => {});
+    const done = lane.run({ mediaId: "b", kind: "speakers" }, undefined, waiting);
+    lane.finish(first);
+    await tick();
+    expect(waiting).not.toHaveBeenCalled();
+    lane.finish(next);
+    await done;
+    expect(waiting).toHaveBeenCalledOnce();
+  });
+
   it("puts work a request waits on ahead of background work, also on a recording no pass has focused", async () => {
     vi.useFakeTimers();
     try {

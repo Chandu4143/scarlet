@@ -86,6 +86,11 @@ export class AudioLane {
     return this.focused.has(mediaId);
   }
 
+  /** Recordings a pass is reading, across both lanes. */
+  focusedMediaIds(): IterableIterator<string> {
+    return this.focused.keys();
+  }
+
   /** Whether a dialogue pass is reading any recording now. */
   reading(): boolean {
     return this.focused.size > 0;
@@ -183,6 +188,11 @@ export class AudioLane {
     this.unhold();
     this.begun.delete(workKey(work));
     this.next();
+  }
+
+  /** A late cleanup only releases the reservation made by this attempt’s own step. */
+  finish(...steps: AudioWork[]) {
+    if (this.held && steps.includes(this.held.work)) this.release(this.held.work);
   }
 
   /** A request now waits on `work`. Queued, it stops waiting for a step the lane is kept for that it now goes ahead of. */

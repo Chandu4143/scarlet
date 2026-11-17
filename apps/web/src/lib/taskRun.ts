@@ -113,6 +113,16 @@ export function noteText(text: string) {
   return sentences.slice(0, 2).join(" ");
 }
 
+const eventNotes = new WeakMap<TaskEvent, string | null>();
+
+function eventNote(event: TaskEvent) {
+  const known = eventNotes.get(event);
+  if (known !== undefined) return known ?? undefined;
+  const note = noteText(event.text);
+  eventNotes.set(event, note ?? null);
+  return note;
+}
+
 /**
  * What the agent said the whole request will come to, before it began: its first words, when they come ahead of its
  * first look at the project. The chat keeps that one sentence above the run's steps for as long as it works. An agent
@@ -127,7 +137,7 @@ export function runAim(events: readonly TaskEvent[]): { text: string; note: stri
     const kind = event.data?.kind;
     if (kind === "editor_progress" && (event.data?.scanPage || typeof event.data?.reviewCounter === "string")) return undefined;
     if (kind && kind !== "editor_progress") continue;
-    const note = noteText(event.text);
+    const note = eventNote(event);
     if (note) return { text: note.split(/(?<=[.!?…”"])\s+/u)[0]!, note };
   }
   return undefined;
@@ -213,12 +223,12 @@ export function runItems(task: Task, events: readonly TaskEvent[], changes: read
         continue;
       }
       if (typeof event.data.reviewCounter === "string") continue;
-      const text = noteText(event.text);
+      const text = eventNote(event);
       if (text && !notes.has(text)) { notes.add(text); items.push({ kind: "note", at, text }); finishGroup(); }
       continue;
     }
     if (event.type === "log" && !event.data?.kind) {
-      const text = noteText(event.text);
+      const text = eventNote(event);
       // The agent's last message is the reply under the bundle, not an update inside it.
       if (text && !notes.has(text) && !(final && event.text.trim() === final) && !(reply && event.text.trim() === reply)) { notes.add(text); items.push({ kind: "note", at, text }); finishGroup(); }
       continue;

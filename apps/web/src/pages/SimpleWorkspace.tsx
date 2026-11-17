@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type MouseEvent, type ReactElement, type ReactNode, type RefObject, type SetStateAction } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type Dispatch, type MouseEvent, type ReactElement, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { createStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
@@ -1154,6 +1154,35 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
   </section>;
 }
 
+/** Track a new edit's point in the message box without rebuilding the rest of the conversation on each pick. */
+function WorkspaceComposer({ newEdit, playerVersion, mediaId, ...props }: ComponentProps<typeof Composer> & {
+  newEdit: boolean; playerVersion?: string; mediaId?: string;
+}) {
+  const point = useUiStore(s => newEdit ? pointOf(s.agentContext) : undefined);
+  const written = useUiStore(s => !!point && !!s.agentDraft.trim());
+  const speaking = useUiStore(s => !!point && s.speaking);
+  // Leave a picked moment behind when playback or a seek takes the editor away. Once a message is being
+  // written or recorded, its explicit target stays with it. N can attach while the player's pause is settling.
+  // Before publishes the clock for a keyboard seek as its clip commits. Check after those layout effects.
+  useEffect(() => {
+    if (!point || written || speaking) return;
+    const release = () => {
+      const box = useUiStore.getState();
+      if (box.agentContext === point && !box.agentDraft.trim() && !box.speaking) box.setAgentContext(null);
+    };
+    const moved = (time: number) => Math.abs(time - point.time) >= .1;
+    if (point.version !== playerVersion || point.mediaId !== mediaId || moved(usePlayerStore.getState().time)) {
+      release();
+      return;
+    }
+    return usePlayerStore.subscribe((now, was) => {
+      if ((now.playing && !was.playing) || moved(now.time)) release();
+    });
+  }, [point, written, speaking, playerVersion, mediaId]);
+  const pointTag = point && !point.fromMessage ? `At ${clockLabel(point.time)}` : undefined;
+  return <Composer {...props} targetTag={props.targetTag ?? pointTag} targetIsPoint={!props.targetTag && !!pointTag} />;
+}
+
 /**
  * The workspace: speak or type an edit, then watch each change with Before and After.
  * Every request is in one conversation, oldest first. The player on the right shows whatever the chat points at.
@@ -1729,7 +1758,7 @@ export function SimpleWorkspace() {
   }, [current.id, replyTo, openDraft]);
   // What the next message revises: one cut, one edit, or the whole request. Shown above the box.
   const [targetLabel, setTargetLabel] = useState<string>();
-  const agentContext = useUiStore(s => s.agentContext);
+  const agentContext = useUiStore(s => replyTo ? s.agentContext : undefined);
   useEffect(() => { if (!replyTo) setTargetLabel(undefined); }, [replyTo]);
   // Each time the editor aims the box. A message that lands clears the aim it was sent under, never one made since.
   // Every aim renders the page, also one that changes nothing else, so the box always holds the count it is sent under.
@@ -3075,10 +3104,7 @@ export function SimpleWorkspace() {
   const aimedAtItem = !!aimed && (aimed.cutIndex !== undefined || aimed.editIndex !== undefined);
   // The tag reads as the same request does in the queue and on its message once sent: "Cut at 2:05".
   const aimedAt = aimed && replyThread ? targetName(aimed) : undefined;
-  // Only a point attached to the draft appears as its target. An offered point never reaches the request.
-  const point = replyTo ? undefined : pointOf(agentContext);
   const written = useUiStore(s => !!s.agentDraft.trim());
-  const pointTag = point && !point.fromMessage ? `At ${clockLabel(point.time)}` : undefined;
   // A message being written keeps the box aimed where it was while the editor moves on to another cut or edit. Once
   // they delete it, nothing is being written: the box talks to what is open again, as an empty box does. Left on the
   // cut they came from, the next note typed would revise that one with another cut's card on screen.
@@ -3090,7 +3116,7 @@ export function SimpleWorkspace() {
     if (cleared) emptied.current();
   }, [written]);
   // An answer says so too, so a message meant as a new edit isn't sent to Scarlet's question by mistake.
-  const boxTag = aimedAt ? (aimed && cutName(aimed)) ?? tagOf(aimedAt) : replyThread ? replyThread.question ? "Answer" : "Reply" : pointTag;
+  const boxTag = aimedAt ? (aimed && cutName(aimed)) ?? tagOf(aimedAt) : replyThread ? replyThread.question ? "Answer" : "Reply" : undefined;
   const aimOnOpen = callCard ? answeringCut ? !aimed : aimed?.changeId === pass!.id && aimed.cutIndex === listening!.index
     : editOpen && !!aimed && aimed.cutIndex === undefined && (aimed.changeId === reviewingEdit!.changeId || aimed.changeId === shownChange!.id)
       && (aimed.editIndex === undefined || aimed.editIndex === reviewingEdit!.spot);
@@ -3187,26 +3213,12 @@ export function SimpleWorkspace() {
   const messageClock: MessageClock | undefined = messageDuration > 0 && !replyTo && !rewordingItem
     ? { duration: messageDuration, timeline: messageTimeline, version: playerVersion, mediaId: source?.id, seek: time => seekFromMessage.current?.(time) }
     : undefined;
-  const markTypedTimes = !!messageClock && !!point?.fromMessage && point.version === playerVersion && point.mediaId === source?.id;
-  const typedTimes = useUiStore(useShallow(s => markTypedTimes
-    ? [...new Set(messageTimestamps(s.agentDraft, messageDuration).map(stamp => stamp.time))] : []));
-  // Leave a picked moment behind when playback or a seek takes the editor away. Once a message is being
-  // written or recorded, its explicit target stays with it. N can attach while the player's pause is settling.
-  useLayoutEffect(() => {
-    if (!point || written || speaking) return;
-    const release = () => {
-      const box = useUiStore.getState();
-      if (box.agentContext === point && !box.agentDraft.trim() && !box.speaking) box.setAgentContext(null);
-    };
-    const moved = (time: number) => Math.abs(time - point.time) >= .1;
-    if (point.version !== playerVersion || point.mediaId !== source?.id || moved(usePlayerStore.getState().time)) {
-      release();
-      return;
-    }
-    return usePlayerStore.subscribe((now, was) => {
-      if ((now.playing && !was.playing) || moved(now.time)) release();
-    });
-  }, [point, written, speaking, playerVersion, source?.id]);
+  const typedTimes = useUiStore(useShallow(s => {
+    const point = messageClock && pointOf(s.agentContext);
+    return point?.fromMessage && point.version === playerVersion && point.mediaId === source?.id
+      ? [...new Set(messageTimestamps(s.agentDraft, messageDuration).map(stamp => stamp.time))] : [];
+  }));
+
 
   /**
    * A stretch marked on the timeline's ruler, or taken off there. It goes on the message as it is aimed: a cut or an
@@ -3275,13 +3287,13 @@ export function SimpleWorkspace() {
       settleAim.current("sent");
     }
   };
-  const composer = <Composer key={JSON.stringify([current.id, replyTo])} thread={replyThread}
+  const composer = <WorkspaceComposer newEdit={!replyTo} playerVersion={playerVersion} mediaId={source?.id} key={JSON.stringify([current.id, replyTo])} thread={replyThread}
     // A new request is the latest thing said, so the chat goes to it. A cut or an edit that's open stays open.
     onCreated={() => { follow.current = true; }} onSent={sentUnder(aims.current)}
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
     messageClock={messageClock}
-    targetTag={boxTag} targetIsPoint={!!pointTag && boxTag === pointTag} onClearTarget={() => settleAim.current("new")}
+    targetTag={boxTag} onClearTarget={() => settleAim.current("new")}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
     rewording={rewordingItem && { id: rewordingItem.id, text: rewording!.text,
       onChange: text => setRewording(r => r && { ...r, text }),

@@ -949,10 +949,12 @@ impl HostRuntime {
     async fn run(self: Arc<Self>) {
         let tasks_root = self.work_root.join(TASKS_DIR);
         let pids = self.work_root.join("agent-pids");
-        let _ = tokio::task::spawn_blocking(move || spawn::stop_orphans(&pids)).await;
         let home = (!child_env(&self.home).contains_key("CLAUDE_CONFIG_DIR")).then(|| self.home.clone());
-        let _ = tokio::task::spawn_blocking(move || prune_task_dirs(&tasks_root, std::time::SystemTime::now(), home.as_deref())).await;
-        let agents = self.detect_agents().await;
+        let cleanup = tokio::task::spawn_blocking(move || {
+            spawn::stop_orphans(&pids);
+            prune_task_dirs(&tasks_root, std::time::SystemTime::now(), home.as_deref());
+        });
+        let (agents, _) = tokio::join!(self.detect_agents(), cleanup);
         *self.agents.write().await = agents;
         self.emit_status();
         // Register (retry until it works or we are stopped).

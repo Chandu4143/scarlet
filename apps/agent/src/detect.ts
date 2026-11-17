@@ -144,13 +144,15 @@ type DetectCtx = Required<Pick<DetectOptions, "env" | "home" | "exec" | "find">>
 export async function detectClaude(o: DetectCtx): Promise<AgentAvailability> {
   const path = await o.find("claude");
   if (!path) return { id: "claude", installed: false };
-  const v = await o.exec(path, ["--version"]);
+  const [v, st] = await Promise.all([
+    o.exec(path, ["--version"]),
+    o.exec(path, ["auth", "status"]).catch(() => null),
+  ]);
   const version = parseVersion(v.stdout + v.stderr);
   let loggedIn: boolean | undefined;
   let auth: AgentAvailability["auth"];
   let plan: string | undefined;
   // Preferred: `claude auth status` prints JSON (exit 1 when signed out).
-  const st = await o.exec(path, ["auth", "status"]).catch(() => null);
   if (st) {
     try {
       const j = JSON.parse(st.stdout.trim()) as { loggedIn?: boolean; authMethod?: string; subscriptionType?: string };
@@ -193,12 +195,14 @@ export async function detectClaude(o: DetectCtx): Promise<AgentAvailability> {
 export async function detectCodex(o: DetectCtx): Promise<AgentAvailability> {
   const path = await o.find("codex");
   if (!path) return { id: "codex", installed: false };
-  const v = await o.exec(path, ["--version"]);
+  const [v, st] = await Promise.all([
+    o.exec(path, ["--version"]),
+    o.exec(path, ["login", "status"]).catch(() => null),
+  ]);
   const version = parseVersion(v.stdout + v.stderr);
   let loggedIn: boolean | undefined;
   let auth: AgentAvailability["auth"];
   // `codex login status`: "Logged in using ChatGPT" / "Logged in using an API key ..." / "Not logged in" (exit 1).
-  const st = await o.exec(path, ["login", "status"]).catch(() => null);
   const out = st ? `${st.stdout}\n${st.stderr}`.toLowerCase() : "";
   if (out.includes("not logged in")) loggedIn = false;
   else if (out.includes("logged in")) {

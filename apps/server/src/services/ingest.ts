@@ -671,6 +671,8 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
   if (transcriptionHeld(ctx, projectId)) controller.abort(new Error("Project media processing stopped."));
   const wav = provider.name === "whispercpp" && matchesSpeakerStream(asset)
     ? join(ctx.paths.tmp, newId("recording") + ".wav") : undefined;
+  const work: AudioWork = { mediaId: asset.id, kind: "transcript" };
+  const alignment: AudioWork = { mediaId: asset.id, kind: "alignment" };
   let labeling: Promise<void> | undefined;
   /** The transcript was saved with its alignment still to come. */
   let early = false;
@@ -690,7 +692,6 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
       return openTranscriptionWork(ctx, task, identity, checkRunning);
     }, "immediate")();
     early = !!saved.alignment;
-    const work: AudioWork = { mediaId: asset.id, kind: "transcript" };
     const progress = transcriptionProgress(ctx, task, provider.name);
     ctx.speakers.begin(ctx, projectId, asset);
     const recognized = saved.fraction ?? (asset.duration ? Math.min(1, saved.recognition.through / asset.duration) : 0);
@@ -756,7 +757,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     // scan pages run while alignment goes on. `aligning.through` says how far the times are final, and whatever
     // turns a word into a cut edge waits for alignment to pass it.
     // Whisper kept the lane for alignment, which this recording won't have: its speakers needn't wait out the hold.
-    if (!alignable && provider.name === "whispercpp") lane.release(work);
+    if (!alignable && provider.name === "whispercpp") lane.finish(work);
     if (alignable && !saved.alignment) early = !!save(result.segments, { through: 0, nextWord: 0, fraction: 0 });
     progress.aligning(saved.alignment?.fraction ?? 0);
     // The old process's scratch WAV is gone. Recreate the shared decode before alignment or the gap check reads it.
@@ -765,7 +766,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     // (RecordingSpeakers.awaitedByPass). Nothing a pass reads needs word times before its first page.
     // A pass reading any recording of the project counts: it turns to this one next, and its first page here waits
     // for these speakers just the same.
-    const passReading = () => ctx.repos.projects.listMedia(projectId).some(m => audioLane(ctx).focusedOn(m.id));
+    const passReading = () => ctx.repos.projects.hasAnyMedia(projectId, audioLane(ctx).focusedMediaIds());
     const speakersFirst = () => ctx.speakers.beside && passReading() ? ctx.speakers.awaitedByPass(projectId) : undefined;
     // Once the words are placed, the recording shows what their times still miss. A word the aligner couldn't place
     // keeps the provider's time, which can run over a wait, so it is brought in to its sound. Local Whisper can also
@@ -779,7 +780,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
         return await fillTranscriptHoles({ wav: full, segments, tmpDir: ctx.paths.tmp, signal, log: message => ctx.log(`${message} (${asset.id})`),
           read: provider.name !== "whispercpp" ? undefined : async laid => (await lane.run(work, signal, () => provider.transcribe({ path: laid, dialogueWindow: {}, tmpDir: ctx.paths.tmp, signal, language }))).segments,
           align: async found => alignTranscript(ctx, { source: src, wav: full, language, segments: found, signal,
-            emissions: await emissionStore(ctx, projectId, src), work: { mediaId: asset.id, kind: "alignment" } }) });
+            emissions: await emissionStore(ctx, projectId, src), work: alignment }) });
       } catch (error) {
         signal.throwIfAborted();
         ctx.log(`[transcribe] ${asset.id}: couldn’t read the stretches without words again: ${(error as Error).message}`);
@@ -790,7 +791,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     const finishedAlignment = saved.alignment?.complete;
     const aligned = finishedAlignment ? result.segments : await alignTranscript(ctx, { source: src, wav, language, segments: result.segments, signal, resume: saved.alignment,
       emissions: alignable ? await emissionStore(ctx, projectId, src) : undefined, hold: speakersFirst,
-      work: { mediaId: asset.id, kind: "alignment" }, onProgress: progress.aligning,
+      work: alignment, onProgress: progress.aligning,
       onFailure: () => { alignmentFailed = true; },
       onTurn: (soFar, through, cursor) => {
         publishedThrough = through;
@@ -825,6 +826,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     if (early && !(running && interrupted.aborted)) keepTimes(ctx, asset.id, task.id);
     throw e;
   } finally {
+    audioLane(ctx).finish(work, alignment);
     if (wav) {
       const remove = () => rm(wav, { force: true });
       // Make the transcript available immediately, and retain the scratch file for the worker reading it.

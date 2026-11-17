@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { TRANSITION_RENDER_REVISION, extractFrame, extractFilmstrip, fileInDirectory, fileInDirectoryAsync, probeMedia, renderTimelineFrame } from "@scarlet/render";
+import { TRANSITION_RENDER_REVISION, extractFrame, extractFilmstrip, fileInDirectory, fileInDirectoryAsync, probeMedia, renderTimelineFrame, timelinePreviewDecoder } from "@scarlet/render";
 import { clipEnd, FILMSTRIP_SEEK_BATCH, MAX_CUT_PLAYBACK_SECONDS, planPlaybackSegments, planSegments, planTransitions, snapToFrame, timelineDuration, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import { Hono } from "hono";
 import { z } from "zod/v3";
@@ -14,7 +14,7 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { requestCutPlaybackFile, waitForPlayback } from "../services/playback.js";
 import { serveFile } from "../files.js";
 import { logId, throttledLog } from "../logText.js";
-import { ensureHead } from "../services/timeline.js";
+import { ensureProjectHead } from "../services/timeline.js";
 import { AnalysisCache } from "../services/analysisCache.js";
 import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
 import { previewPictures } from "../services/previewPictures.js";
@@ -172,8 +172,8 @@ export function renderRoutes(ctx: Ctx) {
       const root = ctx.paths.media(project.id);
       const pictures = previewPictures(root, { signal });
       let usedProxy = false;
-      // An original recording decodes on the GPU when there is one; the CPU retries if the driver can't.
-      const decoder = await pictureDecoder(ctx.settings().render.hwaccel);
+      const accel = ctx.settings().render.hwaccel;
+      const decoder = timelinePreviewDecoder(accel, await pictureDecoder(accel));
       try {
         return await renderTimelineFrame(project, timeline, range, root, signal, size, {
           decoder,
@@ -261,7 +261,7 @@ export function renderRoutes(ctx: Ctx) {
     const attempt = requestAttempt(c.req.raw);
     const head = project.head && ctx.repos.versions.exists(project.id, project.head) ? project.head : ctx.db.transaction(() => {
       requireProjectEditAttempt(ctx, attempt, project.id);
-      return ensureHead(ctx, project.id).head;
+      return ensureProjectHead(ctx, project.id).head;
     }, "immediate")();
     const version = body.version && body.version !== "head" ? body.version : head;
     if (version !== head && !ctx.repos.versions.exists(project.id, version)) throw notFound(`version ${version}`);

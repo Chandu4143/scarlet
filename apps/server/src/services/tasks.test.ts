@@ -9,6 +9,7 @@ import { accessToken } from "../auth.js";
 import { PLAN_STEPS } from "@scarlet/mcp/prompt";
 import { appendTaskEvent, createTask, pairQuestionsAndAnswers, queueRepeatCheck } from "./tasks.js";
 import { recoverTasks } from "./taskRecovery.js";
+import { runAttemptIds } from "./runAttempts.js";
 import { learningCheckContext } from "./learnings.js";
 
 let dataDir: string;
@@ -581,7 +582,8 @@ it("finds a run's attempts among its own project's tasks, not by reading every p
   await save(resumed, "again");
   expect((await api<{ task: Task }>("POST", `/tasks/${resumed.id}/complete`, { state: "done", ifStartedAt: resumed.startedAt })).body.task.state).toBe("done");
   // The staged-call check on each save, putting away a stale save, and the resumed run's earlier passes on finishing.
-  const lookups = [...new Set(prepare.mock.calls.map(([sql]) => sql))].filter(sql => sql.includes("SELECT id FROM tasks WHERE"));
+  const attempts = runAttemptIds(project.id, run.id).sql;
+  const lookups = [...new Set(prepare.mock.calls.map(([sql]) => sql))].filter(sql => sql.includes(attempts));
   expect(lookups).toHaveLength(3);
   const scans = lookups.filter(sql => (app.ctx.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
     .some(({ detail }) => /^SCAN tasks\b/.test(detail)));

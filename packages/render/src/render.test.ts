@@ -41,6 +41,7 @@ import {
   segmentKey,
   snapRange,
   spawnStats,
+  timelinePreviewDecoder,
   usesRevisedProxyClock,
   waveformFromCache,
   wrapText,
@@ -796,6 +797,13 @@ describe("render", () => {
     expect(fallback?.exact).not.toBe(true);
     if (fallback) expect(await fs.realpath(fallback.file)).not.toBe(await fs.realpath(outside));
     expect(resolveFontFile("Inter", { fontFile: outside })).toEqual({ file: outside, exact: true });
+  });
+
+  it("uses threaded AVC for automatic timeline previews on supported Macs and honors explicit decoders", () => {
+    expect(timelinePreviewDecoder("auto", "videotoolbox")).toBe(ffmpeg.threadedAvcPreview ? "videotoolbox-hevc" : "videotoolbox");
+    expect(timelinePreviewDecoder("videotoolbox", "videotoolbox")).toBe("videotoolbox");
+    expect(timelinePreviewDecoder("auto", "cuda")).toBe("cuda");
+    expect(timelinePreviewDecoder("none", undefined)).toBeUndefined();
   });
 
   it("uses the probed playback codec for hardware decoding older imports", async () => {

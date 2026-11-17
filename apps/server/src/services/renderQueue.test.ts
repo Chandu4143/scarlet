@@ -123,7 +123,7 @@ it.each(["joined", "released"])("keeps the latest export destination when a runn
   } finally { finish(); }
 });
 
-it("loads only overlapping clips and their sources for playback, in compositing order", async () => {
+it.each(["playback", "segment"] as const)("loads only the overlapping sources for a %s render", async kind => {
   const { ctx } = workspace;
   const timeline = timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 30 }]);
   const clips = timeline.tracks[0]!.clips;
@@ -132,14 +132,14 @@ it("loads only overlapping clips and their sources for playback, in compositing 
   }
   clips.push(makeMediaClip("later", 0, 5, 5), makeMediaClip("overlay", 0, 2, 1));
   const v = storeVersion(ctx, project.id, timeline, { parent: version }).version;
-  const render = vi.spyOn(ctx.render, "renderPlaybackSegment");
+  const render = vi.spyOn(ctx.render, kind === "playback" ? "renderPlaybackSegment" : "renderRange");
   const allMedia = vi.spyOn(ctx.repos.projects, "listMedia");
-  ctx.renders.request({ ...section(), version: v, kind: "playback", quality: "preview", range: { start: 1, end: 5 } });
+  ctx.renders.request({ ...section(), version: v, kind, quality: "preview", range: { start: 1, end: 5 } });
   await settle();
   expect(allMedia).not.toHaveBeenCalled();
   const [inputs, part] = render.mock.calls[0]!;
   expect(inputs.media.map(m => m.id).sort()).toEqual(["camera", "overlay"]);
-  expect(part.tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[2]!.id]);
+  if (kind === "playback") expect(part.tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[2]!.id]);
 });
 
 it("hands a playback section every clip it renders when its saved endpoints aren't on a frame", async () => {
