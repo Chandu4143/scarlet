@@ -450,11 +450,8 @@ interface Nest { key: string; node: ReactNode }
 const noNests: readonly Nest[] = [];
 
 /** A finished request with one result opens its edit on the timeline. A collection opens a list to choose from. */
-function EditResultLink({ thread, actions, single, count, soFar, paired, list: [open, setOpen], reveal }: {
+function EditResultLink({ thread, actions, single, count, soFar, list: [open, setOpen], reveal }: {
   thread: Thread; actions: ChatActions; single?: EditRef; count: number; soFar?: boolean; list: PassList; reveal(): void;
-  /** Some edits need the editor, and they are listed without a click. It names the list it switches to: it goes while
-   *  every edit is listed, and "Just the N that need you" takes its place. */
-  paired?: boolean;
 }) {
   const expanded = open === "all";
   const current = !!single && !!actions.showing && matchesEdit(actions.showing, single);
@@ -468,10 +465,27 @@ function EditResultLink({ thread, actions, single, count, soFar, paired, list: [
       title={current ? "Close this edit (Esc)" : "Show on the timeline"} onClick={letGo(toggleEdit)}>{current ? "Close edit" : "See edit"}</button>;
   }
   const label = soFar ? `See ${count} ${count === 1 ? "edit" : "edits"} so far` : count === 2 ? "See both" : "See all";
-  if (paired && expanded) return null;
   return <button type="button" className="simple-pass-toggle" data-so-far={soFar || undefined} aria-expanded={expanded}
     title={expanded ? "Hide the edits" : soFar ? "Show the edits Scarlet has made so far, in order" : "Show the edits in order"}
     onClick={() => { if (!expanded) reveal(); setOpen(expanded ? undefined : "all"); }}>{expanded ? "Hide" : label}</button>;
+}
+
+function ReviewListTabs({ need, canSeeAll, list: [open, setOpen], reveal, showNeeded }: {
+  need: number; canSeeAll: boolean; list: PassList; reveal(): void; showNeeded(): void;
+}) {
+  const all = open === "all";
+  const showAll = () => {
+    if (all) return;
+    reveal();
+    setOpen("all");
+  };
+  return <div className="simple-review-tabs" role="group" aria-label="Edit lists">
+    <button type="button" className="simple-review-tab simple-pass-need" aria-label="For you" aria-pressed={!all}
+      title={need ? `${need} ${need === 1 ? "needs" : "need"} you` : undefined} onClick={letGo(showNeeded)}>
+      For you{need > 0 && <span className="simple-review-tab-count" aria-hidden="true">{need}</span>}
+    </button>
+    {canSeeAll && <button type="button" className="simple-review-tab" aria-pressed={all} onClick={letGo(showAll)}>See all</button>}
+  </div>;
 }
 
 /**
@@ -502,11 +516,9 @@ function Made({ parts, link }: { parts: readonly SentencePart[]; link?: ReactNod
 
 /**
  * What a dialogue pass made, as the rows of its block. While its calls wait they are listed without a click, each by
- * its number with Scarlet's note and, once decided or sent back, a word for where it stands. "N need you" follows
- * "See all" on the sentence's line and opens the first one still waiting. Once Scarlet is done, what the pass applied is one sentence,
- * the same for 7 cuts or 300, above any calls still waiting, and a link that opens every edit, calls included, in
- * timeline order. Edits that ask for a look are listed without a click, in the same rows, and "N need you" brings
- * that list back after "See all". A row is one line and opens its
+ * its number with Scarlet's note and, once decided or sent back, a word for where it stands. For you shows that list
+ * by default and opens the first one still waiting when pressed. See all lists every edit, calls included, in timeline
+ * order. Once Scarlet is done, what the pass applied is one sentence above the list. A row is one line and opens its
  * edit or call in the card on the timeline, where Approve and Skip move on to the next call. A request about one cut
  * or edit that is still in the chat (`nests`) sits directly under that cut's or edit's row. `aside` is what the run
  * used, when that shows.
@@ -605,16 +617,14 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   const calls = pass ? rows.filter(r => r.n > 0 || r.needs || r.sentBack) : [];
   // The short list keeps each published row in the order it reached the editor. The full list follows the timeline.
   if (pass?.calls.some(c => c.askOrder !== undefined)) calls.sort((a, b) => (a.num ?? Infinity) - (b.num ?? Infinity));
-  // With no calls to list, "N need you" lists just the edits that ask for a look: the same rows as the full list, only
+  // With no calls to list, For you lists just the edits that ask for a look: the same rows as the full list, only
   // those. `listedNeed` are the rows listed since it was opened: one the editor keeps stays where it was, ticked,
   // until the list closes, so the list doesn't jump under them.
   const filter = listed ? "all" : calls.length ? "calls" : open !== "all" && need + sentBack > 0 ? "need" : undefined;
   if (filter !== "need") listedNeed.current.clear();
   const shown = filter === "calls" ? calls : filter === "need" ? rows.filter(r => r.needs || r.sentBack || listedNeed.current.has(r.key)) : rows;
   if (filter === "need") for (const row of shown) listedNeed.current.add(row.key);
-  // The calls, or the edits that need the editor, are listed without a click, under "N need you": pressed, it opens the
-  // first one waiting on the timeline, so one click reaches the cut, or leaves one of them that's open already. When
-  // "See all" has listed every edit in their place, "Just the N that need you" brings that short list back, and opens it.
+  // For you opens the first waiting row on the timeline, or leaves it open if the editor is already on one.
   const showNeeded = () => {
     setOpen(undefined);
     if (!rows.some(row => row.on && row.needs)) (calls.length ? calls : rows).find(row => row.needs)?.open?.();
@@ -646,45 +656,43 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       {filter !== "calls" && row.word && <span className={`simple-pass-check${row.revised ? "" : " is-kept"}${row.busy ? " working-text" : ""}`}>{row.word}</span>}
     </button>{nests.filter(nest => nest.key === row.key).map(nest => nest.node)}</li>)}
   </ol>;
-  // The full list includes the pass's calls. Leave its link out when “N need you” already lists every row.
+  // The full list includes the pass's calls. A pass with no applied edits has only the calls to show.
   const soFar = (!!working || !!pass?.running) && !made;
-  const seeEvery = edits.length > 0 && (fullList || need < totalRows) &&
-    <EditResultLink thread={thread} actions={actions} single={single} count={totalRows} soFar={soFar} paired={need > 0} list={listState} reveal={reveal} />;
-  // While every edit is listed, the link back to what needs the editor takes the place of "See all".
-  const needLink = need > 0 && filter === "all" && <button type="button" className="simple-pass-need" title="Show just the ones that need you" onClick={showNeeded}>
-    Just the {need} that {need === 1 ? "needs" : "need"} you</button>;
-  // A dim label over the rows says which list they are.
-  const listHead = need > 0 && (filter === "all" ? <p className="simple-list-head">All {totalRows} edits</p>
-    : <button type="button" className="simple-pass-need simple-list-head" title="Open the first one waiting" onClick={showNeeded}>{need} {need === 1 ? "needs" : "need"} you</button>);
-  return <div ref={host} className="simple-pass" role="group" aria-label="Dialogue pass">
-    {made ? <Made parts={made} link={<>{seeEvery}{needLink}</>} /> : needLink && <p className="simple-made-line">{seeEvery}{needLink}</p>}
-    {filter === "calls" && <>{listHead}{rowList}</>}
+  const canSeeAll = edits.length > 0 && (fullList || need < totalRows);
+  const hasReview = need > 0 || sentBack > 0 || calls.some(row => row.sentBack);
+  const seeEvery = !hasReview && canSeeAll &&
+    <EditResultLink thread={thread} actions={actions} single={single} count={totalRows} soFar={soFar} list={listState} reveal={reveal} />;
+  const tabs = hasReview && <ReviewListTabs need={need} canSeeAll={canSeeAll} list={listState} reveal={reveal} showNeeded={showNeeded} />;
+  const outsideList = <>
     {/* A request about a cut or edit whose row isn't listed right now still shows, under what the pass made. */}
     {nests.filter(nest => !placed.has(nest.key)).map(nest => nest.node)}
     <div className="simple-pass-line req-row">
-      {!made && !needLink && seeEvery}
-      {/* Nothing here is a button the editor has to press: the pass goes in once nothing is left to decide. While
-          Scarlet still checks, that is when it finishes. Only an apply that failed offers to try again. */}
+      {!made && seeEvery}
+      {/* The pass goes in once its calls are decided and Scarlet finishes checking. Only a failed apply offers Retry. */}
       {pass?.scheduled && <span className="simple-pass-ok">Goes in when Scarlet finishes</span>}
       {waiting && pass.deciding && <span className="simple-pass-ok">Applying…</span>}
       {waiting && !pass.deciding && !!pass.error && <button type="button" className="simple-link" onClick={pass.apply}>Retry</button>}
       <span className="req-right">{aside}</span>
     </div>
-    {(filter === "all" || filter === "need") && <>{listHead}{rowList}</>}
+  </>;
+  return <div ref={host} className="simple-pass" role="group" aria-label="Dialogue pass">
+    {made && <Made parts={made} link={seeEvery} />}
+    {filter !== "calls" && outsideList}
+    {filter && <>{tabs}{rowList}</>}
+    {filter === "calls" && outsideList}
     {pass?.error && <p className="simple-error" role="alert">{pass.error}</p>}
   </div>;
 }
 
 /**
  * What any other request made, as the rows of its block: one sentence, then a link that opens the edits themselves,
- * numbered as on the timeline. An edit made in several places is one edit. "N need you" counts the flagged edits not
- * yet kept and follows that link: just those are listed without a click, with their own numbers, and it brings that
- * list back after "See all" and opens the first, unless one of them is open already. A request about one of the edits that is still in
- * the chat (`nests`) sits directly under that edit's row.
+ * numbered as on the timeline. An edit made in several places is one edit. For you counts the flagged edits not yet
+ * kept and lists them by default with their own numbers. A request about an edit that is still in the chat (`nests`)
+ * sits directly under that edit's row.
  */
 function ThreadResult({ projectId, thread, edits, actions, aside, working, nests = noNests, list, listedNeed, wasShowing: heldShowing }: { projectId: string; thread: Thread; edits: Omit<ThreadEdit, "at">[]; actions: ChatActions;
   aside?: ReactNode; working?: boolean; nests?: readonly Nest[];
-  /** Which list is open and what "N need you" has listed, held by the turn: the block is mounted anew when it moves
+  /** Which list is open and what For you has listed, held by the turn: the block is mounted anew when it moves
    *  between the conversation and the place above the message box, and a list the editor opened must not close then,
    *  nor turn into the list of every edit. `wasShowing` is whether one of the edits was open when the block last drew. */
   list: PassList; listedNeed: RefObject<Set<string>>; wasShowing?: RefObject<boolean> }) {
@@ -693,15 +701,15 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
   const [open, setOpen] = list;
   const [host, reveal] = useReveal(open);
   // An edit open on the timeline shows in a list: the one that's open, or one that opens with it when none is. For an
-  // edit that still waits on the editor that is the list "N need you" opens, where ↑ and ↓ step to the others that
+  // edit that still waits on the editor that is the For you list, where ↑ and ↓ step to the others that
   // wait, as its card's "1 of N" says. For any other edit it is every edit.
   const showing = actions.showing;
   const shownEdit = showing && edits.find(e => matchesEdit(showing, e));
   const flagged = useMemo(() => edits.filter(e => e.check && !reviewed(e) && !revising(e)), [edits, reviewed, revising]);
-  // An edit made in several places is one edit, on one row of the list: "N need you" counts the rows that wait.
+  // An edit made in several places is one edit, on one row of the list: For you counts the rows that wait.
   const groups = useMemo(() => editGroups(edits), [edits]);
   const need = useMemo(() => groups.filter(group => group.members.some(m => flagged.includes(m.edit))).length, [groups, flagged]);
-  // Every edit waits on the editor: "N need you" lists them all, so the link that opens every edit is left out.
+  // Every edit waits on the editor: For you already lists them all.
   const allNeed = need > 0 && need === groups.length;
   const single = !working && groups.length === 1 ? shownEdit ?? edits[0] : undefined;
   const showingInList = !!shownEdit && (!single || allNeed);
@@ -733,28 +741,23 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
   // An edit made in several places is one row, listed when any of its places is picked, and a request about any of
   // them sits under that row: every place of a row the list shows counts as listed, as the list itself picks its rows.
   const listed = new Set(showsList ? groups.filter(group => !only || group.members.some(m => only(m.edit))).flatMap(group => group.members.map(m => editKey(m.edit))) : []);
-  const seeEvery = (open === "all" || !allNeed) &&
-    <EditResultLink thread={thread} actions={actions} single={single} count={groups.length} soFar={working && !made} paired={flagged.length > 0} list={list} reveal={reveal} />;
-  // While every edit is listed, the link back to the edits that need the editor takes the place of "See all", and a dim
-  // label over the rows says which list they are.
-  // Either link opens the first one waiting, unless one of them is open already, as a pass's does.
+  const canSeeAll = open === "all" || !allNeed;
+  const hasReview = need > 0 || sentBack > 0;
+  const seeEvery = !hasReview && canSeeAll &&
+    <EditResultLink thread={thread} actions={actions} single={single} count={groups.length} soFar={working && !made} list={list} reveal={reveal} />;
   const showNeeded = () => {
     setOpen(undefined);
-    if (!flagged.some(edit => !!actions.showing && matchesEdit(actions.showing, edit))) actions.openEdit(thread, flagged[0]!);
+    if (flagged.length && !flagged.some(edit => !!actions.showing && matchesEdit(actions.showing, edit))) actions.openEdit(thread, flagged[0]!);
   };
-  const needLink = flagged.length > 0 && open === "all" && <button type="button" className="simple-pass-need" title="Show just the ones that need you" onClick={showNeeded}>
-    Just the {need} that {need === 1 ? "needs" : "need"} you</button>;
-  const listHead = flagged.length > 0 && (open === "all" ? <p className="simple-list-head">All {groups.length} edits</p>
-    : <button type="button" className="simple-pass-need simple-list-head" title="Open the first one waiting" onClick={showNeeded}>{need} {need === 1 ? "needs" : "need"} you</button>);
   return <div ref={host} className="simple-pass" role="group" aria-label="Edits">
-    {made ? <Made parts={made} link={<>{seeEvery}{needLink}</>} /> : needLink && <p className="simple-made-line">{seeEvery}{needLink}</p>}
+    {made && <Made parts={made} link={seeEvery} />}
     <div className="simple-pass-line req-row">
-      {!made && !needLink && seeEvery}
+      {!made && seeEvery}
       <span className="req-right">{aside}
         {/* Undo these edits and File this thread have no place in the chat for now. What they reported still shows. */}
         <ThreadAction projectId={projectId} thread={thread} edits={edits} onPlay={ref => actions.openEdit(thread, ref)} menuOnly menu={false} /></span>
     </div>
-    {showsList && listHead}
+    {showsList && hasReview && <ReviewListTabs need={need} canSeeAll={canSeeAll} list={list} reveal={reveal} showNeeded={showNeeded} />}
     {showsList && <ThreadEdits projectId={projectId} thread={thread} edits={edits} showing={actions.showing} only={only}
       onPlay={ref => actions.openEdit(thread, ref)}
       onHover={ref => actions.lightMark(undefined, ref && { threadId: thread.id, editKey: editKey(ref) })}
@@ -1053,8 +1056,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
     const tag = request?.revisionLabel ? tagOf(tagFor(request) ?? request.revisionLabel) : undefined;
     const about = aboutOne(run) ? actions.cutName?.(aimOf(run).context) ?? tag : undefined;
     // Where the request stands, at the right of its heading: a dot while Scarlet asks, a word once it stopped early or
-    // left a suggestion, and Paused while editing is paused and it waits for Continue. What needs the editor
-    // ("N need you") takes this place when there is any.
+    // left a suggestion, and Paused while editing waits for Continue. The review count appears on For you.
     const ended = runEnded(task);
     const editsProject = isProjectEditTask(task);
     const paused = editingPaused && editsProject && task.state === "queued";
@@ -1859,7 +1861,7 @@ export function SimpleWorkspace() {
     player.pause();
     setListening(next ? { changeId: pass.id, index: next.index, cut: { start: next.start, end: next.end }, side: "after", take: 0, key: `${pass.id}/${next.index}` } : undefined);
     if (next) return void saveChoices(pass, decidedNow);
-    // The last call is made. "N need you" counts the request's flagged edits with its calls, so while one of those
+    // The last call is made. For you counts the request's flagged edits with its calls, so while one of those
     // still waits the first of them opens: the card doesn't close on a count above zero.
     const flagged = passThread && passFlagged[0];
     if (flagged) actions.openEdit(passThread, flagged);
@@ -2151,7 +2153,7 @@ export function SimpleWorkspace() {
   const asks = allCalls.filter(a => !sentBack(a.index));
   const cutCount = passCuts?.length ?? pass?.cutReasons?.length ?? 0;
   const passChoices = pass ? choicesOf(pass) : {};
-  // The calls still waiting on the editor: the ones "N need you" counts.
+  // The calls still waiting on the editor: the ones For you counts.
   const waiting = (a: Call) => !sentBack(a.index) && passChoices[a.index] === undefined;
   const waitingCalls = allCalls.filter(waiting);
   const remainingCalls = listening ? waitingCalls.filter(a => a.index !== listening.index) : [];
@@ -2222,7 +2224,7 @@ export function SimpleWorkspace() {
   // is on the version it proposes, where the pass's cuts sit elsewhere. The calls' dots are back when it closes.
   // The calls are on the timeline while the timeline is the pass's, while one of them is open, and while the editor
   // hasn't picked a request in the chat or gone to another's edit: they hold the next request. Another request picked,
-  // or the marked band let go, the timeline marks only that request's edits, or nothing, and "N need you" leads to them.
+  // or the marked band let go, the timeline marks only that request's edits, or nothing, and For you leads to them.
   const callsShown = !!pass && (passThread?.id === focusThread?.id || listening?.changeId === pass.id || (picked === undefined && !focus));
   const marks: TimelineDot[] = pass && !suggestion
     ? !callsShown ? [] : allCalls.flatMap(a => {
@@ -2521,7 +2523,7 @@ export function SimpleWorkspace() {
     return [{ ...dot, n: dotNumbers.get(e) ?? i + 1, state, current, need }];
   }) : [];
   // The waiting pass's edits that ask for a look are with its calls when the timeline is on another request, numbered
-  // after the calls as "N need you" counts them. While the timeline is the pass's own, its dots above draw them.
+  // after the calls as For you counts them. While the timeline is the pass's own, its dots above draw them.
   const passDots: TimelineDot[] = !callsShown || !passThread || suggestion || (playerView && focusThread?.id === passThread.id) ? []
     : passEdits.flatMap(e => {
       if (!e.check || passReviewed(e) || passRevising(e)) return [];
@@ -2587,7 +2589,7 @@ export function SimpleWorkspace() {
   }, [focus, threadTimeline.chosen, threadTimeline.error, openList, newest, settled]); // eslint-disable-line react-hooks/exhaustive-deps
   const shownIndex = reviewingEdit ? threadEdits.indexOf(reviewingEdit) : -1;
   // An edit made in several places is one edit, as the request's list shows it: one row, counted once in "1 of 3" and
-  // in "N need you", and ↑ ↓ and Keep go from edit to edit. A pass lists each of its edits on a line of its own.
+  // in For you, and ↑ ↓ and Keep go from edit to edit. A pass lists each of its edits on a line of its own.
   const editsByRow = threadTimeline.rows;
   const shownRow = reviewingEdit ? editsByRow.findIndex(row => row.includes(reviewingEdit)) : -1;
   const waitingEdit = (e: ThreadEdit) => !!e.check && !reviewed(e) && !revisingEdit(e);
@@ -2762,7 +2764,7 @@ export function SimpleWorkspace() {
   const stopListening = () => { player.pause(); setListening(undefined); };
   function stepCut(delta: number) {
     if (!allCalls.length) return;
-    // From nothing, it starts on a call still waiting on the editor, as "N need you" does: the first with ↓, the last
+    // From nothing, it starts on a call still waiting on the editor, as For you does: the first with ↓, the last
     // with ↑. With none waiting, on one they can decide again. From a call, it goes to the one beside it in the list.
     const at = openCall ? allCalls.indexOf(openCall) : -1;
     const next = at < 0 ? (delta > 0 ? waitingCalls[0] ?? asks[0] ?? allCalls[0] : waitingCalls.at(-1) ?? asks.at(-1) ?? allCalls.at(-1)) : allCalls[at + delta];
