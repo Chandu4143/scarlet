@@ -260,6 +260,8 @@ function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan">, executable: st
     "-c", 'mcp_servers.scarlet.default_tools_approval_mode="approve"',
     "-c", "mcp_servers.scarlet.required=true",
     "-c", "mcp_servers.scarlet.startup_timeout_sec=60",
+    // Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured.
+    "-c", "mcp_servers.scarlet.tool_timeout_sec=300",
     "-c",
     `mcp_servers.scarlet.command=${tomlString(toToml(opts.mcp.command))}`,
     "-c",

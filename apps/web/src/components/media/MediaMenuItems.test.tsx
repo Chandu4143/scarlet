@@ -69,7 +69,10 @@ it("shares cache reads between views and leaves both idle when a poll returns th
     paint.mockClear();
     await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, taskEvents: { working: [] } } })));
     expect(reads).toHaveBeenCalledTimes(1);
+    // With nothing caching, store changes say when to read, so the poll only checks in once a minute.
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(reads).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(50_000));
     expect(reads).toHaveBeenCalledTimes(2);
     expect(paint).not.toHaveBeenCalled();
     await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { cam: 1 } } })));
@@ -245,5 +248,30 @@ it("lets a keyboard user dismiss the Media hover card with Escape", async () => 
     expect(card.hasAttribute("data-escape-owner")).toBe(false);
   } finally {
     container.remove();
+  }
+});
+
+it("reads the caches once at a time, and once more for a change that came meanwhile", async () => {
+  await show([video("cam")]);
+  await act(async () => root.render(null));
+  let answer: (() => void) | undefined;
+  const reads = vi.mocked(api.sourceCaches).mockClear().mockImplementation(() => new Promise(resolve => {
+    answer = () => resolve({ caches: [{ mediaId: "cam", state: "ready" }] });
+  }));
+  function View() { useSourceCaches(); return null; }
+  vi.useFakeTimers();
+  try {
+    await act(async () => root.render(<View />));
+    expect(reads).toHaveBeenCalledTimes(1);
+    await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { cam: 1 } } })));
+    await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { cam: 2 } } })));
+    expect(reads).toHaveBeenCalledTimes(1);
+    await act(async () => { answer!(); });
+    expect(reads).toHaveBeenCalledTimes(2);
+    await act(async () => { answer!(); });
+    expect(reads).toHaveBeenCalledTimes(2);
+  } finally {
+    await act(async () => root.render(null));
+    vi.useRealTimers();
   }
 });

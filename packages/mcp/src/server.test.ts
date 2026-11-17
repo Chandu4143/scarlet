@@ -759,6 +759,90 @@ describe("waveform_get", () => {
   });
 });
 
+describe("reading the same range on several recordings", () => {
+  /** The second microphone heard the same words a moment later. */
+  const mic: Transcript = { ...transcript, id: "t2", mediaId: "m2", segments: transcript.segments.map(s => ({ ...s, id: "s2", start: s.start + .05, end: s.end + .05,
+    words: s.words.map(w => ({ ...w, start: w.start + .05, end: w.end + .05 })) })) };
+
+  it("gives one waveform reading per recording in one call, and says in its place why one has none", async () => {
+    const original = mock.state.waveform;
+    mock.state.waveform = (mediaId, from, to, points) => {
+      if (mediaId === "gone") throw new Error("no such recording");
+      return { mediaId, from, to, peaks: Array(points).fill(mediaId === "m1" ? 0.7 : 0.01) };
+    };
+    try {
+      const r = await client.callTool({ name: "waveform_get", arguments: { mediaIds: ["m1", "m2", "gone"], from: 10, to: 20, points: 50 } }) as CallToolResult;
+      expect(r.isError, textOf(r)).toBeFalsy();
+      const { reads } = JSON.parse(textOf(r));
+      expect(reads.map((read: { mediaId: string }) => read.mediaId)).toEqual(["m1", "m2", "gone"]);
+      expect(reads[0]).toMatchObject({ from: 10, to: 20, bucketSeconds: .2, silences: [] });
+      expect(reads[0].peaksDb.slice(0, 2)).toEqual([-3, -3]);
+      expect(reads[1].silences).toEqual([{ start: 10, end: 20, duration: 10 }]);
+      expect(reads[2]).toEqual({ mediaId: "gone", error: expect.stringContaining("no such recording") });
+      // The single form is as it was, and one call names one recording or a list.
+      expect(JSON.parse(textOf(await client.callTool({ name: "waveform_get", arguments: { mediaId: "m1", from: 10, to: 20, points: 50 } }) as CallToolResult)))
+        .toEqual(reads[0]);
+      const both = await client.callTool({ name: "waveform_get", arguments: { mediaId: "m1", mediaIds: ["m2"], from: 10, to: 20 } }) as CallToolResult;
+      expect(both.isError).toBe(true);
+      expect(textOf(both)).toContain("Give mediaId for one recording or mediaIds for several, not both.");
+      const neither = await client.callTool({ name: "waveform_get", arguments: { from: 10, to: 20 } }) as CallToolResult;
+      expect(textOf(neither)).toContain("Give mediaId, or mediaIds to read the same range on several recordings.");
+    } finally { mock.state.waveform = original; }
+  });
+
+  it("draws a list too long to return whole with fewer buckets on each recording", async () => {
+    const state = makeState({ transcripts: { m1: transcript } });
+    state.waveform = (mediaId, from, to, points) => ({ mediaId, from, to, peaks: Array.from({ length: points }, (_, i) => i % 2 ? 0.7 : 0.2) });
+    const fixture = await startMockServer(state);
+    const agent = new Client({ name: "waveform-list", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    try {
+      const server = createScarletMcpServer(new ScarletClient({ baseUrl: fixture.url, token: "tok" }), {
+        projectId: "prj_test", agent: "claude", capabilities: agentCapabilities("claude", { resultChars: 4000 }), author: { type: "agent", name: "claude" } });
+      await server.connect(a);
+      await agent.connect(b);
+      const result = await agent.callTool({ name: "waveform_get", arguments: { mediaIds: ["m1", "m2"], from: 0, to: 60, points: 2000 } }) as CallToolResult;
+      const body = textOf(result);
+      expect(body.length).toBeLessThanOrEqual(4000);
+      const { reads } = JSON.parse(body);
+      expect(reads).toHaveLength(2);
+      for (const read of reads) {
+        expect(read.peaksDb.length).toBeLessThan(2000);
+        expect(read.bucketSeconds).toBeCloseTo(60 / read.peaksDb.length, 3);
+      }
+    } finally {
+      await agent.close();
+      await fixture.close();
+    }
+  });
+
+  it("reads the transcript of each recording over the same range, each paged on its own", async () => {
+    const original = mock.state.transcripts;
+    mock.state.transcripts = { m1: transcript, m2: mic };
+    // A connection of its own: the words it reads stay with it.
+    const client = await connect();
+    try {
+      const read = textOf(await client.callTool({ name: "transcript_get", arguments: { mediaIds: ["m1", "m2"], from: 0, to: 2 } }) as CallToolResult);
+      const [first, second] = read.split("\n\n");
+      expect(first).toContain("m1: words #0–#3 of 10");
+      expect(first).toContain("#0 0.20-0.50 Hello");
+      expect(second).toContain("m2: words #0–#3 of 10");
+      expect(second).toContain("#0 0.25-0.55 Hello");
+      const json = JSON.parse(textOf(await client.callTool({ name: "transcript_get", arguments: { mediaIds: ["m1", "m2", "gone"], from: 0, to: 1, format: "json" } }) as CallToolResult));
+      expect(json.reads.map((r: { mediaId: string }) => r.mediaId)).toEqual(["m1", "m2", "gone"]);
+      expect(json.reads[1].words[0]).toEqual([0, .25, .55, "Hello", null]);
+      expect(Object.keys(json.reads[2])).toEqual(["mediaId", "error"]);
+      // Word indices are one recording's, so a list is narrowed by seconds.
+      const indexed = await client.callTool({ name: "transcript_get", arguments: { mediaIds: ["m1", "m2"], fromWord: 2 } }) as CallToolResult;
+      expect(indexed.isError).toBe(true);
+      expect(textOf(indexed)).toContain("Word indices belong to one recording.");
+    } finally {
+      mock.state.transcripts = original;
+      await client.close();
+    }
+  });
+});
+
 it("combines word context and independently detected speech on a waveform suggestion request", async () => {
   const original = mock.state.waveform;
   mock.state.waveform = (mediaId, from, to, points) => ({
@@ -3876,6 +3960,30 @@ it("reads a transcript whose words are still being placed on the audio, and hold
     expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut", range: [1.07, 3.5],
       evidence: expect.stringContaining("the removed sound starts") }]);
     expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 4 } }) as CallToolResult)).toContain("#4 2.50-2.70 Um,");
+  } finally {
+    Object.assign(mock.state, original);
+    await editor.close();
+  }
+});
+
+it("reads the words again while they are placed only once alignment has saved more of them", async () => {
+  const original = { transcripts: mock.state.transcripts };
+  mock.state.transcripts = { m1: { ...estimated, createdAt: "2026-11-16T10:00:00.000Z" } };
+  const editor = await connect(undefined, undefined, undefined, 0);
+  const reads = () => mock.requests.filter(r => r.path.endsWith("/media/m1/transcript")).map(r => r.query.get("granularity") ?? "word");
+  const read = async () => textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 4 } }) as CallToolResult);
+  try {
+    const before = reads().length;
+    expect(await read()).toContain("#4 2.20-2.40 Um,");
+    // Nothing new was saved: a read without the words says so, and the words read before serve.
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    expect(await read()).toContain("#4 2.20-2.40 Um,");
+    expect(reads().slice(before)).toEqual(["word", "segment"]);
+    // The next turn of alignment saves the transcript again, and its words are read.
+    mock.state.transcripts = { m1: { ...estimated, aligning: { through: 2.5 }, createdAt: "2026-11-16T10:00:03.000Z" } };
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    expect(await read()).toContain("Times after 2.5 s are estimates");
+    expect(reads().slice(before)).toEqual(["word", "segment", "segment", "word"]);
   } finally {
     Object.assign(mock.state, original);
     await editor.close();

@@ -17,6 +17,8 @@
  *   POST   /projects                CreateProjectRequest → { project: Project }
  *   GET    /projects/:id                                 → ProjectDetail
  *   PATCH  /projects/:id            UpdateProjectRequest → { project: Project }
+ *   POST   /projects/:id/stop-editing                    → { project: Project, tasks: Task[] }
+ *   POST   /projects/:id/resume-editing                  → { project: Project, tasks: Task[] }
  *   DELETE /projects/:id                                 → {}
  *
  *  Media
@@ -70,7 +72,7 @@
  *   GET    /projects/:id/tasks?state=                    → { tasks: Task[] }
  *   GET    /tasks/:taskId                                → { task: Task, events: TaskEvent[] }
  *   GET    /tasks/:taskId/prompt?workDir=&fresh=         → TaskPrompt (what the agent is told; hosts call this before each run)
- *   POST   /tasks/:taskId/cancel                         → { task: Task }
+ *   POST   /tasks/:taskId/cancel?queuedOnly=1            → { task: Task } (queuedOnly is optional)
  *   POST   /tasks/:taskId/retry  RunChoice?              → { task: Task } (resume an interrupted request or retry a failure, on the model given)
  *   POST   /tasks/:taskId/answer    { text }             → { task: Task }     (human answers an agent question)
  *   GET    /projects/:id/usage?by=thread|task|agent|model|day → UsageResponse  (agent token usage, newest group first)
@@ -684,6 +686,13 @@ export const TaskKind = z.enum([
 ]);
 export type TaskKind = z.infer<typeof TaskKind>;
 
+/** Requests that edit the project's video, including requests about a note or an existing edit. */
+export const PROJECT_EDIT_TASK_KINDS: readonly TaskKind[] = ["edit", "note", "revise"];
+
+export function isProjectEditTask(task: { kind: TaskKind }): boolean {
+  return PROJECT_EDIT_TASK_KINDS.includes(task.kind);
+}
+
 export const TaskState = z.enum([
   "queued",
   "claimed",
@@ -825,6 +834,8 @@ export const Task = z.object({
   resumeRootId: Id.optional(),
   /** Insertion order from the engine, used to break ties between requests saved in the same millisecond. */
   queueSequence: z.number().int().optional(),
+  /** This attempt was put back in line by the project's Stop control. It takes priority over waiting requests. */
+  resumesAfterProjectStop: z.boolean().optional(),
   /** Whether the selected cut was still staged when the request was made. Editing an applied cut uses the timeline. */
   stagedCutRevision: z.boolean().optional(),
   /**

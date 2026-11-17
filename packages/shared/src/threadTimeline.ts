@@ -16,6 +16,11 @@ export interface ThreadEdit extends EditRef {
   check?: string;
   /** Where to preview a localized review check in the version currently playing. */
   reviewRange?: TimeRange;
+  /**
+   * `check` without the times it names, once `reviewRange` places them on the working cut. They are in the clock of
+   * the version Scarlet flagged, which later saves move: the card shows where the passage is now instead.
+   */
+  reviewSays?: string;
   /** A later change that supplied the review note for this same edit on the working cut. */
   reviewChangeId?: string;
   /**
@@ -445,6 +450,26 @@ export function threadEditList(thread: Thread, media?: ProjectFiles): Omit<Threa
 
 type ReviewVersionLink = Parameters<typeof historyLineage>[0][number] & { createdAt?: string };
 
+const CLOCK = /\b(?:\d+:)?\d+:[0-5]\d(?:\.\d+)?(?![\d:]|\.\d)/g;
+const seconds = (clock: string) => clock.split(":").reduce((total, part) => total * 60 + Number(part), 0);
+
+/**
+ * The span a flag's own words name inside the passage it flagged, and the words without those times. On Matt's pass a
+ * flag on "Pricing and model names" gave the whole 56 seconds of it as its passage, and its words said where the doubt
+ * was: "Check the ends of ‘GLM 5.3’ and the Lithos pickup and prices at 18:58.5–19:01.6" (2026-11-16). Every time it
+ * names must fall in that passage, so a time about something else, or the source recording, leaves it as flagged.
+ */
+function namedSpan(check: string, flagged: TimeRange): { range: TimeRange; says: string } | undefined {
+  if (/\b(?:source|raw)\b/i.test(check)) return;
+  const times = [...check.matchAll(CLOCK)].map(match => seconds(match[0]));
+  if (!times.length || times.some(t => t < flagged.start - 0.5 || t > flagged.end + 0.5)) return;
+  const range = { start: Math.max(flagged.start, Math.min(...times)), end: Math.min(flagged.end, Math.max(...times)) };
+  const time = CLOCK.source;
+  const says = check.replace(new RegExp(`\\s*(?:\\b(?:at|around|near|from|between)\\s+)?${time}(?:\\s*(?:–|—|-|to|and)\\s*${time})?`, "gi"), "")
+    .replace(/\(\s*\)/g, "").replace(/\s+([.,;:!?])/g, "$1").replace(/\s{2,}/g, " ").trim();
+  return { range, says };
+}
+
 /** Older flags can name a single explicit timeline time in their check without storing its version. */
 function reviewTimeIn(check: string) {
   const matches = [...check.matchAll(/\b(?:\d+:)?\d+:[0-5]\d(?:\.\d+)?(?![\d:]|\.\d)/g)];
@@ -496,15 +521,18 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     if (!saved) return;
     const map = mapFrom(saved.version);
     if (!map) return;
-    const point = saved.range.start === saved.range.end;
-    const start = map(saved.range.start, "right") ?? map(saved.range.start, "left");
-    const end = point ? start : map(saved.range.end, "left") ?? map(saved.range.end, "right");
+    // The editor checks what the words point at, and the card says where that is now.
+    const named = location && namedSpan(edit.check, location.range);
+    const flagged = named?.range ?? saved.range;
+    const point = flagged.start === flagged.end;
+    const start = map(flagged.start, "right") ?? map(flagged.start, "left");
+    const end = point ? start : map(flagged.end, "left") ?? map(flagged.end, "right");
     if (start === null && end === null) return;
     const from = start ?? end!;
     const to = end ?? from;
     // A legacy time may refer to something outside this edit. A structured location was validated when saved.
     if (to < from || from < 0 || to > duration || (!location && (from < edit.range.start || to > edit.range.end))) return;
-    return { start: from, end: to };
+    return { range: { start: from, end: to }, says: named?.says };
   };
   const result: ThreadEdit[] = [];
   // A request that saves the video again often lists every edit it has made so far, not only what that save changed:
@@ -556,6 +584,8 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
         if (first.at === undefined && !first.beforeCut && first.kind !== "cut" && !first.marker) first.reviewRange = later.reviewRange;
       }
       first.check = later.check;
+      if (later.reviewSays) first.reviewSays = later.reviewSays;
+      else delete first.reviewSays;
     }
     if (later.todo) first.todo = later.todo;
     if (later.summary) first.summary = sameSave && first.summary && first.summary !== later.summary ? `${first.summary} ${later.summary}` : later.summary;
@@ -661,8 +691,9 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     const range = { start: Math.max(0, start), end: Math.min(duration, Math.max(start, end)) };
     // A removal has a join but no surviving frames of its own. Audition the join with context.
     const placed: ThreadEdit = range.end === range.start ? { ...edit, at: range.start, range: withHandles(range, 1.5, duration) } : { ...edit, range };
-    const reviewRange = placeReview(placed, reviewLocation);
-    if (reviewRange) placed.reviewRange = reviewRange;
+    const review = placeReview(placed, reviewLocation);
+    if (review) placed.reviewRange = review.range;
+    if (review?.says) placed.reviewSays = review.says;
     const first = (resaved && placed.at !== undefined ? revised(placed, [placed.at], { start: placed.at, end: placed.at }) ?? revised(placed, [placed.at]) : undefined) ??
       (still && placed.at !== undefined ? cutThere(placed) : undefined) ?? sameAs(placed, named);
     if (first) {

@@ -244,19 +244,26 @@ function firstCutName(name: string | undefined) {
 }
 
 /**
- * The guide a skill builds on, named by `extends:` in its header. An editor's own style ("cut my joins tighter, act on
- * my notes to the editor") then runs with the guide it adds to, and the guide's later improvements reach it, instead
- * of a copy of the guide drifting apart from it.
+ * The guides a skill builds on, in the order it names them. It names one by calling it in its text, `/frame-screen`,
+ * at the place it applies, with what it changes written beside the call; or in its header, `extends: dialogue-pass`,
+ * several with commas between them. An editor's own style ("cut my joins tighter, frame my demos my way") then runs
+ * with the guides it adds to, and their later improvements reach it, instead of a copy of each guide drifting apart
+ * from it. A name is only a guide when the library has one by it, which the caller checks.
  */
-export function skillExtends(skill: Pick<Skill, "content">): string | undefined {
-  const header = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skill.content)?.[1];
-  const value = header && /^extends:[ \t]*(.*)$/m.exec(header)?.[1]?.trim().replace(/^["']|["']$/g, "").replace(/^\//, "");
-  return value || undefined;
+export function skillExtends(skill: Pick<Skill, "content"> & Partial<Pick<Skill, "name">>): string[] {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(skill.content);
+  const value = front && /^extends:[ \t]*(.*)$/m.exec(front[1]!)?.[1]?.trim().replace(/^\[|\]$/g, "");
+  const header = (value ?? "").split(",").map(name => name.trim().replace(/^["']|["']$/g, "").replace(/^\//, "")).filter(Boolean);
+  // A call in the text: a whole word after a space or an opening bracket, so a path or a name in code isn't one.
+  const body = skill.content.slice(front?.[0].length ?? 0);
+  const called = Array.from(body.matchAll(/(?:^|[\s(])\/([a-z0-9][a-z0-9-]*)(?=[\s.,;:!?)]|$)/gim), match => match[1]!.toLowerCase());
+  const own = skill.name ?? (front && /^name:[ \t]*(.*)$/m.exec(front[1]!)?.[1]?.trim());
+  return [...new Set([...header, ...called])].filter(name => name !== own);
 }
 
 /** Whether a skill adds to the dialogue pass, so its command asks for one. */
 export function extendsDialoguePass(skill: Skill) {
-  return skill.enabled && !isDialogueGuide(skill) && firstCutName(skillExtends(skill));
+  return skill.enabled && !isDialogueGuide(skill) && skillExtends(skill).some(firstCutName);
 }
 
 export function isDialogueGuide(skill: Skill) {
@@ -302,7 +309,7 @@ const ACTIVE_STATES = new Set(["claimed", "running", "waiting_for_user"]);
 
 const PENDING_STATES = new Set(["queued", ...ACTIVE_STATES]);
 
-export type QueueTask = Pick<Task, "id" | "projectId" | "kind" | "state" | "createdAt" | "resumeRootId" | "queueSequence" | "startsBeforeCalls"> & {
+export type QueueTask = Pick<Task, "id" | "projectId" | "kind" | "state" | "createdAt" | "resumeRootId" | "queueSequence" | "startsBeforeCalls" | "resumesAfterProjectStop"> & {
   context: Pick<Task["context"], "branch" | "changeId" | "threadId" | "cutIndex" | "editIndex">;
 };
 type EditLineage = Pick<Change, "id" | "timelineEdits">;
@@ -427,7 +434,8 @@ function inLine(tasks: readonly QueueTask[]) {
   };
   return (a: QueueTask, b: QueueTask) => {
     const x = place(a), y = place(b);
-    return compare(x.original, y.original) || compare(x.attempt, y.attempt);
+    return Number(!!b.resumesAfterProjectStop) - Number(!!a.resumesAfterProjectStop)
+      || compare(x.original, y.original) || compare(x.attempt, y.attempt);
   };
 }
 

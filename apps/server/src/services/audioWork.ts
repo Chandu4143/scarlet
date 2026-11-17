@@ -12,6 +12,12 @@ import { editorFirst } from "./editorFirst.js";
  *     run that beside the lane (`speakersRunBeside`);
  *  2. everything else, such as transcripts of the other recordings.
  *
+ * Work a request is waiting on this moment (`asked`), such as the page a pass's tool call reads or the joins its
+ * repeat check hears, ranks 1 whatever recording it is on, and goes ahead of other work of its rank. A pass reads its
+ * last pages and checks its joins after its scan has let the recording go, and then they ranked 2, behind every
+ * transcript under way: on 2026-11-16 pages of about a second's work waited 52 s to 1 min 41 s each behind another
+ * recording's alignment, and the pass waited with them.
+ *
  * Rank is read when the lane frees, so a transcript that started in the background moves up as soon as
  * a pass starts reading its recording. Equal ranks run first come, first served, except that work already
  * under way finishes first: a background transcript is Whisper and then word alignment in five-minute turns,
@@ -31,7 +37,9 @@ import { editorFirst } from "./editorFirst.js";
  *
  * Voice notes and other short interactive transcriptions don't use the lane.
  */
-export type AudioWork = { mediaId: string; kind: "transcript" | "alignment" | "speakers" | "page" };
+export type AudioWork = { mediaId: string; kind: "transcript" | "alignment" | "speakers" | "page";
+  /** A request is waiting on this work now. Work already queued becomes asked when a request joins it. */
+  asked?: boolean };
 
 /** Log work that waited this long for the lane or held it this long, so a stalled pass shows what it queued behind. */
 const LOG_WAIT_MS = 30_000;
@@ -78,9 +86,19 @@ export class AudioLane {
     return this.focused.has(mediaId);
   }
 
+  /** Whether a dialogue pass is reading any recording now. */
+  reading(): boolean {
+    return this.focused.size > 0;
+  }
+
   rank(work: AudioWork): number {
-    if (!this.focused.has(work.mediaId)) return 2;
+    if (!this.focused.has(work.mediaId)) return work.asked ? 1 : 2;
     return work.kind === "transcript" ? 0 : 1;
+  }
+
+  /** Whether `work` goes ahead of `other`: it ranks ahead, or ranks the same and a request is waiting on it alone. */
+  private ahead(work: AudioWork, other: AudioWork) {
+    return this.rank(work) - this.rank(other) || Number(!!other.asked) - Number(!!work.asked);
   }
 
   /**
@@ -119,7 +137,7 @@ export class AudioLane {
         this.waiting.push(entry);
         signal?.addEventListener("abort", cancel, { once: true });
         // Work ranked ahead of the step the lane is kept for doesn't wait for it.
-        if (this.held && this.rank(work) < this.rank(this.held.work)) {
+        if (this.held && this.ahead(work, this.held.work) < 0) {
           this.unhold();
           this.next();
         }
@@ -167,6 +185,15 @@ export class AudioLane {
     this.next();
   }
 
+  /** A request now waits on `work`. Queued, it stops waiting for a step the lane is kept for that it now goes ahead of. */
+  ask(work: AudioWork) {
+    work.asked = true;
+    if (this.held && this.waiting.some(entry => entry.work === work) && this.ahead(work, this.held.work) < 0) {
+      this.unhold();
+      this.next();
+    }
+  }
+
   /** Whether work a pass needs is waiting for the lane. */
   urgentWaiting(): boolean {
     return this.waiting.some(entry => this.rank(entry.work) < 2);
@@ -180,7 +207,7 @@ export class AudioLane {
   /** Keep the lane for the next step of `work`, unless something ranked ahead of it is waiting. */
   private hold(work: AudioWork) {
     const [first] = this.ordered();
-    if (first && this.rank(first.work) < this.rank(work)) {
+    if (first && this.ahead(first.work, work) < 0) {
       this.next();
       return;
     }
@@ -200,7 +227,7 @@ export class AudioLane {
   private ordered() {
     // Work already under way keeps the place it had when it first got the lane.
     const place = (entry: { work: AudioWork; seq: number }) => Math.min(entry.seq, this.begun.get(workKey(entry.work)) ?? entry.seq);
-    return [...this.waiting].sort((a, b) => this.rank(a.work) - this.rank(b.work) || place(a) - place(b) || a.seq - b.seq);
+    return [...this.waiting].sort((a, b) => this.ahead(a.work, b.work) || place(a) - place(b) || a.seq - b.seq);
   }
 
   private next() {
@@ -231,4 +258,11 @@ export function whisperLane(ctx: { paths: { root: string }; log?: (message: stri
   let own = whisperLanes.get(ctx.paths.root);
   if (!own) whisperLanes.set(ctx.paths.root, own = lane.sibling("Whisper lane"));
   return own;
+}
+
+/** A request now waits on `work`, which may be queued in either of the engine's lanes. */
+export function askFor(ctx: { paths: { root: string } }, work: AudioWork) {
+  work.asked = true;
+  lanes.get(ctx.paths.root)?.ask(work);
+  whisperLanes.get(ctx.paths.root)?.ask(work);
 }
