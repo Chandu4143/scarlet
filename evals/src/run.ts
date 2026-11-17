@@ -158,7 +158,9 @@ export function reportPublishedWords(inputs: NonNullable<ReturnType<typeof publi
     "--reference", inputs.reference, "--case-dir", loaded.dir, "--evidence", inputs.evidence, "--timeline", timeline, "--verified-keeps", "--matched-joins"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
     { referenceSha256: string; gradingEvidenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null;
       cutWordDistance: { labeledWords: number; differingWords: number; differingFraction: number | null; retainedSkippedWords: number };
-      spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null } };
+      spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null };
+      editorEdges?: { sharedEdges?: number; withinEditorWindowFraction?: number | null; speechMisses?: number; speechMissesOver100Ms?: number;
+        playsRemovedSpeech?: number; dropsKeptSpeech?: number } };
   if (published.referenceSha256 !== inputs.referenceSha256 || published.gradingEvidenceSha256 !== inputs.evidenceSha256) {
     throw new Error("The scored reference or grading evidence differs from its frozen digest.");
   }
@@ -169,7 +171,11 @@ export function reportPublishedWords(inputs: NonNullable<ReturnType<typeof publi
     differingLabeledWords: published.cutWordDistance.differingWords, differingWordFraction: published.cutWordDistance.differingFraction,
     ...(published.spacing && { editorWordRemovingCuts: published.spacing.editorWordRemovingCuts,
       recoveredWordRemovingCuts: published.spacing.recoveredWordRemovingCuts, matchedAudioJoins: published.spacing.sharedJoins,
-      matchedPauseErrorMs: published.spacing.meanAbsErrorMs }) });
+      matchedPauseErrorMs: published.spacing.meanAbsErrorMs }),
+    ...(published.editorEdges?.sharedEdges !== undefined && { editorEdgesShared: published.editorEdges.sharedEdges,
+      editorEdgesInWindow: published.editorEdges.withinEditorWindowFraction ?? null, editorEdgeSpeechMisses: published.editorEdges.speechMisses ?? null,
+      editorEdgeSpeechMissesOver100Ms: published.editorEdges.speechMissesOver100Ms ?? null,
+      editorEdgePlaysRemovedSpeech: published.editorEdges.playsRemovedSpeech ?? null, editorEdgeDropsKeptSpeech: published.editorEdges.dropsKeptSpeech ?? null }) });
 }
 
 async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, runId: string, dir: string, timeoutMs: number, selection: SkillSelection): Promise<TrialRow> {

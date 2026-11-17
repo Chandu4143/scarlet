@@ -4,7 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from score_audio_reference import Piece, cut_word_distance, join_spacing, reference_pieces, score, timeline_pieces, validate_reference_source, verified_keeps
+from score_audio_reference import Piece, cut_word_distance, editor_edges, join_spacing, reference_pieces, score, timeline_pieces, validate_reference_source, verified_keeps
 
 
 class AudioReferenceScoreTests(unittest.TestCase):
@@ -193,3 +193,26 @@ class AudioReferenceScoreTests(unittest.TestCase):
         self.assertEqual(pieces[0].playback(2.5), .75)
         with self.assertRaisesRegex(ValueError, 'More than one'):
             timeline_pieces(tl, 'mic')
+
+    def test_editor_edges_score_placement_from_sound_alone(self):
+        # Words speak at i+.2..i+.7. The editor cuts 3.95 -> 6.0, movable anywhere in the quiet around each edge.
+        db = [-20 if any(w['start'] <= i / 100 < w['end'] for w in self.words) else -70 for i in range(1200)]
+        levels = dict(**{'from': 0}, step=.01, db=db)
+        ref = dict(frameDuration=.03, joins=[dict(finalTime=3.95, rawOut=3.95, rawIn=6.0, earliestFinal=3.85, latestFinal=4.05)])
+        exact = editor_edges(ref, [Piece(0, 3.95, 0), Piece(6, 12, 3.95)], levels)
+        self.assertEqual((exact['sharedEdges'], exact['withinEditorWindow'], exact['speechMisses']), (2, 2, 0))
+        # Out inside word 3 drops 0.2 s the editor kept; in inside word 5 plays 0.2 s the editor removed.
+        wrong = editor_edges(ref, [Piece(0, 3.5, 0), Piece(5.5, 12, 3.5)], levels)
+        self.assertEqual((wrong['withinEditorWindow'], wrong['speechMisses'], wrong['speechMissesOver100Ms']), (0, 2, 2))
+        self.assertEqual((wrong['dropsKeptSpeech'], wrong['playsRemovedSpeech']), (1, 1))
+        self.assertEqual([m['speechSeconds'] for m in wrong['misses']], [.2, .2])
+        # Outside the window but still in quiet: off, yet nothing audible lies between.
+        quiet = editor_edges(ref, [Piece(0, 3.75, 0), Piece(6, 12, 3.75)], levels)
+        self.assertEqual((quiet['withinEditorWindow'], quiet['speechMisses']), (1, 0))
+        self.assertEqual((quiet['misses'], quiet['p90AbsOffMs']), ([], 63.0))
+        # A clip split with nothing removed is not an edge, and an edge beyond reach is not this cut.
+        split = editor_edges(ref, [Piece(0, 2, 0), Piece(2, 3.95, 2), Piece(6, 12, 3.95)], levels)
+        self.assertEqual(split['sharedEdges'], 2)
+        self.assertEqual(editor_edges(ref, [Piece(0, 12, 0)], levels)['sharedEdges'], 0)
+        self.assertIn('unavailable', editor_edges(ref, [Piece(0, 12, 0)], None))
+

@@ -218,6 +218,68 @@ def join_spacing(words, reference, candidate, *, join_times=None):
                 p90AbsErrorMs=quant(absolute, .9), matched=matched)
 
 
+# Edge placement against the editor's own cuts, read from the audio alone. A word's timing never enters it, so
+# changing the transcript or its aligner cannot move the target. Speech uses metrics.ts's edge classes.
+EDGE_REACH = .6          # A candidate edge this far outside the editor's plausible window still counts as the same cut.
+SPEECH_BELOW_TYPICAL_DB = 18
+FLOOR_PERCENTILE, SPEECH_PERCENTILE = .15, .85
+
+
+def speech_threshold(levels):
+    values = [v for v in levels['db'] if math.isfinite(v) and v > -100]
+    return quant(values, SPEECH_PERCENTILE) - SPEECH_BELOW_TYPICAL_DB if values else None
+
+
+def speech_between(levels, threshold, a, b):
+    """Seconds of speech-level frames between two source times."""
+    a, b = min(a, b), max(a, b)
+    first = max(0, math.floor((a - levels['from']) / levels['step'] + 1e-9))
+    last = min(len(levels['db']), math.ceil((b - levels['from']) / levels['step'] - 1e-9))
+    return round(sum(v >= threshold for v in levels['db'][first:last]) * levels['step'], 3)
+
+
+def editor_edges(ref, candidate, levels):
+    """Each editor cut has an out edge and an in edge in the recording, each with the window over which moving it
+    sounds the same (quiet on both sides, plus one frame). A candidate edge of the same side within reach is scored:
+    inside the window it matches; outside, the speech between it and the window is sound the editor kept and the
+    candidate drops, or sound the editor took out and the candidate plays."""
+    threshold = speech_threshold(levels) if levels else None
+    if threshold is None:
+        return dict(unavailable='The grading evidence has no levels.')
+    frame = 1 / ref['frameRate'] if 'frameRate' in ref else ref['frameDuration']
+    # The recording's kept ranges: a clip split with nothing removed between its halves is not an edge.
+    kept = union((p.start, p.end) for p in candidate)
+    outs, ins = [b for _, b in kept], [a for a, _ in kept]
+    edges = []
+    for j in ref['joins']:
+        t = j['finalTime']
+        early = min(j['earliestFinal'], j.get('highBandEarliestFinal', t), j.get('highBandFinal', t)) - t - frame
+        late = max(j['latestFinal'], j.get('highBandLatestFinal', t), j.get('highBandFinal', t)) - t + frame
+        for side, at, mine in (('out', j['rawOut'], outs), ('in', j['rawIn'], ins)):
+            lo, hi = at + early, at + late
+            near = [x for x in mine if lo - EDGE_REACH <= x <= hi + EDGE_REACH]
+            if not near:
+                continue
+            x = min(near, key=lambda v: 0 if lo <= v <= hi else min(abs(v - lo), abs(v - hi)))
+            off = 0. if lo <= x <= hi else x - hi if x > hi else x - lo
+            speech = speech_between(levels, threshold, x, hi if x > hi else lo) if off else 0.
+            # Past the window on the out side, or before it on the in side, the candidate plays more of the recording.
+            plays = (off > 0) == (side == 'out')
+            edges.append(dict(side=side, finalAt=round(t, 4), editor=[round(lo, 4), round(hi, 4)], candidate=round(x, 4),
+                              offMs=round(1000 * off, 1), speechSeconds=speech,
+                              kind=None if not speech else 'playsRemoved' if plays else 'dropsKept'))
+    misses = [e for e in edges if e['speechSeconds'] > 0]
+    absolute = [abs(e['offMs']) for e in edges]
+    return dict(referenceEdges=2 * len(ref['joins']), sharedEdges=len(edges),
+                withinEditorWindow=sum(e['offMs'] == 0 for e in edges),
+                withinEditorWindowFraction=sum(e['offMs'] == 0 for e in edges) / len(edges) if edges else None,
+                speechMisses=len(misses), speechMissesOver100Ms=sum(e['speechSeconds'] > .1 for e in misses),
+                playsRemovedSpeech=sum(e['kind'] == 'playsRemoved' for e in misses),
+                dropsKeptSpeech=sum(e['kind'] == 'dropsKept' for e in misses),
+                medianAbsOffMs=quant(absolute, .5), p90AbsOffMs=quant(absolute, .9),
+                speechThresholdDb=round(threshold, 1), misses=misses)
+
+
 def word_order(words, refpes, candpes, certain):
     ref = [i for p in by_piece(words, refpes) for i in p if certain[i] == 'keep']
     cand = [i for p in by_piece(words, candpes) for i in p if certain[i] == 'keep']
@@ -458,6 +520,8 @@ def main():
     result = verified_keeps(evidence['words'], reference, pieces) if args.verified_keeps else score(words, reference, pieces)
     if args.verified_keeps:
         result['cutWordDistance'] = cut_word_distance(evidence['words'], reference, pieces, result)
+    if args.verified_keeps:
+        result['editorEdges'] = editor_edges(reference, pieces, evidence.get('levels'))
     if args.matched_joins:
         ref_pieces = reference_pieces(reference, mapped_only=True)
         try:
