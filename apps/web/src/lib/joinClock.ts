@@ -47,6 +47,22 @@ export function joinClock(removed: TimeRange[], duration: number): JoinClock {
   };
 }
 
+/**
+ * Plays `inner`'s media while the timeline shows `outer`'s view, when `outer` maps the view onto the version whose
+ * clock `inner` reads: an earlier version shown, the working cut between, and a version with one more cut played.
+ * A moment inside footage either took out lands on its join, and both clocks' removals are removed here.
+ */
+export function composeClocks(outer: JoinClock, inner: JoinClock): JoinClock {
+  const removed = joinClock([...outer.removed, ...inner.removed.map(r => ({ start: outer.toView(r.start), end: outer.toView(r.end) }))],
+    outer.duration).removed;
+  return {
+    duration: outer.duration,
+    removed,
+    toMedia: t => inner.toMedia(outer.toMedia(t)),
+    toView: t => outer.toView(inner.toView(t)),
+  };
+}
+
 // Cuts on the same edit share both immutable timelines and the removal list. Keep the source index and
 // clock for the most recent edited version of each source, while checking each audition on its own.
 const sourceClocks = new WeakMap<Timeline, { media: Timeline; removed: TimeRange[]; fps: number; clock: JoinClock; map: ReturnType<typeof makeTimeMap> }>();

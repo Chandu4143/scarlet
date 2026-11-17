@@ -3271,6 +3271,93 @@ it("keeps the other calls' dots on the timeline while a call is open, so one pre
   expect(numbers()).toEqual(["1", "2", "3"]);
 });
 
+/**
+ * The running pass has already applied a part: a cut joined right after the call at 0:06, which took 7.04–8.04 s out of
+ * the version before it. The working cut is that version without it.
+ */
+const appliedPart = (baseFails = false) => {
+  const base = { ...data.timeline!, version: "ver_base" };
+  data = { ...data, timeline: { ...applyOps(base, [{ op: "rippleDelete", start: 7.04, end: 8.04 }]), version: data.project.head! } };
+  useProjectStore.setState({ current: data });
+  runningPass();
+  const ready = data.changes.find(c => c.id === "chg_ready")!;
+  const part = { ...ready, id: "chg_part", intent: "requested" as const, state: "approved" as const, cutAssessments: undefined, cutChoices: undefined,
+    cutReasons: [{ start: 7.04, end: 8.04, reason: "Beautiful. The detail, the, the" }], createdAt: new Date(Date.parse(ready.createdAt!) - 60_000).toISOString() };
+  data = { ...data, changes: data.changes.flatMap(c => c.id === "chg_ready" ? [part, c] : [c]),
+    tasks: data.tasks.map(t => t.id === "task_done" ? { ...t, changeIds: [part.id, ...t.changeIds] } : t) };
+  useProjectStore.setState({ current: data });
+  const passThread = threadWith("chg_ready").id;
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!, edits: threadId !== passThread ? [] : [
+    { changeId: "chg_part", spot: 0, label: "Beautiful. The detail, the, the", range: { start: 5.54, end: 8.54 }, at: 7.04,
+      beforeCut: { version: "ver_base", removed: { start: 7.04, end: 8.04 } }, previous: [] }] }));
+  vi.spyOn(api, "timeline").mockImplementation(async (_project, version) => {
+    if (version !== "ver_base") return { timeline: useProjectStore.getState().current!.timeline! };
+    if (baseFails) throw new Error("Couldn’t read that version");
+    return { timeline: base };
+  });
+};
+/** Ranges to the hundredth of a second: where a version's footage sits is worked out from its clips. */
+const rounded = (ranges: readonly { start: number; end: number }[]) => ranges.map(r => [r.start, r.end].map(t => Math.round(t * 100) / 100));
+
+it("shows the cuts already in the video around an open call as grey gaps, After stepping over them, and plays one from a click in it", async () => {
+  appliedPart();
+  const listen = vi.spyOn(player, "audition"), seek = vi.spyOn(player, "seek");
+  await show();
+  await act(async () => {});
+  const gaps = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-gap")];
+  // With nothing open the timeline marks only what needs the editor.
+  expect(gaps()).toEqual([]);
+  // The call is shown on the version that still has the cut's footage, which is grey and named by its time now.
+  await openCall("Breath before the price.");
+  await act(async () => {});
+  expect(gaps().map(gap => [gap.textContent, gap.classList.contains("is-skipped")])).toEqual([["Cut at 0:07", true]]);
+  expect(onVideo()).toBe("Showing cut at 0:06 · 2 of 3 · After");
+  expect([...container.querySelectorAll(".simple-timeline-mark.is-numbered")].map(d => d.textContent)).toEqual(["1", "2", "3"]);
+  // After plays as the video runs now: over the call's footage, then over the cut's.
+  expect(rounded(listen.mock.lastCall![0].skips)).toEqual([[6, 7], [7.04, 8.04]]);
+
+  // Without layout a click lands on the gap's first frame. That footage plays in Before from there, and the icon lights.
+  await act(async () => { gaps()[0]!.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, isPrimary: true, button: 0, bubbles: true })); });
+  const visit = listen.mock.lastCall![0];
+  expect(visit.from).toBeCloseTo(7.04, 6);
+  expect([visit.through, visit.skips]).toEqual([true, []]);
+  expect(usePlayerStore.getState().scrubGesture).toBeUndefined();
+  expect(beforeIcon(call())).toEqual(["", "Before", "true", "Back to After (\\)"]);
+  expect(call().querySelector(".edit-card-before.is-flash")).not.toBeNull();
+  expect([...call().querySelector(".edit-card-switched")!.children].map(part => part.textContent)).toEqual(["Before", "The cut at 0:07 took this part out."]);
+  expect(onVideo()).toBe("Showing what the cut at 0:07 took out · Before");
+  // It plays now, so it's only outlined. The call's card is otherwise as it was.
+  expect(gaps()[0]!.classList.contains("is-skipped")).toBe(false);
+  expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 2");
+  expect(buttonIn(call(), "Approve")).toBeTruthy();
+
+  // The lit icon goes back to After, which picks up where that footage ends.
+  await click(call().querySelector(".edit-card-before")!);
+  const back = listen.mock.lastCall![0];
+  expect(back.from).toBeCloseTo(8.04, 2);
+  expect(rounded(back.skips)).toEqual([[6, 7], [7.04, 8.04]]);
+  expect(call().querySelector(".edit-card-switched")).toBeNull();
+  expect(gaps()[0]!.classList.contains("is-skipped")).toBe(true);
+
+  // Closed, the timeline is the working cut again, at the same footage, and draws no gaps.
+  usePlayerStore.setState({ time: 9.04 });
+  await press("Escape");
+  expect(call()).toBeNull();
+  expect(gaps()).toEqual([]);
+  expect(seek.mock.lastCall?.[0]).toBeCloseTo(8.04, 2);
+});
+
+it("keeps a call on the working cut, with no gaps, when the version that has the footage around it can't be read", async () => {
+  appliedPart(true);
+  const listen = vi.spyOn(player, "audition");
+  await show();
+  await act(async () => {});
+  await openCall("Breath before the price.");
+  await act(async () => {});
+  expect(container.querySelector(".simple-timeline-gap")).toBeNull();
+  expect(rounded(listen.mock.lastCall![0].skips)).toEqual([[6, 7]]);
+});
+
 it("plays a call's cut footage from a click inside its passage on the timeline", async () => {
   runningPass();
   const listen = vi.spyOn(player, "audition");
