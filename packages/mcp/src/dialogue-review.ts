@@ -1,4 +1,4 @@
-import { clipDuration, reviewReasons, timelineToSource, type Change, type CutReview, type MediaAsset, type TimeRange } from "@scarlet/timeline";
+import { clipDuration, reviewHeldNotes, reviewReasons, timelineToSource, type Change, type CutReview, type MediaAsset, type TimeRange } from "@scarlet/timeline";
 import { ScarletApiError, type InspectionResult, type ScarletClient, type SheetRequest } from "@scarlet/shared";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod/v3";
@@ -59,8 +59,9 @@ export async function inspectDialogueSuggestion(client: ScarletClient, change: C
   const content: CallToolResult["content"] = [];
   const info = (value: unknown, into = content) => into.push({ type: "text", text: JSON.stringify(value) });
   const receipt: InspectionReceipt = { complete: true, picture: [] };
+  const held = reviewHeldNotes(change, [cut])[0];
   info({ index, total: review.cuts.length, fromVersion: change.fromVersion, toVersion: change.toVersion,
-    ...cut.removed, firstPass: reviewReasons(change, [cut])[0], ...(playback && { inspectedVersion: playback.original.version,
+    ...cut.removed, firstPass: reviewReasons(change, [cut])[0], ...(held && { held }), ...(playback && { inspectedVersion: playback.original.version,
       inspectedRange: playback.range, previewVersion: playback.previewVersion }) });
 
   // Overlay notes keep their place among the tracks.

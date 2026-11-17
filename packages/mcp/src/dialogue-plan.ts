@@ -613,12 +613,16 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
         ? { start: Math.min(c.start, join.start), end: Math.max(c.end, join.end) } : undefined,
       ...(join.reason && { held: join.reason }) }, join.reason ?? "");
   });
-  // What a held edge left in sound plays, with what was measured there, for the model's review.
+  // What a held edge left in sound plays, with what was measured there, for the model's review: the join as placed,
+  // and the passage as it plays if the cut is kept instead.
   await Promise.all(removals.map(async (c, i) => {
     const found = inSound.get(c.input), d = decisions[i]!;
     if (!found || !d.review) return;
-    const plays = await joinPlays(tl, project, { start: d.start, end: d.end }, mediaId => sources.words(mediaId, undefined, false));
-    d.held = [found.reason, plays && `As placed the join plays “${plays}”.`].filter(Boolean).join(" ").slice(0, 800);
+    const range = { start: d.start, end: d.end };
+    const heard = await timelineWordsNear(tl, project, range, mediaId => sources.words(mediaId, undefined, false), 6);
+    const plays = joinText(heard, range), kept = keptText(heard, range);
+    d.held = [found.reason, plays && `As placed the join plays “${plays}”.`, kept && `Kept, it plays “${kept}”.`]
+      .filter(Boolean).join(" ").slice(0, 800);
   }));
   // A cut the model decided that Scarlet held only for how its join measured applies as placed when the model said
   // so. A hold for the selection or footage marked to keep stays: that is the editor's, not a measurement. So does an
@@ -876,10 +880,29 @@ export async function timelineWordsNear(tl: Timeline, project: Pick<Project, "me
  */
 export async function joinPlays(tl: Timeline, project: Pick<Project, "media">, range: TimeRange,
   words: (mediaId: string) => Promise<readonly TranscriptWord[] | null>, count = 6) {
-  const heard = await timelineWordsNear(tl, project, range, words, 6);
+  return joinText(await timelineWordsNear(tl, project, range, words, 6), range, count);
+}
+
+type Heard = ReadonlyArray<{ at: number; text: string }>;
+
+function joinText(heard: Heard, range: TimeRange, count = 6) {
   const before = heard.filter(h => h.at <= range.start).slice(-count).map(h => h.text);
   const after = heard.filter(h => h.at >= range.end).slice(0, count).map(h => h.text);
   return before.length || after.length ? `${before.length ? "… " + before.join(" ") : ""} ‖ ${after.length ? after.join(" ") + " …" : ""}`.trim() : "";
+}
+
+/**
+ * The words a removal plays if it is kept: a few either side and the ones it would take out, as the viewer hears them,
+ * with the middle of a long passage elided. A held restart's note said only what its join would play, and a pass kept
+ * "you can see the rough, you can see the shadows" rather than clip the release of "nice" (2026-11-17).
+ */
+export function keptText(heard: Heard, range: TimeRange, count = 3, inside = 16) {
+  const removed = heard.filter(h => h.at > range.start && h.at < range.end).map(h => h.text);
+  if (!removed.length) return "";
+  const before = heard.filter(h => h.at <= range.start).slice(-count).map(h => h.text);
+  const after = heard.filter(h => h.at >= range.end).slice(0, count).map(h => h.text);
+  const middle = removed.length > inside ? [...removed.slice(0, inside / 2), "…", ...removed.slice(-inside / 2)] : removed;
+  return `${before.length ? "… " : ""}${[...before, ...middle, ...after].join(" ")}${after.length ? " …" : ""}`;
 }
 
 /** How far from a staged cut, in timeline seconds, the words a call's note quotes may start. */
