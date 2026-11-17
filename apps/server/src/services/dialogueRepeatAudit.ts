@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { fileInDirectory } from "@scarlet/render";
 import { carriesAudio, clipEnd, mergeRanges, sourceToTimeline, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
-import { adjacentRepeatCandidates, closesSentence, cutAnchorOn, findRestarts, flattenWords, joinFragment, normalizeTranscriptToken, SILENCE_LEFT_SECONDS,
-  type JoinFragment, type JoinHearing, type SaidWord, type SilenceLeft, type Task } from "@scarlet/shared";
+import { adjacentRepeatCandidates, closesSentence, cutAnchorOn, findRestarts, flattenWords, joinFragment, joinsPlacedByCuts, normalizeTranscriptToken, sameJoin,
+  SILENCE_LEFT_SECONDS, versionJoins, type JoinEdges, type JoinFragment, type JoinHearing, type SaidWord, type SilenceLeft, type Task } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { acousticWordReader } from "../transcribe/acousticWords.js";
 import { EmissionFile } from "../transcribe/emissions.js";
@@ -194,10 +194,11 @@ function silencesLeft(spoken: Heard[]): SilenceLeft[] {
 }
 
 /**
- * The joins that took words out of a sentence, each with what the edit plays either side of it (joinFragment). Read from
- * the transcript and the pieces alone, so it needs no audio: a recording whose sound can't be read is still listed.
+ * The joins that took words out of a sentence, each with what the edit plays either side of it (joinFragment), but for
+ * the ones the dialogue cut tool placed. Read from the transcript and the pieces alone, so it needs no audio: a
+ * recording whose sound can't be read is still listed.
  */
-function dividedSentences(ctx: Ctx, project: Project, parts: Placement[]): JoinFragment[] {
+function dividedSentences(ctx: Ctx, project: Project, parts: Placement[], placedByCuts: readonly JoinEdges[]): JoinFragment[] {
   const transcripts = new Map<string, SaidWord[] | null>();
   const wordsOf = (mediaId: string) => {
     if (!transcripts.has(mediaId)) {
@@ -232,6 +233,8 @@ function dividedSentences(ctx: Ctx, project: Project, parts: Placement[]): JoinF
       // one further on in it. A part the scope cut short ends where the scope does, not at a join.
       if (a.clip.mediaId !== b.clip.mediaId || Math.abs(bStart - aEnd) > .2 || b.source.start - a.source.end < 1e-3) continue;
       if (Math.abs(a.source.end - a.clip.sourceOut) >= 1e-3 || Math.abs(b.source.start - b.clip.sourceIn) >= 1e-3) continue;
+      // A join the dialogue cut tool placed took out the words the pass named, and the tool reported what it left.
+      if (placedByCuts.some(j => sameJoin(j, { mediaId: a.clip.mediaId, out: a.source.end, in: b.source.start }))) continue;
       const words = wordsOf(a.clip.mediaId);
       const evidence = words && joinFragment(words, a.source.end, b.source.start, a.source.start, b.source.end);
       if (!evidence) continue;
@@ -241,6 +244,34 @@ function dividedSentences(ctx: Ctx, project: Project, parts: Placement[]): JoinF
     }
   }
   return found.sort((a, b) => a.at - b.at);
+}
+
+/** A version's joins don't change. Kept by project and version, so each version is read once however often a pass checks. */
+const joinsOfVersion = new Map<string, JoinEdges[]>();
+
+/**
+ * The joins of `tl` that a dialogue cut placed (joinsPlacedByCuts), read from the versions that led to it and the
+ * change that saved each. A version outside the saved history has none: every join it divides a sentence at is listed.
+ */
+function cutToolJoins(ctx: Ctx, project: Project, tl: Timeline): JoinEdges[] {
+  const links = new Map(ctx.repos.versions.links(project.id).map(link => [link.version, link]));
+  const history: Array<{ joins: JoinEdges[]; byCutTool: boolean }> = [];
+  const seen = new Set<string>();
+  for (let version: string | null = tl.version; version && links.has(version) && !seen.has(version); version = links.get(version)!.parent) {
+    seen.add(version);
+    const key = `${project.id}:${version}`;
+    let joins = joinsOfVersion.get(key);
+    if (!joins) {
+      const saved = version === tl.version ? tl : ctx.repos.versions.get(project.id, version)?.timeline;
+      if (!saved) break;
+      joins = versionJoins(saved);
+      if (joinsOfVersion.size > 4000) joinsOfVersion.clear();
+      joinsOfVersion.set(key, joins);
+    }
+    const changeId = links.get(version)!.changeId;
+    history.unshift({ joins, byCutTool: !!changeId && !!ctx.repos.changes.get(changeId)?.cutReasons?.length });
+  }
+  return joinsPlacedByCuts(history);
 }
 
 function clipById(tl: Timeline, id: string) {
@@ -381,5 +412,5 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
       entry.at.add(at);
     }
   }
-  return { version: tl.version, repeats, silences, fragments: dividedSentences(ctx, project, parts), unavailable, joins, unheardJoins: [...unheard.values()] };
+  return { version: tl.version, repeats, silences, fragments: dividedSentences(ctx, project, parts, cutToolJoins(ctx, project, tl)), unavailable, joins, unheardJoins: [...unheard.values()] };
 }

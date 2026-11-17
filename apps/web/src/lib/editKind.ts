@@ -12,7 +12,7 @@ export function editKindWord(edit: Pick<ThreadEdit, "kind">): string | undefined
 }
 
 /** The card shows why Scarlet made the edit and what to check. */
-export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker" | "todo">, reviewFirst = false): string {
+export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker" | "todo" | "reviewSays">, reviewFirst = false): string {
   // A marker changed nothing the editor sees or hears: what it asks of them is the point, so it comes first. A revision
   // only says it was revised, so what the marker asks is kept apart from it.
   const todo = edit.marker ? edit.todo ?? (edit.check !== REVISED_CHECK ? edit.check : undefined) : undefined;
@@ -21,10 +21,12 @@ export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | 
     if (!why) return todo;
     return said(why, todo) ? why : `${todo.replace(/[.!?]*$/, ".")} ${why.replace(/[.!?]*$/, ".")}`;
   }
-  // A located review starts with what the editor should look for in the passage.
+  // A located review starts with what the editor should look for in the passage. The card says where that passage is
+  // now, so times the words gave in an older clock are left out.
   if (reviewFirst && edit.check) {
     const why = edit.reason || edit.summary || edit.label;
-    return said(why, edit.check) ? why : `${endSentence(edit.check)} ${endSentence(why)}`;
+    const look = edit.reviewSays || edit.check;
+    return said(why, look) ? why : `${endSentence(look)} ${endSentence(why)}`;
   }
   if (edit.reason) {
     if (!edit.check || edit.reason.includes(edit.check)) return edit.reason;

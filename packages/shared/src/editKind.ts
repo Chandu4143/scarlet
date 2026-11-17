@@ -255,7 +255,14 @@ export function classifyEdits(change: Change, ranges: TimeRange[], clocks: Clock
   let found: { verdict: Verdict; here: Placed[] }[];
   if (ranges.length <= 1 || !facets.length) {
     const whole = verdict(facets, true);
-    found = ranges.map(() => whole);
+    // A save of the whole video has no steps to place, so what it did is read from how much longer or shorter it left
+    // the cut. That is the doing of the edits where the video changed, not of every edit it names: on Matt's pass a
+    // save that lengthened one pickup at 9:05 also named "Pricing and model names", a passage it left as it was, and
+    // the card called that passage "Added" (2026-11-16). Where the change says nothing looks or sounds different, an
+    // edit it names changed nothing a word names.
+    const changed = !facets.length && ranges.length > 1 && change.ranges?.length ? change.ranges : undefined;
+    const still = { verdict: "other" as const, here: [] as Placed[] };
+    found = ranges.map(range => !changed || changed.some(c => c.start <= range.end + 0.5 && c.end >= range.start - 0.5) ? whole : still);
   } else {
     const anywhere = facets.filter(f => !f.range);
     const unplaced = anywhere.length ? verdict(anywhere) : { verdict: "other" as const, here: [] };

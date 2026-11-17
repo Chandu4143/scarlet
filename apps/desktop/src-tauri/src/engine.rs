@@ -31,7 +31,7 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, Notify};
 
 use crate::config::Paths;
-use crate::util::{child_env, hide_console, lossy_lines, split_command_line};
+use crate::util::{child_env, engine_env, hide_console, lossy_lines, split_command_line};
 
 pub const READY_PREFIX: &str = "SCARLET_READY";
 
@@ -500,7 +500,10 @@ impl EngineManager {
     }
 
     async fn run_once(&self, launch: &EngineLaunch, generation: u64) -> Result<()> {
-        let mut env = child_env(&self.paths.home);
+        let mut env = engine_env(&self.paths.home);
+        // Node's 4 default threads serve every file read, stat and streamed range, so a playing video
+        // and a cache scan queue behind each other. Respect a value the user set.
+        env.entry("UV_THREADPOOL_SIZE".into()).or_insert_with(|| "16".into());
         crate::crisper::set_adapter_env(&mut env, self.paths.resource_dir.as_deref(), tauri::is_dev());
         if let Some(res) = &self.paths.resource_dir {
             let bin = res.join("bin");

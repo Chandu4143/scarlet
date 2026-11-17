@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import { DELIVERY_AUDIO_REVISION, lutFileStamps, PROXY_CLOCK_REVISION, RENDER_REVISION, segmentKey, snapRange, usesRevisedProxyClock } from "@scarlet/render";
 import type { Render, RenderKind } from "@scarlet/shared";
-import { clipEnd, intervalCandidates, newId, planTransitions, sha256, stableStringify, timelineDuration, type Clip, type Project, type Timeline, type TimeRange, type TransitionJoin } from "@scarlet/timeline";
+import { clipEnd, intervalCandidates, newId, planPlaybackSegments, planTransitions, sha256, spanningSections, stableStringify, timelineDuration, type Clip, type Project, type Timeline, type TimeRange, type TransitionJoin } from "@scarlet/timeline";
 import { engineIsAlive, type Ctx } from "../context.js";
 import { conflict, HttpError } from "../errors.js";
 import { now } from "../db.js";
@@ -43,6 +43,8 @@ interface RenderVersion {
    */
   joins?: { key: string; overlapping: (start: number, end: number) => TransitionJoin[] };
   windows: Map<string, { timeline: Timeline; sourceIds: Set<string> }>;
+  /** The version's playback sections at a frame rate. Empty when the timeline is past the planning limits. */
+  sections?: { fps: number; ranges: TimeRange[] };
 }
 
 /**
@@ -266,11 +268,30 @@ export class RenderQueue {
     }
     const entry: RenderVersion = { timeline, duration: timelineDuration(timeline), sourceIds, hasLut, hasTransitions, fullKeys: new Map(), windows: new Map() };
     // A proposal can enqueue a new version within its own database transaction.
+    // Reviewing a cut plays the working cut, the call's version and the one before it in turn: keep all of them planned.
     this.ctx.db.afterCommit(() => {
       this.versions.set(key, entry);
-      if (this.versions.size > 2) this.versions.delete(this.versions.keys().next().value!);
+      if (this.versions.size > 4) this.versions.delete(this.versions.keys().next().value!);
     });
     return entry;
+  }
+
+  private sections(entry: RenderVersion, project: Pick<Project, "settings">): TimeRange[] {
+    const fps = project.settings.fps;
+    if (entry.sections?.fps !== fps) {
+      let ranges: TimeRange[] = [];
+      try { ranges = planPlaybackSegments(project, entry.timeline); } catch { /* Too long to plan: no file is assembled from sections. */ }
+      entry.sections = { fps, ranges };
+    }
+    return entry.sections.ranges;
+  }
+
+  /**
+   * A cut's playback window widened to whole playback sections. Its file is then assembled from the sections the full
+   * preview and the cut player cache, so a window beside one already played encodes only the sections around its join.
+   */
+  sectionWindow(project: Pick<Project, "id" | "settings">, version: string, range: TimeRange): TimeRange {
+    return spanningSections(this.sections(this.version({ id: project.id, head: null }, version), project), range) ?? range;
   }
 
   /** The clips a transition joins inside `range`, both sides of each join, wherever those clips start or end. */
@@ -731,7 +752,18 @@ export class RenderQueue {
         await this.ctx.render.renderPlaybackSegment(project, timeline, render.range, this.ctx.paths.segments(project.id), output, opts);
       } else {
         const range = render.range ?? { start: 0, end: timelineDuration(timeline) };
-        await this.ctx.render.renderRange(project, timeline, range, output, opts);
+        const sections = render.kind === "segment" && (render.quality ?? "preview") === "preview" && render.range
+          ? spanningSections(this.sections(entry, project), range) : undefined;
+        // A preview window on whole sections is assembled from the section cache: only what isn't cached is encoded.
+        const assembled = sections && Math.abs(sections.start - range.start) < 1e-6 && Math.abs(sections.end - range.end) < 1e-6 &&
+          await this.ctx.render.renderFullCached(project, timeline, this.ctx.paths.segments(project.id), output,
+            { ...opts, exportRange: sections, concurrency: 1 }).then(() => true, (error: unknown) => {
+            if (signal.aborted) throw error;
+            this.ctx.log(`[render] ${id} couldn’t assemble its window from sections, rendering it whole: ${clip(error instanceof Error ? error.message : String(error), 300)}`);
+            rmSync(output, { force: true });
+            return false;
+          });
+        if (!assembled) await this.ctx.render.renderRange(project, timeline, range, output, opts);
       }
       if (signal.aborted) return;
       if (queuedKey) {

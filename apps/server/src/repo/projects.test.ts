@@ -123,3 +123,34 @@ it("sends how long each project's video runs with the library, and works out a h
   repos.projects.update(fresh.id, { head: "ver_gone" });
   expect(lengths()).toEqual({ Cut: 1002, Fresh: undefined });
 });
+
+it("keeps a project's threads until one of its edits, requests or notes changes, and only what committed", () => {
+  const project = repos.projects.insert(createProject("Interview"));
+  const task = (id: string, fields: Record<string, unknown> = {}) => repos.tasks.put(Task.parse({ id, projectId: project.id, kind: "edit", agent: "claude",
+    instruction: "Tighten the intro", state: "done", createdBy: { type: "human", name: "Editor" }, createdAt: new Date(0).toISOString(), ...fields }));
+  task("first");
+  const threads = repos.projects.threads(project.id);
+  expect(threads.map(t => t.id)).toEqual(["first"]);
+  const reads = vi.spyOn(db, "prepare");
+  expect(repos.projects.threads(project.id)).toBe(threads);
+  expect(reads.mock.calls.filter(([sql]) => /FROM (changes|tasks|notes)\b/.test(sql))).toEqual([]);
+  reads.mockRestore();
+
+  // A request saved inside a transaction is seen there, and isn't kept when the transaction rolls back.
+  expect(() => db.transaction(() => {
+    task("second", { createdAt: new Date(1000).toISOString() });
+    expect(repos.projects.threads(project.id).map(t => t.id)).toEqual(["first", "second"]);
+    throw Error("rollback");
+  })()).toThrow("rollback");
+  expect(repos.projects.threads(project.id).map(t => t.id)).toEqual(["first"]);
+
+  // Another engine's write, made in SQL, counts as well.
+  db.prepare("UPDATE tasks SET json = json_set(json, '$.instruction', 'Tighten the outro') WHERE id = 'first'").run();
+  expect(repos.projects.threads(project.id)[0]!.title).toContain("outro");
+  task("second", { createdAt: new Date(1000).toISOString() });
+  expect(repos.projects.threads(project.id).map(t => t.id)).toEqual(["first", "second"]);
+  // A transcription isn't a request, and leaves the threads as they were.
+  const kept = repos.projects.threads(project.id);
+  task("words", { kind: "transcribe", agent: "api", createdAt: new Date(2000).toISOString() });
+  expect(repos.projects.threads(project.id)).toBe(kept);
+});

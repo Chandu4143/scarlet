@@ -4,7 +4,7 @@ import syncFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyOps, createProject, makeMediaClip, planPlaybackSegments, planSegments, timelineFromKeepRanges } from "@scarlet/timeline";
+import { applyOps, createProject, makeMediaClip, planPlaybackSegments, planSegments, spanningSections, timelineFromKeepRanges } from "@scarlet/timeline";
 import type { MediaClip, Project, Timeline } from "@scarlet/timeline";
 import * as ffmpeg from "./exec.js";
 import {
@@ -2180,3 +2180,37 @@ it("expands quiet dialogue downward while leaving a loud passage at unity", asyn
   expect(stdout.readFloatLE(24000 * 4)).toBeCloseTo(0.001 * 10 ** (-12 / 20), 5);
   expect(stdout.readFloatLE(72000 * 4)).toBeCloseTo(0.5, 4);
 });
+
+it("assembles a cut's preview window from cached playback sections and encodes only the sections a cut changed", async () => {
+  const project = createProject("Windows", { width: 320, height: 180, fps: 30, aspect: "custom" });
+  // A source with its content hash, as an imported recording has: its sections are keyed by footage, not placement.
+  project.media.push({ id: "m1", kind: "video", name: "src.mp4", path: "src.mp4", hash: "window-source", duration: 10, fps: 30, width: 320, height: 180, hasAudio: true });
+  const before = timelineFromKeepRanges(project.id, "m1", [{ start: 0, end: 10 }, { start: 0, end: 10 }]);
+  // One second out of the second take, 15–16 s into the video.
+  const after = timelineFromKeepRanges(project.id, "m1", [{ start: 0, end: 10 }, { start: 0, end: 5 }, { start: 6, end: 10 }]);
+  const cache = path.join(dir, "window-cache");
+  const opts = { mediaRoot: dir, quality: "preview" as const, height: 180 };
+  const window = (timeline: Timeline, start: number, end: number) => spanningSections(planPlaybackSegments(project, timeline), { start, end })!;
+  const render = (timeline: Timeline, range: { start: number; end: number }, name: string) =>
+    renderFullCached(project, timeline, cache, path.join(dir, name), { ...opts, exportRange: range });
+
+  const first = window(before, 5, 9);
+  expect(first).toEqual({ start: 4, end: 14 });
+  const played = await render(before, first, "window-1.mp4");
+  expect([played.rendered, played.reused]).toEqual([2, 0]);
+  // The next window shares a section with the one before it.
+  const next = await render(before, window(before, 9, 16), "window-2.mp4");
+  expect([next.rendered, next.reused]).toEqual([1, 1]);
+  // After the cut, the section before the join covers the same footage and is copied. Only the join's is encoded.
+  const join = window(after, 12, 16);
+  expect(join).toEqual({ start: 8, end: 19 });
+  const cut = await render(after, join, "window-3.mp4");
+  expect([cut.rendered, cut.reused]).toEqual([1, 1]);
+  const file = path.join(dir, "window-3.mp4");
+  const frames = Number((await runCapture("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0",
+    "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", file])).stdout.toString().trim());
+  expect(frames).toBe(11 * 30);
+  // The sound runs the length of the window across the copied and the encoded section.
+  const sound = await runCapture("ffmpeg", ["-v", "error", "-i", file, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"]);
+  expect(Math.abs(sound.stdout.length / 2 - 11 * 48000)).toBeLessThan(48000 * 0.05);
+}, 60_000);

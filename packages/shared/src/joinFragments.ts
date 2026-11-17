@@ -84,3 +84,48 @@ export function joinFragment(words: readonly SaidWord[], out: number, inn: numbe
     removedEnd: removed > FRAGMENT_CONTEXT_WORDS ? text(Math.max(firstRemoved + FRAGMENT_CONTEXT_WORDS, firstKept - FRAGMENT_CONTEXT_WORDS), firstKept) : "",
     split, lastWord: words[lastKept]?.index ?? lastKept, firstWord: words[firstKept]?.index ?? firstKept };
 }
+
+/** Where one piece of a recording ends and the next piece of it begins: a join, by its two places in the recording. */
+export interface JoinEdges { mediaId: string; out: number; in: number }
+type Pieces = { tracks: ReadonlyArray<{ clips: ReadonlyArray<{ kind: string; mediaId?: string; enabled?: boolean; timelineIn: number; sourceIn?: number; sourceOut?: number; speed?: number }> }> };
+
+/** Every join a version plays: touching or crossfaded pieces of one recording, the later one further on in it. */
+export function versionJoins(timeline: Pieces): JoinEdges[] {
+  const found: JoinEdges[] = [];
+  for (const track of timeline.tracks) {
+    const clips = track.clips.filter(c => c.kind === "media" && c.enabled !== false && c.mediaId !== undefined && c.sourceIn !== undefined && c.sourceOut !== undefined)
+      .slice().sort((a, b) => a.timelineIn - b.timelineIn);
+    for (let i = 1; i < clips.length; i++) {
+      const a = clips[i - 1]!, b = clips[i]!;
+      const aEnd = a.timelineIn + (a.sourceOut! - a.sourceIn!) / (a.speed ?? 1);
+      if (a.mediaId !== b.mediaId || Math.abs(b.timelineIn - aEnd) > .2 || b.sourceIn! - a.sourceOut! < 1e-3) continue;
+      found.push({ mediaId: a.mediaId!, out: a.sourceOut!, in: b.sourceIn! });
+    }
+  }
+  return found;
+}
+
+/** Two frames at 30 a second: a join whose edges moved less than this, as when a crossfade is laid over it, is the same join. */
+export const SAME_JOIN_SECONDS = 0.07;
+export const sameJoin = (a: JoinEdges, b: JoinEdges, within = SAME_JOIN_SECONDS) =>
+  a.mediaId === b.mediaId && Math.abs(a.out - b.out) <= within && Math.abs(a.in - b.in) <= within;
+
+/**
+ * The joins of the last version in `history` that the dialogue cut tool placed. `history` is a video's versions from
+ * the first to the current one, each with its joins and whether the change that saved it was a dialogue cut. A join is
+ * its maker's for as long as later versions leave it where it is; one a later change moves is that change's.
+ *
+ * The cut tool takes the words the model names and reports what the cut leaves. A pass that cuts through it leaves
+ * few divided sentences, and reading them all cost a third more time for nothing found (2026-11-16). The joins a pass
+ * makes by rewriting the timeline or by a ripple of its own have had no such reading: those are the ones to list.
+ */
+export function joinsPlacedByCuts(history: ReadonlyArray<{ joins: readonly JoinEdges[]; byCutTool: boolean }>, within = SAME_JOIN_SECONDS): JoinEdges[] {
+  let before: Array<JoinEdges & { placed: boolean }> = [];
+  for (const version of history) {
+    before = version.joins.map(join => {
+      const earlier = before.find(e => sameJoin(e, join, within));
+      return { ...join, placed: earlier ? earlier.placed : version.byCutTool };
+    });
+  }
+  return before.filter(j => j.placed).map(({ placed: _placed, ...join }) => join);
+}

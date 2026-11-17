@@ -391,6 +391,26 @@ describe("sound_picture", () => {
       expect(sent("/projects/prj_test/source-audio").at(-1)!.body).toEqual({ mediaId: "m1", from: 0.4, to: 1.45 });
     } finally { await listening.close(); }
   });
+
+  it("draws the same passage on several recordings in one call, each after its own line", async () => {
+    const layout = { width: 1280, height: 384, pixelsPerSecond: 320, rows: [{ shows: "recorded", top: 0, bottom: 384, left: 0, right: 1280, seconds: 4 }] };
+    mock.state.extra = (req, res) => req.path !== "/projects/prj_test/sound-picture" ? false
+      : (req.body as { mediaId: string }).mediaId === "gone" ? reply(res, { error: { code: "not_found", message: "media not found" } }, 404)
+      : reply(res, { jpeg: `/9j/${(req.body as { mediaId: string }).mediaId}`, layout });
+    mock.state.transcripts = { m1: transcript };
+    const seeing = await connect();
+    try {
+      const r = await ok(seeing, "sound_picture", { mediaIds: ["m1", "m2", "gone"], from: 1, to: 5 });
+      expect(r.content.map(c => c.type)).toEqual(["text", "image", "text", "image", "text"]);
+      expect(r.content[1]).toMatchObject({ data: "/9j/m1" });
+      expect(r.content[2]).toEqual({ type: "text", text: JSON.stringify({ mediaId: "m2", from: 1, to: 5, ...layout }) });
+      expect(r.content[3]).toMatchObject({ data: "/9j/m2" });
+      expect(JSON.parse((r.content[4] as { text: string }).text)).toEqual({ mediaId: "gone", error: expect.stringContaining("media not found") });
+      expect(sent("/projects/prj_test/sound-picture").map(req => (req.body as { mediaId: string }).mediaId).sort()).toEqual(["gone", "m1", "m2"]);
+      // Up to four pictures come in one call.
+      expect((await call(seeing, "sound_picture", { mediaIds: ["m1", "m2", "m3", "m4", "m5"], from: 1, to: 5 })).isError).toBe(true);
+    } finally { await seeing.close(); }
+  });
 });
 
 describe("review notes", () => {

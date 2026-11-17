@@ -225,13 +225,16 @@ export function createApp(options: ServerOptions): ScarletApp {
   // Below that, every request that changed something, failed or was slow gets a line: what the window or an agent
   // asked for, whether it worked, and the engine's reason when it didn't. Quick reads and routine writes don't.
   const repeats = new Map<string, { at: number; more: number }>();
+  const inFlight = watchEventLoop(ctx);
   api.use("*", async (c, next) => {
     const started = Date.now();
     const request = requestLogId(c.req.raw);
     const route = () => matchedRoutes(c).findLast(r => /^\/api(?:\/(?:[a-z0-9.-]+|:[a-z][a-z0-9]*))+$/i.test(r.path))?.path ?? "unmatched";
     startFileLog(c.req.raw, line => ctx.log(line), route);
     c.header(REQUEST_ID_HEADER, request);
-    await next();
+    const flight = { method: c.req.method, route };
+    inFlight.add(flight);
+    try { await next(); } finally { inFlight.delete(flight); }
     const ms = Date.now() - started;
     const { method, path } = c.req;
     const status = c.res.status;
@@ -306,4 +309,28 @@ export function createApp(options: ServerOptions): ScarletApp {
   app.get("/health", (c) => c.json({ ok: true }));
 
   return { app, ctx };
+}
+
+/** The engine's thread held this long by one piece of work is logged: every request waits behind it. */
+const STALL_MS = 250;
+const STALL_TICK_MS = 100;
+
+/**
+ * Log each time the engine's only JavaScript thread was blocked for STALL_MS or more, with the requests that were in
+ * flight. The `[http]` timer starts when a request is picked up, so time spent queued behind a blocked thread shows
+ * nowhere else.
+ */
+function watchEventLoop(ctx: Ctx) {
+  const inFlight = new Set<{ method: string; route: () => string }>();
+  let expected = Date.now() + STALL_TICK_MS;
+  const timer = setInterval(() => {
+    const now = Date.now(), late = now - expected;
+    expected = now + STALL_TICK_MS;
+    if (late < STALL_MS) return;
+    const routes = [...inFlight].slice(0, 8).map(f => `${f.method} ${f.route()}`);
+    ctx.log(`[stall] blocked ${late} ms${routes.length ? `; in flight: ${routes.join(", ")}${inFlight.size > routes.length ? ` and ${inFlight.size - routes.length} more` : ""}` : ""}`);
+  }, STALL_TICK_MS);
+  timer.unref();
+  ctx.shutdown.addEventListener("abort", () => clearInterval(timer), { once: true });
+  return inFlight;
 }

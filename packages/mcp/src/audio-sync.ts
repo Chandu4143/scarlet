@@ -143,3 +143,89 @@ export function matchAudio(reference: number[], secondary: number[]) {
   }
   return result(matches);
 }
+
+/** One passage of the secondary recording found in the reference: `at` in secondary seconds, `offset` as matchAudio's. */
+export interface SyncPoint { at: number; offset: number }
+
+export type SyncFit =
+  | { kind: "constant"; offset: number }
+  /** The offset grows steadily: the secondary's clock runs at a different rate (a variable frame rate recording, a camera's own clock). */
+  | { kind: "drift"; offsetAtStart: number; msPerMinute: number; secondarySpeed: number }
+  /** The offset holds, then jumps: a dropout or a pause in one recording. Each part is in secondary seconds; a jump lies between one part's `to` and the next part's `from`. */
+  | { kind: "steps"; parts: Array<{ from: number; to: number; offset: number; points: number }> }
+  | { kind: "unclear"; reason: string };
+
+/** Matched passages are 20 ms buckets apart at best; a slip of 1.5 buckets is the smallest this tells from noise. */
+const TOLERANCE = 1.5 / syncRate;
+
+/** Find passages of the secondary across its whole length in the reference, each searched near the last offset first. */
+export function syncPoints(reference: number[], secondary: number[], spacingSeconds = 30): SyncPoint[] {
+  const width = Math.min(150, Math.floor(Math.min(reference.length, secondary.length) / 3));
+  if (width < 30) return [];
+  const full = indexRecording(reference, width);
+  const radius = 5 * syncRate;
+  const spacing = Math.max(width, Math.round(spacingSeconds * syncRate));
+  const points: SyncPoint[] = [];
+  let last: number | undefined;
+  for (let start = 0; start + width <= secondary.length; start += spacing) {
+    const window = secondary.slice(start, start + width);
+    let found: number | undefined;
+    if (last !== undefined) {
+      const from = Math.max(0, start + last - radius);
+      const slice = reference.slice(from, Math.min(reference.length, start + last + radius + width));
+      if (slice.length >= width) {
+        const near = locate(window, indexRecording(slice, width));
+        if (near !== undefined) found = from + near;
+      }
+    }
+    found ??= locate(window, full);
+    if (found === undefined) continue;
+    last = found - start;
+    points.push({ at: start / syncRate, offset: last / syncRate });
+  }
+  return points;
+}
+
+const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Describe how the offset behaves across the recording: constant, a steady drift, or jumps between steady parts. */
+export function fitSync(found: SyncPoint[]): SyncFit & { mismatched?: number } {
+  // A passage that agrees with neither neighbour matched the wrong place: a sound that happens twice, or noise.
+  const points = found.filter((p, i) => [found[i - 1], found[i + 1]].some(q => q && Math.abs(q.offset - p.offset) <= 2 * TOLERANCE));
+  const mismatched = found.length - points.length;
+  const fit = fitPoints(points);
+  return mismatched ? { ...fit, mismatched } : fit;
+}
+
+function fitPoints(points: SyncPoint[]): SyncFit {
+  if (points.length < 2) return { kind: "unclear", reason: points.length ? "Only one passage matched." : "No passage matched." };
+  const offsets = points.map(p => p.offset);
+  if (Math.max(...offsets) - Math.min(...offsets) <= 2 / syncRate) return { kind: "constant", offset: round3(median(offsets)) };
+
+  // A straight line through every point: least squares, then the worst point's distance from it.
+  const n = points.length;
+  const meanAt = points.reduce((s, p) => s + p.at, 0) / n, meanOffset = offsets.reduce((s, o) => s + o, 0) / n;
+  const spread = points.reduce((s, p) => s + (p.at - meanAt) ** 2, 0);
+  if (n >= 3 && spread > 0) {
+    const slope = points.reduce((s, p) => s + (p.at - meanAt) * (p.offset - meanOffset), 0) / spread;
+    const intercept = meanOffset - slope * meanAt;
+    if (points.every(p => Math.abs(intercept + slope * p.at - p.offset) <= TOLERANCE)) {
+      return { kind: "drift", offsetAtStart: round3(intercept), msPerMinute: Math.round(slope * 60_000 * 10) / 10,
+        secondarySpeed: Math.round(1e6 / (1 + slope)) / 1e6 };
+    }
+  }
+
+  // Runs of agreeing points.
+  const runs: SyncPoint[][] = [];
+  for (const p of points) {
+    const run = runs.at(-1);
+    if (run && Math.abs(p.offset - median(run.map(q => q.offset))) <= TOLERANCE) run.push(p);
+    else runs.push([p]);
+  }
+  const steady = runs.filter(r => r.length >= 2);
+  if (steady.length >= 2 && steady.length <= 4 && steady.length === runs.length) {
+    return { kind: "steps", parts: steady.map(r => ({ from: r[0]!.at, to: r.at(-1)!.at, offset: round3(median(r.map(q => q.offset))), points: r.length })) };
+  }
+  return { kind: "unclear", reason: "The matched passages disagree without a steady drift or a few steady parts." };
+}

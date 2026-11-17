@@ -5,7 +5,7 @@ import { recoverSourcePreviews } from "../services/sourcePreviews.js";
 import { withActivity } from "../services/projectActivity.js";
 import { holdProjectEditing, resumeProjectEditing, resumeProjectTranscriptions } from "../services/taskRecovery.js";
 import { Hono } from "hono";
-import { buildThreads, EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
+import { EditReviewRequest, threadTimeline, threadRevision, ThreadDisposition, CreateProjectRequest, MakeShortsRequest, ShortsPlanRequest, UpdateProjectRequest, type ProjectDetail } from "@scarlet/shared";
 import { makeShorts, planShorts } from "../services/shorts.js";
 import { createProject, hasInitialTimeline } from "@scarlet/timeline";
 import type { AppEnv } from "../auth.js";
@@ -77,11 +77,7 @@ export function projectRoutes(ctx: Ctx) {
   });
 
   function projectThread(projectId: string, id: string) {
-    const thread = buildThreads({
-      changes: ctx.repos.changes.select("project_id = ?", [projectId]),
-      tasks: ctx.repos.tasks.select("project_id = ? AND kind != 'transcribe'", [projectId]),
-      notes: ctx.repos.notes.select("project_id = ? AND json_extract(json, '$.changeId') IS NOT NULL", [projectId]),
-    }).find(t => t.id === id);
+    const thread = ctx.repos.projects.threads(projectId).find(t => t.id === id);
     if (!thread) throw notFound("thread");
     return thread;
   }

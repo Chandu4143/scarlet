@@ -104,3 +104,20 @@ it("releases an event-based status wait on cancellation and reads peer-owned wor
     expect(ctx.bus.listenerCount("ws")).toBe(before);
   } finally { await ctx.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+it("keeps a long recording's transcript read, rather than reading it whole again for every page", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scarlet-long-transcript-"));
+  const { ctx } = createApp({ dataDir: dir, env: {}, log() {} });
+  try {
+    const project = ctx.repos.projects.insert(createProject("Long"));
+    const media = ctx.repos.projects.putMedia(project.id, { id: "mic", path: "mic.wav", kind: "audio", name: "Mic", transcriptId: "t" }, "ready");
+    // About as long, saved, as the words of two and a half hours of talk.
+    const segments = Array.from({ length: 2000 }, (_, i) => ({ id: `s${i}`, start: i, end: i + 1, text: "word ".repeat(800), words: [] }));
+    ctx.repos.transcripts.put({ id: "t", mediaId: media.id, projectId: project.id, segments });
+    const reader = transcriptReader(ctx);
+    const read = () => reader.read({ ...media, projectId: project.id }, null, null, false);
+    const first = read();
+    expect(first?.segments).toHaveLength(2000);
+    expect(read()).toBe(first);
+  } finally { await ctx.close(); await rm(dir, { recursive: true, force: true }); }
+});

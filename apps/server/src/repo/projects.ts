@@ -1,5 +1,5 @@
 import { MediaAsset, Project, ProjectSettings, StyleGuide, Timeline, timelineDuration, type Change, type Note } from "@scarlet/timeline";
-import { countReviewDecisions, type ProjectSummary, type Task } from "@scarlet/shared";
+import { buildThreads, countReviewDecisions, type ProjectSummary, type Task, type Thread } from "@scarlet/shared";
 import { now, type Db } from "../db.js";
 import type { JsonStore } from "./store.js";
 
@@ -45,7 +45,39 @@ interface MediaRow {
 
 export class ProjectsRepo {
   private readonly reviewCounts = new Map<string, { revision: number; count: number }>();
+  private readonly builtThreads = new Map<string, { revision: number; threads: readonly Thread[] }>();
   constructor(private readonly db: Db, private readonly review: { changes: JsonStore<Change>; tasks: JsonStore<Task>; notes: JsonStore<Note> }) {}
+
+  /**
+   * The project's requests as its chat groups them. One thread is found only by linking every edit, request and note
+   * of the project, so the list is kept until one of them changes: review_revision counts those writes, made by any
+   * engine. The threads are shared between readers, which don't change them.
+   */
+  threads(projectId: string): readonly Thread[] {
+    const read = () => {
+      const row = this.db.prepare("SELECT review_revision AS revision FROM projects WHERE id = ?").get(projectId) as { revision: number } | undefined;
+      const cached = this.builtThreads.get(projectId);
+      if (row && cached?.revision === row.revision) {
+        this.builtThreads.delete(projectId);
+        this.builtThreads.set(projectId, cached);
+        return cached.threads;
+      }
+      const threads = buildThreads({
+        changes: this.review.changes.select("project_id = ?", [projectId]),
+        tasks: this.review.tasks.select("project_id = ? AND kind != 'transcribe'", [projectId]),
+        notes: this.review.notes.select("project_id = ? AND json_extract(json, '$.changeId') IS NOT NULL", [projectId]),
+      });
+      // What a transaction read is kept only once it commits: one that rolls back takes its writes, and their count, with it.
+      if (row) this.db.afterCommit(() => {
+        this.builtThreads.delete(projectId);
+        this.builtThreads.set(projectId, { revision: row.revision, threads });
+        if (this.builtThreads.size > 8) this.builtThreads.delete(this.builtThreads.keys().next().value!);
+      });
+      return threads;
+    };
+    // The count and the rows it counts are read in one snapshot.
+    return this.db.inTransaction ? read() : this.db.transaction(read)();
+  }
 
   private reviewCount(projectId: string, revision: number, completed: string): number {
     const cached = this.reviewCounts.get(projectId);
@@ -88,6 +120,7 @@ export class ProjectsRepo {
   /** Move to the trash (kept TRASH_DAYS, then purged). */
   softDelete(id: string) {
     this.reviewCounts.delete(id);
+    this.builtThreads.delete(id);
     this.db.prepare("UPDATE projects SET deleted_at = ? WHERE id = ?").run(now(), id);
   }
 
@@ -182,6 +215,7 @@ export class ProjectsRepo {
 
   remove(id: string) {
     this.reviewCounts.delete(id);
+    this.builtThreads.delete(id);
     this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   }
 

@@ -6,7 +6,10 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 16, 2026
 
-- Before a dialogue pass finishes, Scarlet rereads every cut that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.
+- Before a dialogue pass finishes, Scarlet rereads the cuts it made outside its dialogue cut tool that took words out of a sentence, and fixes a stray word or a sentence left without its start or its end.
+- An edit's card no longer has an Undo edit button. To put an edit back, open it and ask in the message box.
+- When Scarlet wants you to check part of an edit, its card has an amber Check tag that plays just that part, the timeline marks that part in amber, and an edit that changed nothing there no longer says Added.
+- Scarlet checks that your camera, screen and mic recordings stay in sync through its edit, and tells you when one doesn't.
 - Scarlet hears when you keep an edit it flagged, so a request still working doesn't ask you about it again.
 - Scarlet stays connected when you pause media processing while it’s caching a video.
 - The message box shows an edit’s time on its own and widens its tag to show the × on hover. Open +1 to see and clear an additional marked range.
