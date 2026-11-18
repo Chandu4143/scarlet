@@ -1,12 +1,12 @@
 import { toolAnnotations } from "@scarlet/mcp/annotations";
-import { beginRevision, DialogueScanPage, planText, taskNeedsTranscripts, taskPlan, taskRecoveryAction, type RunChoice, type Task } from "@scarlet/shared";
+import { beginRevision, closingCheckFailed, DialogueScanPage, planText, taskNeedsTranscripts, taskPlan, taskRecoveryAction, type RunChoice, type Task } from "@scarlet/shared";
 import os from "node:os";
 import { mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { processIsAlive, type Ctx } from "../context.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
 import { logId } from "../logText.js";
-import { appendTaskEvent, cancelTask, createTask, FINISHED_TASK, hasTranscript, PROJECT_EDIT_KINDS, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
+import { appendTaskEvent, cancelTask, createTask, FINISHED_TASK, hasTranscript, isDialoguePass, PROJECT_EDIT_KINDS, queueRepeatCheck, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { prepareCutReview } from "./changes.js";
 import { skillEditEnded, startLearningCheck } from "./learnings.js";
@@ -387,6 +387,18 @@ export function retryTask(ctx: Ctx, id: string, choice: RunChoice = {}): Task {
 function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}, afterProjectStop = false): Task {
   const id = task.id;
   if (task.retryTaskId) return ctx.repos.tasks.get(task.retryTaskId)!;
+  // The pass finished; only its closing check couldn't run. Retry runs that check again, as the same request, on the
+  // video as it plays now, with its full allowance of returns. A pass recorded as failed for this before the pass was
+  // kept as finished (2026-11-18) is picked up the same way, rather than starting the pass over.
+  const checkOnly = closingCheckFailed(task) || (task.state === "failed" && !task.interrupted && isDialoguePass(task) && !!task.reply && !!task.repeatAudit);
+  if (!afterProjectStop && checkOnly) {
+    const head = ctx.repos.projects.get(task.projectId)?.head;
+    if (!head) throw conflict("not_retryable", "This request cannot be retried.");
+    const run = choice.agent ? { agent: choice.agent, model: choice.model, effort: choice.effort, fast: choice.fast, serviceTier: choice.serviceTier } : {};
+    const queued = queueRepeatCheck(ctx, { ...task, ...run, repeatAudit: { ...task.repeatAudit!, returns: 0, failed: undefined } }, head);
+    ctx.log(`[task] ${id} closing check retried`);
+    return queued;
+  }
   const action = afterProjectStop ? "resume" : taskRecoveryAction(task, savedChanges(ctx, [task]).length > 0);
   if (!action) throw conflict("not_retryable", "This request cannot be retried.");
   const resumeRootId = action === "resume" ? task.resumeRootId ?? id : undefined;

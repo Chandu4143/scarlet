@@ -812,6 +812,8 @@ export const Task = z.object({
     /** Every audible passage in scope was checked and there were no repeats or joins to review. */
     noFindings: z.boolean().optional(),
     unavailable: z.array(z.string()).optional(), returns: z.number().int().nonnegative().default(0),
+    /** The pass had finished and the check it went back for couldn't run: why. The pass stands; Retry runs the check. */
+    failed: z.string().optional(),
   }).optional(),
   /** Change(s) produced. */
   changeIds: z.array(Id).default([]),
@@ -903,7 +905,15 @@ export function taskNeedsTranscripts(task: Task): boolean {
 export function taskRecoveryAction(task: Task, hasLinkedChange: boolean): "resume" | "retry" | undefined {
   if (task.kind === "transcribe" || task.resultSkillId) return;
   if (task.state === "cancelled" || taskWasStopped(task) || taskNeedsTranscripts(task)) return "resume";
+  if (closingCheckFailed(task)) return "retry";
   if (canRetryTask(task) && !hasLinkedChange) return task.resumeRootId ? "resume" : "retry";
+  // A run that failed after saving picks up where it left off, keeping what it saved.
+  if (task.state === "failed") return "resume";
+}
+
+/** A finished pass whose closing check for repeats couldn't run. The pass stands; Retry runs the check again. */
+export function closingCheckFailed(task: Task): boolean {
+  return task.state === "done" && !!task.repeatAudit?.failed;
 }
 
 /** The editor-selected destination available to a live skill authoring task. */

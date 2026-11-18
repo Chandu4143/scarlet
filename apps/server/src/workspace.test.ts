@@ -7,7 +7,7 @@ import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it as vitestIt, vi, onTestFinished } from "vitest";
 import { partedIt } from "../../../test/parts";
 import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
-import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, threadRevision, type Render, type Task } from "@scarlet/shared";
+import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, taskRecoveryAction, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
 import { seedSkillList } from "./services/skills.js";
@@ -3646,6 +3646,38 @@ it.each(["a1", "alternate"])("requires an audio check of the version that plays,
   expect((await api("POST", `/changes/${proposed.id}/approve`, { restoredCuts: [] })).status).toBe(200);
   expect(ctx.repos.projects.header(project.id)!.head).not.toBe(repaired);
   expect(ctx.repos.tasks.get(pass.id)).toMatchObject({ state: "done", repeatAudit: { version: repaired, returns: 1 } });
+});
+
+it("keeps a pass finished when its closing check can't run, and Retry runs the check again", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  const claim = async () => (await (await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id })).json()).task as Task;
+  await claim();
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20 }, "ready");
+  await micSpeech({ 30: "go|", 110: "go|" });
+  const version = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Assemble two takes", ops: [
+    { op: "addClip", trackId: "a1", clip: { id: "one", kind: "media", mediaId: "mic", sourceIn: 0, sourceOut: 1, timelineIn: 0 } },
+    { op: "addClip", trackId: "a1", clip: { id: "two", kind: "media", mediaId: "mic", sourceIn: 2, sourceOut: 8, timelineIn: 1 } },
+  ] }).change.toVersion;
+  const finished = await (await api("POST", `/tasks/${pass.id}/complete`, { state: "done", summary: "Saved a tighter first cut." })).json();
+  expect(finished.task).toMatchObject({ state: "queued", repeatAudit: { returns: 1 } });
+  await claim();
+  // 2026-11-18: the check's own session was refused sign-in. The pass's work and words stand.
+  const refused = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header";
+  const failed = (await (await api("POST", `/tasks/${pass.id}/complete`, { state: "failed", error: refused })).json()).task as Task;
+  expect(failed).toMatchObject({ state: "done", reply: "Saved a tighter first cut.", repeatAudit: { version, failed: refused } });
+  expect(failed.error).toBeUndefined();
+  expect(taskRecoveryAction(failed, true)).toBe("retry");
+  // Retry runs the check again as the same request, with its full allowance.
+  const retried = (await (await api("POST", `/tasks/${pass.id}/retry`, {})).json()).task as Task;
+  expect(retried).toMatchObject({ id: pass.id, state: "queued", reply: "Saved a tighter first cut.", repeatAudit: { version, returns: 1 } });
+  expect(retried.repeatAudit!.failed).toBeUndefined();
+  // A pass recorded as failed this way before is picked up the same way, not started over.
+  ctx.repos.tasks.put({ ...retried, state: "failed", error: refused, finishedAt: new Date().toISOString() });
+  const resumed = (await (await api("POST", `/tasks/${pass.id}/retry`, {})).json()).task as Task;
+  expect(resumed).toMatchObject({ id: pass.id, state: "queued", repeatAudit: { returns: 1 } });
+  expect(resumed.error).toBeUndefined();
 });
 
 it("holds a pass until each restart and long silence its edit still plays is cut or kept", async () => {
