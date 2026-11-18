@@ -4,6 +4,7 @@ import type { LoadedCase } from "./case.ts";
 import { reviewDecisions, reviewExport } from "./decisions.ts";
 import type { Engine, ReviewChangeExport, TaskRecord } from "./engine.ts";
 import { mediaEvidence, type StoredEvidence } from "./evidence.ts";
+import { loadMoments } from "./moments.ts";
 import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type LabeledRange, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
 import { scoreRun, type Score } from "./score.ts";
 import { audibleMediaIds, type MediaInfo } from "./timeline.ts";
@@ -202,6 +203,7 @@ function evaluateArtifacts(a: Artifacts, evidence: ReadonlyMap<string, MediaEvid
     plans: a.plans?.map(plan => ({ plan, timeline: a.timelines.get(plan.version)! })),
     timelineAt: v => a.timelines.get(v),
     evidence, reference, task: a.task, events: a.events, edgeOptions,
+    moments: opts.loaded?.dir ? loadMoments(opts.loaded.dir) : undefined,
   });
   return {
     schema: 1, kind: "task", generatedAt: new Date().toISOString(), taskId: a.task.id, projectId: a.projectId, caseId: opts.loaded?.file.id,

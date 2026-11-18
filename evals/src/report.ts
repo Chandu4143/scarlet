@@ -170,6 +170,7 @@ export function runMarkdown(title: string, rows: TrialRow[]): string {
   const keys = ["appliedSeconds", "reviewSeconds", "appliedSpeechEdges", "reviewSpeechEdges", "clippedWordsOnSound", "needsYourCall", "heldByScarlet", "stagedWaiting", "gapsLeft", "looseJoins",
     "deadAirSeconds", "recommendedDeadAirSeconds", "recommendedLooseJoins", "restartsLeft", "silencesLeft", "dividedJoins", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
     "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "activeMinutes", "tokens"];
+  if (rows.some(r => typeof r.headline?.momentsRight === "number")) keys.push("momentsRight", "momentsAsked", "momentsWrong");
   if (rows.some(r => r.headline?.verifiedPublishedWords !== undefined))
     keys.push("verifiedPublishedWords", "missingVerifiedWords", "verifiedWordRecall");
   if (rows.some(r => r.headline?.labeledSourceWords !== undefined))

@@ -12,6 +12,7 @@ import {
   type ReferenceComparison, type RemovalSummary, type SubmittedPlan, type TaskLike, type TraceMetrics, type Word, overlap,
 } from "./metrics.ts";
 import { pictureAt } from "./layout.ts";
+import { scoreMoments, type LeftEdit, type Moment, type MomentResult } from "./moments.ts";
 import { comparePicture, summarizePicture, type PictureComparison, type PictureSample, type PictureSummary } from "./picture.ts";
 import { comparePublishedJoinSpacing, type PublishedReference } from "./published.ts";
 import { dividedJoins, keptSource, playedWords, sourceSpan, sourceToTimeline, timelineRangeToSource, wordsWithout, type DividedJoin, type MediaInfo, type SourceRange } from "./timeline.ts";
@@ -41,6 +42,8 @@ export interface ScoreInput {
   task?: TaskLike;
   events?: EventLike[];
   edgeOptions?: EdgeOptions;
+  /** Places in the recordings where a cut has gone wrong before, with what the edit should play there. */
+  moments?: readonly Moment[];
 }
 
 interface EdgeDetail extends EdgeReport { context?: string; reason?: string }
@@ -100,6 +103,10 @@ export interface Score {
     published?: Omit<PublishedReference, "kept" | "played" | "pieces" | "picture">;
     operatingPoints: Record<"applied" | "recommended" | "proposed", { cut?: ScoredReference; decisions?: ReturnType<typeof compareToDecisions> }>;
   };
+  /** What the task left of each recording, for comparing trials with each other. */
+  left: LeftEdit;
+  /** How each known moment of the case came out. */
+  moments?: MomentResult[];
   headline: Record<string, number | null>;
 }
 
@@ -277,10 +284,15 @@ export function scoreRun(input: ScoreInput): Score {
   // The engine's usage totals keep input separate from cache reads and writes; totalTokens adds them up.
   const usage = trace?.usage as { totalTokens?: number; inputTokens?: number; outputTokens?: number } | undefined;
   const tokens = usage ? (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)) || null : null;
+  const ranges = (kept: ReadonlyMap<string, readonly Range[]>) => Object.fromEntries([...kept].map(([id, rs]) => [id, rs.map(r => ({ start: round(r.start, 3), end: round(r.end, 3) }))]));
+  const leftEdit: LeftEdit = { kept: ranges(kLeft), removed: ranges(removedSource(kS, kLeft)),
+    staged: staged.flatMap(c => c.sources).map(s => ({ mediaId: s.mediaId, start: round(s.start, 3), end: round(s.end, 3) })) };
+  const moments = input.moments?.length ? scoreMoments(input.moments, evidence, leftEdit) : undefined;
+  const momentCount = (outcome: MomentResult["outcome"]) => moments ? moments.filter(m => m.outcome === outcome).length : null;
   return {
     versions: { source: timelines.source.version, applied: timelines.applied.version, proposed: timelines.proposed.version,
       ...(timelines.final && { final: timelines.final.version }) },
-    applied, review, pacing: pacingScore, picture, plan, trace, reference,
+    applied, review, pacing: pacingScore, picture, plan, trace, reference, left: leftEdit, ...(moments && { moments }),
     headline: {
       appliedCuts: applied.removal.cuts,
       appliedSeconds: applied.removal.seconds,
@@ -318,6 +330,10 @@ export function scoreRun(input: ScoreInput): Score {
       timeF1: proposedRef?.time.f1 ?? null,
       edgeF1At20ms: proposedRef?.edges?.f1["20ms"]?.f1 ?? null,
       requiredLinesMissing: proposedRef?.requiredLines.missing ?? null,
+      // Known moments of the case: the cut came out right, was left to the editor, or came out wrong.
+      momentsRight: momentCount("right"),
+      momentsAsked: momentCount("asked"),
+      momentsWrong: momentCount("wrong"),
       toolCalls: trace?.toolCalls ?? null,
       toolErrors: trace?.errors ?? null,
       activeMinutes: trace?.activeSeconds == null ? null : round(trace.activeSeconds / 60, 1),
