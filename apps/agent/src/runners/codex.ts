@@ -6,7 +6,8 @@
  * the isolated server. Answers reach a fresh run through the replayed Q&A.
  */
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { apiKeyVars, stripVars } from "../detect.js";
@@ -223,7 +224,7 @@ export function buildCodexCommand(
   return {
     file: executable ?? bin,
     args: ["exec", "--json", "--skip-git-repo-check", "--cd", opts.cwd, "--strict-config", "--ignore-user-config", "--ignore-rules", "--ephemeral",
-      ...codexConfig(opts, executable), "--output-last-message", lastMessagePath, ...(opts.model ? ["--model", opts.model] : []), ...codexModelConfig(opts), "-"],
+      ...codexConfig(opts, executable, executable ?? bin), "--output-last-message", lastMessagePath, ...(opts.model ? ["--model", opts.model] : []), ...codexModelConfig(opts), "-"],
     stdin: opts.instruction,
     files: { [join(opts.cwd, "AGENTS.md")]: opts.systemPrompt },
     lastMessagePath,
@@ -240,7 +241,37 @@ function codexExecutable(bin: string): string | undefined {
   return executable;
 }
 
-function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan">, executable: string | undefined): string[] {
+/**
+ * How long a Codex script runs before it hands control back to the model, in milliseconds. Codex's default is 10–30 s,
+ * shorter than many of Scarlet's tools take, and each hand-back is a model turn that re-reads the whole context to call
+ * `wait`: 173 of 1,357 pass turns, about 20M tokens, Nov 16–18 2026. It matches `toolWaitSeconds` (capabilities.ts).
+ */
+export const CODE_MODE_YIELD_MS = 240_000;
+const yieldSupport = new Map<string, boolean>();
+
+/**
+ * Whether this Codex takes `features.code_mode.default_exec_yield_time_ms`. One that doesn't refuses it under
+ * --strict-config and would fail every run, so each binary is asked once: App Server exits at once on closed stdin,
+ * with an error for a key it doesn't know (about 40 ms).
+ */
+export function codeModeYieldSupported(bin: string): boolean {
+  let key = bin;
+  try { key += `@${statSync(bin).mtimeMs}`; } catch { return false; }
+  const known = yieldSupport.get(key);
+  if (known !== undefined) return known;
+  const home = mkdtempSync(join(tmpdir(), "scarlet-codex-probe-"));
+  try {
+    const probe = spawnSync(bin, ["app-server", "--strict-config", "-c", `features.code_mode.default_exec_yield_time_ms=${CODE_MODE_YIELD_MS}`],
+      { env: { ...process.env, CODEX_HOME: home }, stdio: "ignore", timeout: 5000 });
+    const supported = probe.status === 0;
+    yieldSupport.set(key, supported);
+    return supported;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan">, executable: string | undefined, bin = executable): string[] {
   // Forward slashes keep the TOML readable and work for node on Windows.
   const toToml = (p: string) => p.replace(/\\/g, "/");
   return [
@@ -270,6 +301,7 @@ function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan">, executable: st
     `mcp_servers.scarlet.env_vars=[${Object.keys(opts.mcp.env).sort().map(tomlString).join(",")}]`,
     "-c",
     'shell_environment_policy.exclude=["SCARLET_*"]',
+    ...(bin && codeModeYieldSupported(bin) ? ["-c", `features.code_mode.default_exec_yield_time_ms=${CODE_MODE_YIELD_MS}`] : []),
   ];
 }
 
@@ -349,7 +381,7 @@ function serverError(value: unknown) {
 
 async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin: string, home: string): Promise<RunAgentResult | undefined> {
   const executable = codexExecutable(bin);
-  const args = ["app-server", "--strict-config", ...codexConfig({ mcp: opts.mcp }, executable),
+  const args = ["app-server", "--strict-config", ...codexConfig({ mcp: opts.mcp }, executable, executable ?? bin),
     "-c", "project_root_markers=[]", "-c", 'cli_auth_credentials_store="file"',
     "-c", `tools.update_plan.enabled=${!!opts.plan}`, "-c", "tools.experimental_request_user_input.enabled=false", "--disable", "goals",
     ...codexModelConfig({ effort: opts.effort })];
