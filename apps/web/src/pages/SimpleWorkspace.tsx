@@ -2881,7 +2881,10 @@ export function SimpleWorkspace() {
       callsToKeepTo.map(call => ({ call, at: pass!.cutEdits?.find(c => c.index === call.index)?.range.start ?? call.start })))
     : undefined;
   const nextRowAfterKeep = !reviewingEdit || !reviewingEdit.check ? undefined : rowAfterKeep(waitingEdit);
-  const nextEditAfterKeep = afterUnflaggedKeep && "edit" in afterUnflaggedKeep ? afterUnflaggedKeep.edit
+  // Keep reaches a moment as ↑ ↓ do: whole, at the edit it is named for, however much of it is kept already. The
+  // first of its edits still to keep would open alone and unfold the moment.
+  const momentLead = (edit: ThreadEdit) => threadTimeline.moments ? editsByRow.find(row => row.includes(edit))?.[0] ?? edit : edit;
+  const nextEditAfterKeep = afterUnflaggedKeep && "edit" in afterUnflaggedKeep ? momentLead(afterUnflaggedKeep.edit)
     : nextRowAfterKeep && (nextRowAfterKeep.find(waitingEdit) ?? nextRowAfterKeep[0]);
   const nextCallAfterKeep = afterUnflaggedKeep ? "call" in afterUnflaggedKeep ? afterUnflaggedKeep.call : undefined
     : !nextEditAfterKeep && reviewingEdit?.check && passThread?.id === focusThread?.id ? waitingCalls[0] : undefined;

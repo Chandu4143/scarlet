@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- Keep in a pass's See all now goes on to the next moment as a whole, even when part of it was kept before, instead of opening one of its edits on its own.
 - Scarlet now zooms in on any text shown or read on screen, including screenshots and pages over the camera, so it's readable, without zooming in line by line.
 - A request's estimated cost now shows for new models as soon as their prices are published, and counts the higher price of Fast and Ultrafast speeds; when Scarlet has no price yet, the hover names the model.
 
