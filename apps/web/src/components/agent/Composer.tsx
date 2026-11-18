@@ -44,6 +44,8 @@ interface ComposerProps {
   messageClock?: MessageClock;
   /** What taking the tag off does. Without it, the message becomes a reply to the whole request. */
   onClearTarget?(): void;
+  /** ⌘Z in an empty box puts back the tag Backspace or its × just took off. Says whether there was one to put back. */
+  onRestoreTarget?(): boolean;
   /**
    * The box is changing the words of a request still in the queue instead of writing a message: it shows `text` alone,
    * across its whole width, and sending saves them. The request's row in the tray says which it is, so the box has no
@@ -53,7 +55,7 @@ interface ComposerProps {
   rewording?: Rewording;
   selectedEdit?: AgentContext; onClearSelectedEdit?(): void; thread?: Thread; onCreated?(task: Task): void; onSent?(): void; modelPicker?: boolean }
 
-function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, rewording, messageClock }: ComposerProps & { project: Project }) {
+function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, onRestoreTarget, rewording, messageClock }: ComposerProps & { project: Project }) {
   const media = useProjectStore(s => s.current?.media);
   const createTask = useProjectStore((s) => s.createTask);
   const createNote = useProjectStore((s) => s.createNote);
@@ -383,13 +385,16 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       {attached.length > 0 && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }} />}
       {/* Esc leaves a queued request's words as they were, unless the skill list took it first. */}
       {/* While an input method composes, Esc is its own: it puts away its candidates, and the words stay in the box. */}
-      {/* Backspace in an empty box takes a picked moment off, as it would a tag. A held Backspace that just emptied the box doesn't. */}
+      {/* Backspace in an empty box takes the tag off, as its × does, and ⌘Z puts it back. A held Backspace that just emptied the box doesn't. */}
       <div className={firstEditHint ? "composer-box first-edit-hint" : "composer-box"} onKeyDown={e => {
         if (rewording && e.key === "Escape" && !e.defaultPrevented && !isComposing(e)) rewording.onCancel();
-        if (e.key === "Backspace" && !e.repeat && !e.defaultPrevented && !isComposing(e) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey &&
-            placeTag && targetIsPoint && !recording && !heard && e.target === inputRef.current && !inputRef.current.value) {
+        const emptyBox = !e.defaultPrevented && !isComposing(e) && !recording && !heard && e.target === inputRef.current && !inputRef.current.value;
+        if (e.key === "Backspace" && !e.repeat && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && emptyBox && placeTag) {
           e.preventDefault();
           takeOffTarget();
+        }
+        if (e.key.toLowerCase() === "z" && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && emptyBox && !rewording && onRestoreTarget?.()) {
+          e.preventDefault();
         }
       }}
         onKeyDownCapture={e => {

@@ -376,25 +376,33 @@ it("tags the box with a picked moment and sends it with the request", async () =
   expect(tag()).toBeNull();
 });
 
-it("takes a picked moment off on Backspace in an empty box, but not a cut it revises or a held Backspace", async () => {
+it("takes the tag off on Backspace in an empty box, but not on a held Backspace, and puts it back on ⌘Z", async () => {
   const onClearTarget = vi.fn();
-  await show({ targetTag: "At 0:07", targetIsPoint: true, onClearTarget });
-  const backspace = (repeat = false) => act(async () => {
-    container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", repeat, bubbles: true, cancelable: true }));
+  const onRestoreTarget = vi.fn(() => true);
+  await show({ targetTag: "At 0:07", targetIsPoint: true, onClearTarget, onRestoreTarget });
+  const press = (key: string, init: KeyboardEventInit = {}) => act(async () => {
+    container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
   });
   await type("Zoom");
-  await backspace();
+  await press("Backspace");
   expect(onClearTarget).not.toHaveBeenCalled();
+  // ⌘Z with words in the box is the words' own undo.
+  await press("z", { metaKey: true });
+  expect(onRestoreTarget).not.toHaveBeenCalled();
   await type("");
   // Holding Backspace to clear the words stops at the empty box.
-  await backspace(true);
+  await press("Backspace", { repeat: true });
   expect(onClearTarget).not.toHaveBeenCalled();
-  await backspace();
+  await press("Backspace");
   expect(onClearTarget).toHaveBeenCalledTimes(1);
-  // A cut or an edit the box revises stays: only its × starts a new edit instead.
-  await show({ targetTag: "Cut at 2:05", targetIsPoint: false, onClearTarget });
-  await backspace();
-  expect(onClearTarget).toHaveBeenCalledTimes(1);
+  await press("z", { metaKey: true });
+  expect(onRestoreTarget).toHaveBeenCalledTimes(1);
+  // A cut or an edit the box revises comes off the same way.
+  await show({ targetTag: "Cut at 2:05", targetIsPoint: false, onClearTarget, onRestoreTarget });
+  await press("Backspace");
+  expect(onClearTarget).toHaveBeenCalledTimes(2);
+  await press("z", { ctrlKey: true });
+  expect(onRestoreTarget).toHaveBeenCalledTimes(2);
 });
 
 it("sends the version of an explicitly attached point even when the project head has advanced", async () => {

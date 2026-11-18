@@ -7,6 +7,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 18, 2026
 
 - Scarlet no longer leaves a stumbled restart playing because the transcript hid it: before tightening a pause, it now hears any words the transcript dropped there and decides on them.
+- Backspace in an empty message box now takes off its time tag, also when an edit is open, and ⌘Z puts it back.
+- Punch-ins on a talking head are milder across a cut inside a sentence, and no longer pull back out before the sentence ends.
 - New project now lets you add videos one pick at a time, and each one has its own × to take it off the list.
 - The model's Speed choice that uses the provider's own speed now says Standard instead of Auto.
 - A Codex edit that stopped when Scarlet closed, or that asked you something, now carries on where it was instead of starting over.

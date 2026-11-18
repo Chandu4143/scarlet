@@ -38,7 +38,7 @@ import { selectOption } from "../../test/selectOption";
 const it = partedIt(vitestIt);
 
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
-type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void;
+type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void; onRestoreTarget?(): boolean;
   messageClock?: import("../lib/messageTimestamps").MessageClock;
   rewording?: { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void } };
 const composer = vi.hoisted(() => ({ props: undefined as BoxProps | undefined }));
@@ -7323,6 +7323,39 @@ it("leaves a message being written aimed where it was, says where, and brings it
   expect(aimLine()).toEqual(["Starting a new edit", false, "Move here"]);
   expect(boxTag()).toBeUndefined();
   expect(editPanel()).not.toBeNull();
+});
+
+it("puts the tag taken off an empty box back on ⌘Z, until the box is aimed again or written in", async () => {
+  appliedEdits();
+  data = { ...data, tasks: data.tasks.map(t => t.state === "waiting_for_user" ? { ...t, state: "done" as const, question: null } : t) };
+  useProjectStore.setState({ current: data });
+  await show();
+  const edits = () => turnFor("chg_approved_2").querySelectorAll<HTMLElement>(".simple-edits .simple-edit");
+  await click(edits()[2]!);
+  await act(async () => {});
+  expect(boxTag()).toBe("Edit at 0:11");
+  const aimedThere = boxNow();
+  // Backspace in the empty box takes the tag off: a new edit, with the edit still open.
+  await act(async () => composer.props!.onClearTarget!());
+  expect(boxTag()).toBeUndefined();
+  expect(editPanel()).not.toBeNull();
+  // ⌘Z puts the box back on the edit, as it was.
+  let restored = false;
+  await act(async () => { restored = composer.props!.onRestoreTarget!(); });
+  expect(restored).toBe(true);
+  expect(boxTag()).toBe("Edit at 0:11");
+  expect(boxNow()).toEqual(aimedThere);
+  expect(Object.keys(useUiStore.getState().savedDrafts)).toEqual([]);
+  // Only once: a second ⌘Z has nothing to put back.
+  await act(async () => { restored = composer.props!.onRestoreTarget!(); });
+  expect(restored).toBe(false);
+  // Words typed since the tag came off are the message: ⌘Z is theirs.
+  await act(async () => composer.props!.onClearTarget!());
+  await act(async () => useUiStore.getState().setAgentDraft("Bigger"));
+  await act(async () => useUiStore.getState().setAgentDraft(""));
+  await act(async () => { restored = composer.props!.onRestoreTarget!(); });
+  expect(restored).toBe(false);
+  expect(boxTag()).toBeUndefined();
 });
 
 it("keeps the box where it was while the editor speaks into it, and follows what opened once the message is sent", async () => {
