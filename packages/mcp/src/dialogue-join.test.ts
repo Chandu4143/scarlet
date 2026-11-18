@@ -257,6 +257,20 @@ describe("native retake boundaries", () => {
     expect(cut.dips).toHaveLength(2);
     expect(cut.problems).toEqual(["No pause on either side of “the”: both edges sit between words that run together."]);
   });
+  it("keeps a start edge before the middle of a named word too quiet to locate", () => {
+    // “nice you can”: a faint “you” runs on from “nice” with no pause and the room is quiet for the last 40 ms of its
+    // timing. The edge went to that quiet, past the middle of the “you” the cut names, and the save was refused for
+    // playing “you” twice (2026-11-17).
+    const said = [{ start: 1, end: 1.5, text: "nice" }, { start: 1.5, end: 1.62, text: "you" }, { start: 1.62, end: 1.8, text: "can" }, { start: 2.6, end: 3, text: "see" }];
+    const rms = Array.from({ length: 250 }, (_, i) => i >= 50 && i < 75 ? .12 : i >= 75 && i < 79 ? .006 : i >= 79 && i < 81 ? .0002 : (i >= 81 && i < 90) || (i >= 130 && i < 150) ? .12 : .001);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: 1, end: 1.8 }, { start: 2.6, end: 3 }] });
+    const cut = wordCutRange(said, 1, 2, () => edges);
+    expect(cut.start).toBeLessThanOrEqual(1.56);
+    // The join check keeps it there too: the quiet is past the middle of “you”, and moving onto it would leave “you” playing.
+    const { p, tl } = fixture();
+    const joined = checkDialogueJoin(tl, p, { start: cut.start, end: cut.end }, [{ mediaId: "mic", start: 0, end: 5, edges }]);
+    expect(joined.start).toBeLessThanOrEqual(1.56);
+  });
   it("puts a dip edge in the middle of the room tone between two words, not on its last bucket before the next word", () => {
     // “one two”: room tone from 1.44 to 1.52 s, deepest in its last 20 ms, then “two” starts. A pause, then “three”.
     const said = [{ start: 1, end: 1.5, text: "one" }, { start: 1.5, end: 2, text: "two" }, { start: 2.6, end: 3, text: "three" }];
