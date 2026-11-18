@@ -5,7 +5,7 @@ import { recordEditReview, requestPosition } from "../../lib/editReviews";
 import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
 import { removedSeconds } from "../../lib/format";
-import { editKindWord } from "../../lib/editKind";
+import { editRowWord } from "../../lib/editKind";
 import { editKey, keepEdits, reviewKey, useKeptEdits } from "../../lib/keptEdits";
 import { useProjectStore } from "../../stores/project";
 import { Dropdown, MenuItem } from "../shell/WorkspaceNavigation";
@@ -74,8 +74,10 @@ export function EditBadge({ n, kept, check }: { n: number; kept?: boolean; check
  * Which version an edit or a call is on once it has been revised: "v2". One mark, the same after a row's words in
  * either kind of list and before the note on a call's card. `title` is what hovering it says.
  */
-export function EditVersion({ n, title }: { n: number; title?: string }) {
-  return <small className="edit-version" title={title} tabIndex={title ? 0 : undefined}>v{n}</small>;
+export function EditVersion({ n, title, hover }: { n: number; title?: string;
+  /** A hover for a mark inside a row's button, which takes no focus of its own. */
+  hover?: string }) {
+  return <small className="edit-version" title={title ?? hover} tabIndex={title ? 0 : undefined}>v{n}</small>;
 }
 
 type ListedEdit = Omit<ThreadEdit, "at">;
@@ -194,9 +196,11 @@ function removedLabel(edit: ListedEdit) {
  * left the chat. With `only`, the list is just the edits it picks, such as the ones that need the editor, each with
  * the number it has in the whole list.
  */
-export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover, under, only }: {
+export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover, under, only, spent }: {
   projectId: string; thread: Thread; edits: ListedEdit[]; showing?: ThreadEdit;
   onPlay(ref: EditRef): void; onHover?(ref?: EditRef): void; under?(edit: ListedEdit): ReactNode[]; only?(edit: ListedEdit): boolean;
+  /** What the requests about an edit took, for the hover of the word its row ends on: their time and, when those show, tokens. */
+  spent?(edit: ListedEdit): string | undefined;
 }) {
   const reviewed = useReviewed(projectId, thread);
   const revising = useRevising(thread);
@@ -213,10 +217,10 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
     const shown = members.find(m => m.i === open) ?? members.find(waiting) ?? members[0]!;
     // An edit made in several places keeps its first number, so the list reads 1, 2, 5 and doesn't renumber as places are kept.
     return { ...shown, n: members[0]!.i + 1, places: members.length, needs: members.filter(waiting).length, allKept: members.every(m => reviewed(m.edit)),
-      nested: under ? members.flatMap(m => under(m.edit)) : [] };
+      nested: under ? members.flatMap(m => under(m.edit)) : [], took: spent ? members.flatMap(m => spent(m.edit) ?? [])[0] : undefined };
   });
   return <ol className="simple-edits" aria-label={only ? "Edits that need you" : "Edits in this thread"}>
-    {rows.map(({ edit, i, n, places, needs, allKept, nested }) => {
+    {rows.map(({ edit, i, n, places, needs, allKept, nested, took }) => {
       const on = i === open;
       const isKept = places > 1 ? allKept : reviewed(edit);
       // A revision on its way takes the edit off the editor's list until it comes back. Its row says so whether or not
@@ -226,7 +230,7 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
       const busy = revisingNow === "claimed" || revisingNow === "running";
       const version = edit.previous.length ? edit.previous.length + 1 : 0;
       // A cut says how much came out; any other edit says what it did, or in how many places.
-      const value = places > 1 ? `${places} places` : removedLabel(edit) ?? editKindWord(edit);
+      const value = places > 1 ? `${places} places` : removedLabel(edit) ?? editRowWord(edit);
       const check = places > 1 ? needs > 0 : !!edit.check && !isRevising;
       const title = (edit.reason && edit.summary) || edit.label;
       // One that came back revised with no reason from Scarlet says so on its row until it is kept: its card has no
@@ -242,10 +246,11 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
         title={revised || edit.reason ? undefined : edit.check}
         aria-label={`Edit ${n}: ${title}${places > 1 ? `, ${places} places` : ""}${isRevising ? ", revising" : isKept ? ", kept" : check ? ", check" : ""}`}>
         <EditBadge n={n} kept={isKept} check={check} />
-        <span className="simple-edit-title">{title}{version > 0 && places === 1 && <EditVersion n={version} />}</span>
-        {value && <span className="simple-edit-value">{value}</span>}
-        {isRevising ? <span className={busy ? "simple-edit-check is-kept working-text" : "simple-edit-check is-kept"}>Revising…</span>
-          : revised && <span className="simple-edit-check">{edit.check}</span>}
+        <span className="simple-edit-title">{title}{version > 0 && places === 1 && <EditVersion n={version} hover={took} />}</span>
+        {/* What the row ends on says on hover what the requests about this edit took: their time and tokens, nothing else. */}
+        {value && <span className="simple-edit-value" title={took}>{value}</span>}
+        {isRevising ? <span className={busy ? "simple-edit-check is-kept working-text" : "simple-edit-check is-kept"} title={took}>Revising…</span>
+          : revised && <span className="simple-edit-check" title={took}>{edit.check}</span>}
       </button>{nested}</li>;
     })}
   </ol>;

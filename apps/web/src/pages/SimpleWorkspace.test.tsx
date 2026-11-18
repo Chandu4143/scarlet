@@ -1089,7 +1089,7 @@ it("keeps a flagged edit's row to its amber number and its name: the reason is o
   const turn = turnFor("chg_approved_2");
   const row = () => [...turn.querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")][2]!;
   // No line under the row says why it asks for a look. Hovering the row does, as on a pass's row.
-  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-check", "3wrap", CHECK]);
+  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-check", "3wrapEdit", CHECK]);
   expect(turn.querySelector(".simple-edits")!.textContent).not.toContain(CHECK);
   // Its card says it, inside Scarlet's sentence.
   await click(row());
@@ -1097,7 +1097,7 @@ it("keeps a flagged edit's row to its amber number and its name: the reason is o
   expect(editPanel()!.querySelector(".edit-card-title")?.textContent).toBe(SUMMARY);
   // Kept, the badge fills, and the row is still one line.
   await press("k");
-  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-kept", "3wrap", CHECK]);
+  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-kept", "3wrapEdit", CHECK]);
 });
 
 it("reviews only the edits Scarlet flagged, then leaves nothing to press", async () => {
@@ -5032,6 +5032,74 @@ it("marks a revised call v2 in the list and in its card, with the earlier versio
   const version = call().querySelector(".edit-version")!;
   expect([version.tagName, version.className, version.textContent, version.nextElementSibling?.classList.contains("edit-card-title")]).toEqual(["SMALL", "edit-version", "v2", true]);
   expect(version.getAttribute("title")).toBe("v1: The corrected image-input take belongs here.\nYou: “The words don't line up.”");
+});
+
+it("says what the requests about a cut took on the hover of the word its row ends on, once they have left the chat", async () => {
+  flagged();
+  const threadId = threadWith("chg_ready").id;
+  const base = data.tasks.find(t => t.id === "task_done")!;
+  // The editor sent the call at 9:58 back once. Its revision is the pass waiting now, and the request has left the chat.
+  const revision = { ...base, id: "task_revise", kind: "revise" as const, state: "done" as const, changeIds: ["chg_revised"], workedMs: 42_000,
+    instruction: "The words don't line up.", context: { threadId, changeId: "chg_ready", cutIndex: 2, time: 598, end: 602.5, message: "The words don't line up." } };
+  // A pass saves the cuts it staged, which is how a request is found on the cut it was about.
+  const staged = data.changes.find(c => c.id === "chg_ready")!;
+  const first = { ...staged, cutReasons: staged.cutAssessments!.map(({ start, end, reason }) => ({ start, end, reason })) };
+  const revised = { ...first, id: "chg_revised", taskId: "task_revise", threadId, createdAt: new Date().toISOString(),
+    cutAssessments: first.cutAssessments!.map(a => a.index === 2 ? { ...a, reason: "The cut now starts in the pause." } : a) };
+  const used = { runs: 1, inputTokens: 20_000, outputTokens: 15_000, cacheReadTokens: 1_050_000, cacheWriteTokens: 15_000, reasoningTokens: 0, totalTokens: 1_100_000, firstAt: null, lastAt: null };
+  data = { ...data, tasks: [...data.tasks, revision], taskUsage: { task_done: { ...used, totalTokens: 18_200_000 }, task_revise: used },
+    changes: [...data.changes.map(c => c.id === "chg_ready" ? { ...first, state: "revising" as const } : c), revised] };
+  const shown = useUiStore.getState().showRunTokens;
+  useUiStore.getState().setShowRunTokens(false);
+  useProjectStore.setState({ current: data });
+  await show();
+  await act(async () => {});
+  await click(passCard().querySelector(".simple-pass-need")!);
+  const word = () => passRows()[1]!.querySelector(".simple-pass-value")!;
+  // The row's own hover is as it was: the earlier version and the words that sent it back. A call nothing was asked
+  // about has only its note, and no word to hover.
+  expect(passRows().map(r => r.getAttribute("title"))).toEqual(["Breath before the price.", "v1: The corrected image-input take belongs here.\nYou: “The words don't line up.”"]);
+  expect(passRows()[0]!.querySelector("[title]")).toBeNull();
+  // The word it ends on says the revision's active time, and nothing else.
+  expect([word().textContent, word().getAttribute("title")]).toEqual(["v2", "42s"]);
+  // With tokens shown (Settings → Usage), its tokens too: the revision's own, not the pass's.
+  await act(async () => useUiStore.getState().setShowRunTokens(true));
+  expect(word().getAttribute("title")).toBe("42s · 1.1M tokens");
+  // The band still counts the pass's own work.
+  expect(turnFor("chg_ready").querySelector(".unit-msg .unit-tokens")?.textContent).toMatch(/· 18\.2M tokens$/);
+  // Decided, the word changes and says the same.
+  await click(passRows()[1]!);
+  await press("a");
+  expect([word().textContent, word().getAttribute("title")]).toEqual(["Approved", "42s · 1.1M tokens"]);
+  await act(async () => useUiStore.getState().setShowRunTokens(shown));
+});
+
+it("says what an applied edit's revision took on the hover of what its row ends on", async () => {
+  flagged();
+  const threadId = threadWith("chg_ready").id;
+  const base = data.tasks.find(t => t.id === "task_done")!;
+  const revision = { ...base, id: "task_revise", kind: "revise" as const, state: "done" as const, changeIds: ["chg_revised"], workedMs: 75_000,
+    instruction: "The words don't line up.", context: { threadId, changeId: "chg_ready", cutIndex: 2, time: 598, end: 602.5, message: "The words don't line up." } };
+  // The revision moved the third cut's start, and that pass was applied: the cut is an edit in the request's list now.
+  const reasons = data.changes.find(c => c.id === "chg_ready")!.cutAssessments!.map(({ start, end, reason }) => ({ start, end, reason }));
+  const first = { ...data.changes.find(c => c.id === "chg_ready")!, cutReasons: reasons };
+  const revised = { ...first, id: "chg_revised", taskId: "task_revise", threadId, createdAt: new Date().toISOString(), state: "approved" as const,
+    cutReasons: reasons.map((r, i) => i === 2 ? { ...r, start: 598.2, reason: "The cut now starts in the pause." } : r) };
+  data = { ...data, tasks: [...data.tasks, revision],
+    changes: [...data.changes.map(c => c.id === "chg_ready" ? { ...first, state: "rejected" as const, replacedBy: "chg_revised" } : c), revised] };
+  const shown = useUiStore.getState().showRunTokens;
+  useUiStore.getState().setShowRunTokens(false);
+  useProjectStore.setState({ current: data });
+  vi.spyOn(api, "threadEdits").mockResolvedValue({ version: data.project.head!, edits: revised.cutReasons.map((r, spot) => (
+    { changeId: "chg_revised", spot, label: r.reason, range: { start: spot * 10, end: spot * 10 + 3 }, at: spot * 10 + 1.5,
+      beforeCut: { version: "v_before", removed: { start: r.start, end: r.end } }, previous: [] })) });
+  vi.spyOn(api, "timeline").mockResolvedValue({ timeline: { ...data.timeline!, version: "v_before" } } as never);
+  await show();
+  await act(async () => {});
+  // Only the cut the request was about says so, and only there: the rows themselves have no hover of their own here.
+  const rows = [...container.querySelectorAll<HTMLButtonElement>('.unit[data-run="task_done"] .simple-edit')];
+  expect(rows.map(row => [row.getAttribute("title"), row.querySelector(".simple-edit-value")?.getAttribute("title") ?? null])).toEqual([[null, null], [null, null], [null, "1m 15s"]]);
+  useUiStore.getState().setShowRunTokens(shown);
 });
 
 it("waits for a staged revision to finish while the editor decides the other calls", async () => {

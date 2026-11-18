@@ -44,7 +44,7 @@ import { appLog } from "../lib/appLog";
 import { clock as clockLabel, clockRange, lengthLabel, plural, removedSeconds } from "../lib/format";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
 import { madeSentence, type SentencePart } from "../lib/madeSentence";
-import { editFocus, editKindWord, editNote } from "../lib/editKind";
+import { editFocus, editKindWord, editNote, editRowWord } from "../lib/editKind";
 import { player, type Audition } from "../lib/player";
 import { appliedCutClock, appliedCutSource, cutChange } from "../lib/appliedCutPlayback";
 import { cutAudition, cutAuditionClock, isolatedReviewCut } from "../lib/cutAudition";
@@ -52,7 +52,7 @@ import { besides, removedSince } from "../lib/removedSince";
 import { usePlayerStore } from "../stores/player";
 import { composeClocks, verifiedJoinClock, type JoinClock } from "../lib/joinClock";
 import { buildThreads, firstCutDeliveries, isRedo, requestTarget, revisionTarget, stagedCuts, threadConversation, type Thread, type ThreadEntry } from "../lib/threads";
-import { runIsActive } from "../lib/taskRun";
+import { runIsActive, spentLabel } from "../lib/taskRun";
 import { aboutOne, aimOf, closingReply, lastAttempt, laterAttempts, notesStillAsked, redoWords, requestRoots, stagingTask, takenFromQueue, threadRuns, waitingToStart, type Run } from "../lib/requestRuns";
 import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut, isDialoguePass, isOpenPass, keepGoesTo, noRevisions, openPass, passRevision, reviewCalls, revisedCall, revisedFrom, revisionCut, savedChoices, waitsToPlay,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
@@ -448,6 +448,9 @@ type PassList = [open: OpenList, setOpen: Dispatch<SetStateAction<OpenList>>];
 /** A request about one cut or edit that is still in the chat, drawn directly under the row it is about. `key` is that row's. */
 interface Nest { key: string; node: ReactNode }
 const noNests: readonly Nest[] = [];
+/** What the requests about each row's cut or edit took, by the row's key, for the hover of the word the row ends on. */
+type Spent = ReadonlyMap<string, string>;
+const noSpent: Spent = new Map();
 
 /** A finished request with one result opens its edit on the timeline. A collection opens a list to choose from. */
 function EditResultLink({ thread, actions, single, count, soFar, list: [open, setOpen], reveal }: {
@@ -523,8 +526,8 @@ function Made({ parts, link }: { parts: readonly SentencePart[]; link?: ReactNod
  * or edit that is still in the chat (`nests`) sits directly under that cut's or edit's row. `aside` is what the run
  * used, when that shows.
  */
-function PassSummary({ projectId, thread, edits, actions, aside, list: listState, listedNeed, working, nests = noNests }: { projectId: string; thread: Thread; edits: Omit<ThreadEdit, "at">[];
-  actions: ChatActions; aside?: ReactNode; list: PassList; listedNeed: RefObject<Set<string>>; working?: boolean; nests?: readonly Nest[] }) {
+function PassSummary({ projectId, thread, edits, actions, aside, list: listState, listedNeed, working, nests = noNests, spent = noSpent }: { projectId: string; thread: Thread; edits: Omit<ThreadEdit, "at">[];
+  actions: ChatActions; aside?: ReactNode; list: PassList; listedNeed: RefObject<Set<string>>; working?: boolean; nests?: readonly Nest[]; spent?: Spent }) {
   const reviewed = useReviewed(projectId, thread);
   const revising = useRevising(thread);
   const kept = useKeptEdits(projectId, thread);
@@ -593,7 +596,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       const displayAt = (!seen && !sent ? e.reviewRange?.start : undefined) ?? at;
       // Listed with the calls, it has the number it has among them.
       return [{ key, at, displayAt, mark: displayAt as number | undefined, hover: { threadId: thread.id, editKey: key }, label: (e.reason && e.summary) || e.label, n: 0, num: pass?.editNumbers.get(key)?.n,
-        state: word, value: editRemoved(e) ?? editKindWord(e), word, revised,
+        state: word, value: editRemoved(e) ?? editRowWord(e), word, revised,
         // Scarlet is on that revision now, so its word moves; one still waiting its turn sits still.
         busy: isWorking(sent),
         needs: !!e.check && !seen && !sent, sentBack: !!e.check && !seen && !!sent,
@@ -648,12 +651,14 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       {filter === "calls" && row.num ? <EditBadge n={row.num} check={row.needs} />
         : <span className={row.needs ? "simple-pass-time is-need" : "simple-pass-time"}>{clockLabel(row.displayAt)}{row.needs && <span>, needs you</span>}</span>}
       <span className="simple-pass-label">{filter === "calls" ? row.label : <>{row.decided && !row.needs && <span className="simple-pass-tick" aria-label="Decided"><Icon name="check" size={10} /></span>}<span className="simple-pass-words">{row.label}</span>
-        {row.version > 0 && <EditVersion n={row.version} />}{row.fresh && <small className="edit-version is-new">New</small>}</>}</span>
-      {filter === "calls" ? row.state && <span className={row.busy ? "simple-pass-value working-text" : "simple-pass-value"}>{row.state}</span>
-        : row.value && <span className={row.busy && !row.word ? "simple-pass-value working-text" : "simple-pass-value"}>{row.value}</span>}
+        {row.version > 0 && <EditVersion n={row.version} hover={spent.get(row.key)} />}{row.fresh && <small className="edit-version is-new">New</small>}</>}</span>
+      {/* The word a row ends on (v2, Approved, Revising…) says on hover what the requests about its cut or edit took:
+          their time and tokens, nothing else. The rest of the row keeps the row's own hover. */}
+      {filter === "calls" ? row.state && <span className={row.busy ? "simple-pass-value working-text" : "simple-pass-value"} title={spent.get(row.key)}>{row.state}</span>
+        : row.value && <span className={row.busy && !row.word ? "simple-pass-value working-text" : "simple-pass-value"} title={spent.get(row.key)}>{row.value}</span>}
       {/* An applied edit sent back, or come back revised, says so after its amount, as a row of any other request's
           list does: amber once it is back and waits on the editor, quiet while Scarlet is on it. */}
-      {filter !== "calls" && row.word && <span className={`simple-pass-check${row.revised ? "" : " is-kept"}${row.busy ? " working-text" : ""}`}>{row.word}</span>}
+      {filter !== "calls" && row.word && <span className={`simple-pass-check${row.revised ? "" : " is-kept"}${row.busy ? " working-text" : ""}`} title={spent.get(row.key)}>{row.word}</span>}
     </button>{nests.filter(nest => nest.key === row.key).map(nest => nest.node)}</li>)}
   </ol>;
   // The full list includes the pass's calls. A pass with no applied edits has only the calls to show.
@@ -690,8 +695,8 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
  * kept and lists them by default with their own numbers. A request about an edit that is still in the chat (`nests`)
  * sits directly under that edit's row.
  */
-function ThreadResult({ projectId, thread, edits, actions, aside, working, nests = noNests, list, listedNeed, wasShowing: heldShowing }: { projectId: string; thread: Thread; edits: Omit<ThreadEdit, "at">[]; actions: ChatActions;
-  aside?: ReactNode; working?: boolean; nests?: readonly Nest[];
+function ThreadResult({ projectId, thread, edits, actions, aside, working, nests = noNests, spent = noSpent, list, listedNeed, wasShowing: heldShowing }: { projectId: string; thread: Thread; edits: Omit<ThreadEdit, "at">[]; actions: ChatActions;
+  aside?: ReactNode; working?: boolean; nests?: readonly Nest[]; spent?: Spent;
   /** Which list is open and what For you has listed, held by the turn: the block is mounted anew when it moves
    *  between the conversation and the place above the message box, and a list the editor opened must not close then,
    *  nor turn into the list of every edit. `wasShowing` is whether one of the edits was open when the block last drew. */
@@ -761,7 +766,7 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
     {showsList && <ThreadEdits projectId={projectId} thread={thread} edits={edits} showing={actions.showing} only={only}
       onPlay={ref => actions.openEdit(thread, ref)}
       onHover={ref => actions.lightMark(undefined, ref && { threadId: thread.id, editKey: editKey(ref) })}
-      under={edit => nests.filter(nest => nest.key === editKey(edit)).map(nest => nest.node)} />}
+      under={edit => nests.filter(nest => nest.key === editKey(edit)).map(nest => nest.node)} spent={edit => spent.get(editKey(edit))} />}
     {nests.filter(nest => !listed.has(nest.key)).map(nest => nest.node)}
   </div>;
 }
@@ -809,6 +814,9 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
   const retryTask = (taskId: string) => retryRun(taskId, effective ?? undefined);
   const continueWhenReady = useProjectStore(s => s.continueWhenReady);
   const allTasks = useProjectStore(s => s.current?.tasks ?? []);
+  // The tokens each run reported, while those show (Settings → Usage).
+  const showTokens = useUiStore(s => s.showRunTokens);
+  const usage = useProjectStore(s => showTokens ? s.current?.taskUsage : undefined);
   // The changes a request about one cut or edit can name, to tell which edit it is across its revisions (`requestTargetKey`).
   const threadChanges = useMemo(() => [...thread.changes, ...thread.flagged ?? []], [thread.changes, thread.flagged]);
   const historyKey = useMemo(() => JSON.stringify(thread.tasks.filter(t => !waitingToStart(t)).map(t => [t.id, runIsActive(t)])), [thread.tasks]);
@@ -980,6 +988,18 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
     const key = run !== owner && aboutOne(run) && !settled(run) ? rowOf(run) : undefined;
     return key ? [[run.root, key] as const] : [];
   }) : []);
+  // What the requests about each listed cut or edit took: their active time and, when those show, tokens. A request
+  // about one cut or edit leaves the chat once it's done, and its figures went with it; the word its row ends on
+  // (v2, Approved, Revising…) says them on hover.
+  const spent = new Map<string, string>();
+  if (owner && hasRows) {
+    const about = new Map<string, Task[]>();
+    for (const run of runs) {
+      const key = run !== owner && aboutOne(run) ? rowOf(run) : undefined;
+      if (key) about.set(key, [...about.get(key) ?? [], ...run.attempts]);
+    }
+    for (const [key, attempts] of about) { const took = spentLabel(attempts, events, usage); if (took) spent.set(key, took); }
+  }
   // A rule reads at the end of the block of the request it came from. A request about one cut or edit that has left the
   // chat, or sits under its row inside another block, hands its rule to the block it belongs to.
   const learnedIn = (run: Run) => learned.filter(l => {
@@ -1040,8 +1060,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
     // The requests about one of this block's cuts or edits, each drawn under its row.
     const nests: Nest[] = !inside && run === owner ? [...nested].map(([root, key]) => ({ key, node: unit(runs.find(r => r.root === root)!, true) })) : [];
     const rows = run === owner && hasRows ? (aside: ReactNode) => summed
-      ? <PassSummary projectId={projectId} thread={thread} edits={listed} actions={actions} aside={aside} list={passList} listedNeed={passListed} working={runIsActive(task)} nests={nests} />
-      : <ThreadResult projectId={projectId} thread={thread} edits={listed} actions={actions} aside={aside} working={runIsActive(task)} nests={nests} list={passList} listedNeed={passListed} wasShowing={wasShowing} /> : undefined;
+      ? <PassSummary projectId={projectId} thread={thread} edits={listed} actions={actions} aside={aside} list={passList} listedNeed={passListed} working={runIsActive(task)} nests={nests} spent={spent} />
+      : <ThreadResult projectId={projectId} thread={thread} edits={listed} actions={actions} aside={aside} working={runIsActive(task)} nests={nests} spent={spent} list={passList} listedNeed={passListed} wasShowing={wasShowing} /> : undefined;
     // A request about one cut or edit says what it did there, and its row opens that cut or edit on the timeline.
     const target = targets.get(run.root);
     const pass = actions.pass?.threadId === thread.id ? actions.pass : undefined;

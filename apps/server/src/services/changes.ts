@@ -58,7 +58,7 @@ import { requestCutPlaybackFile, waitForPlayback } from "./playback.js";
 import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { notify } from "./notify.js";
-import { createTask, editsDialogue, FINISHED_TASK, parseAssignTo, isDialoguePass, queueRepeatCheck, saveTask, stagesCut } from "./tasks.js";
+import { createTask, editsDialogue, FINISHED_TASK, parseAssignTo, saveTask, stagesCut } from "./tasks.js";
 import { runAttemptIds, runRoot } from "./runAttempts.js";
 import { ensureProjectHead, resolveTimeline, storeValidatedVersion, storeVersion } from "./timeline.js";
 import { actorFor, authorName, logActivity, quote } from "./activity.js";
@@ -2039,13 +2039,9 @@ export function approveChange(ctx: Ctx, user: User, change: Change, opts: { spot
     appliedJoinFades,
     leftOut: appliedReview ? undefined : leftOutOf(ctx, project, change),
   });
-  if (saved.intent === "suggestion" && saved.cutReasons?.length && target !== head && appliedReview?.joins.length !== 0) {
-    const pass = latestAttempt(ctx, saved.taskId);
-    const owner = pass?.repeatAudit ? pass : latestAttempt(ctx, saved.threadId);
-    if (owner?.state === "done" && owner.finishedAt && owner.repeatAudit && owner.repeatAudit.version !== target && isDialoguePass(owner)) {
-      queueRepeatCheck(ctx, owner, target);
-    }
-  }
+  // A finished pass whose calls the editor has just made stays finished. Its closing check ran before they decided, and
+  // each call played its join for them as they decided it. Checking the video again afterwards started the pass back
+  // up after the editor's last Approve and re-cut that join three times (2026-11-17).
   retireOtherVersions(ctx, saved);
   if (saved.intent === "alternative" && saved.taskId) {
     const alternatives = ctx.repos.changes.select(
