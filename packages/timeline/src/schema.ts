@@ -42,6 +42,8 @@ export const SOURCE_PREVIEW_SECONDS = 8;
  * timeline out again took the agent a minute and a half.
  */
 export const SUMMARY_MAX = 600;
+/** A plain sentence explaining why an edit was made. */
+export const EditReason = z.string().trim().min(1).max(600);
 
 /** Default output height for preview renders and source proxies. */
 export const DEFAULT_PREVIEW_HEIGHT = 540;
@@ -169,6 +171,29 @@ export const Effect = z.object({
 });
 export type Effect = z.infer<typeof Effect>;
 
+/**
+ * How the picture moves from the clip before to this one, centred on the join between them. A dip passes through a
+ * colour; the others play the incoming picture over the outgoing one, using the footage either side of the join,
+ * so with little footage to spare they run shorter (the render reports it). Sound is untouched: the join's audio stays
+ * as it was.
+ */
+export const TransitionType = z.enum(["dissolve", "dip", "push", "slide", "whip"]);
+export type TransitionType = z.infer<typeof TransitionType>;
+export const TransitionDirection = z.enum(["left", "right", "up", "down"]);
+export type TransitionDirection = z.infer<typeof TransitionDirection>;
+export const Transition = z.object({
+  type: TransitionType,
+  /** Seconds, centred on the join. */
+  duration: z.number().positive().max(10),
+  /** push, slide and whip: the way the picture travels ("left" brings the next picture in from the right). */
+  direction: TransitionDirection.default("left"),
+  /** dip: the colour it passes through (default black). */
+  color: RenderColor.optional(),
+  /** The saved template it came from, by the name the editor types after $ ("swipe"). */
+  template: z.string().max(64).optional(),
+});
+export type Transition = z.infer<typeof Transition>;
+
 const ClipBase = z.object({
   id: Id,
   /** Timeline position (seconds). */
@@ -199,6 +224,8 @@ export const MediaClip = ClipBase.extend({
   videoFadeIn: Seconds.default(0),
   videoFadeOut: Seconds.default(0),
   effects: z.array(Effect).default([]),
+  /** The transition into this clip from the one before it on its track. Absent: a straight cut. */
+  transitionIn: Transition.optional(),
 });
 export type MediaClip = z.infer<typeof MediaClip>;
 
@@ -350,9 +377,13 @@ export const StyleGuide = z.object({
 export type StyleGuide = z.infer<typeof StyleGuide>;
 
 export const Project = z.object({
+  /** Orders saved project metadata independently of the timeline head and the displayed Last edited time. */
+  rowRevision: z.number().int().nonnegative().optional(),
   /** Last conversation revision filed by the editor, independently of the timeline head. */
   completedThreads: z.record(z.string()).optional(),
   mediaPaused: z.boolean().optional(),
+  /** The editor stopped project edits and must release the queue before any more start. */
+  editingPaused: z.boolean().optional(),
   id: Id,
   archived: z.boolean().optional(),
   branch: z.string().optional(),
@@ -362,6 +393,11 @@ export const Project = z.object({
   /** Version id of the current (head) timeline. */
   head: Id.nullable().default(null),
   styleGuide: StyleGuide.optional(),
+  /**
+   * The project this one was made from, as a short of it: its id and name. `notice` is true until the editor dismisses
+   * the line in the chat that says so. `gone` when that project is in the trash or was deleted.
+   */
+  source: z.object({ projectId: Id, name: z.string(), notice: z.boolean().optional(), gone: z.boolean().optional() }).optional(),
   createdAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional(),
 });
@@ -407,6 +443,8 @@ export const Transcript = z.object({
    * milliseconds off. Word order and indices never change. Absent once every time is final.
    */
   aligning: z.object({ through: Seconds }).optional(),
+  /** The version of the aligner that placed these word times. Absent on a transcript aligned before versions were kept. */
+  alignment: z.number().int().positive().optional(),
   id: Id,
   mediaId: Id,
   language: z.string().optional(),
@@ -449,6 +487,8 @@ export const EditIntent = z.enum(["requested", "suggestion", "alternative"]);
 export const CutAssessment = z.object({
   index: z.number().int().nonnegative(), start: Seconds, end: Seconds,
   verdict: z.enum(["cut", "keep", "ask"]), reason: z.string().trim().min(1).max(800),
+  /** Short account of the proposed cut for the chat row. */
+  summary: z.string().trim().min(1).max(SUMMARY_MAX).optional(),
   /** Set by the agent host after inspecting this exact range and version. */
   inspected: z.boolean().optional(),
   /** A fallback note carried onto a staged cut that the pass still has to check. */
@@ -499,9 +539,11 @@ export const Change = z.object({
   toVersion: Id,
   firstCut: z.boolean().optional(),
   description: z.string(),
+  /** Editorial reason for the change as a whole or a change without named edits. */
+  reason: EditReason.optional(),
   author: Author,
   /** Editorial reasons on the pre-proposal timeline. Adjacent removals can share one review item. */
-  cutReasons: z.array(z.object({ start: Seconds, end: Seconds, reason: z.string(), originalRange: TimeRange.optional(),
+  cutReasons: z.array(z.object({ start: Seconds, end: Seconds, reason: z.string(), summary: CutAssessment.shape.summary, originalRange: TimeRange.optional(),
     /** Requested overlap in seconds at submission time. Older changes have one duration in joinFades. */
     crossfade: Seconds.optional(),
     /** An unassessed cut staged under the retired Suggest setting still needs the editor if recommended. */
@@ -510,7 +552,9 @@ export const Change = z.object({
     /** Why the editor should look or listen before keeping this applied cut. */
     check: z.string().trim().min(1).max(120).optional(),
     /** Why Scarlet held this cut for a closer look: what it measured at the edges. For the agent; the editor reads `reason`. */
-    held: z.string().optional() })).optional(),
+    held: z.string().optional(),
+    /** Nothing Scarlet measures can settle this cut's join, so it waits for the editor to hear it and no later cut replaces it. */
+    unheard: z.literal(true).optional() })).optional(),
   /** Second-pass recommendations on the immutable chronological cut-review plan. */
   cutAssessments: z.array(CutAssessment).optional(),
   /** A call rechecked against newer footage. Its index still identifies the same call in the original pass. */
@@ -528,9 +572,11 @@ export const Change = z.object({
   noteIds: z.array(Id).default([]),
   /** Named, individually playable edits on toVersion. Overlapping edits keep distinct identities. */
   timelineEdits: z.array(z.object({ label: z.string().trim().min(1).max(180), range: TimeRange,
+    /** Editorial reason shown on the edit's card. Optional for earlier edits. */
+    reason: EditReason.optional(),
     /** Why the editor should look or listen before keeping this edit. */
     check: z.string().trim().min(1).max(120).optional(),
-    /** One sentence on what the edit did, side effects included. The edit's card shows this and nothing else. */
+    /** Short sentence in the chat on what the edit did, including notable side effects. */
     summary: z.string().trim().min(1).max(SUMMARY_MAX).optional(), replaces: z.object({ changeId: Id, spot: z.number().int().nonnegative() }).optional() })).optional(),
   /**
    * Doubts a later request raised about this change's edits once they were in the video: the edit (`spot`, as its
@@ -538,7 +584,18 @@ export const Change = z.object({
    * that needs the editor until they keep it there.
    */
   flags: z.array(z.object({ spot: z.number().int().nonnegative(), check: z.string().trim().min(1).max(120), taskId: Id,
-    at: z.string().datetime() })).optional(),
+    at: z.string().datetime(),
+    /** The passage the editor should inspect, in the clock of the version where it was checked. */
+    location: z.object({ version: Id, range: TimeRange }).optional() })).optional(),
+  /**
+   * Edits of this change the editor kept (`spot`, as the request in `threadId` lists it), with the name and reason to
+   * look they read then and where the edit was on the video. A run hears of them, so a doubt the editor has settled
+   * isn't raised again (2026-11-16: a pass flagged a hold the editor had kept in each of its next two saves). `recheck`
+   * is the later doubt (`flags`) the Keep settles.
+   */
+  kept: z.array(z.object({ spot: z.number().int().nonnegative(), threadId: Id, at: z.string().datetime(), recheck: z.string().optional(),
+    label: z.string().max(180).optional(), check: z.string().max(120).optional(),
+    place: z.object({ version: Id, range: TimeRange }).optional() })).optional(),
   /** Timeline ranges affected by the change (merged, with handles applied by the renderer). */
   ranges: z.array(TimeRange).default([]),
   state: ChangeState.default("proposed"),
@@ -580,7 +637,9 @@ export const Change = z.object({
   restoredCuts: z.array(z.number().int().min(0)).optional(),
   appliedReview: z.object({
     originalVersion: Id,
-    joins: z.array(z.object({ at: Seconds, removed: TimeRange, reviewIndex: z.number().int().nonnegative().optional() })),
+    joins: z.array(z.object({ at: Seconds, removed: TimeRange, reviewIndex: z.number().int().nonnegative().optional(),
+      /** Join position on the proposal, for matching its named note after review moves the join. */
+      proposedAt: Seconds.optional() })),
     originalDuration: Seconds,
     duration: Seconds,
   }).optional(),

@@ -1,6 +1,6 @@
 # Transcription models
 
-Choose a model in **App Settings → General → Transcribe speech with**. The selection applies to new transcriptions, including imports, dialogue analysis and voice notes. Opening an existing project keeps its saved transcript.
+Choose your **Preferred model** under **App Settings → General → Speech transcription**. The selection applies to new transcriptions, including imports, dialogue analysis and voice notes. Opening an existing project keeps its saved transcript.
 
 In **Media**, hover over the circular arrow beside **Transcribed**, or focus it with Tab, to see when that recording’s last successful transcription finished and which model produced it. Click the arrow to re-transcribe the original recording with your current settings.
 
@@ -49,4 +49,4 @@ For synthetic audio in which someone says “I, I agree,” the adapter can retu
 }
 ```
 
-Scarlet uses those times for editing and can refine English word boundaries with its local acoustic aligner. New local transcripts record which model option produced them.
+Scarlet uses those times for editing and can refine English and Spanish word boundaries from the audio. The first Spanish alignment downloads a 356 MB model, which Scarlet reuses locally. Words the model cannot confidently place keep their provider times. To refine a previously saved Spanish transcript, transcribe the recording again. New local transcripts record which model option produced them. [Spanish alignment model and attribution](https://huggingface.co/parseh/aligner-es/tree/d2b70028033dac453897da0cafaa98ce3a6121b9)

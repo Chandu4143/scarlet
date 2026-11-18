@@ -21,6 +21,14 @@ describe("what sounds between two words", () => {
     expect(describeGapSound(gapSound(levels(() => undefined), { start: 2.9, end: 4.6 })!)).toBe("quiet");
   });
 
+  it("reads a range that starts on a level's edge, where rounding leaves the first level no width", () => {
+    // 300 s at 20000 levels: the edge at 464.16 s computes as 464.15999999999997, the start the gate passed.
+    const rms = Array.from({ length: 20000 }, (_, i) => { const t = 300 + (i + .5) * .015; return (t >= 464.24 && t < 464.37) || (t >= 464.52 && t < 464.85) ? .015 : .0005; });
+    const start = 464.15999999999997;
+    expect(300 + 10944 * .015).toBe(start);
+    expect(gapSound({ from: 300, to: 600, rms }, { start, end: 465.1 }, -37, 0)!.runs.length).toBe(2);
+  });
+
   it("leaves out a sibilant's hiss, a click and each word's own edge", () => {
     // Hiss at -44 dBFS through the gap, a 40 ms click, and the words' sound running 40 ms past their timings.
     const hiss = levels(t => t >= 2.9 && t < 2.94 ? .1 : t >= 4.56 && t < 4.6 ? .1 : t >= 3.7 && t < 3.74 ? .2 : t >= 2.94 && t < 4.56 ? .006 : undefined);

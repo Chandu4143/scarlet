@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, isLearningCheck, isSkillEdit, planText, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, isAsideTask, isLearningCheck, isProjectEditTask, PROJECT_EDIT_TASK_KINDS, isSkillEdit, planText, queueBlocker, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { carriesAudio, describeDialogueRemovals, dialogueReceipt, dialogueRemova
 import { mimeFor, styleGuidePath } from "./graphics.js";
 import type { Ctx } from "../context.js";
 import { now } from "../db.js";
-import { clip, since } from "../logText.js";
+import { clip, logId, since, throttledLog } from "../logText.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { recordTaskFinished, recordTaskRequested } from "../telemetry/events.js";
 import { notify } from "./notify.js";
@@ -15,10 +15,15 @@ import { restoreUnreplacedProposal } from "./revisionState.js";
 import { assistantSkills } from "./skills.js";
 import { applyChoicesWhenDone, changeDiff, cutRevisionReference, passToRevise, retireStaleSaves } from "./changes.js";
 import { resolveTimeline } from "./timeline.js";
+import { runAttemptIds } from "./runAttempts.js";
 import { learningCheckContext, skillEditEnded, startLearningCheck } from "./learnings.js";
 
 /** States a task never leaves. */
 export const FINISHED_TASK: ReadonlySet<string> = new Set(["done", "failed", "cancelled"]);
+const queueLogs = new WeakMap<Ctx, ReturnType<typeof throttledLog>>();
+
+/** Requests that can edit a project's video. */
+export const PROJECT_EDIT_KINDS = `(${PROJECT_EDIT_TASK_KINDS.map(kind => `'${kind}'`).join(",")})`;
 
 /** The recording has a saved transcript. */
 export function hasTranscript(ctx: Ctx, mediaId: string): boolean {
@@ -64,7 +69,7 @@ function recentDuration(ctx: Ctx, kind: TaskKind, agent: AgentId, model: string 
   return (seconds[middle]! + seconds[Math.floor((seconds.length - 1) / 2)]!) / 2;
 }
 
-export const editsDialogue = (kind: TaskKind) => kind === "edit" || kind === "revise" || kind === "note";
+export const editsDialogue = (kind: TaskKind) => isProjectEditTask({ kind });
 
 /** Whether a request of this kind about one cut of `change` revises a staged cut: a revision does, and so does any request about a pass that waits or was replaced. */
 export function stagesCut(kind: TaskKind, change: Change): boolean {
@@ -72,8 +77,8 @@ export function stagesCut(kind: TaskKind, change: Change): boolean {
 }
 
 function requestedDialogue(ctx: Ctx, text: string) {
-  if (!dialogueCommand(text)) return;
-  return dialogueCommand(text, ctx.repos.skills.select("name IN ('dialogue-pass','first-cut-dialogue','tighten-pauses-here')"));
+  const names = skillCommands(text).map(command => command.name).filter(Boolean);
+  if (names.length) return dialogueCommand(text, ctx.repos.skills.select("name IN (SELECT value FROM json_each(?))", [JSON.stringify(names)]));
 }
 
 /** Upgrade old requests and their answers once, before a host or the renderer reads them. */
@@ -109,6 +114,7 @@ export function createTask(
     createdBy: Author;
     state?: Task["state"];
     resumeRootId?: string;
+    resumesAfterProjectStop?: boolean;
     stagedCutRevision?: boolean;
     cutConflict?: Task["cutConflict"];
   },
@@ -128,6 +134,7 @@ export function createTask(
     serviceTier: input.serviceTier,
     instruction: input.instruction,
     resumeRootId: input.resumeRootId,
+    resumesAfterProjectStop: input.resumesAfterProjectStop,
     stagedCutRevision: input.stagedCutRevision ?? (selected && selected.projectId === input.projectId
       ? stagesCut(input.kind, selected) : undefined),
     cutConflict: input.cutConflict,
@@ -165,6 +172,22 @@ export function saveTask(ctx: Ctx, task: Task): Task {
   return finishedRevision && !ctx.db.inTransaction ? ctx.db.transaction(persist, "immediate")() : persist();
 }
 
+/** Close the current claim's clock before it waits, requeues, or finishes. */
+export function recordWorkThrough(task: Task, at: string): Task {
+  if (!task.startedAt || (task.state !== "claimed" && task.state !== "running")) return task;
+  const elapsed = Math.max(0, Date.parse(at) - Date.parse(task.startedAt));
+  return { ...task, workedMs: (task.workedMs ?? 0) + elapsed };
+}
+
+/** On upgrade, retain the known part of a claim that already paused for a question. */
+function pausedWork(ctx: Ctx, task: Task): number | undefined {
+  const { startedAt, workedMs } = task;
+  if (workedMs !== undefined || !startedAt) return workedMs;
+  const question = ctx.repos.taskEvents.list(task.id, "questionsAndAnswers")
+    .find(event => event.type === "question" && event.at >= startedAt);
+  return question && Math.max(0, Date.parse(question.at) - Date.parse(startedAt));
+}
+
 /** A run saving a rule the editor approved in Learnings, where there is no message box to answer it from. */
 const asksForARule = (task: Task) => isSkillEdit(task) && Boolean(task.context.learningId);
 
@@ -196,15 +219,16 @@ export function appendTaskEvent(ctx: Ctx, task: Task, ev: TaskEvent): { task: Ta
     if (last?.type === "plan" && JSON.stringify(last.data) === JSON.stringify(plan.data)) return { task, event: last };
     ev = { ...ev, text: planText(plan.data.steps), data: plan.data };
   }
-  const event = ctx.repos.taskEvents.append({ ...ev, id: ev.id ?? newId("evt"), taskId: task.id, at: ev.at ?? now() });
+  const receivedAt = now();
+  const event = ctx.repos.taskEvents.append({ ...ev, id: ev.id ?? newId("evt"), taskId: task.id, at: ev.at ?? receivedAt });
   if (ev.type === "question" && asksForARule(task)) {
     ctx.bus.publish({ type: "task.event", projectId: task.projectId, taskId: task.id, event });
     return { task: returnRuleWithQuestion(ctx, task, ev.text), event };
   }
   let next: Task = task;
-  if (task.state === "claimed") next = { ...next, state: "running", startedAt: next.startedAt ?? now() };
+  if (task.state === "claimed") next = { ...next, state: "running", startedAt: next.startedAt ?? receivedAt };
   if (ev.type === "question") {
-    next = { ...next, state: "waiting_for_user", question: ev.text };
+    next = { ...recordWorkThrough(next, receivedAt), state: "waiting_for_user", question: ev.text };
     notify(ctx, `Agent question: ${ev.text.slice(0, 80)}`, {
       body: ev.text,
       projectId: task.projectId,
@@ -212,7 +236,7 @@ export function appendTaskEvent(ctx: Ctx, task: Task, ev: TaskEvent): { task: Ta
     });
   } else if (ev.type === "answer") {
     const operation = editsDialogue(task.kind) && requestedDialogue(ctx, ev.text);
-    next = { ...next, state: "queued", hostId: null, question: null,
+    next = { ...next, workedMs: pausedWork(ctx, task), state: "queued", hostId: null, question: null,
       ...(operation && operation !== taskDialogueOperation(task) && { context: { ...task.context, dialogueOperation: operation, dialogueRange: undefined }, repeatAudit: undefined }),
       ...(task.cutConflict && { cutConflict: { ...task.cutConflict, answered: true, retried: undefined } }) };
   } else if (ev.type === "change" && typeof ev.data?.changeId === "string") {
@@ -237,11 +261,16 @@ export function isDialoguePass(task: Task) {
     taskDialogueOperation(task) === "first-cut";
 }
 
-/** The same pass owns its verification, even when the editor's final call lands after the original run finished. */
+/** A pass that ends with outstanding findings on the version that plays runs again, as the same request, to resolve them. */
 export function queueRepeatCheck(ctx: Ctx, task: Task, version: string, changeIds = task.changeIds) {
   const receipt = task.repeatAudit?.version === version ? task.repeatAudit : undefined;
-  const queued = saveTask(ctx, { ...task, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
+  const closed = recordWorkThrough(task, now());
+  // A previously finished pass may predate the persisted clock. Its latest claim is still measurable.
+  const workedMs = closed.workedMs ?? pausedWork(ctx, task) ?? (task.startedAt && task.finishedAt
+    ? Math.max(0, Date.parse(task.finishedAt) - Date.parse(task.startedAt)) : undefined);
+  const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
     repeatAudit: { ...receipt, version, noFindings: undefined, returns: (receipt?.returns ?? 0) + 1 } });
+  ctx.db.afterCommit(() => ctx.log(`[task] repeat_check task=${logId(task.id)} project=${logId(task.projectId)} outcome=queued attempt=${queued.repeatAudit!.returns}`));
   ctx.bus.taskQueued({ taskId: task.id, projectId: task.projectId });
   return queued;
 }
@@ -255,15 +284,20 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   if (body.state === "done" && task.cutConflict) {
     if (task.state === "waiting_for_user") return task;
     if (!task.cutConflict.retried) {
-      const queued = saveTask(ctx, { ...task, state: "queued", hostId: null, session: undefined,
+      const queued = saveTask(ctx, { ...recordWorkThrough(task, now()), state: "queued", hostId: null, session: undefined,
         cutConflict: { ...task.cutConflict, retried: true } });
+      ctx.db.afterCommit(() => ctx.log(`[task] completion_deferred task=${logId(task.id)} project=${logId(task.projectId)} outcome=queued reason=cut_changed`));
       ctx.bus.taskQueued({ taskId: queued.id, projectId: queued.projectId });
       return queued;
     }
     if (task.state === "queued") return task;
-    if (!task.cutConflict.answered) return appendTaskEvent(ctx, task, { type: "question", text: task.cutConflict.range
-      ? "The take here changed. Should I trim the current take or keep it as it plays?"
-      : "The takes have changed. Which words should I keep here?" }).task;
+    if (!task.cutConflict.answered) {
+      const asked = appendTaskEvent(ctx, task, { type: "question", text: task.cutConflict.range
+        ? "The take here changed. Should I trim the current take or keep it as it plays?"
+        : "The takes have changed. Which words should I keep here?" }).task;
+      ctx.db.afterCommit(() => ctx.log(`[task] completion_deferred task=${logId(task.id)} project=${logId(task.projectId)} outcome=waiting_for_user reason=cut_changed`));
+      return asked;
+    }
     body = { state: "failed", error: "Scarlet could not finish the cut using your answer. Your answer is saved." };
   }
   if (task.kind === "skill_from_change" && body.state === "done" && !task.resultSkillId) {
@@ -281,9 +315,9 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     for (const change of own()) applyChoicesWhenDone(ctx, change);
     retireStaleSaves(ctx, task);
     // A run resumed after a quit may finish without saving another part. Its earlier attempts' pass still applies.
-    const rootId = task.resumeRootId;
-    if (rootId) for (const change of ctx.repos.changes.select(`project_id = ? AND state = 'ready' AND json_extract(json, '$.taskId') IN
-        (SELECT id FROM tasks WHERE project_id = ? AND (id = ? OR json_extract(json, '$.resumeRootId') = ?))`, [task.projectId, task.projectId, rootId, rootId])) {
+    const attempts = task.resumeRootId && runAttemptIds(task.projectId, task.resumeRootId);
+    if (attempts) for (const change of ctx.repos.changes.select(`project_id = ? AND state = 'ready' AND json_extract(json, '$.taskId') IN (${attempts.sql})`,
+        [task.projectId, ...attempts.params])) {
       if (change.taskId !== task.id) applyChoicesWhenDone(ctx, change);
     }
   }
@@ -298,7 +332,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
       if (plays && (receipt?.remaining !== 0 || receipt.unavailable?.length)) {
         if (receipt?.unavailable?.length || (receipt?.returns ?? 0) >= 2) {
           body = { ...body, state: "failed", interrupted: true, error: receipt?.unavailable?.join(" ") ||
-            "The final audio check still has repeated dialogue to resolve. Resume to finish checking the saved edit." };
+            "The final audio check still has repeats, silences or divided sentences to resolve. Resume to finish checking the saved edit." };
         } else {
           // The pass's closing words are kept for the editor while the check runs: the check's own are about the check.
           const reply = task.reply ?? (body.summary?.trim() || undefined);
@@ -327,8 +361,11 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   const reply = dialogue ? task.reply ?? (body.summary?.trim() || undefined) : task.reply;
   // The run finished without transcripts it waited for. What it saved stands, and the editor can resume it once they're ready.
   const needsTranscripts = body.state === "done" && task.kind !== "transcribe" ? unmetTranscriptWaits(ctx, task.id) : [];
+  const finishedAt = now();
+  const closed = recordWorkThrough(task, finishedAt);
   const saved = saveTask(ctx, {
-    ...task,
+    ...closed,
+    workedMs: closed.workedMs ?? pausedWork(ctx, task),
     state: body.state,
     summary,
     ...(reply ? { reply } : {}),
@@ -336,15 +373,18 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     error: body.error,
     changeIds,
     question: null,
-    finishedAt: now(),
+    finishedAt,
     // The host stopped a stalled run. Its saved work stands, and the editor can resume it.
     ...(body.state === "failed" && body.interrupted ? { interrupted: true } : {}),
   });
   recordTaskFinished(ctx, saved);
   const ran = since(saved.startedAt, Date.parse(saved.finishedAt!));
-  ctx.log(`[task] ${saved.id} ${body.state}${ran ? ` after ${ran}` : ""}${body.error ? `: ${clip(body.error, 400)}` : ""}` +
-    `${changeIds.length ? ` (${changeIds.length} change${changeIds.length === 1 ? "" : "s"})` : ""}` +
-    `${needsTranscripts.length ? `, without the transcript of ${needsTranscripts.join(", ")}` : ""}`);
+  ctx.db.afterCommit(() => {
+    ctx.log(`[task] ${saved.id} ${saved.state}${ran ? ` after ${ran}` : ""}${body.error ? `: ${clip(body.error, 400)}` : ""}` +
+      `${changeIds.length ? ` (${changeIds.length} change${changeIds.length === 1 ? "" : "s"})` : ""}` +
+      `${needsTranscripts.length ? `, without the transcript of ${needsTranscripts.join(", ")}` : ""}`);
+    if (needsTranscripts.length) ctx.log(`[task] completion_deferred task=${logId(task.id)} project=${logId(task.projectId)} outcome=awaiting_transcripts reason=transcripts remaining=${needsTranscripts.length}`);
+  });
   const asked = saved.context.message ?? saved.instruction.split("\n").pop() ?? saved.instruction;
   // A learning check is Scarlet's own reading of a request. What it offers is in Learnings; the run itself is no one's news.
   if (!isLearningCheck(saved)) logActivity(ctx, {
@@ -374,7 +414,9 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
 
 export function cancelTask(ctx: Ctx, task: Task): Task {
   if (FINISHED_TASK.has(task.state)) return task;
-  const saved = saveTask(ctx, { ...task, state: "cancelled", finishedAt: now() });
+  const finishedAt = now();
+  const closed = recordWorkThrough(task, finishedAt);
+  const saved = saveTask(ctx, { ...closed, workedMs: closed.workedMs ?? pausedWork(ctx, task), state: "cancelled", finishedAt });
   recordTaskFinished(ctx, saved);
   const ran = since(task.startedAt, Date.parse(saved.finishedAt!));
   ctx.log(`[task] ${task.id} cancelled while ${task.state}${ran ? ` after ${ran}` : ""}`);
@@ -384,8 +426,12 @@ export function cancelTask(ctx: Ctx, task: Task): Task {
   return saved;
 }
 
-/** CLIs whose sessions Scarlet resumes after an answer. Codex runs stay ephemeral, out of the user's Codex thread list. */
-export const RESUMABLE = new Set<string>(["claude"]);
+/**
+ * CLIs whose sessions Scarlet resumes after an answer or a quit. A Codex run keeps its thread in a private Codex home
+ * beside its task folder, out of the user's own Codex thread list. Started afresh, a pass resumed after a quit spent
+ * 120 more turns and 13.7M tokens finding its place again (2026-11-18).
+ */
+export const RESUMABLE = new Set<string>(["claude", "codex"]);
 
 /** What a run hears when it carries on in its own CLI session after Scarlet closed on it. */
 const INTERRUPTED = "Scarlet closed while you were working on this request, and it is open again. Carry on from where you stopped. " +
@@ -454,6 +500,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     skills: assistantSkills(ctx.repos.skills.select("1=1", [], "name ASC"), c.skillIds, true),
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,
+    areaCheck: task.kind === "area_check" ? task.context.areaCheck : undefined,
     workDir: opts.workDir,
     timeLimitMinutes: opts.timeLimitMinutes,
     capabilities: { ...agentCapabilities(task.agent), plan: plans },
@@ -463,8 +510,9 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   const plan = plans ? { plan: true } : {};
   if (isDialoguePass(task) && task.repeatAudit?.returns) {
     // The goal and what counts as done, not the steps: the tools say how they check and repair.
-    const finish = "The dialogue pass has saved its editing work. What is left is the repeat check on the current playback: " +
-      "no word the cuts clipped, and no accidental repeat, should play. Keep intentional speech with its reason. " +
+    const finish = "The dialogue pass has saved its editing work. What is left is the closing check on the current playback: " +
+      "no word the cuts clipped should play, and each repeat, silence and divided sentence the check lists is cut, kept " +
+      "with its reason, or staged for the editor when you doubt it, as the skill and the editor ask. " +
       "The pass is done once dialogue_check_repeats on the current version has nothing outstanding. " +
       "Honor the editor’s scope, preferences, protected footage and decisions.";
     return { systemPrompt, instruction: finish + "\nEditor’s request: " + firstMessage(task.instruction.trim()) +
@@ -483,9 +531,14 @@ function graphicsContext(ctx: Ctx, project: Project, task: Task) {
   if (task.kind === "skill_from_change" || isAsideTask(task)) return {};
   const attachments = (task.context.attachments ?? []).map(a => ({ ...a, mime: a.mime ?? mimeFor(a.name), path: join(ctx.paths.attachments(project.id), a.id, a.name) }));
   const said = task.context.message ?? task.instruction;
-  const names = [...new Set([...said.matchAll(/(?:^|[^\w$])\$([a-z0-9][a-z0-9-]*)/g)].map(m => m[1]!))];
+  const named = (text: string) => [...text.matchAll(/(?:^|[^\w$])\$([a-z0-9][a-z0-9-]*)/g)].map(m => m[1]!);
+  // A skill the editor chose can name templates too ("every time we go to the screen recording, use $swipe").
+  const chosen = (task.context.skillIds ?? []).map(id => ctx.repos.skills.get(id)).filter(s => !!s && s.enabled);
+  const fromSkill = new Map(chosen.flatMap(skill => named(skill!.content).map(name => [name, skill!.name] as const)).reverse());
+  const names = [...new Set([...named(said), ...fromSkill.keys()])];
   const pickedTemplates = names.map(name => ctx.repos.templates.select("name = ?", [name])[0]).filter(t => !!t)
-    .map(t => ({ id: t.id, name: t.name, title: t.title, fields: t.fields }));
+    .map(t => ({ id: t.id, name: t.name, title: t.title, fields: t.fields, kind: t.kind, ...(t.transition && { transition: t.transition }),
+      ...(!named(said).includes(t.name) && fromSkill.has(t.name) && { skill: fromSkill.get(t.name) }) }));
   const guide = project.styleGuide;
   const guidePath = styleGuidePath(ctx, project.id, guide);
   return {
@@ -644,55 +697,80 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   const agents = host.agents.filter(a => a.installed && a.loggedIn !== false && (!freeAgents || freeAgents.includes(a.id)));
   if (!taskId && !agents.length) return null;
   const filter = taskId ? "q.id = ?" : "q.kind != 'transcribe' AND q.agent IN (SELECT value FROM json_each(?))";
-  // A skill edit and a learning check don't touch the video: neither waits for the project's requests nor holds them up.
-  // One request at a time per project, in the order they were asked, so two agents never edit the same footage at
-  // once. The exception is two requests that are each about one cut or edit, and about different ones: neither waits
-  // for the other, running or ahead in line (runsBeside in @scarlet/shared, which this repeats). A dialogue pass whose staged cuts still need the editor holds back requests that aren't about it. So does one
-  // with a cut sent back, while that revision is queued or running; the version a finished revision replaced holds nothing.
-  // queueWait in @scarlet/shared explains the same rule in the app; keep the two in step.
-  // A request the editor started anyway (startsBeforeCalls) doesn't wait for a pass's calls; it still takes its turn.
-  // A request whose words the editor is changing isn't started until they're saved, and still holds its place.
-  // IS, not =: a missing thread or change id must compare false, not NULL, or NOT would let the request through.
-  const about = (t: string) => `(coalesce(json_extract(${t}.json, '$.context.threadId'), ${t}.id) IS json_extract(o.json, '$.threadId')
-    OR json_extract(${t}.json, '$.context.changeId') IS o.id)`;
-  const open = (t: string) => `SELECT 1 FROM changes o JOIN tasks ot ON ot.id = json_extract(o.json, '$.taskId')
-    WHERE o.project_id = ${t}.project_id AND json_extract(o.json, '$.intent') = 'suggestion'
-      AND (o.state = 'ready' OR (o.state = 'revising' AND EXISTS (SELECT 1 FROM tasks rv WHERE rv.project_id = o.project_id
-        AND rv.state IN ('queued','claimed','running','waiting_for_user') AND json_extract(rv.json, '$.context.changeId') = o.id)))
-      AND json_array_length(coalesce(json_extract(o.json, '$.cutReasons'), '[]')) > 0
-      AND json_extract(ot.json, '$.context.branch') IS json_extract(${t}.json, '$.context.branch')`;
-  const thread = (t: string) => `coalesce(json_extract(${t}.json, '$.context.threadId'), ${t}.id)`;
-  const aboutOne = (t: string) => `(json_extract(${t}.json, '$.context.changeId') IS NOT NULL
-    AND (json_extract(${t}.json, '$.context.cutIndex') IS NOT NULL OR json_extract(${t}.json, '$.context.editIndex') IS NOT NULL))`;
-  const beside = (a: string, b: string) => `(${aboutOne(a)} AND ${aboutOne(b)} AND NOT (${thread(a)} IS ${thread(b)}
-    AND json_extract(${a}.json, '$.context.cutIndex') IS json_extract(${b}.json, '$.context.cutIndex')
-    AND json_extract(${a}.json, '$.context.editIndex') IS json_extract(${b}.json, '$.context.editIndex')))`;
-  // A resumed run keeps the place in line of the run it continues: requests asked while that run worked still wait for it.
-  // It takes that run's row number as well as its time, so a request asked in the same millisecond as that run doesn't pass it.
-  const place = (t: string) => {
-    const root = (column: string) => `coalesce((SELECT r.${column} FROM tasks r WHERE r.id = json_extract(${t}.json, '$.resumeRootId')), ${t}.${column})`;
-    return `${root("created_at")}, ${root("rowid")}, ${t}.rowid`;
-  };
-  const rows = ctx.db.prepare(`SELECT q.json FROM tasks q JOIN projects p ON p.id=q.project_id
+  // Include only tasks this host can claim in the candidate scan. The shared queue still sees
+  // requests for other hosts and requests being reworded, since they can hold up later work.
+  const checkedAt = now();
+  const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at, p.editing_paused,
+    coalesce(json_extract(q.json, '$.rewordingUntil') > ?, 0) AS rewording FROM tasks q JOIN projects p ON p.id = q.project_id
+    LEFT JOIN tasks root ON root.id = json_extract(q.json, '$.resumeRootId')
     WHERE p.deleted_at IS NULL AND q.state = 'queued' AND ${filter}
-    AND (json_extract(q.json, '$.rewordingUntil') IS NULL OR json_extract(q.json, '$.rewordingUntil') <= ?)
-    AND (q.kind IN ('skill_edit', 'learning_check') OR (NOT EXISTS (SELECT 1 FROM tasks prior
-      WHERE prior.project_id = q.project_id AND prior.id != q.id AND prior.kind NOT IN ('transcribe', 'skill_edit', 'learning_check')
-        AND NOT ${beside("q", "prior")}
-        AND (prior.state IN ('claimed','running','waiting_for_user')
-          OR (prior.state = 'queued' AND (${place("prior")}) < (${place("q")})
-            AND NOT EXISTS (${open("q")} AND ${about("q")} AND NOT ${about("prior")}))))
-    AND (json_extract(q.json, '$.startsBeforeCalls') IS 1 OR NOT EXISTS (${open("q")} AND NOT ${about("q")}))))
-    ORDER BY ${place("q")}`).iterate(taskId ?? JSON.stringify(agents.map(a => a.id)), now());
+    AND (p.editing_paused = 0 OR q.kind NOT IN ${PROJECT_EDIT_KINDS})
+    ORDER BY coalesce(root.created_at, q.created_at), coalesce(root.rowid, q.rowid), q.rowid`)
+    .iterate(checkedAt, taskId ?? JSON.stringify(agents.map(a => a.id))) as Iterable<{
+      id: string; project_id: string; kind: TaskKind; json: string; created_at: string; editing_paused: number; rewording: number;
+    }>;
+  // Only the columns the queue reads: an open pass's cut reasons are counted in SQL, never parsed, and an edit's
+  // lineage is read only for a request about an applied edit.
+  const lineage = ctx.db.prepare("SELECT json_extract(json, '$.timelineEdits') AS edits FROM changes WHERE id = ?");
+  function readQueue(projectId: string, editingPaused: boolean) {
+    const changes = (ctx.db.prepare(`SELECT id, project_id AS projectId, state, json_extract(json, '$.intent') AS intent,
+        json_extract(json, '$.taskId') AS taskId, json_extract(json, '$.threadId') AS threadId,
+        json_array_length(json_extract(json, '$.cutReasons')) AS cuts
+      FROM changes WHERE project_id = ? AND state IN ('ready', 'revising')
+        AND json_extract(json, '$.intent') = 'suggestion' AND json_array_length(json_extract(json, '$.cutReasons')) > 0`)
+      .all(projectId) as (Omit<QueueChange, "cutReasons" | "taskId" | "threadId"> & { taskId: string | null; threadId: string | null; cuts: number })[])
+      .map(({ cuts, taskId, threadId, ...change }): QueueChange =>
+        ({ ...change, taskId: taskId ?? undefined, threadId: threadId ?? undefined, cutReasons: { length: cuts } }));
+    const snapshot = ctx.repos.tasks.queue(projectId, changes.flatMap(change => change.taskId ? [change.taskId] : []));
+    const tasks = editingPaused ? snapshot.filter(task => !editsDialogue(task.kind) || FINISHED_TASK.has(task.state)) : snapshot;
+    const edits = new Map<string, Pick<Change, "id" | "timelineEdits"> | undefined>();
+    const lookup = (id: string) => {
+      if (!edits.has(id)) {
+        const row = lineage.get(id) as { edits: string | null } | undefined;
+        edits.set(id, row?.edits ? { id, timelineEdits: JSON.parse(row.edits) } : undefined);
+      }
+      return edits.get(id);
+    };
+    return { blocker: queueBlocker(tasks, editingPaused ? [] : changes, lookup),
+      byId: new Map(tasks.map(task => [task.id, task])) };
+  }
+  const queues = new Map<string, ReturnType<typeof readQueue>>();
+  const logBlocked = (row: { id: string; project_id: string; created_at: string }, reason: string, blocker?: string) => {
+    const wait = Date.parse(checkedAt) - Date.parse(row.created_at);
+    if (!(wait >= 30_000)) return;
+    let write = queueLogs.get(ctx);
+    if (!write) queueLogs.set(ctx, write = throttledLog(ctx.log, 60_000, 5000));  // One key per blocked queued request.
+    write(`${row.id}/${reason}/${blocker ?? ""}`, `[task] claim_blocked task=${logId(row.id)} project=${logId(row.project_id)} reason=${reason} wait_ms=${wait}` +
+      (blocker ? ` blocker=${logId(blocker)}` : ""));
+  };
   for (const row of rows) {
-    const task = ctx.repos.tasks.parse(row.json as string);
-    if (!hostCanRun(host, task)) continue;
+    if (row.rewording) {
+      logBlocked(row, "rewording");
+      continue;
+    }
+    // A host that can't run the request never reads the project's queue for it.
+    const task = ctx.repos.tasks.parse(row.json);
+    if (!hostCanRun(host, task)) {
+      logBlocked(row, "capability");
+      continue;
+    }
+    if (!isAsideTask({ kind: row.kind })) {
+      const queue = queues.get(row.project_id) ?? readQueue(row.project_id, row.editing_paused === 1);
+      queues.set(row.project_id, queue);
+      const candidate = queue.byId.get(row.id)!;
+      const blocker = queue.blocker(candidate);
+      if (blocker) {
+        logBlocked(row, blocker.reason, blocker.id);
+        continue;
+      }
+    }
+    const createdAt = task.createdAt ?? row.created_at;
     const seenAt = now();
     const startedAt = task.startedAt && task.startedAt >= seenAt ? new Date(Date.parse(task.startedAt) + 1).toISOString() : seenAt;
     ctx.db.prepare("UPDATE tasks SET worker_pid = ?, worker_seen_at = ? WHERE id = ?").run(desktopPid, seenAt, task.id);
-    const waited = since(task.createdAt, Date.parse(seenAt));
+    const waited = since(createdAt, Date.parse(seenAt));
     ctx.log(`[task] ${task.id} claimed by ${host.name} (${host.id})${waited ? ` after ${waited} in the queue` : ""}`);
-    return saveTask(ctx, { ...task, state: "claimed", hostId: host.id, startedAt });
+    return saveTask(ctx, { ...task, createdAt, state: "claimed", hostId: host.id, startedAt, workedMs: pausedWork(ctx, task) ?? 0 });
   }
   return null;
 }

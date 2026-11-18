@@ -7,6 +7,7 @@
 import { adjacentRepeatCandidates, normalizeTranscriptToken } from "@scarlet/shared";
 import type { TimeRange, TranscriptWord } from "@scarlet/timeline";
 import type { TimelineWord } from "./timeline-perception.js";
+import { isTag } from "./analysis.js";
 
 /**
  * Under this, word to word, a gap is the rhythm of speech and not a pause, so it is never listed. Which pauses are worth
@@ -40,6 +41,11 @@ interface RepeatedWords {
   toWord: number;
   /** A cut of this part sits between the two sayings: its join made the repeat. */
   atJoin: boolean;
+  /**
+   * Seconds the edit plays between the two sayings, by the words' times. A stutter repeats at once; "click into it,
+   * it kind of highlights" said "it" twice with 0.74 s of room tone between, and a pass cut one as a restart (2026-11-16).
+   */
+  pause: number;
 }
 
 /** A stretch of a recording the part still plays between two words it keeps, for a reading of what sounds in it. */
@@ -58,7 +64,7 @@ export function partLeftovers(words: readonly TimelineWord[], cuts: readonly Tim
   const removed = [...cuts].sort((a, b) => a.start - b.start);
   const cutIn = (from: number, to: number) => removed.reduce((sum, c) => sum + Math.max(0, Math.min(c.end, to) - Math.max(c.start, from)), 0);
   // A word plays when its middle does, the rule captions use.
-  const heard = words.filter(w => w.end > w.start && !/^\[.*\]$/.test(w.text) && normalizeTranscriptToken(w.text) &&
+  const heard = words.filter(w => w.end > w.start && !isTag(w.text) && normalizeTranscriptToken(w.text) &&
     !removed.some(c => c.start <= (w.start + w.end) / 2 && (w.start + w.end) / 2 < c.end));
   const sourceOf = (w: TimelineWord) => transcripts.get(w.mediaId)?.[w.index];
   const pauses: KeptPause[] = [];
@@ -114,8 +120,10 @@ export function partLeftovers(words: readonly TimelineWord[], cuts: readonly Tim
     });
     const first = heard[i]!, at = sourceOf(first);
     if (!found || !at) { i++; continue; }
+    const last = heard[i + found - 1]!, next = heard[i + found]!;
     repeats.push({ mediaId: first.mediaId, source: at.start, text: heard.slice(i, i + 2 * found).map(w => w.text).join(" "),
-      fromWord: first.index, toWord: first.index + found - 1, atJoin: cutIn(first.start, heard[i + 2 * found - 1]!.end) > 1e-6 });
+      fromWord: first.index, toWord: first.index + found - 1, atJoin: cutIn(first.start, heard[i + 2 * found - 1]!.end) > 1e-6,
+      pause: Math.round(Math.max(0, next.start - last.end - cutIn(last.end, next.start)) * 100) / 100 });
     i += found;
   }
   return { pauses, repeats, gaps };

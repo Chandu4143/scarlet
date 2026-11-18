@@ -1,6 +1,7 @@
 import os from "node:os";
 import { RecordingSpeakers } from "./services/recordingSpeakers.js";
 import { audioWorker } from "./transcribe/audioWorker.js";
+import { editorFirst } from "./services/editorFirst.js";
 import { AnalysisCache } from "./services/analysisCache.js";
 import type { ServerSettings } from "@scarlet/shared";
 import type { JoinFades, Transcript } from "@scarlet/timeline";
@@ -19,6 +20,7 @@ import { createTelemetry, type Telemetry } from "./telemetry/analytics.js";
 import { telemetryConfig } from "./telemetry/config.js";
 import { bundledWhisperCli, bundledWhisperGpu, LocalWhisperModel } from "./transcribe/localModel.js";
 import { hasCrisperWhisper } from "./transcribe/localRuntime.js";
+import { ModelPrices } from "./repo/modelPrices.js";
 
 /** Permission errors mean the owner may still be working in another desktop instance. */
 export function processIsAlive(pid: number): boolean {
@@ -141,6 +143,8 @@ export interface ServerOptions {
   prepareSourceProxies?: boolean;
   /** Move SQLite checkpoints off the serving thread while the engine is running. */
   backgroundCheckpoints?: boolean;
+  /** Look up prices for models the shipped price list doesn't have. */
+  modelPrices?: { fetch?: typeof fetch };
   telemetry?: {
     /** Default project token for the packaged engine. SCARLET_POSTHOG_KEY takes precedence. */
     posthogKey?: string;
@@ -190,7 +194,9 @@ export interface Ctx {
   spotChecks: AnalysisCache<Array<number | null> | null>;
   /** A review selection's saved draft, and the crossfade Scarlet put on its joins. */
   reviewDrafts: Map<string, { version: string; joinFades?: JoinFades }>;
-  track<T>(p: Promise<T>): Promise<T>;
+  projectWorkPending(projectId: string): boolean;
+  /** Track work for shutdown and, when it belongs to a project, for storage cleanup. */
+  track<T>(p: Promise<T>, projectId?: string): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -202,11 +208,15 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
   const whisperCli = bundledWhisperCli(env);
   // The audio helper is one per engine process. Its notes on where each model runs go to this engine's log.
   audioWorker.log = options.log ?? (m => console.log(m));
+  editorFirst.log = audioWorker.log;
   // An agent at work asks for the helper's models again within a turn or two.
   const agentAtWork = db.prepare("SELECT 1 FROM tasks WHERE state IN ('claimed','running') AND kind != 'transcribe' LIMIT 1");
   audioWorker.wanted = () => { try { return !!agentAtWork.get(); } catch { return false; } };
-  const repos = createRepos(db, () => whisperCli || hasCrisperWhisper(paths.root) ? "whispercpp" : "none");
+  // Prices for models the shipped list doesn't have are fetched only by an engine that asks for it, never by tests or tools.
+  const prices = new ModelPrices({ file: join(paths.root, "model-prices.json"), fetch: options.modelPrices?.fetch, log: options.log ?? (m => console.log(m)) });
+  const repos = createRepos(db, () => whisperCli || hasCrisperWhisper(paths.root) ? "whispercpp" : "none", prices);
   const pending = new Set<Promise<unknown>>();
+  const projectWork = new Map<string, number>();
   const shutdown = new AbortController();
   const log = options.log ?? ((m: string) => console.log(m));
   if (whisperCli && process.platform === "linux") {
@@ -269,9 +279,19 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
     spotChecks: new AnalysisCache(owners => (owners?.length ?? 0) * 8, 1024 * 1024, 1),
     reviewDrafts: new Map(),
     whisperModel: new LocalWhisperModel(join(paths.root, "models")),
-    track<T>(p: Promise<T>) {
+    projectWorkPending(projectId) {
+      return projectWork.has(projectId);
+    },
+    track<T>(p: Promise<T>, projectId?: string) {
       pending.add(p);
-      p.finally(() => pending.delete(p)).catch(() => {});
+      if (projectId !== undefined) projectWork.set(projectId, (projectWork.get(projectId) ?? 0) + 1);
+      p.finally(() => {
+        pending.delete(p);
+        if (projectId === undefined) return;
+        const remaining = projectWork.get(projectId)! - 1;
+        if (remaining > 0) projectWork.set(projectId, remaining);
+        else projectWork.delete(projectId);
+      }).catch(() => {});
       return p;
     },
     async close() {
@@ -293,6 +313,15 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
         db.close();
       }
     },
+  };
+  // Runs Scarlet couldn't price show their cost once a fetched list has it.
+  prices.onUpdate = () => {
+    const recent = db.prepare(`SELECT task_id, project_id FROM task_usage GROUP BY task_id ORDER BY max(at) DESC LIMIT 200`)
+      .all() as { task_id: string; project_id: string }[];
+    for (const r of recent) {
+      const usage = repos.usage.taskTotals(r.task_id);
+      if (usage.estimatedApiCostUsd != null) ctx.bus.publish({ type: "task.usage", projectId: r.project_id, taskId: r.task_id, usage });
+    }
   };
   // Reads ctx.log when it happens, so a log set after startup still gets it.
   db.onEffectError = error => ctx.log(`[error] after-commit listener failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);

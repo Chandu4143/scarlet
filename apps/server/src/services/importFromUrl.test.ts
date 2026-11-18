@@ -158,6 +158,22 @@ it.each(["deadline", "client"] as const)("discards a partial response when the %
   expect(stored()).toEqual([]);
 });
 
+it("cancels a finished transfer before its file can be added to the project", async () => {
+  const stop = new AbortController();
+  const probe = vi.mocked(workspace.ctx.render.probeMedia);
+  probe.mockImplementationOnce(async () => {
+    expect(stored()).toHaveLength(1);
+    stop.abort();
+    return { duration: 0, hasAudio: false, kind: "image" };
+  });
+  answers();
+  const imported = await importUrl("https://media.example/clip.png", undefined, stop.signal);
+  expect(imported).toMatchObject({ status: 408, body: { error: { code: "download_cancelled" } } });
+  expect(probe).toHaveBeenCalledOnce();
+  expect(stored()).toEqual([]);
+  expect(workspace.ctx.repos.projects.listMedia(project.id)).toEqual([]);
+});
+
 it("restarts a resumed download when the original window disconnects while both requests are waiting", async () => {
   const stop = new AbortController();
   vi.mocked(downloadImport).mockImplementationOnce((_url, signal) => new Promise((_resolve, reject) => {
@@ -211,15 +227,30 @@ it("keeps a server's file name as sent when it isn't percent-encoding", async ()
   expect(lines.filter(line => line.startsWith("[error]"))).toEqual([]);
 });
 
-it("names a download after the address when the server gives no name, and after the editor's when they chose one", async () => {
+it("names a download after the address, without its percent-escapes, when the server gives no name, and after the editor's when they chose one", async () => {
   answers();
   expect((await importUrl("https://media.example/clips/intro.final.png?sig=abc")).body.media).toMatchObject({ name: "intro.final.png" });
+  answers();
+  const cafe = (await importUrl("https://media.example/clips/Caf%C3%A9%20title%20card.png?sig=abc")).body.media;
+  expect(cafe).toMatchObject({ name: "Café title card.png", path: `${cafe.id}.png` });
+  answers();
+  const escapedDot = (await importUrl("https://media.example/clips/intro%2Emp4?sig=abc")).body.media;
+  expect(escapedDot).toMatchObject({ name: "intro.mp4", path: `${escapedDot.id}.mp4` });
+  answers();
+  expect((await importUrl("https://media.example/clips/intro%252Emp4")).body.media.name).toBe("download");
+  // "%zz" isn't an escape, so the name stays as the address spells it.
+  answers();
+  expect((await importUrl("https://media.example/clips/100%25%20done%zz.png")).body.media).toMatchObject({ name: "100%25%20done%zz.png" });
+  // A path's "+" is a plus, not a space.
+  answers();
+  expect((await importUrl("https://media.example/clips/a+b.png")).body.media).toMatchObject({ name: "a+b.png" });
   answers();
   // No extension in the address: nothing says what kind of file it is.
   const bare = (await importUrl("https://media.example/get")).body.media;
   expect(bare).toMatchObject({ name: "download", path: `${bare.id}.bin` });
   answers({ "content-disposition": "attachment; filename=\"server.png\"" });
   expect((await importUrl("https://media.example/get", "Logo.webp")).body.media).toMatchObject({ name: "Logo.webp" });
+  expect(lines.filter(line => line.startsWith("[error]"))).toEqual([]);
 });
 
 it("answers 400 with the reason when the address can't be reached, and when it isn't one Scarlet downloads", async () => {

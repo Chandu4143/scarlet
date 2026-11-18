@@ -167,6 +167,14 @@ export function applyOp(input: Timeline, op: TimelineOp): Timeline {
   return applyToDraft(structuredClone(input), op);
 }
 
+/**
+ * Apply `op` to a timeline the caller owns, changing it in place. The op is copied first: a later op changes the
+ * timeline in place too, and would otherwise change the data it shares with this one.
+ */
+export function applyOpInPlace(draft: Timeline, op: TimelineOp): Timeline {
+  return applyToDraft(draft, structuredClone(op));
+}
+
 function applyToDraft(tl: Timeline, op: TimelineOp): Timeline {
   switch (op.op) {
     case "addClip": {
@@ -192,7 +200,10 @@ function applyToDraft(tl: Timeline, op: TimelineOp): Timeline {
       const patch = { ...op.patch };
       delete patch.id;
       delete patch.kind;
-      const merged = Clip.parse({ ...found.clip, ...patch });
+      const next: Record<string, unknown> = { ...found.clip, ...patch };
+      // A null transition takes the transition off: the join is a straight cut again.
+      if (next.transitionIn === null) delete next.transitionIn;
+      const merged = Clip.parse(next);
       found.track.clips[found.index] = merged;
       sortClips(found.track);
       return tl;
@@ -439,6 +450,8 @@ export function splitClip(clip: Clip, at: number, newId: string): [Clip, Clip] {
   if (right.kind === "media") {
     right.audioFadeIn = 0;
     right.videoFadeIn = 0;
+    // A transition plays at the join it was put on, not at a split made inside the clip.
+    delete right.transitionIn;
   }
   return [left, right];
 }

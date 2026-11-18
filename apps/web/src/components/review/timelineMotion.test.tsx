@@ -32,9 +32,43 @@ it("lands a just-applied edit with a moment: a cut's red closes up first, any ot
   const closing = container.querySelectorAll<HTMLElement>(".simple-timeline-closing");
   expect(closing).toHaveLength(1);
   expect(closing[0]!.style.left).toBe(marks[0]!.style.left);
-  // A settled edit drawn as a faint tick has no moment.
-  await show(0, [{ time: 20, title: "Edit 1", n: 1, quiet: true, landed: "cut" }]);
-  expect(container.querySelector("[data-landed], .simple-timeline-closing")).toBeNull();
+});
+
+it("plays an edit's arrival once: a marker drawn again picks it up where it is, and one drawn after is simply there", async () => {
+  let now = 1_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const cut = (time: number): TimelineDot => ({ time, title: "Edit 1", n: 1, landed: "cut", landedAt: 1_000_000 });
+  await show(0, [cut(20)]);
+  const mark = () => container.querySelector<HTMLElement>(".simple-timeline-mark")!;
+  expect(mark().dataset.landed).toBe("cut");
+  expect(mark().style.animationDelay).toBe("");
+  // The cut's timeline settles 400 ms later and moves the marker: drawn anew, it carries on from 400 ms in.
+  now += 400;
+  await show(0, [cut(18)]);
+  expect(mark().dataset.landed).toBe("cut");
+  expect(mark().style.animationDelay).toBe("-140ms");
+  expect(container.querySelector<HTMLElement>(".simple-timeline-closing")!.style.animationDelay).toBe("-400ms");
+  // Once the moment has played, a marker drawn again doesn't play it a second time.
+  now += 1000;
+  await show(0, [cut(17)]);
+  expect(mark().dataset.landed).toBeUndefined();
+  expect(container.querySelector(".simple-timeline-closing")).toBeNull();
+  vi.restoreAllMocks();
+});
+
+it("takes a newer cut into a pill already there quietly: only that cut's red closes up, where it is", async () => {
+  const now = 1_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  await show(0, [
+    { time: 21, title: "Edit 1", n: 1 },
+    { time: 21, title: "Edit 2", n: 2 },
+    { time: 21, title: "Edit 3", n: 3, landed: "cut", landedAt: now, edit: "c3/0" },
+  ]);
+  const marks = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
+  expect(marks.map(m => [m.textContent, m.dataset.landed])).toEqual([["1–3", undefined]]);
+  const closing = [...container.querySelectorAll<HTMLElement>(".simple-timeline-closing")];
+  expect(closing.map(c => c.style.left)).toEqual([`${21 / 120 * 100}%`]);
+  vi.restoreAllMocks();
 });
 
 it("glides the playhead through a jump, and follows playback and small steps as before", async () => {

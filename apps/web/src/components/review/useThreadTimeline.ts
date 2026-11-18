@@ -7,6 +7,7 @@ import { editGroups } from "./ThreadEdits";
 import { originalReviewRef } from "../../lib/editReviews";
 import { editMoments } from "./EditReferences";
 import { appliedPassCuts, type FirstCutDelivery } from "../../lib/threads";
+import { listMoments, type Moment } from "../../lib/editMoments";
 
 const empty: ThreadEdit[] = [];
 /** Only project/thread/version-matched markers can start playback. Ignore replies from a previous view. */
@@ -14,7 +15,8 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
   const key = useThreadEditKey(projectId, head, thread);
   const [result, setResult] = useState<{ key: string; edits?: ThreadEdit[]; error?: string }>();
   const [attempt, setAttempt] = useState(0);
-  const [picked, setPicked] = useState<{ owner: string; ref: EditRef; request: number }>();
+  // `single`: one edit of a moment, picked from under its row, and not the moment it is in.
+  const [picked, setPicked] = useState<{ owner: string; ref: EditRef; request: number; single?: boolean }>();
   const owner = JSON.stringify([projectId, thread?.id]);
   useEffect(() => { setPicked(undefined); }, [owner]);
   useEffect(() => {
@@ -53,6 +55,13 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
     return { beforeVersion: original.appliedOnto ?? original.fromVersion, cue };
   }
   const rows = useMemo(() => passFocused ? edits.map(edit => [edit]) : editGroups(edits).map(g => g.members.map(m => m.edit)), [edits, passFocused]);
+  // A pass's list shows its edits as moments: edits that overlap so much they play as one change are one row, named for
+  // its main edit, which is the one chosen when the moment is. One of its edits picked on its own is just that edit.
+  const moments = useMemo(() => passFocused ? listMoments(edits) : undefined, [edits, passFocused]);
+  const momentOf = (edit: ThreadEdit) => moments?.find(m => m.edits.includes(edit));
+  const single = !!picked?.single;
+  const shownMoment = selected && !single ? momentOf(selected) : undefined;
+  const selectedMoment: Moment<ThreadEdit> | undefined = shownMoment && shownMoment.edits.length > 1 && shownMoment.main === selected ? shownMoment : undefined;
   const reviewRefs = useMemo(() => {
     const refs = new Map<ThreadEdit, EditRef>();
     for (const row of rows) {
@@ -61,18 +70,29 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
     }
     return refs;
   }, [rows]);
-  const replyTarget = (edit: ThreadEdit): AgentContext => ({
+  const replyTarget = (edit: ThreadEdit, moment?: Moment<ThreadEdit>): AgentContext => ({
     changeId: edit.changeId, editIndex: edit.spot, reviewRef: reviewRefs.get(edit), editNumber: edits.indexOf(edit) + 1,
     version: head ?? undefined, time: edit.range.start, end: edit.range.end, clipIds: [], label: edit.label,
+    // A moment is about all of its edits: its stretch is theirs, and Scarlet is told the others.
+    ...moment && { time: Math.min(...moment.edits.map(e => e.range.start)), end: Math.max(...moment.edits.map(e => e.range.end)),
+      momentEdits: moment.edits.filter(e => e !== edit).map(e => ({ changeId: e.changeId, spot: e.spot, label: e.label })) },
   });
-  return { edits, rows, selected, chosen, originalChange: cutChange || (selected && originalChangeFor(selected)), cutReview, framingFor, framing: selected && framingFor(selected), selectedTarget: selected && replyTarget(selected), threadId: thread?.id, request: picked?.request ?? 0,
+  return { edits, rows, selected, chosen, originalChange: cutChange || (selected && originalChangeFor(selected)), cutReview, framingFor, framing: selected && framingFor(selected), selectedTarget: selected && replyTarget(selected, selectedMoment),
+    moments, selectedMoment, single, threadId: thread?.id, request: picked?.request ?? 0,
     error: current?.error, loading: !!head && !!thread && !current,
     retry: () => { setResult(undefined); setAttempt(n => n + 1); },
-    choose: (edit: ThreadEdit, origin: "timeline" | "chat" = "timeline") => {
+    /**
+     * Open an edit. A moment's main edit opens the whole moment, as its row does; any other edit of a moment, or one
+     * picked with `single` from under the moment's row, is that edit alone.
+     */
+    choose: (edit: ThreadEdit, origin: "timeline" | "chat" = "timeline", single = false) => {
       const ui = useUiStore.getState();
+      const found = momentOf(edit);
+      const moment = !single && found && found.edits.length > 1 && found.main === edit ? found : undefined;
+      const alone = !moment && !!found && found.edits.length > 1;
       // Timeline selections explicitly target the reply. Chat previews preserve a draft already in progress.
-      if (origin === "timeline" || !ui.agentDraft.trim()) ui.setAgentContext(ui.agentDraft.trim() ? replyTarget(edit) : null);
-      setPicked(prev => ({ owner, ref: { changeId: edit.changeId, spot: edit.spot }, request: (prev?.request ?? 0)+1 }));
+      if (origin === "timeline" || !ui.agentDraft.trim()) ui.setAgentContext(ui.agentDraft.trim() ? replyTarget(edit, moment) : null);
+      setPicked(prev => ({ owner, ref: { changeId: edit.changeId, spot: edit.spot }, request: (prev?.request ?? 0)+1, ...alone && { single: true } }));
     },
     clear: () => setPicked(undefined),
   };

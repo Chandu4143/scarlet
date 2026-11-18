@@ -8,6 +8,7 @@ import { fileInDirectory } from "@scarlet/render";
 import { createProject } from "@scarlet/timeline";
 import { createApp } from "../app.js";
 import { createTask, cancelTask } from "./tasks.js";
+import { wordsFromPages } from "./dialogueDetections.js";
 import { accessToken } from "../auth.js";
 import { WhisperCppProvider } from "../transcribe/whispercpp.js";
 import { UhmDetector } from "../transcribe/uhm.js";
@@ -23,7 +24,7 @@ vi.mock("@scarlet/render", async original => ({
   speechActivityOf: async () => [{ start: 4, end: 5 }],
 }));
 // Word alignment downloads a model and runs a worker; these tests cover scan scheduling, not timing.
-vi.mock("../transcribe/wordAlign.js", async original => ({ ...await original<typeof import("../transcribe/wordAlign.js")>(), alignmentVersion: 1, alignWords: async (_ctx: unknown, _wav: string, segments: unknown) => segments }));
+vi.mock("../transcribe/wordAlign.js", async original => ({ ...await original<typeof import("../transcribe/wordAlign.js")>(), alignWords: async (_ctx: unknown, _wav: string, segments: unknown) => segments }));
 vi.mock("../render/ffmpeg.js", async original => ({
   ...await original<typeof import("../render/ffmpeg.js")>(),
   extractWav: async (_file: string, target: string) => {
@@ -80,7 +81,7 @@ it("reads the selected input's existing acoustic words with transcription off", 
   expect(await kept()).toEqual(unavailable);
   // The older engine used the path as imported. Seed its exact filename independently of the current writer.
   const info = await stat(imported);
-  const legacy = createHash("sha256").update(JSON.stringify([1, [imported, info.size, info.mtimeMs, info.ctimeMs, 1]])).digest("hex");
+  const legacy = createHash("sha256").update(JSON.stringify([3, [imported, info.size, info.mtimeMs, info.ctimeMs, 1]])).digest("hex");
   const legacyFile = join(ctx.paths.waveforms(project.id), `emissions-${legacy.slice(0, 32)}.bin`);
   const canonical = await emissionStore(ctx, project.id, file, 1);
   expect(legacyFile).not.toBe(canonical);
@@ -587,4 +588,17 @@ it("scans for a request sent about a point and for a revision as it does for a w
     vi.restoreAllMocks();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+it("reads each word of overlapping saved pages from the page it sits furthest inside", () => {
+  const w = (text: string, start: number) => ({ text, start, end: start + .3 });
+  // Two pages that overlap from 58 s to 60 s read the words there twice, and a short re-read of 70-80 s sits less far
+  // inside than the minute that holds it.
+  const first = { start: 0, end: 60, words: [w("including", 57), w("three,", 58.4), w("uh,", 59.5)] };
+  const second = { start: 58, end: 118, words: [w("including", 58.4), w("uh,", 59.5), w("its", 75), w("ability", 76)] };
+  const reread = { start: 70, end: 80, words: [w("its", 75.1), w("ability", 76.1)] };
+  const { words, covered } = wordsFromPages([first, second, reread]);
+  expect(words.map(x => [x.text, x.start])).toEqual([["including", 57], ["three,", 58.4], ["uh,", 59.5], ["its", 75], ["ability", 76]]);
+  expect(covered).toEqual([{ start: 0, end: 118 }]);
+  expect(wordsFromPages([{ start: 0, end: 10, words: [] }, { start: 20, end: 30, words: [] }]).covered).toEqual([{ start: 0, end: 10 }, { start: 20, end: 30 }]);
 });

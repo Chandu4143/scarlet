@@ -49,6 +49,21 @@ coaching, and automatic removals in historical runs. Results are split by tier:
 - **Hand-analysis method.** `--kept-side` reads the loudest 50 ms on the kept side. "Per-cut edges" counts both
   edges of every listed cut, the way the original hand analysis did.
 
+**Showable area** (`showable.ts`, `showableMeasure.ts`). Whether a cut keeps a screen recording inside what the
+editor means viewers to see: the window being presented, without the desktop, other apps or a call beside it.
+
+- **Labels.** The editor confirms a box on a frame of the recording, once for each window layout. The file is
+  `{"schema":1,"recording":"<media id>","labels":[{"at":<second>,"area":{"left":0.08,"top":0.1,"right":0.84,"bottom":0.89}}]}`,
+  edges as fractions of the picture. List an edge under `soft` when the picture has no line there. Keep the
+  file with the case, never in the repository.
+- **Holds.** `--recording <file>` reads one frame every five seconds and records the stretches each box holds for:
+  every edge it needs is still a line where it was. A window that moves or resizes ends the hold, and that
+  time stays unlabelled until a box is confirmed for it.
+- **Score.** `--timeline <json>` looks at a version every half second. Of the labelled screen time on picture,
+  `outsideShare` shows anything more than 1% of the picture past its box and `farOutsideShare` more than 5%.
+  `worst` lists the moments to look at. A box can hold by chance on a different window with edges in the same
+  places, so check `worst` against frames before trusting a change in the score.
+
 **Pacing** (`pacing` in `metrics.ts`). What each version still plays, read from the transcript's words on that
 version's timeline: the source, the applied cut, the proposed cut and the reference.
 
@@ -59,14 +74,21 @@ version's timeline: the source, the applied cut, the proposed cut and the refere
   The second delivery must begin within three seconds of the first ending. For phrases over five words, the two
   starts must be within 25 seconds of each other. The reference count includes deliberate emphasis ("very, very").
 - A typed or silent demonstration is a gap here. The reference's own count is the floor a cut can reach.
+- **What the task left.** The headline gaps, dead air and doubled words are measured on the edit the task ended on:
+  the applied cut plus the task's own later changes (closing-check repairs, staged picks it applied). With an engine,
+  that is the head of the task's branch whenever one of the task's changes made it. `recommended…` and the
+  `restartsLeft`/`silencesLeft` counts take out, too, every staged cut still waiting for the editor that the agent
+  marked `cut`, including cuts staged on earlier versions: they go in with the editor's calls. `stagedWaiting` counts
+  those earlier-version cuts. Scored on the applied version, a pass whose closing check cut a 73-second wait was
+  charged for it (2026-11-17).
 
 **Held by Scarlet.** Staged cuts the agent submitted as `cut`: the measured edit needs review.
 
 **Against a reference** (the editor's final or approved cut). This section is scored at three operating points:
 
 - `applied`: the confident cuts alone.
-- `recommended`: applied plus the review items the AI marked `cut`.
-- `proposed`: applied plus every review item.
+- `recommended`: what the task left, less every staged item the AI marked `cut`.
+- `proposed`: what the task left, less every staged item.
 
 The metrics are:
 
@@ -90,6 +112,40 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 - `task.usage` token counts when the engine records them.
 - The submitted plan by kind and decision.
 - The share of edged cuts whose edges were checked with `dialogue_check_join`.
+
+## Known moments, and how far trials agree
+
+Two trials of one configuration never make the same cut, so one rerun can't show whether a change fixed anything.
+`moments.ts` reads finished trials and answers the two questions a change has to pass.
+
+**Known moments.** A place where a cut has gone wrong before: a restart left in, the wrong take kept, a line dropped.
+The case folder's `moments.json` says what the finished edit should play there:
+
+```json
+{ "schema": 1, "moments": [
+  { "id": "broken-first-take", "mediaId": "med_…", "start": 770.7, "end": 775.0,
+    "plays": "I remember there was a time where you would occasionally see",
+    "note": "Broken first take, then the whole one." } ] }
+```
+
+`start` and `end` are the recording's seconds, wide enough to hold every delivery of the line. `plays` is compared as
+words (case and punctuation don't count), so either of two matching words can be the one cut; give a list when
+several readings are right. Each trial comes out `right`, `asked` (a staged cut waits for the editor there, with what
+approving it plays) or `wrong` (with what it played). A trial's `evaluation.json` carries them as `score.moments` and
+counts them in the headline. Moments are the editor's words: keep the file with the case, never in the repository.
+
+**Agreement.** For the trials of one arm: the F1 of each pair's removed words, the words every trial removed, the
+words they split on and how many places those fall in. With a published reference it also says how often the editor
+removed a word every trial removed, and one they split on. A difference between two arms smaller than the
+disagreement inside one arm is not a result.
+
+```sh
+# Arms are labelled sets of runs: folder names under results/runs, or paths.
+$TSX evals/src/moments.ts --case my-case --runs main=2026-…-aaaa,2026-…-bbbb --runs branch=2026-…-cccc
+```
+
+It prints each arm's headline numbers with their spread, a row per moment and the agreement table. Run at least four
+trials an arm. Results saved before a trial stored what it left (`score.left`) are read from their applied cuts.
 
 ## Build a case
 
@@ -239,6 +295,34 @@ node --import tsx evals/src/wordEdges.ts --case my-case --reference-map /private
 
 The first run reads and caches the recording's waveform, peaks and voice activity from the engine. Subsequent runs replay offline on the same measurements. `--engine URL` selects the engine and `--waveforms PATH` selects a private cache. The output records how many joins removed a different set of word midpoints and the mean absolute error in the gap between the kept words, in milliseconds, before and after the timeline's frame rounding. A baseline comparison scores common joins on identical case inputs. Each result also includes every eligible join for that version. Use the full task benchmark to measure the agent's choice of words.
 
+## Compare two revisions on a frozen episode
+
+`compare.py` runs each checkout's real cut planner on the same source word occurrences and writes a Markdown scorecard and a content-addressed JSON report. Use it for cut placement and pacing. It works offline after setup. A prepared episode can be copied between machines. Install the locked dependencies in each checkout with `pnpm install --frozen-lockfile`.
+
+```sh
+python3 -B evals/compare.py "$EPISODE" --baseline "$BASE_CHECKOUT" --candidate "$CANDIDATE_CHECKOUT" \
+  --baseline-leave 0.25 --candidate-leave 0.15
+python3 -B evals/compare.py "$EPISODE" --check-baseline
+```
+
+The first command requests 250 ms and 150 ms between retained words. Both values go through the planner's `leave` argument and audio checks. For a code comparison at one pacing setting, pass the same value twice. Without either flag the runner measures the engine's default word-cut placement and counts pause-only joins separately. Both checkouts must implement the measured planner API. The runner builds their shared and timeline packages before scoring. Newer graders or engine changes get their own reports.
+
+**Prepare once.** Keep one directory per episode version outside the checkout, with:
+
+- `cases/<id>/` containing the saved case, raw timeline, timed words, plans and their source versions.
+- `media/presenter.mp4`, `media/published.mp4` and any other original camera recordings; `reference-audio.json` from `match_audio.py` (above).
+- `waveforms.json` containing the full cached 20 ms waveform pages and voice activity used by `wordEdges.ts`. Use the same raw recording, source clock and audio stream throughout.
+- `pictures.json` containing verified outgoing and incoming source-picture indices and the raw presenter's SHA-256 as `sourceId`, plus `source-pts.json` containing its presentation times in seconds (source time zero at PTS zero). To prepare them, run `uv run --with opencv-python-headless python -B evals/tools/verify_pictures.py "$EPISODE"` with FFmpeg available. For a presenter inset, supply its normalized `--inset X Y W H`. The verifier fits the camera crop on a separate frame. The image and motion across three consecutive frames must then identify a unique cut on both sides. Check representative matches and record layouts outside its coverage.
+- `provenance.json` can record the published source, episode split, capture methods and editorial settings.
+
+Run `python3 -B evals/compare.py "$EPISODE" --freeze CASE_ID` to hash the private inputs. Run a comparison with `--accept-baseline` to pin the report, then use `--check-baseline` to reproduce it on the same revisions. The latter reads the pinned settings. Run it on the second machine after copying the episode and checking out the recorded revisions. If the grader or inputs change, keep the old episode and pin a new version. Private caches in `preparation/` and results in `results/` are outside the input lock.
+
+**Read a comparison.** Pacing counts use only the same word occurrences placed in both variants. They include a pause left intact when the requested trim is unnecessary. Long and short errors are strictly beyond ±200 ms. Consult the per-side eligible counts, calls for review, word errors and omitted joins alongside the paired rate. Frame recall uses all independently verified picture cuts, including those without a corresponding placement. A zero denominator has no percentage. The input words came from the published choice; this measures placement conditional on those choices. Use a full model trial below to measure editorial selection. For partial soundtrack matches, `unmappedFinal` stays visible and whole-source cut/keep scores require separate evidence.
+
+`extraKeptWordTrimMs` flags cuts overlapping a kept word by more than 20 ms beyond the overlap in the published edit. These are listening cues because timed word boundaries are approximate.
+
+`python3 -B evals/listen.py "$EPISODE" /private/path/to/comparison.json` prepares blind A/B clips of the largest improvement, regression and a near-neutral change among comparable joins. Each pair has the same source context. Its randomized assignment remains stable on replay. Ask for a preference before opening `listening/answer-key.json`.
+
 ## Run
 
 ```sh
@@ -251,7 +335,7 @@ $TSX evals/src/run.ts --cases my-case --configs … --trials 3 --yes
 
 Each trial follows these steps:
 
-1. Creates the branch `eval <case> <config> t<n> <time>` from the case's source version.
+1. Creates a branch from the case's source version. Its name includes the trial number and a unique run ID, even when long case or model names need shortening.
 2. Sends the composer's first-cut request on that branch.
 3. Waits for the task. A question or a timeout cancels it.
 4. Switches the project back to the editor's branch.
@@ -261,6 +345,30 @@ Trials run one at a time because a project has one head. The project shows the e
 runs. Results land in `results/runs/<time>/<case>/<config>/trial-<n>/` (`evaluation.json`, `summary.md`,
 `task.json`). The mean ± spread for each case and config is in `results/runs/<time>/summary.md`. Rebuild the
 summary with `--summarize <dir>`.
+
+For audio-matched cases, read `recoveredWordRemovingCuts` against `editorWordRemovingCuts`, alongside `missingVerifiedWords`. A recovered cut joins the same two source-word occurrences across a splice. `matchedPauseErrorMs` averages absolute pause differences only on the `matchedAudioJoins` shared by both edits. Unmapped passages contribute no joins. A crossfade with quiet handles uses each word’s actual playback time. The scorer counts a crossfade touching speech as ambiguous and records unsupported mixes as unavailable.
+
+**Edges against the editor's own cuts** (`editorEdges` in `published-words.json`, `editorEdge…` in the headline). The waveform map gives each editor cut an out edge and an in edge in the recording, each with the window over which the cut sounds the same: the plausible boundary shift plus one frame. A candidate edge of the same side within 0.6 s of that window counts as the same cut. Inside the window it matches (`editorEdgesInWindow`, a fraction of `editorEdgesShared`). Outside, the frames at speech level between the candidate edge and the window are sound the candidate plays that the editor removed (`editorEdgePlaysRemovedSpeech`) or sound the editor kept that it drops (`editorEdgeDropsKeptSpeech`). Their sum is `editorEdgeSpeechMisses`, and `editorEdgeSpeechMissesOver100Ms` counts the ones you'd hear. Speech uses the edge classes above (the recording's 85th percentile level minus 18 dB) on the grading evidence's levels. Both sides are where the sound switches. The editor's comes from the published audio, which on Muse switches a frame after the picture cut (41 of 46 clear cuts). The candidate's is where each clip is heard, the middle of its audio fade: Scarlet's dialogue audio runs a frame past each picture edge and crossfades over two frames, and that handle's own edges are silent. Read at the handles, every Muse in-edge looked a frame early and every out-edge a frame late. No word time enters this measure, so it is the one to read when comparing transcripts or aligners. The pause and join metrics above place their targets with the grading words. To use it on a case built with `--published-media`, map the published video with `tools/match_audio.py` and freeze the case with that map as its reference.
+
+For a change to the prompt, model or transcription, run three fresh trials per configuration. Each
+trial requests a digest of the ordered word occurrences and timings actually read by the editing tools.
+`transcripts.json` compares those receipts with the frozen words and engine snapshots before and after
+the task. A missing receipt, an older MCP without this feature, or a changing transcript excludes that
+trial from the mean and leaves its evidence available. To test a new transcription, freeze a case for
+each transcript on the same media and published reference.
+
+With `SCARLET_EVAL_DATA` pointing to a frozen episode, each live trial saves its applied timeline and
+`published-words.json`. The latter lists which definitely published source-word occurrences the trial
+removed and the fraction it kept. The report needs positive evidence for each word. Unmapped footage
+therefore contributes no labels. Score an archived run the same way with
+`python3 -B evals/score_audio_reference.py --case-dir "$CASE_DIR" --reference "$EPISODE/reference-audio.json" --evaluation "$EVALUATION" --verified-keeps`.
+
+The same report includes `cutWordDistance`. It adds editor-kept words the candidate removed and
+editor-skipped words the candidate kept, then divides by the number of labeled source occurrences.
+On a partly matched soundtrack, a skipped word needs a verified local forward splice. It could still
+appear in an unmapped passage. The report records that scope and excludes unknown words from the
+denominator. Compare the two error counts as well as their sum. A word counts as retained when at
+least half of its source duration plays. First-consonant and fade checks are separate measurements.
 
 Score an existing task (read-only) or a case's stored run (offline):
 
@@ -315,3 +423,105 @@ The scan-window set that best reproduces the original run is chosen automaticall
 - Measure with evidence independent of the system under test. Compare 10 ms levels decoded from the
   original recording with the waveform Scarlet used for its decisions.
 - Never commit user data. Everything project-derived stays in `$SCARLET_EVAL_DATA`.
+
+### Picture cut to first word
+
+For frozen single-presenter episodes with verified picture observations, score a saved timeline locally:
+
+```sh
+SCARLET_EVAL_DATA="$EPISODE" node --import tsx evals/src/entrances.ts --case "$CASE" --version "$VERSION" > entrances.json
+SCARLET_EVAL_DATA="$EPISODE" node --import tsx evals/src/entrances.ts --case "$CASE" --timeline candidate.json --baseline entrances.json
+```
+
+The baseline may also be an exported timeline. The paired report gives mean absolute timing error for each edit on the same matched entrances, the change in milliseconds, and the joins each edit alone matched. A negative change means a closer match to the editor. The report includes the first 40 seconds separately.
+
+Use `--timeline candidate.json` for an exported timeline. New model trials, `--evaluate-case` and `--evaluate-task --case` also write `picture-entrances.json` when the episode contains picture evidence. The grader checks the frozen inputs. Older picture observations resolve the frame timestamp with FFprobe against the hash-checked finished movie. New observations store the presentation timestamp directly. Prepare a reference with the existing audio and picture tools. Candidate media and the editor reference stay outside Git.
+
+Each row measures from the incoming presenter picture to the aligned start of the incoming take’s first spoken word. Positive values mean the picture leads the voice. Negative values mean the voice starts first. Both neighboring source-word occurrences must match uniquely. Scarlet uses the actual audio placement and first displayed project frame. The reference uses the verified published frame timestamp and its independently mapped soundtrack. Uncertain word boundaries, a partial word, an onset under an audio fade, or an unmatched picture have their own outcomes. A different camera or a picture cut under a covering layer may lack comparable evidence.
+
+For repeated trials compare mean absolute error and signed bias **on the same matched joins**, alongside coverage and candidate-wide counts of trimmed words and onsets inside fades. Missing observations stay unscored. The JSON includes individual join IDs, candidate and editor times, the first 40 published seconds, and episode and candidate digests. The editor’s timings are evaluation labels. Keep the desired delivery and exceptions in a selectable custom skill.
+
+To test one custom guide on the same frozen footage, pass `--skills skill-name` to replace the case’s selection for that run. To add a guide to the original selection, pass `--add-skills skill-name`. The source timeline and the editing request stay fixed across arms. Each trial records the selected IDs, current names and versions. Keep model, effort, source case and trial count fixed across arms.
+
+### Choosing between two recorded takes
+
+Use this experiment to measure whether a model picks the delivery an editor used. A passage has three choices. Keep the earlier rendition and join it to the later continuation, start on the later rendition, or keep the whole passage. Scarlet supplies repeated phrases and the original audio. The selected skill describes the desired edit. The model chooses. The editor’s export is used only for scoring.
+
+Use a fresh private directory for each run. A source evidence JSON contains timed words and the duration of the recording. Repeat `--episode` for other recordings and `--guide` for other Markdown guides.
+
+```sh
+python3 evals/prepare_take_pairs.py \
+  --episode example holdout "$SOURCE" "$EVIDENCE" --out "$STUDY/source"
+python3 evals/take_listening.py prepare --manifest "$STUDY/source/cases.json" \
+  --guide "$STUDY/current.md" --guide "$STUDY/candidate.md" --out "$STUDY/batch"
+```
+
+Give the runner only `batch/requests.jsonl` and the WAVs it names. Each passage appears with the same words with and without sound. A second presentation swaps the excerpts and rotates the answer letters. Lock the model, decoding settings and guides before opening the reference. Verify that the runner can identify two different spoken lines in their presented order. Each response must record the request ID, original prompt SHA-256, ordered WAV SHA-256 digests, attachment count, number of audio tokens, seed, temperature and answer text. An ambiguous answer counts as a miss on a labeled passage.
+
+On Apple silicon, the optional MLX runner accepts a local Gemma 3n model directory and performs inference offline. In a separate Python 3.12 environment the measured setup used `mlx-vlm==0.7.12`, `mlx==0.32.4`, `transformers==5.23.0` and `soundfile==0.14.0`. The 4-bit checkpoint was `mlx-community/gemma-3n-E4B-it-4bit` revision `505468a22e5703ff090e222aae9beedec49b383f`. Save the exact model revision and runtime package versions with each study. For three-option passages, use the same one-letter decoder for every arm.
+
+```sh
+python3 -B evals/run_take_listening_mlx.py --model "$MODEL_DIR" \
+  --input "$STUDY/batch/requests.jsonl" --output "$STUDY/responses.jsonl" --choice-letters ABC
+```
+
+The runner joins the two original waveforms with 750 ms of silence so the model can hear both within one audio input. Its receipts include both original hashes and the joined waveform hash. Calibrate with two spoken phrases whose words are absent from the prompt. Reverse their order and check both transcriptions. Also ask the model to identify the excerpts by letter in both orders using the experiment’s decoder. Record any failures alongside editorial accuracy. The runner writes `responses.jsonl.runtime.json` before inference and records its hash with every answer. Seal the completed batch before decoding. Keep the receipt and original batch for replay. New request IDs bind each response to its private answer mapping. When replaying an older batch with numeric IDs, pass `--legacy-key-sha256` to `decode` with the key digest from an independently archived choices file or inventory.
+
+Supply a separate private JSON object mapping each recording ID to its source word evidence and independently prepared `reference-audio.json`. For example, `{"example":{"words":"/private/path/words.json","reference":"/private/path/reference-audio.json"}}`.
+
+```sh
+python3 evals/label_take_pairs.py --manifest "$STUDY/source/cases.json" \
+  --sources "$STUDY/reference-index.json" --out "$STUDY/labels.json"
+python3 evals/take_listening.py seal --requests "$STUDY/batch/requests.jsonl" \
+  --responses "$STUDY/responses.jsonl" --runtime "$STUDY/responses.jsonl.runtime.json" \
+  --runner evals/run_take_listening_mlx.py
+python3 evals/take_listening.py decode --batch "$STUDY/batch" \
+  --responses "$STUDY/responses.jsonl" --out "$STUDY/choices.json"
+python3 evals/take_listening.py score --choices "$STUDY/choices.json" \
+  --labels "$STUDY/labels.json" --tier strict --out "$STUDY/score.json"
+```
+
+`strict` needs evidence for every word in the repeated phrase, `majority` needs a majority on each occurrence, and `provenance` uses corresponding word positions with no contradictory evidence. On partially mapped soundtracks these tiers can establish a local choice at a verified splice. Append `Global` to any tier (for example, `provenanceGlobal`) to require evidence that also holds across any unexplained audio in the final. Current reference maps contain source and editor file hashes and stream indices. For legacy maps, regenerate with `evals/tools/match_audio.py` and supply the result as `replayedReference` with its archive source record or verified inventory. The report gives each order’s accuracy, the number right in both, and the denominator. Uncertain passages, mixed edits and passages the editor removed entirely stay visible in the label file. Inspect which takes the reference favored alongside a simple always-later baseline. Whole-edit cut recall, retained-word loss and picture-to-first-word timing use the timeline graders above.
+
+### Freezing aligned word times for a dialogue case
+
+To compare placement with the same model-selected word ranges, derive a separate case from the original English source evidence. The command runs Scarlet’s wav2vec2 alignment worker on the recording and audio stream specified in the case. Original Whisper or Crisper decoder JSON preserves its segment groups when available. Without it the frozen timed word sequence supplies the groups.
+
+```sh
+python3 evals/freeze_aligned_case.py --case-dir "$EPISODE/cases/$CASE" \
+  --source "$RECORDING" --model "$ENGLISH_CTC_WEIGHTS" \
+  --segments "$DECODER_JSON" --out "$STUDY/aligned/$CASE"
+```
+
+The derived case lives under `cases/$CASE` in the new private output root. `alignment.json` identifies each confidence-qualified word index, the number of remaining estimated words, the original stream and the input, weights and output hashes. Word indices and spellings remain stable. Supply the same inclusive removals to native and aligned cases, then score both timelines against the same independently frozen source occurrences and editor joins. A matched published word on either side alone can hide extra words left in between.
+
+To score live model decisions, add `--reference "$EPISODE/reference-audio.json"` when freezing. Use a map from `tools/match_audio.py` with the source file hash and audio stream. The output root then contains the verified audio map, an episode lock, the candidate evidence for the model, and a byte-for-byte copy of the original source evidence in `cases/$CASE/grading-evidence.json`. Deriving another case from this one preserves that original grading transcript. A freeze without an audio map also preserves the original transcript for subsequent offline scoring.
+
+Set `SCARLET_EVAL_DATA` to the derived root for `evals/src/run.ts` and point it at an engine holding the candidate transcript. The runner checks the case declaration, transcript files and map before starting a trial. Its published-word recall, skipped words retained, exact audio joins and matched pause error use the original transcript. Picture entrance scoring uses those same original words when verified picture observations are supplied. `published-words.json` records both the grading file and the ordered-word digests. Compare arms only when their grading word and reference digests agree. Older original cases use their own source evidence.
+
+### Optional suggestions from an editor’s past cuts
+
+`editor_history.py` trains an offline experimental model from one editor’s other frozen recordings. It
+produces possible source-word removals and the words that would meet at each splice. The target input
+is its raw case. Historical editing preferences come from the editor’s own training corpus. The editing
+model can take, change or ignore any suggestion. The generator runs only when invoked for an experiment.
+
+Create a private JSON array with one `{"caseDir": ".../cases/<id>", "reference": ".../reference-audio.json"}`
+per training recording, in a fixed order. Paths are relative to the manifest or absolute. Each
+correlation must carry the recording hashes and audio streams from `tools/match_audio.py`. Reserve whole
+projects for evaluation and keep alternate exports of the same performance together. The runner
+rejects duplicate project IDs and overlapping source or editor digests. Run in an environment with NumPy and scikit-learn (tested with
+2.5.4 and 1.9.1). It fits the model in memory and records the library versions and input digests.
+
+```sh
+python -B evals/editor_history.py --history "$PRIVATE/history.json" \
+  --case-dir "$EPISODE/cases/$CASE_ID" --out "$PRIVATE/suggestions.json"
+```
+
+Use `--include-markers` to reproduce the alternate arm that includes decoder annotations in training labels.
+To try a suggestion file in Scarlet, attach the JSON to a request editing the matching recording and
+ask the model to use the suggestions at its discretion.
+
+Compare the identical editing request with and without the optional suggestions. Score the applied
+timelines on exact word-removing joins, lost editor-kept words and `cutWordDistance` on the same frozen
+reference. Retain the source-only baseline, model seed, prompt and footage digests with each run.

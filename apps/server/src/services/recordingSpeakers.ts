@@ -13,6 +13,7 @@ import { LocalWhisperModel } from "../transcribe/localModel.js";
 import { labelTranscript, numberSpeakers, speakerAnalysisVersion, speakerTurnCacheVersion, type SpeakerTurn } from "../transcribe/speakerLabels.js";
 import { AnalysisCache } from "./analysisCache.js";
 import { audioLane } from "./audioWork.js";
+import { editorFirst } from "./editorFirst.js";
 import { speakerGpuRuntime } from "../transcribe/speakerWorker.js";
 import { humanDuration } from "../logText.js";
 import { availableParallelism } from "node:os";
@@ -138,12 +139,13 @@ export class RecordingSpeakers {
   private async analysed(ctx: Ctx, projectId: string, media: MediaAsset, decoded: DecodedRecording | undefined, priority: boolean,
     previous: Promise<void>, placed: () => void): Promise<SpeakerTurn[]> {
     // Queue in request order, even when one lookup fails. Only placement is serialized; workers still run concurrently.
-    await previous;
-    const pause = ctx.mediaSignal(projectId);
-    // Trash, a quit and a change of the transcription settings stop an analysis whoever waits for it.
-    const always = AbortSignal.any([ctx.projectSignal(projectId), ctx.repos.settings.transcriptionSignal]);
-    let file: string, info: Stats;
+    // Whatever happens before the lookup is placed, the next request is let go: it waits on this one.
+    let file: string, info: Stats, pause: AbortSignal, always: AbortSignal;
     try {
+      await previous;
+      pause = ctx.mediaSignal(projectId);
+      // Trash, a quit and a change of the transcription settings stop an analysis whoever waits for it.
+      always = AbortSignal.any([ctx.projectSignal(projectId), ctx.repos.settings.transcriptionSignal]);
       if (!priority) pause.throwIfAborted();
       always.throwIfAborted();
       const source = await fileInDirectoryAsync(ctx.paths.media(projectId), media.path);
@@ -230,7 +232,8 @@ export class RecordingSpeakers {
       const paused = () => { if (!this.passWaits.has(media.id)) stop.abort(pause.reason); };
       if (always.aborted) stopped(); else always.addEventListener("abort", stopped, { once: true });
       if (pause.aborted) paused(); else pause.addEventListener("abort", paused, { once: true });
-      try { return await analyse(stop.signal); }
+      // Nobody's to wait for until a pass reads the recording, so it yields to the editor's playback meanwhile.
+      try { return await editorFirst.run(() => !this.passWaits.has(media.id) && !audioLane(ctx).focusedOn(media.id), () => analyse(stop.signal)); }
       finally {
         always.removeEventListener("abort", stopped);
         pause.removeEventListener("abort", paused);
@@ -264,7 +267,7 @@ export class RecordingSpeakers {
     if (!this.beside || ctx.settings().transcription.provider === "none" || (!media.hasAudio && media.kind !== "audio")) return;
     void ctx.track(this.turns(ctx, projectId, media).catch(err => {
       if (!ctx.mediaSignal(projectId).aborted) ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);
-    }));
+    }), projectId);
   }
 
   /** Publish a new transcript revision so already-open transcript pages refresh.
@@ -305,7 +308,7 @@ export class RecordingSpeakers {
         this.retryAfter.set(key, Date.now() + 5 * 60_000);
         ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);
       }
-    }).finally(() => this.revisions.delete(key)));
+    }).finally(() => this.revisions.delete(key)), projectId);
     this.revisions.set(key, job);
     return job;
   }

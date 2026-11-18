@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { encodeWaveformCache } from "@scarlet/render";
 import { createProject, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
+import { ScarletClient } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { ffmpeg } from "../render/ffmpeg.js";
@@ -40,6 +41,19 @@ function api(method: string, path: string, body?: unknown) {
     headers: { Authorization: `Bearer ${accessToken(workspace.ctx)}`, ...(body !== undefined && { "Content-Type": "application/json" }) } });
 }
 const settle = async () => { while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]); };
+
+it("serves the same resampled peaks for synchronization, including full-precision legacy samples", async () => {
+  const { app, ctx } = workspace;
+  ctx.paths.ensureProject(project.id);
+  ctx.repos.projects.putMedia(project.id, { id: "track", name: "Track", path: "track.wav", kind: "audio", duration: 3 }, "ready");
+  const peaks = [0.1, 0.12345678912345, 0.75];
+  writeFileSync(join(ctx.paths.waveforms(project.id), "track.json"), JSON.stringify({ duration: 3, pointsPerSecond: 1, peaks }));
+  const client = new ScarletClient({ baseUrl: "https://engine.invalid", token: accessToken(ctx),
+    fetch: (url, init) => app.request(String(url), init) }).forProject(project.id);
+  const wave = await client.waveform("track", 0, 3, 6, true);
+  expect(wave.peaks).toEqual(peaks.flatMap(p => [p, p]));
+  expect(await client.waveformPeaks("track", 0, 3, 6)).toEqual({ peaks: wave.peaks });
+});
 
 it.each(["prepare", "dialogue"])("continues saved recognition when a resumed edit requests %s with caching still paused", async entry => {
   const id = "voice";
@@ -273,6 +287,8 @@ it("takes a file Scarlet couldn't read out of the project with everything kept f
   const others = [...await emissions("read"), (await savedSpeakerTurns(ctx, project.id, ctx.repos.projects.getMedia("read")!))!];
   const brokenStores = await emissions("broken");
   expect(brokenStores.length).toBeGreaterThan(1);
+  // A recording aligned in Spanish keeps that language's store beside the English one, and it goes too.
+  expect(brokenStores.filter(path => /\.es-[0-9a-f]{8}\.bin$/.test(path))).toHaveLength(brokenStores.length / 2);
   for (const kept of [...brokenStores, (await savedSpeakerTurns(ctx, project.id, broken))!, ...others]) writeFileSync(kept, "x");
   // A clip from a file placed while it was still being added. This version is in the history, not the working video.
   storeVersion(ctx, project.id, timelineFromKeepRanges(project.id, "placed", [{ start: 0, end: 4 }]), { parent: null });

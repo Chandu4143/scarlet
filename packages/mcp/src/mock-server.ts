@@ -1,7 +1,7 @@
 /**
  * Tiny in-process Scarlet API mock used by the MCP tests (and reusable by the
  * agent host tests). Implements only the routes the tools touch and records
- * every request so tests can assert on bodies.
+ * operational requests and tool diagnostics separately so tests can assert on both.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -24,6 +24,8 @@ export interface MockState {
   waveform: (mediaId: string, from: number, to: number, points: number) => WaveformResponse;
   /** Which input each word and gap came from, as the engine reads a recording's inputs. Unavailable by default. */
   otherInput: (mediaId: string, words: Array<[number, number]>, gaps: Array<[number, number]>) => { available: boolean; words: boolean[]; gaps: Array<Array<{ start: number; end: number }>> };
+  /** The cuts in a recording's picture, as the engine reads them (`/picture-cuts`). None by default. */
+  pictureCuts: (mediaId: string) => Array<{ at: number; share: number; cells: string }>;
   notes: Note[];
   skills: Skill[];
   changes: Change[];
@@ -37,6 +39,7 @@ export interface MockServer {
   url: string;
   state: MockState;
   requests: RecordedRequest[];
+  diagnostics: RecordedRequest[];
   close(): Promise<void>;
 }
 
@@ -53,6 +56,7 @@ export function makeState(partial: Partial<MockState> = {}): MockState {
     transcripts: {},
     waveform: (mediaId, from, to, points) => ({ mediaId, from, to, peaks: Array.from({ length: points }, () => 0.5) }),
     otherInput: (_mediaId, words, gaps) => ({ available: false, words: words.map(() => false), gaps: gaps.map(() => []) }),
+    pictureCuts: () => [],
     notes: [],
     skills: [],
     changes: [],
@@ -84,6 +88,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 export async function startMockServer(state: MockState = makeState()): Promise<MockServer> {
   const requests: RecordedRequest[] = [];
+  const diagnostics: RecordedRequest[] = [];
   let changeSeq = 0;
   let versionSeq = 0;
 
@@ -92,6 +97,13 @@ export async function startMockServer(state: MockState = makeState()): Promise<M
     const path = url.pathname.replace(/^\/api/, "");
     const body = await readBody(req);
     const rec: RecordedRequest = { method: req.method ?? "GET", path, query: url.searchParams, body, headers: req.headers };
+    const diagnostic = rec.method === "POST" && /^\/projects\/([^/]+)\/tasks\/[^/]+\/tool-diagnostic$/.exec(path);
+    if (diagnostic) {
+      if (diagnostic[1] !== state.project.id) return notFound(res, "project");
+      diagnostics.push(rec);
+      res.writeHead(204).end();
+      return;
+    }
     requests.push(rec);
     try {
       if (state.extra && (await state.extra(rec, res))) return;
@@ -143,6 +155,10 @@ export async function startMockServer(state: MockState = makeState()): Promise<M
       if (rec.method === "GET" && (mm = m(/^\/media\/([^/]+)\/waveform$/))) {
         const q = url.searchParams;
         return send(res, 200, state.waveform(mm[1]!, Number(q.get("from")), Number(q.get("to")), Number(q.get("points") ?? 1000)));
+      }
+      if (rec.method === "GET" && (mm = m(/^\/projects\/[^/]+\/media\/([^/]+)\/picture-cuts$/))) {
+        const q = url.searchParams, from = Number(q.get("from") ?? 0), to = Number(q.get("to") ?? 0);
+        return send(res, 200, { mediaId: mm[1], from, to, cuts: state.pictureCuts(mm[1]!).filter(c => c.at >= from && c.at < to), readSeconds: to - from, done: true });
       }
       if (rec.method === "POST" && (mm = m(/^\/projects\/[^/]+\/media\/([^/]+)\/other-input$/))) {
         const b = body as { words?: Array<[number, number]>; gaps?: Array<[number, number]> };
@@ -242,6 +258,7 @@ export async function startMockServer(state: MockState = makeState()): Promise<M
     url: `http://127.0.0.1:${port}`,
     state,
     requests,
+    diagnostics,
     close: () => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
   };
 }
