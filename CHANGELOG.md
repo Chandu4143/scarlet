@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 17, 2026
 
+- See all now sits on its own line under the summary, where For you and See all sit when something needs you.
+- Scarlet ends a request with a plain one-line summary of what it did, and anything it wants you to check is in For you instead of its reply.
 - Hovering v2, Approved or whatever a cut’s or an edit’s row ends on says how long its revisions took and, when tokens are shown, how many tokens they used.
 - Approving the last call on a dialogue pass finishes it: Scarlet no longer starts checking and editing again afterwards.
 - Every edit in a request's list now ends with a word for what it did, and a camera punch-in next to a demo reads Zoom instead of nothing.

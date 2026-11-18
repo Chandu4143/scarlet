@@ -2098,8 +2098,9 @@ it("lists every edit of a long list from its one link, with no second link to th
   await act(async () => {});
   const turn = turnFor("chg_approved_2");
   const rows = () => [...turn.querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")];
-  // "See all" opens all twelve: the list is its rows and nothing else, with no fold after the first few.
-  expect(turn.querySelector(".simple-pass-toggle")?.textContent).toBe("See all");
+  // "See all" opens all twelve: the list is its rows and nothing else, with no fold after the first few. It is a tab
+  // under the sentence, where For you and See all sit when something waits on the editor.
+  expect([seeAll(turn)?.textContent, seeAll(turn)?.className, turn.querySelector(".simple-pass-toggle")]).toEqual(["See all", "simple-review-tab", null]);
   await click(seeAll(turn)!);
   expect(rows().map(r => r.querySelector(".edit-badge")?.textContent)).toEqual(many.map((_, i) => String(i + 1)));
   expect(turn.querySelectorAll(".simple-edits > *")).toHaveLength(12);
@@ -2576,7 +2577,7 @@ it("switches an applied pass between For you and See all, with its cuts numbered
   await press("k");
   await act(async () => {});
   expect(editPanel()).toBeNull();
-  expect([pass.querySelector(".simple-review-tabs"), list()]).toEqual([null, null]);
+  expect([reviewModes(pass), list()]).toEqual([[["See all", "false"]], null]);
   await click(seeAll(pass)!);
   await act(async () => {});
   expect(list()?.getAttribute("aria-label")).toBe("Every edit");
@@ -2585,8 +2586,8 @@ it("switches an applied pass between For you and See all, with its cuts numbered
   // The row under the pointer lights its dot.
   await act(async () => { list()!.querySelector("button")!.dispatchEvent(new PointerEvent("pointerover", { bubbles: true })); });
   expect(marks()[0]!.classList.contains("is-hot")).toBe(true);
-  // The link, which now says Hide, closes the list, and the dots go with it.
-  expect([pass.querySelector(".simple-pass-toggle")?.textContent, pass.querySelector(".simple-pass-toggle")?.getAttribute("aria-expanded")]).toEqual(["Hide", "true"]);
+  // See all, lit while its list is open, closes the list when pressed again, and the dots go with it.
+  expect(reviewModes(pass)).toEqual([["See all", "true"]]);
   await click(seeAll(pass)!);
   expect(list()).toBeNull();
   expect(marks()).toEqual([]);
@@ -8217,7 +8218,7 @@ it("keeps a request's line as it was while the list for a change that just lande
   later.lists[later.earlier] = (later.lists[later.earlier] as object[]).slice(0, 2);
   await showFolded();
   await act(async () => {});
-  const line = () => [turnFor("chg_approved_2").querySelector(".simple-made b")?.textContent, turnFor("chg_approved_2").querySelector(".simple-pass-toggle")?.textContent].join(" · ");
+  const line = () => [turnFor("chg_approved_2").querySelector(".simple-made b")?.textContent, seeAll(turnFor("chg_approved_2"))?.textContent].join(" · ");
   expect(line()).toBe("2 · See both");
   // The change is saved again and the list is asked for again. Until it arrives, the line doesn't fall back to the
   // saved three and then return to two.
@@ -9089,9 +9090,9 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
   await act(async () => {});
   expect(numbered()).toEqual([["1", undefined], ["2", undefined]]);
   expect(approve).not.toHaveBeenCalled();
-  // Done: the sentence says what the pass made, and the link after it no longer says "so far".
+  // Done: the sentence says what the pass made, and See all, under it in the tabs' place, no longer says "so far".
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_done" ? { ...t, state: "done" as const, finishedAt: new Date().toISOString() } : t) }));
-  expect(link().textContent).not.toMatch(/so far/);
+  expect([link(), reviewModes(pass())]).toEqual([null, [["See both", "false"]]]);
 });
 
 it("wraps the line of a pass scheduled while Scarlet still works, so its link and its status never run over each other", async () => {
@@ -9927,7 +9928,7 @@ it("keeps the list of what needs the editor, and only that, once one of its edit
       timelineEdits: [{ label: "wrap", range: { start: 11.5, end: 16 } }] }] }));
   await act(async () => {});
   expect(container.querySelector(".simple-pin .unit")).toBeNull();
-  expect([list(), owner().querySelector(".simple-pass-toggle")?.getAttribute("aria-expanded"), container.querySelector('[data-run="task_fix"]')]).toEqual([null, "false", null]);
+  expect([list(), seeAll(owner())?.getAttribute("aria-pressed"), container.querySelector('[data-run="task_fix"]')]).toEqual([null, "false", null]);
 });
 
 it("draws a request about one place of an edit made in several once, under that edit's row, while only what needs the editor is listed", async () => {
@@ -11301,14 +11302,14 @@ it("keeps one list of every edit open at a time, and puts a request's edits on t
   await act(async () => {});
   expect(band("chg_later").classList.contains("is-marked")).toBe(true);
   expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2"]);
-  // Opening one request's list of every edit closes another's, so two "Hide" links never stand for one timeline.
-  const toggle = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".simple-pass-toggle")!;
+  // Opening one request's list of every edit closes another's, so two lit See all tabs never stand for one timeline.
+  const toggle = (changeId: string) => seeAll(turnFor(changeId))!;
   await click(toggle("chg_approved_2"));
-  expect(toggle("chg_approved_2").getAttribute("aria-expanded")).toBe("true");
+  expect(toggle("chg_approved_2").getAttribute("aria-pressed")).toBe("true");
   await click(toggle("chg_later"));
-  expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("true");
-  expect(toggle("chg_approved_2").getAttribute("aria-expanded")).toBe("false");
-  expect([...container.querySelectorAll(".simple-pass-toggle")].filter(t => t.textContent === "Hide")).toHaveLength(1);
+  expect(toggle("chg_later").getAttribute("aria-pressed")).toBe("true");
+  expect(toggle("chg_approved_2").getAttribute("aria-pressed")).toBe("false");
+  expect(container.querySelectorAll('.simple-review-tab[aria-pressed="true"]')).toHaveLength(1);
   // A request's band with an edit of it open leaves the card and shows that request's edits.
   await click(editRows("chg_later")[0]!);
   await act(async () => {});
@@ -11316,7 +11317,7 @@ it("keeps one list of every edit open at a time, and puts a request's edits on t
   await click(band("chg_approved_2"));
   await act(async () => {});
   expect(container.querySelector(".edit-card")).toBeNull();
-  expect(toggle("chg_later").getAttribute("aria-expanded")).toBe("false");
+  expect(toggle("chg_later").getAttribute("aria-pressed")).toBe("false");
   expect(band("chg_approved_2").classList.contains("is-marked")).toBe(true);
   expect(numbered().map(([n]) => n).sort()).toEqual(["1", "2", "3"]);
 });
