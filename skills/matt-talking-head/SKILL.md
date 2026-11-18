@@ -8,6 +8,8 @@ category: Story and pacing
 
 My edit is a /dialogue-pass cut my way, with my screen demos framed and my camera punched in. Each part below calls the skill it builds on and says what I change. A bare `/matt-talking-head` covers the current edit, including camera punch-ins and any screen demos. If I name a pass, source, selection or cut, work just on that. Keep an existing edit’s sync and composition. For separate camera, screen and mic recordings, play the dialogue mic once and carry cuts across all synchronized tracks, so my mouth, my voice and the action I describe still line up.
 
+When cropping my camera, make sure to show my full head and shoulders.
+
 ## Choose the take
 
 Keep the delivery meant for the viewer. If the wording of two takes is the same but the splice changes which performance survives, keep the take I meant. Keep my genuine reactions.
@@ -40,13 +42,13 @@ Use a two-frame audio crossfade at dialogue joins and a straight picture cut. Br
 
 /frame-screen, with these changes.
 
-During a synchronized screen demo, my camera is an inset at one size throughout. Aim for the bottom right every time: first frame the screen so the inset there covers nothing I read or use, and move it to another corner only for a stretch where no such framing works. Start with the inset size you would otherwise use and scale it up by 20% in both dimensions, then crop the sides for a narrower frame. Aim for 1.5:1 (width to height), with room to go up to 2:1 if the framing needs it. Zoom in slightly more within the inset and trim a little more from the top of the frame, leaving a small margin above my head. Keep my full chest in frame throughout the demo. Round all four corners of the inset.
+During a synchronized screen demo, my camera is an inset at one size throughout. Aim for the bottom right every time: first frame the screen so the inset there covers nothing I read or use, and move it to another corner only for a stretch where no such framing works. Start with the inset size you would otherwise use and scale it up by 20% in both dimensions, then crop the sides for a narrower frame. Aim for 1.5:1 (width to height), with room to go up to 2:1 if the framing needs it. Within the inset, frame me from a small margin above my hair down to the desk in front of me, with my full chest and my hands in and some of the room on either side of me, the same throughout the demo. Round all four corners of the inset.
 
 Show the whole of what I am presenting with the rest of the page it is on: the whole watch on its web page, not a close-up of its movement. When the page is taller than the video, crop into it; cropping is fine. A move every ten seconds or so is fine while I go from one thing to the next.
 
 ## Camera punch-ins
 
-/punch-in at every jump cut on full-screen camera footage. Place the punch-ins once the dialogue cuts are in, and again on any cut I approve later.
+/punch-in at every jump cut between sentences on full-screen camera footage. Keep the camera framing steady through mid-sentence cuts. Punch in or out mid-sentence only when my body position or placement in the frame changes enough to make the framing change necessary. That should be rare. Apply this rule once the dialogue cuts are in and again on any cut I approve later.
 
 ## When requested
 
