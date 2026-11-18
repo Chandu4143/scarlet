@@ -155,6 +155,12 @@ describe("dialogueCutSuggestions", () => {
     expect(firstCutPauses(t, wf, undefined)).toEqual([]);
   });
 
+  it("reads a scan passage's barely heard words with their scores", () => {
+    const words = [["so", .87], ["this", .97], ["all", 0], ["right,", .08], ["so", .95]].map(([text, heard], i) => ({ text: text as string, start: i, end: i + .2, heard: heard as number }));
+    const t = { id: "t", mediaId: "m", segments: [{ id: "s", start: 0, end: 5, text: "so this all right, so", words }] };
+    expect(firstCutEvidence(t, { from: 0, to: 5 }).passages[0]!.text).toBe("so this all (heard 0.00) right, (heard 0.08) so");
+  });
+
   it("recognizes ah and extended hesitations as candidates and preserves whole words", () => {
     const words = ["Ah!", "aahh", "Um,", "uhh", "ahead", "huh", "uh-huh"].map((text, i) => ({ text, start: i, end: i + .2 }));
     const t = { id: "t", mediaId: "m", segments: [{ id: "s", start: 0, end: 7, text: words.map(w => w.text).join(" "), words }] };

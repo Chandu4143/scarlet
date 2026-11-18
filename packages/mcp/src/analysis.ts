@@ -375,10 +375,12 @@ export function firstCutEvidence(transcript: Transcript | null, wf: {
     const words = segment.words.filter(w => w.end > wf.from && w.start < wf.to);
     if (!words.length && segment.words.length) continue;
     const first = words[0], last = words.at(-1);
-    const text = words.length ? words.map(w => w.text).join(" ") : segment.text;
+    const said = words.length ? words.map(w => w.text).join(" ") : segment.text;
+    // A word the aligner barely heard reads with its score, as transcript_get shows it.
+    const text = words.length ? words.map(heardText).join(" ") : segment.text;
     // An explicit reset can precede a completely reworded take. Flag the passage
     // for comparison even when ASR supplied only segment timing.
-    const correctionCue = text.match(/\b(?:nope|scratch that|(?:sorry|no)[, —-]+I mean(?:t)?|let me (?:start (?:that )?(?:again|over)|(?:try|do|say) that (?:again|one more time))|that came out wrong)\b/i)?.[0];
+    const correctionCue = said.match(/\b(?:nope|scratch that|(?:sorry|no)[, —-]+I mean(?:t)?|let me (?:start (?:that )?(?:again|over)|(?:try|do|say) that (?:again|one more time))|that came out wrong)\b/i)?.[0];
     passages.push({ start: first?.start ?? segment.start, end: last?.end ?? segment.end,
       text, speaker: segment.speaker, timing: words.length ? "word" : "segment", ...(correctionCue && { correctionCue }) });
     for (const interval of words.length ? words : [segment]) {
