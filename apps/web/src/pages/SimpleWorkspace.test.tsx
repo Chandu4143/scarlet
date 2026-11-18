@@ -5241,6 +5241,27 @@ it("lists a pass's edits that overlap as one moment, with its own edits under it
   expect(listRows()[1]!.querySelector(".simple-pass-tick")).not.toBeNull();
 });
 
+it("opens a moment whole from Keep on the row before it, when the edit it is named for is kept already", async () => {
+  passWithMoment(false);
+  // The editor kept "Cube inset", the edit the moment is named for, on its own earlier.
+  keepEdits(PRJ, threadWith("chg_approved_2").id, [{ changeId: "chg_approved_2", spot: 4 }]);
+  await show();
+  await act(async () => {});
+  await click(passToggle());
+  await act(async () => {});
+  await click(listRows()[0]!);
+  await act(async () => {});
+  expect(openPassRow()).toBe("captions");
+  // Keep goes on to the moment as a whole, as ↓ does: one card for all three, its edits still folded under its row.
+  await press("k");
+  await act(async () => {});
+  expect([openPassRow(), editPanel()?.querySelector(".edit-card-length")?.textContent, momentRows()]).toEqual(["Cube inset", "3 edits", []]);
+  // Keep there keeps the rest of it and goes on past it.
+  await press("k");
+  await act(async () => {});
+  expect([listRows()[1]!.className, openPassRow()]).toEqual(["is-decided", "wrap"]);
+});
+
 it("keeps a moment the video plays through while the pass's list is open, and never an edit that asks for a look", async () => {
   passWithMoment(true);
   await show();
