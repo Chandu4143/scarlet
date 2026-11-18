@@ -74,12 +74,38 @@ let endedPassage = false;
  */
 let borrower: { pause(): void } | undefined;
 let pendingPlay: AbortController | undefined;
-const isPlaying = () => !!pendingPlay || (!!video && !video.paused && !video.ended);
+/**
+ * The element that was playing came down without a pause: the video changed under it (an edit landed, its preview
+ * finished, its timeline was read again). The editor didn't stop it, so the element put up in its place, in the same
+ * moment and at the same playhead (`at`), plays on. `el` is that element once it is up. Nothing up in its place by
+ * then means the video closed, and a playhead moved meanwhile means another project or a clip from Media opened.
+ * A pause or a play ends the handover: the editor's own, or one from a passage or listen set up again, which carries
+ * on as it was by itself.
+ */
+let handover: { at: number; el?: HTMLVideoElement } | undefined;
+const isPlaying = () => !!pendingPlay || !!handover || (!!video && !video.paused && !video.ended);
 function cancelPendingPlay() {
   if (!pendingPlay) return;
   pendingPlay.abort();
   pendingPlay = undefined;
   usePlayerStore.getState().setPlaying(false);
+}
+/**
+ * Take up the handover on `el`, once the component that put it up has finished setting it up: a stream has its
+ * joins, and a file has its metadata and the playhead's place on it.
+ */
+function carryOn(el: HTMLVideoElement) {
+  const resume = () => {
+    if (handover?.el !== el || video !== el) return;
+    handover = undefined;
+    if (!el.paused && !el.ended) return;
+    playbackLog("transport carry-on", { el: logId(el), at: usePlayerStore.getState().time });
+    player.play();
+  };
+  // A stream has nothing to load until it's played. A file is played once it knows its length, as its component
+  // puts it at the playhead then: played before, it would start from its top.
+  if (el.readyState >= 1 || !el.getAttribute("src")) queueMicrotask(resume);
+  else el.addEventListener("loadedmetadata", resume, { once: true });
 }
 function letGo() {
   const was = isPlaying();
@@ -241,9 +267,18 @@ export const player = {
       el.removeEventListener("timeupdate", onSeek);
     };
     if (stream?.duration || Number.isFinite(el.duration)) onMeta();
+    if (handover && !handover.el && Math.abs(usePlayerStore.getState().time - handover.at) < 1e-6) {
+      handover.el = el;
+      carryOn(el);
+    } else handover = undefined;
   },
   detach() {
-    if (video) playbackLog("transport detach", { el: logId(video), playing: isPlaying(), at: usePlayerStore.getState().time });
+    const was = isPlaying();
+    if (video) playbackLog("transport detach", { el: logId(video), playing: was, at: usePlayerStore.getState().time });
+    if (video) handover = was ? { at: usePlayerStore.getState().time } : undefined;
+    const given = handover;
+    // React puts the next element up in the same commit. Once that is over, nothing is coming.
+    if (given) queueMicrotask(() => { if (handover === given && !given.el) handover = undefined; });
     cancelPendingPlay();
     detachFn?.();
     detachFn = null;
@@ -367,6 +402,8 @@ export const player = {
       } else through = true;
       finished = false;
     }
+    // A play with nothing up yet is for the element on its way, which a handover still brings.
+    if (video) handover = undefined;
     if (pendingPlay) return;
     this.prepare();
     playbackLog("transport play", { at: usePlayerStore.getState().time, el: video ? logId(video) : "none", ready: video?.readyState, by: calledBy() });
@@ -402,6 +439,9 @@ export const player = {
   pause() {
     if (isPlaying()) playbackLog("transport pause", { at: usePlayerStore.getState().time, by: calledBy() });
     carry = false;
+    // A passage or listen let go between one element and the next pauses nothing that's up. It keeps the handover,
+    // and takes it as its own `carry`.
+    if (video) handover = undefined;
     cancelPendingPlay();
     stream?.pause?.();
     video?.pause();

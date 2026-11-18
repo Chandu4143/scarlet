@@ -10398,7 +10398,7 @@ it("keeps an open edit's card up, paused, while its markers load again for a new
   await act(async () => {});
   expect(openTitle()).toBe("captions");
   // The editor paused it. Another request's edit then lands, and every request's markers are asked for again.
-  await act(async () => usePlayerStore.setState({ playing: false }));
+  await act(async () => player.pause());
   const play = vi.spyOn(player, "play");
   const passage = vi.spyOn(player, "previewRange");
   later.hold(later.earlier);
@@ -10436,6 +10436,7 @@ const openCutThenRevise = async () => {
   await act(async () => {});
   // Opening it played it once. The editor then paused it and sent a note on it.
   expect(spies.play).toHaveBeenCalledTimes(1);
+  await act(async () => player.pause());
   spies.play.mockClear();
   const lands = async (revised: object) => {
     listed = [{ label: "Keep the image test", ...revised, changeId: "chg_revised", spot: 0, previous: [{ changeId: "chg_approved_2", spot: 0 }] }];
@@ -10487,6 +10488,8 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await act(async () => {});
   expect(openTitle()).toBe("captions");
   expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  // The editor paused it, part-way through.
+  await act(async () => { player.seek(1.5, true); player.pause(); });
   play.mockClear();
   // The revision moves the captions and their surrounding preview later. The engine lists it in the same edit's place.
   edits.mockImplementation(async (_project, threadId) => ({ version: useProjectStore.getState().current!.project.head!,
@@ -10506,6 +10509,24 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await act(async () => {});
   expect(passage).toHaveBeenLastCalledWith({ start: 0.5, end: 3.5 }, expect.any(Number), undefined, false);
   expect(play).toHaveBeenCalledTimes(1);
+});
+
+it("plays an open edit on from where it was when a new working cut lands while it plays", async () => {
+  appliedEdits();
+  const passage = vi.spyOn(player, "previewRange");
+  await show();
+  await click(editRows("chg_approved_2")[1]!);
+  await act(async () => {});
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  await act(async () => player.seek(1.5, true));
+  const was = player.element()!;
+  expect(was.paused).toBe(false);
+  // Another request's edit lands while it plays: the player is put up again for the new working cut.
+  await headMoves("ver_next");
+  await act(async () => {});
+  expect(player.element()).not.toBe(was);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, true);
+  expect([player.element()!.paused, usePlayerStore.getState().time]).toEqual([false, 1.5]);
 });
 
 /** A request that made the three edits, with Scarlet's closing words, and nothing running. */
