@@ -139,14 +139,14 @@
 .simple-timeline-cut.is-kept { background: rgba(244, 241, 233, .55); }
 .simple-timeline-cut.is-kept span { border-color: rgba(244, 241, 233, .35); background: rgba(12, 12, 12, .78); }
 .simple-timeline-mark { position: absolute; z-index: 1; pointer-events: none; }
-.simple-timeline-mark.is-dot { top: calc(var(--ruler-height) - var(--marker-strip-height) / 2 - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
+.simple-timeline-mark.is-dot { top: calc(var(--ruler-height) - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
   background: var(--color-muted); box-shadow: 0 0 0 1px #1a1918; }
 /* A dot with no number is amber too while it asks for a look. */
 .simple-timeline-mark.is-dot[data-state="check"] { background: var(--color-warn); }
 .simple-timeline-mark.is-dot.is-hot, .simple-timeline-mark.is-dot.is-on { background: var(--color-fg); }
 .simple-timeline-mark.is-dot.is-on { box-shadow: 0 0 0 3px rgba(255, 255, 255, .16); }
 /* Hovering anywhere along the markers picks the nearest one, and lifts it over the playhead and the others. */
-.simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - var(--marker-strip-height)); height: var(--marker-strip-height); }
+.simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - 12px); height: 32px; }
 /* Over a marker that opens its edit, the pointer says a press opens it instead of scrubbing. */
 .simple-timeline-hover.is-aimed { cursor: pointer; }
 .simple-timeline-mark.is-pill { z-index: 2; }
@@ -215,22 +215,24 @@
 .review-compare { display: inline-flex; }
 .review-compare:empty { display: none; }
 
-/* Flat edit numbers occupy their own strip between the ruler and the footage. */
-.simple-timeline-mark.is-numbered { top: calc(var(--ruler-height) - var(--marker-strip-height)); height: var(--marker-strip-height);
-  display: grid; place-items: center; color: var(--color-muted); }
-.simple-timeline-number { display: inline-flex; align-items: center; white-space: nowrap; font: 500 12px/16px var(--font-mono);
-  font-variant-numeric: tabular-nums; }
-.simple-timeline-mark.is-numbered:is(.is-hot, .is-on) { color: var(--color-fg); }
-.simple-timeline-mark.is-numbered:is(.is-hot, .is-on) .simple-timeline-number { box-shadow: 0 1px currentColor; }
-.simple-timeline-mark.is-numbered[data-state="check"] { color: var(--color-warn); }
-.simple-timeline-mark.is-numbered[data-state="kept"] .simple-timeline-number::before { content: ""; width: 7px; height: 4px; margin-right: 3px;
-  border: solid currentColor; border-width: 0 0 1.5px 1.5px; transform: rotate(-45deg); }
+/* An applied edit's dot and a waiting call's carry their number, as in the chat: filled once kept, amber while it asks for a look. */
+.simple-timeline-mark.is-numbered { top: calc(var(--ruler-height) - 9px); width: 17px; height: 17px; margin-left: -8.5px; display: grid; place-items: center;
+  border: 1.2px solid var(--color-muted); border-radius: 9px; background: var(--color-raised); box-shadow: 0 0 0 1px #1a1918; }
+.simple-timeline-number { white-space: nowrap; font-size: 10px; font-weight: 600; line-height: 1; font-style: normal; color: var(--color-fg); font-variant-numeric: tabular-nums; pointer-events: none; }
+.simple-timeline-mark.is-numbered[data-state="check"] { border-color: var(--color-warn); }
+.simple-timeline-mark.is-numbered[data-state="check"] .simple-timeline-number { color: var(--color-warn); }
+.simple-timeline-mark.is-numbered[data-state="kept"] { border-color: var(--color-fg); background: var(--color-fg); }
+.simple-timeline-mark.is-numbered[data-state="kept"] .simple-timeline-number { color: var(--color-bg); }
+.simple-timeline-mark.is-numbered.is-hot, .simple-timeline-mark.is-numbered.is-on { border-color: var(--color-fg); }
+.simple-timeline-mark.is-numbered.is-hot:not([data-state="kept"]), .simple-timeline-mark.is-numbered.is-on:not([data-state="kept"]) { background: #3a3a3a; }
+.simple-timeline-mark.is-numbered.is-on { box-shadow: 0 0 0 3px rgba(255, 255, 255, .16); }
 /* An edit applied a moment ago arrives with a moment: its marker pops in with one ring that spreads and fades. A cut's
    red first closes up where the footage came out. With motion reduced, the marker is simply there. */
 .simple-timeline-mark[data-landed] { animation: timeline-land .42s cubic-bezier(.2, .9, .3, 1.35) both; }
 .simple-timeline-mark[data-landed="cut"] { animation-delay: .26s; }
 .simple-timeline-mark[data-landed]::after { content: ""; position: absolute; inset: -1.5px; border: 1.5px solid rgba(244, 241, 233, .75);
-  border-radius: 50%; pointer-events: none; animation: timeline-land-ring .7s ease-out both; animation-delay: inherit; }
+  border-radius: inherit; pointer-events: none; animation: timeline-land-ring .7s ease-out both; animation-delay: inherit; }
+.simple-timeline-mark.is-dot[data-landed]::after { border-radius: 50%; }
 .simple-timeline-closing { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; width: 44px; margin-left: -22px; pointer-events: none;
   border-radius: 3px; border: 1px solid rgba(255, 160, 156, .7); background: rgba(255, 160, 156, .26);
   transform: scaleX(0); animation: timeline-close .3s cubic-bezier(.5, 0, .75, 0) both; }

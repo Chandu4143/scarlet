@@ -336,8 +336,7 @@ it("keeps zoom controls on the timeline and draws no edit points, zoomed or not"
   expect(button("Show edit points")).toBeUndefined();
   const ruler = container.querySelector(".timeline-ruler")!;
   expect(ruler.textContent).toContain("2:00");
-  expect(ruler.textContent).toContain("2:30");
-  expect(ruler.textContent).not.toContain("3:00");
+  expect(ruler.textContent).not.toContain("2:30");
   expect(ruler.querySelector('.ruler-major[style*="75%"]')).toBeTruthy();
   await act(() => zoomIn.dispatchEvent(new PointerEvent("pointerdown", { button: 0, isPrimary: true, bubbles: true })));
   await click(zoomIn);
@@ -376,7 +375,7 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   // 4×: fifty seconds around the playhead.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
-  expect([zoomed[0], zoomed.at(-1)]).toEqual(["2:00", "2:40"]);
+  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:00$/), expect.stringMatching(/2:30$/)]);
   // A revision lands. The head moves first and the new cut arrives a moment later, ten seconds shorter. The timeline is
   // built again each time, on the stretch it showed.
   await render(undefined, 200);
@@ -483,7 +482,7 @@ it("draws crowded edits as one pill that zooms to its run on a press, and a dot 
   expect(opened).toEqual([5]);
 });
 
-it("zooms a range label when another group's edit sits at the same time", async () => {
+it("zooms a pill when another group's circle is under the pointer too", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
@@ -495,9 +494,6 @@ it("zooms a range label when another group's edit sits at the same time", async 
   ]} />);
   const pill = container.querySelector<HTMLElement>(".simple-timeline-mark.is-pill")!;
   expect([pill.textContent, pill.style.left]).toEqual(["12+", "11%"]);
-  const single = container.querySelector<HTMLElement>(".simple-timeline-mark:not(.is-pill)")!;
-  const right = parseFloat(pill.style.left) * 10 + parseFloat(pill.style.width) / 2;
-  expect(parseFloat(single.style.left) * 10 - parseFloat(single.style.width) / 2).toBeGreaterThan(right);
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
   vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await act(() => strip.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, isPrimary: true, button: 0, clientX: 111, bubbles: true })));
