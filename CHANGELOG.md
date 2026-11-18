@@ -14,6 +14,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - Edit numbers sit above the footage, and clicking the zoom percentage on the ruler fits the whole timeline.
 - Click the speed beside Full screen to open the player’s − and + controls.
 - Cuts Scarlet places by time now leave only the pause your skill asks for after your last word, instead of whatever quiet was there.
+- A dialogue pass now sees the restarts and stutters a transcript tidies away while it plans its cuts, not only when it reads its edit back.
 - A screen demo that ends or starts a frame or two off the camera's cut now changes on that cut, so your camera no longer flashes full frame between them.
 - Speech transcription settings show your preferred model, when Scarlet uses bundled Whisper, and how to set up CrisperWhisper.
 
