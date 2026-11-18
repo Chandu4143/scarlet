@@ -856,6 +856,16 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     if (c.notes?.length) report.push({ cut: c.input, kind: c.kind, ...(c.words && { words: c.words }), asked: c.decision, outcome: d.review ? "review" : "cut",
       range: [r2(d.start), r2(d.end)], evidence: c.notes.join(" ") });
   });
+  // A retake applied without a hold is reported with what it takes out and what its join plays, as a held one is: two
+  // deliveries of one line read alike in a list of edges, and the one taken out can be the one that says it whole.
+  await Promise.all(removals.map(async (c, i) => {
+    const d = decisions[i]!;
+    if (d.review || c.kind !== "retake" || c.decision !== "cut") return;
+    const heard = await cutReading(tl, project, d, mediaId => sources.words(mediaId, undefined, false));
+    if (!heard.plays) return;
+    report.push({ cut: c.input, kind: c.kind, ...(c.words && { words: c.words }), asked: c.decision, outcome: "cut", range: [r2(d.start), r2(d.end)],
+      ...(heard.removes !== c.words && heard.removes && { removes: heard.removes }), plays: heard.plays });
+  }));
   // One line per submitted range: a later adjustment replaces an earlier one, keeping both reasons.
   const gate = new Map<number, GateLine>();
   for (const line of report) {
@@ -908,6 +918,21 @@ export async function joinPlays(tl: Timeline, project: Pick<Project, "media">, r
 }
 
 type Heard = ReadonlyArray<{ at: number; text: string }>;
+
+/**
+ * What a removal takes out and what its join then plays, as the viewer hears them. A revision placed by seconds on the
+ * only span with quiet at both edges took out the whole retake "where you would" and kept the broken first take: the
+ * result listed the words at each edge, and nothing said the line now played "a time where would ‖ occasionally see"
+ * (2026-11-17).
+ */
+export async function cutReading(tl: Timeline, project: Pick<Project, "media">, range: TimeRange,
+  words: (mediaId: string) => Promise<readonly TranscriptWord[] | null>, inside = 16) {
+  const heard = await timelineWordsNear(tl, project, range, words, 6);
+  const removed = heard.filter(h => h.at > range.start && h.at < range.end).map(h => h.text);
+  const removes = (removed.length > inside ? [...removed.slice(0, inside / 2), "…", ...removed.slice(-inside / 2)] : removed).join(" ");
+  const plays = joinText(heard, range);
+  return { ...(removes && { removes }), ...(plays && { plays }) };
+}
 
 function joinText(heard: Heard, range: TimeRange, count = 6) {
   const before = heard.filter(h => h.at <= range.start).slice(-count).map(h => h.text);
