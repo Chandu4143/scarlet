@@ -8,7 +8,6 @@ import { removedSeconds } from "../../lib/format";
 import { editRowWord } from "../../lib/editKind";
 import { editKey, keepEdits, reviewKey, useKeptEdits } from "../../lib/keptEdits";
 import { useProjectStore } from "../../stores/project";
-import { useShownCutStore } from "../../stores/shownCut";
 import { Dropdown, MenuItem } from "../shell/WorkspaceNavigation";
 import { Icon } from "../ui/primitives";
 import { useAgentAvailability } from "../agent/AgentChip";
@@ -94,8 +93,7 @@ type ListedEdit = Omit<ThreadEdit, "at">;
  * now, so a list kept from an earlier one has none.
  */
 export function useThreadEdits(projectId: string, thread: Thread | undefined, needed = true) {
-  // Located on the working cut on screen, which holds while the video plays: the engine's list for a newer one waits.
-  const head = useShownCutStore(s => s.head);
+  const head = useProjectStore(s => s.current?.project.head ?? null);
   const media = useProjectStore(s => s.current?.media);
   const saved = useMemo(() => thread ? threadEditList(thread, media) : [], [thread, media]);
   // An edit another request made counts here once this request flagged it.

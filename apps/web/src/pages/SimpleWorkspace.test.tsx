@@ -17,7 +17,6 @@ import { player } from "../lib/player";
 import { captureProjectPlace } from "../lib/updatePlace";
 import { useHostsStore } from "../stores/hosts";
 import { usePlayerStore } from "../stores/player";
-import { useShownCutStore } from "../stores/shownCut";
 import { useProjectStore, type ProjectData } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
 import { useTemplatesStore } from "../stores/templates";
@@ -1191,7 +1190,6 @@ it("lets go of an open edit that is no longer in its request's list, and goes ba
   expect(openTitle()).toBe("music bed");
   expect(numbered()).toEqual([["1", undefined], ["2", undefined], ["3", undefined]]);
   // The edit is undone. Its request no longer lists it.
-  await pauses();
   later.lists[later.earlier] = (later.lists[later.earlier] as object[]).slice(1);
   await headMoves("ver_undone");
   await act(async () => {});
@@ -1214,7 +1212,6 @@ it("doesn't bring an edit back half open when the latest request lists it again"
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  await pauses();
   // The edit is undone while it is open, then put back.
   const all = only.lists[only.earlier] as object[];
   only.lists[only.earlier] = [all[0]!, all[2]!];
@@ -1291,7 +1288,6 @@ it("keeps an open edit through markers that fail to load, unless a newer request
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  await pauses();
   // The working cut moves on and the markers fail to load. The card goes, and comes back on the same edit when they load.
   const good = later.lists[later.earlier]!;
   later.lists[later.earlier] = new Error("Engine unreachable");
@@ -1303,7 +1299,6 @@ it("keeps an open edit through markers that fail to load, unless a newer request
   await headMoves("ver_back");
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  await pauses();
   // They fail again, and this time a newer request arrives meanwhile. It takes the timeline, and the edit stays closed.
   later.lists[later.earlier] = new Error("Engine unreachable");
   await headMoves("ver_failed_again");
@@ -1614,8 +1609,6 @@ const laterRequest = (request = "chg_later", flagged = true) => {
 };
 /** The working cut moves on, as when a revision lands: every request's markers are asked for again. */
 const headMoves = (version: string) => event(d => ({ ...d, project: { ...d.project, head: version }, timeline: { ...d.timeline!, version } }));
-/** The editor pauses. A working cut saved while the video plays waits until it stops (`useShownCut`). */
-const pauses = () => act(async () => player.pause());
 /** Only the earlier request, with "wrap" asking for a look unless told otherwise. */
 const earlierRequestOnly = (flagged = true) => {
   appliedEdits();
@@ -1659,7 +1652,6 @@ it("flags a request's applied edit while Scarlet still works on it, and follows 
   await click(fade().querySelector(".simple-pass-need")!);
   expect(fade().querySelector(".simple-edit-title")?.textContent).toBe("outro fade");
   expect(fade().querySelector(".edit-badge.is-check")).not.toBeNull();
-  await pauses();
   const replaces = { changeId: change.id, spot: 0 };
   const final = { ...change, id: "chg_final_fade", taskId: task.id, threadId: task.id, toVersion: "ver_final_fade",
     timelineEdits: [{ label: "shorter fade", check: "Listen to the last beat", range: { start: 14, end: 15 }, replaces }] };
@@ -2687,7 +2679,6 @@ it("closes the selected edit in one click when only that edit remains in an expa
   await click(buttonIn(turn, "See all")!);
   await click(editRows("chg_approved_2")[1]!);
   expect(openTitle()).toBe("captions");
-  await pauses();
   lists[earlier] = (lists[earlier] as object[]).slice(1, 2);
   await headMoves("ver_only_captions");
   expect(openTitle()).toBe("captions");
@@ -6951,7 +6942,6 @@ it("keeps an edit that left its request's list closed when it is listed again, i
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  await pauses();
   // "captions" is undone while it is open. Its request still has "wrap" to check, so it keeps the timeline.
   const all = later.lists[later.earlier] as object[];
   later.lists[later.earlier] = [all[0]!, all[2]!];
@@ -6979,7 +6969,6 @@ it("gives the timeline to a request that arrived while an earlier request's edit
   await act(async () => {});
   expect(openTitle()).toBe("captions");
   // The working cut moves on with the new edit, and the open edit's markers fail to load. Its request has "wrap" to check.
-  await pauses();
   later.lists[later.earlier] = new Error("Engine unreachable");
   await headMoves("ver_failed");
   await act(async () => {});
@@ -10602,7 +10591,7 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   expect(play).toHaveBeenCalledTimes(1);
 });
 
-it("plays an open edit on without a break when a new working cut lands while it plays, and takes the new one up once paused", async () => {
+it("plays an open edit on from where it was when a new working cut lands while it plays", async () => {
   appliedEdits();
   const passage = vi.spyOn(player, "previewRange");
   await show();
@@ -10612,40 +10601,12 @@ it("plays an open edit on without a break when a new working cut lands while it 
   await act(async () => player.seek(1.5, true));
   const was = player.element()!;
   expect(was.paused).toBe(false);
-  const listens = passage.mock.calls.length;
-  // Another request's edit lands while it plays, as a pass's saves do a few times a second: the same player plays on.
+  // Another request's edit lands while it plays: the player is put up again for the new working cut.
   await headMoves("ver_next");
-  await headMoves("ver_after_next");
-  await act(async () => {});
-  expect(player.element()).toBe(was);
-  expect(passage).toHaveBeenCalledTimes(listens);
-  expect([was.paused, usePlayerStore.getState().time]).toEqual([false, 1.5]);
-  // Paused, the newest working cut is put up where it was, and stays paused.
-  await pauses();
   await act(async () => {});
   expect(player.element()).not.toBe(was);
   expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.4 }, expect.any(Number), undefined, true);
-  expect([player.element()!.paused, usePlayerStore.getState().time]).toEqual([true, 1.5]);
-});
-
-it("plays the video on without a break while a pass saves new working cuts, and shows the newest once paused", async () => {
-  appliedEdits();
-  await show();
-  await act(async () => {});
-  await act(async () => { player.seek(4, true); player.play(); });
-  const was = player.element()!;
-  expect([editPanel(), was.paused]).toEqual([null, false]);
-  await headMoves("ver_next");
-  await headMoves("ver_after_next");
-  await act(async () => {});
-  expect([player.element(), was.paused, usePlayerStore.getState().time]).toEqual([was, false, 4]);
-  // The picture says the new edits are ready, and how to see them.
-  expect(container.querySelector(".watch-monitor .caught-up-notice")?.textContent).toBe("New edits ready · pause to see them");
-  await pauses();
-  await act(async () => {});
-  expect(player.element()).not.toBe(was);
-  expect(useShownCutStore.getState().head).toBe("ver_after_next");
-  expect(container.querySelector(".caught-up-notice")).toBeNull();
+  expect([player.element()!.paused, usePlayerStore.getState().time]).toEqual([false, 1.5]);
 });
 
 /** A request that made the three edits, with Scarlet's closing words, and nothing running. */

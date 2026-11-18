@@ -12,7 +12,6 @@ import { logPlayRefusal } from "../../lib/playbackLog";
 import { player } from "../../lib/player";
 import { usePlayerStore } from "../../stores/player";
 import { selectHeadRender, useProjectStore } from "../../stores/project";
-import { useShownCut } from "../../stores/shownCut";
 import { Icon, Spinner } from "../ui/primitives";
 
 export const Player = memo(function Player({ source, autoPlaySource, cut, hidden, active, rejectedOriginal, onRejectOriginal, onMedia }: {
@@ -27,14 +26,11 @@ export const Player = memo(function Player({ source, autoPlaySource, cut, hidden
 }) {
   const current = useProjectStore(useShallow(s => {
     if (!cut || !s.current) return null;
-    const { id, project, renders, fullRenderKeys, historyRevision } = s.current;
-    return { id, project, renders, fullRenderKeys, historyRevision };
+    const { id, project, timeline, renders, fullRenderKeys, historyRevision } = s.current;
+    return { id, project, timeline, renders, fullRenderKeys, historyRevision };
   }));
   const hasMedia = useProjectStore(s => !!s.current?.media.length);
-  // The working cut on screen, which holds while the video plays.
-  const shownCut = useShownCut();
-  const head = current ? shownCut.head : undefined;
-  const timeline = current ? shownCut.timeline : undefined;
+  const head = current?.project.head;
   const context = head && current && fullRenderContext(current.project);
   useEffect(() => {
     const store = useProjectStore.getState();
@@ -43,8 +39,8 @@ export const Player = memo(function Player({ source, autoPlaySource, cut, hidden
   // The edit can move on before its new timeline has been read, and stay so while that read is tried again. Meanwhile
   // the timeline on screen is the one before, and it plays as itself: the new version's file, or its footage at the old
   // version's places, would play something the timeline doesn't show.
-  const shown = head && timeline ? timeline.version : head;
-  const render = head && current && shown === head ? selectHeadRender({ ...current, project: { ...current.project, head } }) : undefined;
+  const shown = head && current?.timeline ? current.timeline.version : head;
+  const render = head && shown === head ? selectHeadRender(current) : undefined;
   // Keep using the same bytes for playback and range seeks throughout this viewing session.
   const [startedOnOriginal] = useState(() => !!source && !isPlayableMedia(source) && canPlayOriginal(source));
   const original = startedOnOriginal && source?.id !== rejectedOriginal;
@@ -66,8 +62,8 @@ export const Player = memo(function Player({ source, autoPlaySource, cut, hidden
       autoPlay={autoPlaySource && active && !hidden} hidden={hidden} />;
   }
   // The monitor's own dark shows round the picture, so the ambient light behind it can glow through.
-  if (!src && head && current && timeline) return <div hidden={hidden} className="absolute inset-0">
-    <CutStream project={current.project} timeline={timeline} version={timeline.version} onStart={startStreaming} />
+  if (!src && head && current?.timeline) return <div hidden={hidden} className="absolute inset-0">
+    <CutStream project={current.project} timeline={current.timeline} version={current.timeline.version} onStart={startStreaming} />
   </div>;
   return (
     <div hidden={hidden} className="absolute inset-0">
