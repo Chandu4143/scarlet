@@ -7,7 +7,6 @@ import type { MediaAsset, Timeline } from "@scarlet/timeline";
 import { cutWords, mapWords, sourceWords, selectionRange, indexWordTimes, type MappedWord } from "../../lib/transcriptMap";
 import { usePlayerStore } from "../../stores/player";
 import { useProjectStore } from "../../stores/project";
-import { useShownCutStore } from "../../stores/shownCut";
 import { useUiStore, type AgentContext } from "../../stores/ui";
 import { EmptyState, Icon, Spinner } from "../ui/primitives";
 
@@ -57,8 +56,7 @@ const WordParagraph = memo(function WordParagraph({ words, from, to }: {
 export function TranscriptPane({ source, draft, onAsk }: { draft?: Timeline; source?: MediaAsset; onAsk(words: AgentContext): void }) {
   const project = useProjectStore(s => s.current?.project);
   const projectMedia = useProjectStore(s => s.current?.media ?? emptyMedia);
-  // The working cut on screen, which holds while the video plays, so the words lit are the ones heard.
-  const projectTimeline = useShownCutStore(s => s.timeline);
+  const projectTimeline = useProjectStore(s => s.current?.timeline);
   const setAgentContext = useUiStore((s) => s.setAgentContext);
   const focusComposer = useUiStore((s) => s.focusComposer);
   const [selected, setSelected] = useState<{ from: string; to: string } | null>(null);

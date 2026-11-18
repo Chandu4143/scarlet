@@ -15,8 +15,6 @@ import type { JoinClock } from "../lib/joinClock";
 import { api, IS_MOCK, loggedFetch, readLoggedBody } from "../lib/client";
 import { usePlayerStore } from "../stores/player";
 import { selectRender, useProjectStore } from "../stores/project";
-import { useShownCut } from "../stores/shownCut";
-import { CaughtUpOnMonitor } from "../components/player/CaughtUp";
 import { editTargetAt, markedRangeOf, useUiStore, type AgentContext, type MarkedRange } from "../stores/ui";
 import { Icon } from "../components/ui/primitives";
 import { CachedVideo } from "../components/player/CachedVideo";
@@ -303,11 +301,9 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   onMedia, simple, joined }: PreviewProps) {
   const current = useProjectStore(useShallow(s => {
     if (!s.current) return null;
-    const { id, project, media, notes, versions, renderSettingsRevision, headError } = s.current;
-    return { id, project, media, notes, versions, renderSettingsRevision, headError };
+    const { id, project, media, timeline, notes, versions, renderSettingsRevision, headError } = s.current;
+    return { id, project, media, timeline, notes, versions, renderSettingsRevision, headError };
   }))!;
-  // The working cut on screen, which holds while the video plays (`useShownCut`). Anything sent goes by `project.head`.
-  const shownCut = useShownCut();
   const pendingImports = useImportCount(current.id);
   const cut = hasCut && !source && !draftVersion;
   const videoDuration = usePlayerStore((s) => s.duration);
@@ -317,13 +313,13 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const { hash } = useLocation();
   const navigate = useNavigate();
   const emptyBase = change && (change.fromVersion === change.toVersion ||
-    (shownCut.timeline?.version === change.fromVersion && !hasCut) ||
+    (current.timeline?.version === change.fromVersion && !hasCut) ||
     current.versions?.some(v => v.version === change.fromVersion && v.duration === 0));
   const approvalChange = useApprovalComparison(approval && !emptyBase ? change : undefined, spot);
   const comparisonChange = approval ? approvalChange : change;
   const pair = (comparisonChange ?? change)?.renders[spot];
   const [rejectedOriginal, rejectOriginal] = useState<string>();
-  const head = cut ? shownCut.head : null;
+  const head = cut ? current.project.head : null;
   const playable = !openingJoin && (draftVersion ? !!draft : source ? source.id !== rejectedOriginal || isPlayableMedia(source) : !!head);
   const monitor = useRef<HTMLDivElement>(null);
   // Whichever play button is on the monitor shows that its picture is loading, in place of its icon.
@@ -332,7 +328,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const cacheSource = source?.kind === "video" ? source.id : undefined;
   const selectedCache = usePlaybackCache(current.project, { version: draftVersion, mediaId: cacheSource, automatic: !!cacheSource && active, settingsRevision: current.renderSettingsRevision });
   const { cache } = cut ? workingCache : selectedCache;
-  const displayedTimeline = draftVersion ? draft : shownCut.timeline?.version === head ? shownCut.timeline : null;
+  const displayedTimeline = draftVersion ? draft : current.timeline?.version === head ? current.timeline : null;
   const missingTimeline = !!cacheVersion && !displayedTimeline;
   const timelineFailed = draftVersion ? draftFailed : !!current.headError;
   const previewStrip = useMemo(() => {
@@ -372,7 +368,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
         setDecodedSource(previous => previous?.id === source.id && previous.aspect === aspect ? previous : { id: source.id, aspect });
       }
     } : undefined;
-  const cutDuration = useMemo(() => cut && shownCut.timeline ? timelineDuration(shownCut.timeline) : 0, [cut, shownCut.timeline]);
+  const cutDuration = useMemo(() => cut && current.timeline ? timelineDuration(current.timeline) : 0, [cut, current.timeline]);
   const proposedDuration = useMemo(() => draft ? timelineDuration(draft) : 0, [draft]);
   const duration = draftVersion ? proposedDuration : source?.duration || cutDuration || videoDuration;
   const fps = source?.fps || settings.fps;
@@ -447,7 +443,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       : cutFrameUrl(current.project, displayedTimeline, at, exact);
   }, [source, current.project, displayedTimeline, current.media, lastFrame]);
   const beforeRender = useProjectStore(s => selectRender(s.current, pair?.before));
-  const applied = change?.state === "approved" && (change.appliedVersion ?? change.toVersion) === shownCut.head;
+  const applied = change?.state === "approved" && (change.appliedVersion ?? change.toVersion) === current.project.head;
   const missingBefore = !applied && !pair?.beforeRange && !beforeRender ? pair?.before : null;
   useEffect(() => { if (missingBefore) void useProjectStore.getState().ensureRender(missingBefore); }, [missingBefore]);
   const editRange = (!approval && !draftVersion && !applied ? pair?.beforeRange ?? beforeRender?.range : undefined) ?? pair?.range ?? change?.ranges[spot];
@@ -511,13 +507,13 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     const at = Math.min(time, lastFrame);
     if (!source) setSelectedTime(at);
     // The point is on the timeline the player is on, which is the one before while the edit's new timeline is read.
-    const point = editTargetAt(at, draftVersion ?? shownCut.timeline?.version ?? shownCut.head ?? undefined, displayedTimeline, source?.id);
+    const point = editTargetAt(at, draftVersion ?? current.timeline?.version ?? current.project.head ?? undefined, displayedTimeline, source?.id);
     simple.onPick?.(point, how);
   };
 
   // The stretch marked for the message in the box, drawn while the timeline is the one it was marked on.
   const markedRange = useUiStore(s => markedRangeOf(s.agentContext));
-  const rangeVersion = draftVersion ?? shownCut.timeline?.version ?? shownCut.head ?? undefined;
+  const rangeVersion = draftVersion ?? current.timeline?.version ?? current.project.head ?? undefined;
   const shownRange = useMemo(() => markedRange && markedRange.version === rangeVersion && markedRange.mediaId === source?.id
     ? { start: markedRange.start, end: markedRange.end } : undefined, [markedRange, rangeVersion, source?.id]);
   const markRange = (range: TimeRange | undefined, byKey?: boolean) => {
@@ -750,8 +746,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
           <TemplateOnPicture />
-          {/* The edits saved while the video played come in as it stops, with a word that they did. */}
-          {!source && <CaughtUpOnMonitor />}
           {cutLoadError && <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-black/75 p-2 text-sm">
             <span role="alert" title={cutLoadError.reason}>{cutLoadError.message}</span>
             <button type="button" className="btn-quiet" onClick={cutLoadError.retry}>Retry</button>
