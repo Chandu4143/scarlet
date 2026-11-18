@@ -1964,6 +1964,8 @@ export function SimpleWorkspace() {
   // One the editor made on a whole request (the whole pass, an answer) stays until the chat moves on.
   const aimForItem = useRef(false);
   const itemIsOpen = useRef(false);
+  /** The aim Backspace or the tag's × just took off the box, which ⌘Z puts back. */
+  const tagTakenOff = useRef<{ aim: number; restore(): void }>(undefined);
   /** Aim the message box at one cut, one edit or a whole proposal of a request, as the editor asked. */
   function aimAt(thread: Thread, target: AgentContext, label: string) {
     aimForItem.current = itemIsOpen.current;
@@ -3403,6 +3405,7 @@ export function SimpleWorkspace() {
   useLayoutEffect(() => {
     const cleared = wasWritten.current && !written;
     wasWritten.current = written;
+    if (written) tagTakenOff.current = undefined;
     if (cleared) emptied.current();
   }, [written]);
   // An answer says so too, so a message meant as a new edit isn't sent to Scarlet's question by mistake.
@@ -3583,13 +3586,41 @@ export function SimpleWorkspace() {
       settleAim.current("sent");
     }
   };
+  // Taking the tag off (Backspace in an empty box, or its ×) makes the message a new edit about the whole video. ⌘Z in
+  // the empty box puts the aim back as it was, until the box is aimed again or written in.
+  const clearTarget = () => {
+    const ui = useUiStore.getState();
+    const was = { replyTo, label: targetLabel, forItem: aimForItem.current, context: ui.agentContext };
+    const before = aims.current;
+    settleAim.current("new");
+    tagTakenOff.current = aims.current === before ? undefined : { aim: aims.current, restore: () => {
+      const box = useUiStore.getState();
+      // The new edit's own box keeps no "whole video" aim left from the tag taken off.
+      if (!box.agentDraft) box.setAgentContext(null);
+      aimForItem.current = was.forItem;
+      countAim();
+      openDraft(current.id, was.replyTo);
+      setReplyTo(was.replyTo);
+      setTargetLabel(was.label);
+      useUiStore.getState().setAgentContext(was.context);
+      useUiStore.getState().focusComposer();
+    } };
+  };
+  const restoreTarget = () => {
+    const taken = tagTakenOff.current;
+    tagTakenOff.current = undefined;
+    const ui = useUiStore.getState();
+    if (!taken || taken.aim !== aims.current || ui.agentDraft.trim() || ui.speaking) return false;
+    taken.restore();
+    return true;
+  };
   const composer = <WorkspaceComposer newEdit={!replyTo} playerVersion={playerVersion} mediaId={source?.id} key={JSON.stringify([current.id, replyTo])} thread={replyThread}
     // A new request is the latest thing said, so the chat goes to it. A cut or an edit that's open stays open.
     onCreated={() => { follow.current = true; }} onSent={sentUnder(aims.current)}
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
     messageClock={messageClock}
-    targetTag={boxTag} onClearTarget={() => settleAim.current("new")}
+    targetTag={boxTag} onClearTarget={clearTarget} onRestoreTarget={restoreTarget}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
     rewording={rewordingItem && { id: rewordingItem.id, text: rewording!.text,
       onChange: text => setRewording(r => r && { ...r, text }),
