@@ -5,7 +5,7 @@ import { recordEditReview, requestPosition } from "../../lib/editReviews";
 import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
 import { removedSeconds } from "../../lib/format";
-import { editKindWord } from "../../lib/editKind";
+import { editRowWord } from "../../lib/editKind";
 import { editKey, keepEdits, reviewKey, useKeptEdits } from "../../lib/keptEdits";
 import { useProjectStore } from "../../stores/project";
 import { useShownCutStore } from "../../stores/shownCut";
@@ -228,7 +228,7 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
       const busy = revisingNow === "claimed" || revisingNow === "running";
       const version = edit.previous.length ? edit.previous.length + 1 : 0;
       // A cut says how much came out; any other edit says what it did, or in how many places.
-      const value = places > 1 ? `${places} places` : removedLabel(edit) ?? editKindWord(edit);
+      const value = places > 1 ? `${places} places` : removedLabel(edit) ?? editRowWord(edit);
       const check = places > 1 ? needs > 0 : !!edit.check && !isRevising;
       const title = (edit.reason && edit.summary) || edit.label;
       // One that came back revised with no reason from Scarlet says so on its row until it is kept: its card has no
