@@ -113,6 +113,40 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 - The submitted plan by kind and decision.
 - The share of edged cuts whose edges were checked with `dialogue_check_join`.
 
+## Known moments, and how far trials agree
+
+Two trials of one configuration never make the same cut, so one rerun can't show whether a change fixed anything.
+`moments.ts` reads finished trials and answers the two questions a change has to pass.
+
+**Known moments.** A place where a cut has gone wrong before: a restart left in, the wrong take kept, a line dropped.
+The case folder's `moments.json` says what the finished edit should play there:
+
+```json
+{ "schema": 1, "moments": [
+  { "id": "broken-first-take", "mediaId": "med_…", "start": 770.7, "end": 775.0,
+    "plays": "I remember there was a time where you would occasionally see",
+    "note": "Broken first take, then the whole one." } ] }
+```
+
+`start` and `end` are the recording's seconds, wide enough to hold every delivery of the line. `plays` is compared as
+words (case and punctuation don't count), so either of two matching words can be the one cut; give a list when
+several readings are right. Each trial comes out `right`, `asked` (a staged cut waits for the editor there, with what
+approving it plays) or `wrong` (with what it played). A trial's `evaluation.json` carries them as `score.moments` and
+counts them in the headline. Moments are the editor's words: keep the file with the case, never in the repository.
+
+**Agreement.** For the trials of one arm: the F1 of each pair's removed words, the words every trial removed, the
+words they split on and how many places those fall in. With a published reference it also says how often the editor
+removed a word every trial removed, and one they split on. A difference between two arms smaller than the
+disagreement inside one arm is not a result.
+
+```sh
+# Arms are labelled sets of runs: folder names under results/runs, or paths.
+$TSX evals/src/moments.ts --case my-case --runs main=2026-…-aaaa,2026-…-bbbb --runs branch=2026-…-cccc
+```
+
+It prints each arm's headline numbers with their spread, a row per moment and the agreement table. Run at least four
+trials an arm. Results saved before a trial stored what it left (`score.left`) are read from their applied cuts.
+
 ## Build a case
 
 A case is a project, a source version to cut from, the request (instruction and skills, as the app sends
