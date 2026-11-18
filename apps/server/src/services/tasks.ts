@@ -261,7 +261,7 @@ export function isDialoguePass(task: Task) {
     taskDialogueOperation(task) === "first-cut";
 }
 
-/** The same pass owns its verification, even when the editor's final call lands after the original run finished. */
+/** A pass that ends with outstanding findings on the version that plays runs again, as the same request, to resolve them. */
 export function queueRepeatCheck(ctx: Ctx, task: Task, version: string, changeIds = task.changeIds) {
   const receipt = task.repeatAudit?.version === version ? task.repeatAudit : undefined;
   const closed = recordWorkThrough(task, now());

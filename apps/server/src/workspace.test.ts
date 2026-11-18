@@ -3642,12 +3642,10 @@ it.each(["a1", "alternate"])("requires an audio check of the version that plays,
   const proposed = (await (await api("POST", projectsPath() + "/dialogue-cuts", { taskId: pass.id, fromVersion: repaired, description: "Shorten the tail",
     cuts: [{ start: 4, end: 5, review: true, reason: "Check the final beat." }] })).json()).changes[0] as Change;
   expect((await finish()).state).toBe("done");
+  // The editor's calls go in and the pass stays finished: it doesn't start up again after their last Approve (2026-11-17).
   expect((await api("POST", `/changes/${proposed.id}/approve`, { restoredCuts: [] })).status).toBe(200);
-  expect(ctx.repos.tasks.get(pass.id)?.state).toBe("queued");
-  await claim();
-  const approved = ctx.repos.projects.header(project.id)!.head!;
-  expect(await (await check(approved)).json()).toMatchObject({ version: approved, heard: 1, remaining: 0 });
-  expect(await finish()).toMatchObject({ state: "done", repeatAudit: { remaining: 0, noFindings: false } });
+  expect(ctx.repos.projects.header(project.id)!.head).not.toBe(repaired);
+  expect(ctx.repos.tasks.get(pass.id)).toMatchObject({ state: "done", repeatAudit: { version: repaired, returns: 1 } });
 });
 
 it("holds a pass until each restart and long silence its edit still plays is cut or kept", async () => {
