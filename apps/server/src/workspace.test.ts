@@ -2030,11 +2030,19 @@ it("resumes a legacy interruption from its saved edits, answers and scanned rang
   expect(first.instruction).toContain(`Saved change ${change.id} [approved]`);
   expect(first.instruction).toContain("Editor answered: Keep the intro.");
   expect(first.instruction).toContain("Scanned source seconds on camera: 0–118, 150–210");
+  for (let i = 0; i < 6; i++) appendTaskEvent(workspace.ctx, first, { type: "log", text: "Applying the cuts.", data: { kind: "editor_progress" } });
   appendTaskEvent(workspace.ctx, first, { type: "log", text: "Checking the remaining pauses.", data: { kind: "editor_progress" } });
+  // Refused after the attempt's last save: a write is still to do, a read isn't.
+  appendTaskEvent(workspace.ctx, first, { type: "log", text: "Error: This edit takes away the footage of 3 staged cuts.", data: { kind: "tool_refused", tool: "scarlet.timeline_propose" } });
+  appendTaskEvent(workspace.ctx, first, { type: "log", text: "Inspect the words first.", data: { kind: "tool_refused", tool: "scarlet.timeline_transcript" } });
   await api("POST", `/tasks/${first.id}/cancel`);
   const next = await resume(first.id);
   expect(next.resumeRootId).toBe(task.id);
   expect(next.instruction).toContain("Checking the remaining pauses.");
+  expect(next.instruction.split("Previous progress: Applying the cuts.")).toHaveLength(2);
+  expect(next.instruction).toContain("Not saved when it stopped");
+  expect(next.instruction).toContain("- timeline_propose: This edit takes away the footage of 3 staged cuts.");
+  expect(next.instruction).not.toContain("Inspect the words first.");
   expect(next.instruction.split(change.id)).toHaveLength(2);
   expect(workspace.ctx.repos.changes.select().map(c => c.id)).toEqual([change.id]);
 });
