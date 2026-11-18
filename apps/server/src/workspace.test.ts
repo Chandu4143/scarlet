@@ -4426,6 +4426,11 @@ it("lets no later cut replace one staged for the editor's ear, and says when a s
   expect(over.heldForReview).toEqual([{ start: 9, end: 12 }]);
   expect(ctx.repos.projects.header(project.id)!.head).toBe(base);
   expect(await listed(over.review)).toEqual([[8, 10], [14, 16]]);
+  // Nor can the pass move it onto that take itself: where Scarlet placed it is what the editor is asked to hear.
+  const move = await api("POST", `/changes/${over.review.id}/staged-cuts/0`, { taskId: task.id, start: 9, end: 12, reason: "Both edges are quiet here." });
+  expect(move.status).toBe(409);
+  expect((await move.json()).error).toMatchObject({ code: "cut_unheard", message: expect.stringMatching(/waits for the editor to hear its join.*Record ask.*or keep/) });
+  expect(await listed(ctx.repos.changes.get(over.review.id)!)).toEqual([[8, 10], [14, 16]]);
   // The other staged cut carries no such mark. A cut that moves its edge a frame is the same cut and takes its place quietly.
   const frame = 1 / 30;
   const moved = await submit(base, [staged(14, 16 - frame)]) as Awaited<ReturnType<typeof submit>> & { droppedFromReview?: unknown };

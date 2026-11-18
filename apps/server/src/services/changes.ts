@@ -1025,6 +1025,15 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     const autonomous = !scoped && (!!task || body.author?.type === "agent");
     if (autonomous && (was && (isPublishedCall(was) || was.askOrder !== undefined) || change.cutChoices?.some(c => c.index === index)))
       throw conflict("cut_with_editor", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s is with the editor. Only a revision they request can change this cut. ${CALL_WITH_EDITOR}`);
+    // A cut staged because nothing Scarlet measures can settle its join is the editor's to hear, where Scarlet placed it.
+    // A pass moved one onto the take that replaced the false start, where both edges were quiet, recorded it as a cut,
+    // and the broken take played with no call (2026-11-17). A keep is the model's own decision that the passage stays.
+    const unheard = !!change.cutReasons?.some(r => r.unheard && r.start < old.end - 1e-6 && r.end > old.start + 1e-6);
+    const aFrame = 1 / project.settings.fps;
+    const moves = Math.abs(range.start - old.start) > aFrame + 1e-6 || Math.abs(range.end - old.end) > aFrame + 1e-6;
+    if (autonomous && unheard && moves && !body.keep)
+      throw conflict("cut_unheard", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s waits for the editor to hear its join, so it stays where Scarlet placed it. `
+        + "Record ask on it with dialogue_review_save, with what to listen for, or keep if the passage belongs in the video as it was said.");
     const placement = placeRevision(ctx, project, change, review, index, body, range, task, scoped, named.fromVersion);
     if ("conflict" in placement) {
       const { reason, range } = placement.conflict;
@@ -1048,7 +1057,7 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
       const duration = r.crossfade ?? change.joinFades?.duration;
       return duration ? { ...r, crossfade: duration } : r;
     });
-    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }) });
+    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(unheard && !moves && { unheard: true as const }) });
     cutReasons.sort((a, b) => a.start - b.start);
     const { change: revised } = persistProposal(ctx, user, change.projectId, { fromVersion: change.fromVersion, intent: "suggestion", autoApprove: false,
       ops: [...ranges].reverse().map(r => ({ op: "rippleDelete" as const, start: r.start, end: r.end })),
