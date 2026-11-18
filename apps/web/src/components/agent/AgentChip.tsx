@@ -395,7 +395,7 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
                     value={effective.serviceTier ?? ""}
                     onChange={(v) => choose({ serviceTier: v || undefined })}
                     options={[
-                      { id: "", label: "Auto", title: defaultSpeedTitle(profiles) },
+                      { id: "", label: "Standard", title: defaultSpeedTitle(profiles) },
                       ...speeds.map(o => ({ id: o.id, label: optionLabel(o), title: o.description })),
                     ]}
                   />
