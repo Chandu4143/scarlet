@@ -46,7 +46,8 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
   if (step > 0.031) return; // A coarse waveform cannot locate an edge between syllables.
   const quiet: TimeRange[] = [], valleys: TimeRange[] = [];
   const quietBelow = quietRms(wf.rms, step);
-  const still = quietBuckets(wf.rms, wf.peaks, wf.from, step, wf.speechActivity, quietBelow);
+  const spoken = words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text));
+  const still = quietBuckets(wf.rms, wf.peaks, wf.from, step, wf.speechActivity, quietBelow, spoken);
   for (let i = 0; i < wf.rms.length; i++) {
     const start = wf.from + i * step, end = wf.from + (i + 1) * step;
     if (still[i]) appendInterval(quiet, start, end);
@@ -56,7 +57,6 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
     if (wf.rms[i]! <= Math.min(.002, quietBelow) && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
   }
   const db = wf.rms.map(dbfs), levels = { from: wf.from, step, db };
-  const spoken = words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text));
   return { voice: wf.speechActivity, valleys, words: onTheirSound(spoken, [...quiet, ...valleys.filter(v => v.end - v.start >= silentValley)], levels),
     quiet, levels };
 }
