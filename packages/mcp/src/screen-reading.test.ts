@@ -72,6 +72,34 @@ describe("framingReport", () => {
     // Nothing the edit didn't frame is reported.
     expect(framingReport(after, after, media, canvas)).toEqual([]);
   });
+
+  it("gives the video beside a stretch where the recording, off picture, still shows what the frame did, on the clock of the camera beside it", () => {
+    // The camera plays throughout, cut at 25 to later footage; the screen, 10 s ahead of it, is framed on its top-left quarter from 5 to 15.
+    const before = applyOps(emptyTimeline("p"), [
+      { op: "addTrack", track: { id: "cam", kind: "video", name: "Camera", clips: [] } },
+      { op: "addTrack", track: { id: "scr", kind: "video", name: "Screen", clips: [] } },
+      { op: "addClip", trackId: "cam", clip: { id: "c1", kind: "media", mediaId: "camera", sourceIn: 0, sourceOut: 25, timelineIn: 0 } },
+      { op: "addClip", trackId: "cam", clip: { id: "c2", kind: "media", mediaId: "camera", sourceIn: 60, sourceOut: 75, timelineIn: 25 } },
+      { op: "addClip", trackId: "scr", clip: { id: "s1", kind: "media", mediaId: "screen", sourceIn: 15, sourceOut: 25, timelineIn: 5 } },
+    ]);
+    const after = applyOps(before, [{ op: "updateClip", clipId: "s1", patch: { transform: { scale: 2, x: 0.5, y: 0.5 } } }]);
+    const demo: ScreenLine = { start: 12, end: 34, text: "Watermelon vs. rifle bullet", box: [0.1, 0.1, 0.4, 0.15] };
+    const outside: ScreenLine = { start: 0, end: 90, text: "Settings", box: [0.6, 0.6, 0.9, 0.65] };
+    const changes = (...at: number[]) => at.map(s => ({ at: s, areas: [[0.1, 0.2, 0.4, 0.45, 0.05]] as Array<[number, number, number, number, number]> }));
+    const words = said("I mean it's pretty cool to watch", 16, 1);
+    const report = (lines: ScreenLine[], seconds: ReturnType<typeof changes>) =>
+      framingReport(before, after, media, canvas, [], [], { lines: new Map([["screen", lines]]), seconds: new Map([["screen", seconds]]), words })[0]!;
+
+    // The demo's title stays on screen to source 34, timeline 24, while the frame's area keeps moving from source 27.
+    const stretch = report([demo, outside], changes(11, 27));
+    expect(stretch.shownAfter).toEqual({ from: 15, to: 24, showing: ["Watermelon vs. rifle bullet"], said: "I mean it's pretty cool to watch" });
+    // Before, the title came up at source 12, timeline 2, and the frame's area held still from then on.
+    expect(stretch.shownBefore).toEqual({ from: 2, to: 5, showing: ["Watermelon vs. rifle bullet"], unchanged: true });
+    // A screen that moves on as the stretch ends has nothing beside it; text outside the frame doesn't count.
+    expect(report([{ ...demo, end: 25 }, outside], changes(25)).shownAfter).toBeUndefined();
+    // With no text, an area that holds still says so, up to where the camera's cut takes the clock past its change.
+    expect(report([], changes(11, 40)).shownAfter).toEqual({ from: 15, to: 25, unchanged: true, said: "I mean it's pretty cool to watch" });
+  });
 });
 
 describe("motionSpans", () => {

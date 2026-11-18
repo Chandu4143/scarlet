@@ -130,6 +130,27 @@ export function registerPerception(deps: PerceptionDeps) {
     return { spans: motionSpans(tl, new Map(reads.map(({ id, read }) => [id, read.seconds])), range), ids: sources.map(s => s.id), unread };
   }
 
+  /**
+   * What recordings show over ranges of their source seconds, whether or not their picture plays there (their text and
+   * where their picture changes), with the words heard over a range of the timeline: the evidence for the video beside a
+   * framed stretch.
+   */
+  async function besideOn(tl: Timeline, project: Project, sources: Array<{ id: string; from: number; to: number }>, range: { start: number; end: number }, wait: number) {
+    const [text, motion, transcripts] = await Promise.all([
+      readPictures<{ spans: ScreenLine[] }>("screen-text", sources, wait),
+      readPictures<{ seconds: MotionSecond[] }>("screen-motion", sources, wait),
+      wordsFor(tl, project).catch(() => new Map<string, TranscriptWord[]>()),
+    ]);
+    return {
+      evidence: {
+        lines: new Map(text.reads.map(({ id, read }) => [id, read.spans])),
+        seconds: new Map(motion.reads.map(({ id, read }) => [id, read.seconds])),
+        words: transcripts.size ? timelineWords(tl, transcripts, range) : [],
+      },
+      unread: [...text.unread, ...motion.unread],
+    };
+  }
+
   /** Audit the given joins of `tl`. Missing measurements make the audit say so instead of guessing. */
   async function auditJoins(tl: Timeline, project: Project, joins: TimelineJoin[], all = timelineJoins(tl, project)): Promise<JoinAudit[]> {
     const duration = (id: string) => project.media.find(m => m.id === id)?.duration ?? Infinity;
@@ -396,6 +417,7 @@ export function registerPerception(deps: PerceptionDeps) {
     readTranscript,
     readingsOn,
     motionOn,
+    besideOn,
     /** Audit the joins at timeline times `at` on a version (e.g. a staged cut's join on its toVersion). */
     /**
      * Audit the join a cut left at timeline time `at` on a version (e.g. a staged cut's join on its
