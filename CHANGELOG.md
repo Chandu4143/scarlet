@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 17, 2026
 
+- Approving the last call on a dialogue pass finishes it: Scarlet no longer starts checking and editing again afterwards.
 - Every edit in a request's list now ends with a word for what it did, and a camera punch-in next to a demo reads Zoom instead of nothing.
 
 - There’s more space between the edit summary and the For you and See all tabs.
