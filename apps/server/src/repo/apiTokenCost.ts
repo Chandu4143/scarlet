@@ -10,6 +10,8 @@ type Rates = readonly [input: number, output: number, cacheRead: number, cacheWr
 
 const standardRates = new Map<string, Rates>([
   // https://developers.openai.com/api/docs/pricing
+  ["gpt-6.2-astra", [8, 40, 0.40, 10]],
+  ["gpt-6.2-sol", [2, 10, 0.10, 2.5]],
   ["gpt-6-astra", [10, 50, 1, 12.5]],
   ["gpt-6.1-sol", [2, 10, 0.10, 2.5]],
   ["gpt-6.1-terra", [1, 5, 0.05, 1.25]],
