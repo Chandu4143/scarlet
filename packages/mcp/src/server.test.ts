@@ -534,6 +534,36 @@ describe("timeline_propose", () => {
     expect(textOf(r)).toContain("Provide either");
   });
 
+  it("names a picture an insert shows briefly where the recording it comes from cuts to another window and back", async () => {
+    // His edit at 1:19 (2026-11-18): 2.5 s of the screen over the camera, in which the recording switched windows twice.
+    const original = { timeline: mock.state.timeline, head: mock.state.project.head, media: mock.state.project.media, cuts: mock.state.pictureCuts };
+    mock.state.project.media = [...original.media, { id: "scr", kind: "video", name: "screen.mp4", path: "screen.mp4", duration: 600, fps: 30, width: 1920, height: 1080 } as never];
+    const tl = emptyTimeline(mock.state.project.id);
+    tl.version = "screen";
+    tl.tracks[0]!.clips = [{ ...makeMediaClip("m1", 0, 10, 0), id: "wide" }];
+    mock.state.timeline = tl;
+    const whole = Buffer.alloc(64 * 36 / 8, 0xff).toString("base64");
+    mock.state.pictureCuts = id => id === "scr" ? [{ at: 101.2, share: 0.6, cells: whole }, { at: 101.9, share: 0.6, cells: whole }] : [];
+    const c = await connect("task_cuts");
+    try {
+      const r = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Show the reply", reason: "He reads the reply aloud.",
+        ops: [{ op: "addTrack", track: { id: "v2", kind: "video", name: "Screen", clips: [] } },
+          { op: "addClip", trackId: "v2", clip: { id: "reply", kind: "media", mediaId: "scr", sourceIn: 100, sourceOut: 102.5, timelineIn: 3, volume: 0 } }] } }) as CallToolResult;
+      expect(r.isError, textOf(r)).toBeFalsy();
+      expect(firstJson(r).briefPictures).toEqual([
+        { from: 4.2, to: 4.9, seconds: 0.7, shows: ["reply"], before: ["reply"], after: ["reply"],
+          recordingCuts: [{ at: 4.2, clip: "reply", source: 101.2, changed: 100 }, { at: 4.9, clip: "reply", source: 101.9, changed: 100 }] },
+        { from: 4.9, to: 5.5, seconds: 0.6, shows: ["reply"], before: ["reply"], after: ["wide"], recordingCuts: [{ at: 4.9, clip: "reply", source: 101.9, changed: 100 }] },
+      ]);
+      // The camera that speaks plays as recorded: only the screen's cuts are read.
+      expect(mock.requests.filter(q => q.path.endsWith("/picture-cuts")).map(q => q.path)).toEqual(["/projects/prj_test/media/scr/picture-cuts"]);
+    } finally {
+      Object.assign(mock.state, { timeline: original.timeline, pictureCuts: original.cuts });
+      Object.assign(mock.state.project, { head: original.head, media: original.media });
+      await c.close();
+    }
+  });
+
   /** An edit of 6.02 s at 30 fps, which ends between two frames, and what a session sent the engine for its ops. */
   async function offFrameEdit(taskId: string | undefined, ops: unknown[], options: object = {}) {
     const original = { timeline: mock.state.timeline, head: mock.state.project.head };

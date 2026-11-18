@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyOps, emptyTimeline, type MediaAsset, type Timeline } from "@scarlet/timeline";
-import { newBriefPictures, briefPictures, flashesOntoCuts } from "./brief-pictures.js";
+import { newBriefPictures, briefPictures, flashesOntoCuts, CUT_GRID, cutShareOf, type RecordingCut } from "./brief-pictures.js";
 
 const canvas = { width: 3840, height: 2160 };
 const media = [
@@ -58,6 +58,52 @@ describe("briefPictures", () => {
     const after = applyOps(before, [{ op: "updateClip", clipId: "punch", patch: { opacity: 1 } }] as never);
     expect(newBriefPictures(before, after, media, canvas)).toEqual([]);
     expect(newBriefPictures(edit(86.32), before, media, canvas)).toHaveLength(1);
+  });
+});
+
+describe("briefPictures with the cuts in a recording", () => {
+  /** A cut at `at` source seconds changing the cells centred in `box` ([left, top, right, bottom] of the source). */
+  const cutAt = (at: number, box = [0.22, 0.06, 0.86, 1]): RecordingCut => {
+    const { cols, rows } = CUT_GRID, bits = new Uint8Array(cols * rows / 8);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const cx = (x + 0.5) / cols, cy = (y + 0.5) / rows;
+      if (cx >= box[0]! && cx <= box[2]! && cy >= box[1]! && cy <= box[3]!) bits[(y * cols + x) >> 3]! |= 1 << ((y * cols + x) & 7);
+    }
+    return { at, share: 0.3, cells: Buffer.from(bits).toString("base64") };
+  };
+  const reply = { x: -0.06, y: -0.588, scale: 3.745, rotation: 0, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 };
+  /** His edit at 1:19 (2026-11-18): the wide camera, and over it 2.5 s of the screen that switched to another window and back. */
+  const insert = (sourceIn = 323.82, sourceOut = 326.3) => applyOps(emptyTimeline("p"), [
+    { op: "addTrack", track: { id: "v_screen", kind: "video", name: "Screen", clips: [] } },
+    { op: "addClip", trackId: "v1", clip: { id: "wide", kind: "media", mediaId: "camera", sourceIn: 308.36, sourceOut: 314.53, timelineIn: 77.978 } },
+    { op: "addClip", trackId: "v_screen", clip: { id: "wang_reply", kind: "media", mediaId: "screen", sourceIn, sourceOut, timelineIn: 79.613, transform: reply } },
+  ] as never);
+  const cuts = new Map([["screen", [cutAt(325.1), cutAt(325.967), cutAt(326.667)]]]);
+
+  it("names the other window and the reply's return, each on screen for under a second", () => {
+    expect(briefPictures(insert(), media, canvas)).toEqual([]);
+    expect(briefPictures(insert(), media, canvas, undefined, cuts)).toEqual([
+      { from: 80.893, to: 81.76, seconds: 0.867, shows: ["wang_reply"], before: ["wang_reply"], after: ["wang_reply"],
+        recordingCuts: [{ at: 80.893, clip: "wang_reply", source: 325.1, changed: 100 }, { at: 81.76, clip: "wang_reply", source: 325.967, changed: 100 }] },
+      { from: 81.76, to: 82.093, seconds: 0.333, shows: ["wang_reply"], before: ["wang_reply"], after: ["wide"],
+        recordingCuts: [{ at: 81.76, clip: "wang_reply", source: 325.967, changed: 100 }] },
+    ]);
+  });
+
+  it("says nothing of an insert that ends on the recording's cut", () => {
+    expect(briefPictures(insert(323.82, 325.1), media, canvas, undefined, cuts)).toEqual([]);
+  });
+
+  it("leaves out a cut in a part of the recording the frame doesn't show", () => {
+    const corner = new Map([["screen", [cutAt(325.1, [0, 0, 0.3, 0.3]), cutAt(325.967, [0, 0, 0.3, 0.3])]]]);
+    expect(briefPictures(insert(), media, canvas, undefined, corner)).toEqual([]);
+    expect(cutShareOf(cutAt(1, [0, 0, 0.5, 1]), [0.25, 0, 0.75, 1])).toBe(0.5);
+  });
+
+  it("reports a brief picture at a recording's cut once, also when its cuts were read after it was laid", () => {
+    expect(newBriefPictures(insert(), insert(), media, canvas, cuts)).toEqual([]);
+    expect(newBriefPictures(null, insert(), media, canvas, cuts)).toHaveLength(2);
+    expect(newBriefPictures(insert(), insert(), media, canvas, cuts, new Set(["screen"]))).toHaveLength(2);
   });
 });
 
