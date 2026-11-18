@@ -2178,7 +2178,7 @@ it("checks a join under a picture that has no sound, without asking the engine f
 });
 
 it("says what a join plays, so a check that takes out the whole retake shows the broken first take it keeps", async () => {
-  const original = { timeline: mock.state.timeline, waveform: mock.state.waveform, transcripts: mock.state.transcripts };
+  const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform, transcripts: mock.state.transcripts };
   const isolated = await connect();
   // "there was a time where would … where you would occasionally see": the first take drops "you". Only the span that
   // takes out the pause and the whole retake has quiet at both edges (2026-11-17).
@@ -2201,6 +2201,17 @@ it("says what a join plays, so a check that takes out the whole retake shows the
     const check = JSON.parse(textOf(await isolated.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, start: 1.25, end: 3.0 } }) as CallToolResult));
     expect(check.removes).toBe("where you would");
     expect(check.plays).toBe("… there was a time where would ‖ occasionally see …");
+    // Saved by its seconds, the same range applies with clean edges, and the report says what it took and left.
+    mock.state.extra = (req, res) => {
+      if (!req.path.endsWith("/dialogue-detections") && !req.path.endsWith("/dialogue-cuts")) return false;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(req.path.endsWith("/dialogue-cuts") ? { changes: [] } : { segments: [], acoustic: [] }));
+      return true;
+    };
+    const applied = await isolated.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Keep the first setup",
+      cuts: [{ start: check.start, end: check.end, kind: "retake", decision: "cut", reason: "Keep the first setup through “would”." }] } }) as CallToolResult;
+    expect(JSON.parse(textOf(applied)).gate.decisions).toContainEqual(expect.objectContaining({ cut: 0, removes: "where you would",
+      plays: "… there was a time where would ‖ occasionally see …" }));
   } finally {
     await isolated.close();
     Object.assign(mock.state, original);
@@ -3697,7 +3708,7 @@ it("cuts by word reference: edges go in the measured gaps, and every gate decisi
     expect(saved).toMatchObject({ description: "Remove the first attempt", cuts: [{ start: 1.067, end: 3.567, review: false }] });
     expect(saved.cuts[0]).not.toHaveProperty("check");
     expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut",
-      range: [1.07, 3.57], plays: "… Hello everyone ‖ welcome back to the show. …", evidence: expect.stringContaining("the removed sound starts") }]);
+      range: [1.07, 3.57], evidence: expect.stringContaining("the removed sound starts") }]);
     // Without measured silence beside the words, the edge falls back to word timings and Scarlet stages the cut, saying why.
     mock.state.waveform = (mediaId, from, to, points) => ({ mediaId, from, to, peaks: Array(points).fill(.2), rms: Array(points).fill(.2),
       speechActivity: [{ start: from, end: to }] });
@@ -4127,7 +4138,7 @@ it("reads a transcript whose words are still being placed on the audio, and hold
     await new Promise(resolve => setTimeout(resolve, 1600));
     const applied = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [cut] } }) as CallToolResult;
     expect(JSON.parse(textOf(applied)).gate.decisions).toEqual([{ cut: 0, kind: "retake", words: "welcome back. Um,", asked: "cut", outcome: "cut", range: [1.07, 3.57],
-      plays: "… Hello everyone ‖ welcome back to the show. …", evidence: expect.stringContaining("the removed sound starts") }]);
+      evidence: expect.stringContaining("the removed sound starts") }]);
     expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 4 } }) as CallToolResult)).toContain("#4 2.50-2.70 Um,");
   } finally {
     Object.assign(mock.state, original);

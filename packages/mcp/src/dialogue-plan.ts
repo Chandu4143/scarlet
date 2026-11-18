@@ -856,15 +856,14 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     if (c.notes?.length) report.push({ cut: c.input, kind: c.kind, ...(c.words && { words: c.words }), asked: c.decision, outcome: d.review ? "review" : "cut",
       range: [r2(d.start), r2(d.end)], evidence: c.notes.join(" ") });
   });
-  // A retake applied without a hold is reported with what it takes out and what its join plays, as a held one is: two
-  // deliveries of one line read alike in a list of edges, and the one taken out can be the one that says it whole.
+  // A retake placed by seconds and applied without a hold is reported with what it takes out and what its join plays.
+  // A word reference names its words; seconds don't, and a range meant for the first take can sit on the pause after
+  // it or on the retake itself.
   await Promise.all(removals.map(async (c, i) => {
     const d = decisions[i]!;
-    if (d.review || c.kind !== "retake" || c.decision !== "cut") return;
+    if (d.review || c.kind !== "retake" || c.decision !== "cut" || c.words !== undefined) return;
     const heard = await cutReading(tl, project, d, mediaId => sources.words(mediaId, undefined, false));
-    if (!heard.plays) return;
-    report.push({ cut: c.input, kind: c.kind, ...(c.words && { words: c.words }), asked: c.decision, outcome: "cut", range: [r2(d.start), r2(d.end)],
-      ...(heard.removes !== c.words && heard.removes && { removes: heard.removes }), plays: heard.plays });
+    if (heard.plays) report.push({ cut: c.input, kind: c.kind, asked: c.decision, outcome: "cut", range: [r2(d.start), r2(d.end)], removes: heard.removes ?? "", plays: heard.plays });
   }));
   // One line per submitted range: a later adjustment replaces an earlier one, keeping both reasons.
   const gate = new Map<number, GateLine>();
