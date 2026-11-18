@@ -13,6 +13,44 @@ export interface BriefPicture {
   shows: string[];
   before: string[];
   after: string[];
+  /**
+   * Ends of it that are cuts in a recording itself rather than clip edges: `at` on the timeline, `source` in the
+   * recording's seconds, and `changed`, the share of what the clip shows there that changed at once, in percent.
+   */
+  recordingCuts?: Array<{ at: number; clip: string; source: number; changed: number }>;
+}
+
+/** A cut in a recording's picture, as the engine reads it (`/picture-cuts`): source seconds and the cells it changed. */
+export interface RecordingCut { at: number; share: number; cells: string }
+/** The grid a recording cut's cells are on, columns by rows, row by row, one bit each. */
+export const CUT_GRID = { cols: 64, rows: 36 } as const;
+/** A cut in a recording that changes at least this share of what a clip shows of it changes the picture on screen. */
+export const CUT_SHOWN = 0.25;
+
+/** The area of its source a clip puts on screen at `local` seconds, as fractions of the source, or null when none is. */
+function sourceOnScreen(clip: MediaClip, local: number, source: { width: number; height: number }, canvas: { width: number; height: number }): Box | null {
+  const [l, t, r, b] = pictureBox(clip, local, source, canvas);
+  const seen: Box = [Math.max(0, l), Math.max(0, t), Math.min(1, r), Math.min(1, b)];
+  if (seen[2] <= seen[0] || seen[3] <= seen[1] || r <= l || b <= t) return null;
+  const cl = clip.transform?.cropLeft ?? 0, ct = clip.transform?.cropTop ?? 0;
+  const cw = 1 - cl - (clip.transform?.cropRight ?? 0), ch = 1 - ct - (clip.transform?.cropBottom ?? 0);
+  return [cl + (seen[0] - l) / (r - l) * cw, ct + (seen[1] - t) / (b - t) * ch, cl + (seen[2] - l) / (r - l) * cw, ct + (seen[3] - t) / (b - t) * ch];
+}
+
+/** The share of an area of the source that a recording cut changed: of the grid's cells centred in it, or the one under its middle. */
+export function cutShareOf(cut: Pick<RecordingCut, "cells">, area: Box): number {
+  const bits = Buffer.from(cut.cells, "base64"), { cols, rows } = CUT_GRID;
+  const on = (x: number, y: number) => (bits[(y * cols + x) >> 3]! >> ((y * cols + x) & 7)) & 1;
+  let inside = 0, changed = 0;
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    const cx = (x + 0.5) / cols, cy = (y + 0.5) / rows;
+    if (cx < area[0] || cx > area[2] || cy < area[1] || cy > area[3]) continue;
+    inside++;
+    changed += on(x, y);
+  }
+  if (inside) return changed / inside;
+  const x = Math.min(cols - 1, Math.floor((area[0] + area[2]) / 2 * cols)), y = Math.min(rows - 1, Math.floor((area[1] + area[3]) / 2 * rows));
+  return on(x, y);
 }
 
 type Layer = { clip: MediaClip; order: number; source: { width: number; height: number } };
@@ -26,9 +64,13 @@ const near = (a: number, b: number, by: number) => Math.abs(a - b) <= by;
  * tight framing (2026-11-16). The picture is what the viewer sees: each opaque picture from the top track down to the
  * first that fills the video. A cut between two pieces of a recording at the same framing is not a change of picture,
  * and neither is a framing that moves on across a clip edge; a dissolve or fade at either change is left alone.
+ *
+ * A recording can cut inside a clip too. A pass laid 2.5 s of a screen recording over the camera in which the recording
+ * switched to another window and back, so the viewer saw three pictures in two seconds (2026-11-18). With `cuts`, a
+ * recording's cuts (by media id) that change enough of what a clip on screen shows of it are changes of picture as well.
  */
 export function briefPictures(timeline: Timeline, media: readonly MediaAsset[], canvas: { width: number; height: number },
-  min = BRIEF_PICTURE_SECONDS): BriefPicture[] {
+  min = BRIEF_PICTURE_SECONDS, cuts?: ReadonlyMap<string, readonly RecordingCut[]>): BriefPicture[] {
   const assets = new Map(media.map(m => [m.id, m]));
   const layers: Layer[] = timeline.tracks.flatMap((track, order) => track.kind !== "video" || track.hidden ? [] :
     track.clips.flatMap(clip => {
@@ -67,11 +109,28 @@ export function briefPictures(timeline: Timeline, media: readonly MediaAsset[], 
     if (last && t - last[1] < 1e-3) last[1] = t;
     else edges.push([t, t]);
   }
-  const changes: { at: number; before: Shown[]; after: Shown[] }[] = [];
+  type Cut = NonNullable<BriefPicture["recordingCuts"]>[number];
+  const changes: { at: number; before: Shown[]; after: Shown[]; cut?: Cut }[] = [];
   for (const [first, last] of edges) {
     const before = picture(first - 1e-5), after = picture(last + 1e-5);
     if (!same(before, after)) changes.push({ at: r3(first), before, after });
   }
+  // A cut in a recording, inside a clip that shows it, changes the picture there unless it falls on a clip edge.
+  if (cuts?.size) for (const { clip, source } of layers) {
+    const speed = clip.speed ?? 1;
+    for (const cut of cuts.get(clip.mediaId) ?? []) {
+      if (cut.at <= clip.sourceIn + 1e-3 || cut.at >= clip.sourceOut - 1e-3) continue;
+      const at = clip.timelineIn + (cut.at - clip.sourceIn) / speed;
+      if (edges.some(([first, last]) => at >= first - 1e-3 && at <= last + 1e-3)) continue;
+      const shown = picture(at);
+      if (!shown.some(s => s.clip === clip)) continue;
+      const area = sourceOnScreen(clip, at - clip.timelineIn, source, canvas);
+      const share = area ? cutShareOf(cut, area) : 0;
+      if (share < CUT_SHOWN) continue;
+      changes.push({ at: r3(at), before: shown, after: shown, cut: { at: r3(at), clip: clip.id, source: r3(cut.at), changed: Math.round(share * 100) } });
+    }
+  }
+  changes.sort((a, b) => a.at - b.at);
   // A dissolve or fade blends one picture into the next over its length: it is not a hard change to judge here.
   const blended = (c: (typeof changes)[number]) => [...c.before, ...c.after].some(({ clip }) =>
     clip.transitionIn || (clip.videoFadeIn > 0 && near(clip.timelineIn, c.at, 0.002)) || (clip.videoFadeOut > 0 && near(clipEnd(clip), c.at, 0.002)));
@@ -79,24 +138,35 @@ export function briefPictures(timeline: Timeline, media: readonly MediaAsset[], 
   for (let i = 0; i + 1 < changes.length; i++) {
     const a = changes[i]!, b = changes[i + 1]!;
     if (b.at - a.at >= min - 1e-6 || blended(a) || blended(b)) continue;
+    const inRecording = [a.cut, b.cut].filter((c): c is Cut => !!c);
     found.push({ from: a.at, to: b.at, seconds: r3(b.at - a.at), shows: a.after.map(s => s.clip.id),
-      before: a.before.map(s => s.clip.id), after: b.after.map(s => s.clip.id) });
+      before: a.before.map(s => s.clip.id), after: b.after.map(s => s.clip.id), ...(inRecording.length && { recordingCuts: inRecording }) });
   }
   return found;
 }
 
-/** The brief pictures an edit makes: those it leaves as they were (the same recordings for the same time) aren't news. */
-export function newBriefPictures(before: Timeline | null, after: Timeline, media: readonly MediaAsset[], canvas: { width: number; height: number }) {
+/**
+ * The brief pictures an edit makes: those it leaves as they were (the same recordings for the same time) aren't news.
+ * `fresh` names recordings whose cuts weren't known when the run last saved: a brief picture at one of their cuts is
+ * news, as it wasn't reported then.
+ */
+export function newBriefPictures(before: Timeline | null, after: Timeline, media: readonly MediaAsset[], canvas: { width: number; height: number },
+  cuts?: ReadonlyMap<string, readonly RecordingCut[]>, fresh: ReadonlySet<string> = new Set()) {
   const sig = (tl: Timeline, f: BriefPicture) => {
     const clips = new Map(tl.tracks.flatMap(t => t.clips.map(c => [c.id, c] as const)));
     return `${f.seconds}|${f.shows.map(id => { const c = clips.get(id); return c?.kind === "media" ? c.mediaId : id; }).join(",")}`;
   };
-  const had = new Set(before ? briefPictures(before, media, canvas).map(f => sig(before, f)) : []);
-  return briefPictures(after, media, canvas).filter(f => !had.has(sig(after, f)));
+  const mediaOf = new Map(after.tracks.flatMap(t => t.clips.map(c => [c.id, c.kind === "media" ? c.mediaId : ""] as const)));
+  const had = new Set(before ? briefPictures(before, media, canvas, BRIEF_PICTURE_SECONDS, cuts).map(f => sig(before, f)) : []);
+  return briefPictures(after, media, canvas, BRIEF_PICTURE_SECONDS, cuts)
+    .filter(f => !had.has(sig(after, f)) || f.recordingCuts?.some(c => fresh.has(mediaOf.get(c.clip) ?? "")));
 }
 
 export const BRIEF_PICTURES_NEXT = `Each stretch in briefPictures shows that picture for under ${BRIEF_PICTURE_SECONDS} s between two others, from \`from\` to \`to\` in seconds of the edit. ` +
-  "If it shouldn't play that briefly, run the shot before or after over it, or move the change onto the same cut.";
+  "If it shouldn't play that briefly, run the shot before or after over it, or move the change onto the same cut. " +
+  "An end listed in recordingCuts is a cut in the recording itself, at `source` seconds of it, such as a switch to another window or page, " +
+  "and `changed` is how much of what the clip shows changed there, in percent: to keep it off screen, end or start the clip on that cut, " +
+  "or take the picture from a stretch of the recording that holds.";
 
 /** A picture this short between two others is a flash: no one means it, so its edge goes onto the cut beside it. */
 export const FLASH_SECONDS = 0.1;
