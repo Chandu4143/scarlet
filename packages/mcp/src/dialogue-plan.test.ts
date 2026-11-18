@@ -1011,6 +1011,8 @@ describe("equivalent removals", () => {
     expect(quotesAwayFromCut("Cut the second ‘very simple’ and land on “prompt I want.” Listen for the start of ‘prompt.’", near, cutRange)).toEqual([]);
     // A line that begins beside the cut can run on past the reach, and an apostrophe is not a closing quote.
     expect(quotesAwayFromCut("Keep ‘prompt I want it I wanted to know is it able to.’ Then ‘gave it’s’ is fine.", near, cutRange)).toEqual(["gave it’s"]);
+    // What the join plays, quoted across it, is about this cut.
+    expect(quotesAwayFromCut("Listen to “I gave prompt I want” at the join.", near, cutRange)).toEqual([]);
   });
 });
 

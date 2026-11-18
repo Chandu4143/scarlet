@@ -976,11 +976,15 @@ export const NOTE_QUOTE_REACH = 3;
 export function quotesAwayFromCut(note: string, heard: ReadonlyArray<{ at: number; text: string }>, range: TimeRange, reach = NOTE_QUOTE_REACH) {
   const tokens = heard.map(h => ({ at: h.at, token: normalizeTranscriptToken(h.text) })).filter(t => t.token);
   const quoted = [...note.matchAll(/[‘“"]([^‘“"”]+?)[’”"](?=[\s.,;:!?)]|$)/gu)].map(m => m[1]!.trim());
+  // What the cut leaves playing: a note that says what the join should sound like quotes words from both sides of
+  // it, which are not next to each other until the cut is made. “Listen to ‘a time where you would’” was refused on a
+  // cut that plays exactly that (2026-11-17).
+  const played = tokens.filter(t => t.at <= range.start || t.at >= range.end);
   return quoted.filter(q => {
     const phrase = q.split(/\s+/u).map(normalizeTranscriptToken).filter(Boolean);
     if (phrase.length < 2) return false;
-    return !tokens.some((t, i) => t.at >= range.start - reach && t.at <= range.end + reach &&
-      phrase.every((p, k) => tokens[i + k]?.token === p));
+    return ![tokens, played].some(said => said.some((t, i) => t.at >= range.start - reach && t.at <= range.end + reach &&
+      phrase.every((p, k) => said[i + k]?.token === p)));
   });
 }
 
