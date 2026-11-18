@@ -581,7 +581,12 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     // cut starts where that word begins, found by matching it to the retake's, and waits for the editor, since
     // nothing here can hear the join (sameWordJoin). A cut already there waits the same way.
     const same = c.kind === "retake" && c.decision !== "keep" ? checkJoin({ start: c.start, end: c.end }, c.spoken, c.air) : undefined;
-    const placed = same?.sameWord ? { start: same.start, end: same.end, reason: same.reason ?? "" } : same?.sameWordJoin;
+    const offered = same?.sameWordJoin, said = offered && "“" + offered.word + "”";
+    // Said of the cut as saved: the check's own words offer the seconds, and a pass sent the cut again on them.
+    const placed = same?.sameWord ? { start: same.start, end: same.end, reason: same.reason ?? "" } : offered && { start: offered.start, end: offered.end,
+      reason: `Staged from ${r2(offered.start)} s, where the first ${said} begins: the word before runs into it with no pause, so Scarlet found its start by matching it to the second ${said} on their sound` +
+        `${offered.takesFirst ? `, and took out the first ${said} too, which the range as given left playing twice` : ""}. No kept word is cut as measured. ` +
+        "Scarlet can't hear the join and neither can you, so it waits for the editor as a call: record ask on it. Nothing else is needed on this cut." };
     if (placed) {
       unheard.add(c.input);
       inSound.set(c.input, { inWord: false, reason: placed.reason });

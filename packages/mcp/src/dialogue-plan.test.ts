@@ -88,8 +88,13 @@ describe("dialogue plan", () => {
     const plan = await planDialogueCuts({ tl, localPauses: false, unsureJoins: "cut", cuts: [cut({ mediaId: "mic", fromWord: 4, toWord: 5 })] }, sources);
     expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
     if (plan.outcome !== "ready") return;
-    expect(plan.decisions[0]!.held).toContain("Scarlet can't hear the result, so a cut saved on those seconds is the editor's to hear, as a call. " +
+    expect(plan.decisions[0]!.held).toContain("it waits for the editor as a call: record ask on it. Nothing else is needed on this cut. " +
       "As placed the join plays “… there was a time ‖ where you would …”. Kept, it plays “… was a time where would where you would …”.");
+    // Given as the repeated “would” alone, with the voice in right after the cut, the range leaves “where ‖ where”
+    // playing: the cut takes the first “where” too.
+    const repeat = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 1.43, end: 2.37 })] }, sources);
+    expect(repeat).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
+    if (repeat.outcome === "ready") expect(repeat.decisions[0]!.held).toContain("took out the first “where” too, which the range as given left playing twice");
   });
 
   it("meets an earlier join a cut stops a few frames short of, so no flash plays between them", async () => {
