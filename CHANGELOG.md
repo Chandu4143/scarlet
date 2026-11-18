@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- The model's Speed choice that uses the provider's own speed now says Standard instead of Auto.
 - A Codex edit that stopped when Scarlet closed, or that asked you something, now carries on where it was instead of starting over.
 - Requests about a long video, such as a few more frames on one cut, use far fewer tokens, and a pass no longer looks at the same screen frame again and again.
 - A cut after the end of a sentence now comes right after the last word, before the breath that follows it, so the video no longer holds while you look away.
