@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentUsage } from "@scarlet/shared";
 import { windowsAclShell } from "../private-files.js";
 import { runClaude } from "./claude.js";
-import { runCodex } from "./codex.js";
+import { codexHomeDir, runCodex } from "./codex.js";
 import { runGemini } from "./gemini.js";
 import { runAgent, runnerFor } from "./index.js";
 import type { RunAgentFn, RunAgentOptions, RunnerEvent } from "./types.js";
@@ -49,6 +49,9 @@ createInterface({ input: process.stdin }).on("line", line => {
   const { id, method, params } = JSON.parse(line);
   if (method === "initialize") send({ id, result: { userAgent: "fake codex" } });
   if (method === "thread/start") send({ id, result: { thread: { id: "t1", ephemeral: params.ephemeral }, model: params.model ?? "default-model", approvalPolicy: "never", activePermissionProfile: { id: "scarlet" } } });
+  if (method === "thread/resume") send(params.threadId === "t1"
+    ? { id, result: { thread: { id: "t1", ephemeral: false }, model: params.model ?? "default-model", approvalPolicy: "never", activePermissionProfile: { id: "scarlet" } } }
+    : { id, error: { code: -32600, message: "no rollout found for thread id " + params.threadId } });
   if (method === "turn/start") {
     if (process.env.FAKE_APP_FAIL_START) return send({ id, error: { code: -32603, message: "Turn rejected" } });
     emit("before-start-out");
@@ -337,7 +340,7 @@ describe.skipIf(process.platform === "win32")("runCodex App Server", { timeout: 
       last: { inputTokens: 1, outputTokens: 1 } }, ...route,
   });
 
-  it("shows cumulative App Server counts during an ephemeral edit and keeps the final total", async () => {
+  it("shows cumulative App Server counts during an edit and keeps the final total", async () => {
     const snapshots: AgentUsage[] = [];
     const observed: (number | string)[] = [];
     const { result, args, stdin, server, cwd, read } = await run(runCodex, {
@@ -361,7 +364,8 @@ describe.skipIf(process.platform === "win32")("runCodex App Server", { timeout: 
     const requests = (await stdin()).trim().split("\n").map(line => JSON.parse(line));
     expect(requests.map(r => r.method)).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
     expect(requests[0].params.capabilities).toEqual({ experimentalApi: true, requestAttestation: false });
-    expect(requests[2].params).toEqual({ ephemeral: true, model: "gpt-5", serviceTier: "fast" });
+    expect(requests[2].params).toEqual({ ephemeral: false, model: "gpt-5", serviceTier: "fast" });
+    expect(result.sessionId).toBe("t1");
     expect(requests[3].params).toEqual({ threadId: "t1", input: [{ type: "text", text: "Make the first cut", text_elements: [] }] });
     expect(await server()).toBe("http://localhost:4000");
     expect(await args()).toEqual(expect.arrayContaining(["app-server", "project_root_markers=[]", "tools.update_plan.enabled=true", 'default_permissions="scarlet"']));
@@ -370,7 +374,25 @@ describe.skipIf(process.platform === "win32")("runCodex App Server", { timeout: 
     expect(await read("app-auth-target")).toMatch(/\/codex-home\/auth\.json$/);
     expect(await read("app-lock-target")).toMatch(/\/codex-home\/auth\.lock$/);
     expect(await read("app-home")).not.toBe(join(cwd, "..", "codex-home"));
-    await expect(stat(await read("app-home"))).rejects.toMatchObject({ code: "ENOENT" });
+    // The run's Codex home is beside its folder, outside what the agent may write, and stays for a resume.
+    expect(await read("app-home")).toBe(codexHomeDir(cwd));
+    expect((await stat(codexHomeDir(cwd))).isDirectory()).toBe(true);
+  });
+
+  it("resumes the thread a run left, and asks for a fresh run when Codex no longer has it", async () => {
+    const { result, stdin } = await run(runCodex, { appServer: true, lines: [
+      notification("item/completed", { item: { type: "agentMessage", id: "msg1", phase: "final_answer", text: "Kept the take." } }),
+      notification("turn/completed", { turn: { id: "turn1", status: "completed" } }),
+    ] }, { resumeSession: "t1", instruction: 'The editor answered: "keep it"' });
+    expect(result).toMatchObject({ ok: true, summary: "Kept the take.", sessionId: "t1" });
+    const requests = (await stdin()).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.map(r => r.method)).toEqual(["initialize", "initialized", "thread/resume", "turn/start"]);
+    expect(requests[2].params).toMatchObject({ threadId: "t1" });
+    const fallback = vi.fn();
+    const gone = await run(runCodex, { appServer: true }, { resumeSession: "t0", onCodexFallback: fallback });
+    // Nothing ran, and no `codex exec` fallback, which keeps no thread: the host starts afresh.
+    expect(gone.result).toMatchObject({ ok: false, resumeFailed: true });
+    expect(fallback).toHaveBeenCalledWith("thread_resume_failed");
   });
 
   it("drains the usage reported when an edit stops for a question", async () => {

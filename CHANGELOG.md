@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A Codex edit that stopped when Scarlet closed, or that asked you something, now carries on where it was instead of starting over.
 - Requests about a long video, such as a few more frames on one cut, use far fewer tokens, and a pass no longer looks at the same screen frame again and again.
 
 ## November 17, 2026

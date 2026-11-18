@@ -1,4 +1,4 @@
-//! Run one ephemeral Codex turn over the App Server's JSONL stdio protocol.
+//! Run one Codex turn over the App Server's JSONL stdio protocol, in a new thread or one it resumes.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -48,6 +48,8 @@ struct Session {
     interrupted: bool,
     completed: bool,
     error: Option<anyhow::Error>,
+    /// `thread/resume` for a thread an earlier run of this task left, otherwise `thread/start`.
+    thread_method: &'static str,
 }
 
 impl Session {
@@ -121,14 +123,16 @@ impl Session {
             // or the stop deadline will close the process regardless of its response.
             return Ok(false);
         }
+        let resuming = self.thread_method == "thread/resume";
         let method = match id {
             INITIALIZE => "initialize",
-            START_THREAD => "thread/start",
+            START_THREAD => self.thread_method,
             START_TURN => "turn/start",
             _ => unreachable!(),
         };
         let phase = match id {
             INITIALIZE => "initialize_failed",
+            START_THREAD if resuming => "thread_resume_failed",
             START_THREAD => "thread_start_failed",
             _ => "turn_start_failed",
         };
@@ -141,11 +145,15 @@ impl Session {
             INITIALIZE => {
                 self.send(json!({ "method": "initialized" }))?;
                 self.pending_response = Some(START_THREAD);
-                self.request(START_THREAD, "thread/start", thread_params)?;
+                self.request(START_THREAD, self.thread_method, thread_params)?;
             }
             START_THREAD => {
-                if result.pointer("/thread/ephemeral").and_then(Value::as_bool) != Some(true) {
-                    return Err(handshake("thread_policy_mismatch", "Codex App Server did not confirm an ephemeral thread"));
+                // The thread is kept in the run's private Codex home so a run cut short can resume it.
+                if result.pointer("/thread/ephemeral").and_then(Value::as_bool) != Some(false) {
+                    return Err(handshake("thread_policy_mismatch", "Codex App Server did not keep the thread"));
+                }
+                if resuming && result.pointer("/thread/id").and_then(Value::as_str) != thread_params["threadId"].as_str() {
+                    return Err(handshake("thread_resume_failed", "Codex App Server resumed another thread"));
                 }
                 if result["approvalPolicy"].as_str() != Some("never") {
                     return Err(handshake("thread_policy_mismatch", "Codex App Server did not apply Scarlet's approval policy"));
@@ -177,15 +185,19 @@ impl Session {
     }
 }
 
+/// `resume`: the id of a thread an earlier run of this task left in the same Codex home, to carry on in.
 pub async fn run_app_server(
     file: &str, args: &[String], opts: SpawnLinesOptions,
-    mut thread_params: Value, mut turn_params: Value, mut on_event: NotificationHandler,
+    mut thread_params: Value, mut turn_params: Value, mut on_event: NotificationHandler, resume: Option<&str>,
 ) -> Result<SpawnOutcome> {
-    thread_params["ephemeral"] = json!(true);
+    let thread_method = match resume {
+        Some(id) => { thread_params["threadId"] = json!(id); "thread/resume" }
+        None => { thread_params["ephemeral"] = json!(false); "thread/start" }
+    };
     let (input, lines) = mpsc::unbounded_channel();
     let session = Session {
         input: Some(input), thread: None, turn: None, pending_response: Some(INITIALIZE),
-        pending_events: Vec::new(), interrupted: false, completed: false, error: None,
+        pending_events: Vec::new(), interrupted: false, completed: false, error: None, thread_method,
     };
     session.request(INITIALIZE, "initialize", &json!({
         "clientInfo": { "name": "scarlet", "title": "Scarlet", "version": env!("CARGO_PKG_VERSION") },
@@ -274,8 +286,14 @@ lines.on('line', line => {
         break;
     case 'thread/start':
         assert.equal(initialized, true);
-        assert.equal(params.ephemeral, true);
-        reply({thread: {id: 'thread', ephemeral: true}, model: 'fake-model', approvalPolicy: 'never', activePermissionProfile: {id: 'scarlet'}});
+        assert.equal(params.ephemeral, false);
+        reply({thread: {id: 'thread', ephemeral: false}, model: 'fake-model', approvalPolicy: 'never', activePermissionProfile: {id: 'scarlet'}});
+        break;
+    case 'thread/resume':
+        assert.equal(initialized, true);
+        assert.equal(params.ephemeral, undefined);
+        if (params.threadId !== 'thread') { send({id, error: {code: -32600, message: `no rollout found for thread id ${params.threadId}`}}); break; }
+        reply({thread: {id: 'thread', ephemeral: false}, model: 'fake-model', approvalPolicy: 'never', activePermissionProfile: {id: 'scarlet'}});
         break;
     case 'turn/start':
         assert.equal(params.threadId, 'thread');
@@ -335,9 +353,11 @@ lines.on('close', () => {
             if stop == Stop::Stall {
                 opts.stall = Some(Duration::from_secs(2));
             }
+            // A question stops a resumed thread the same way.
+            let resume = (stop == Stop::Question).then_some("thread");
             let result = run_app_server(
-                &node, &["-e".into(), FAKE_SERVER.into()], opts, json!({"ephemeral": false}),
-                json!({"input": [{"type": "text", "text": "Make the edit", "text_elements": []}]}), on_event,
+                &node, &["-e".into(), FAKE_SERVER.into()], opts, json!({}),
+                json!({"input": [{"type": "text", "text": "Make the edit", "text_elements": []}]}), on_event, resume,
             ).await.unwrap();
             assert_eq!(result.code, Some(0), "{result:?}");
             assert_eq!(result.aborted, stop == Stop::Cancel);
@@ -351,9 +371,18 @@ lines.on('close', () => {
         let script = r#"const lines = require('node:readline').createInterface({input: process.stdin});
 lines.on('line', line => console.log(JSON.stringify({id: JSON.parse(line).id, error: {code: -32603, message: 'Connection failed'}})));"#;
         let (node, opts) = process_options(CancellationToken::new());
-        let error = run_app_server(&node, &["-e".into(), script.into()], opts, json!({}), json!({}), Box::new(|_, _| false))
+        let error = run_app_server(&node, &["-e".into(), script.into()], opts, json!({}), json!({}), Box::new(|_, _| false), None)
             .await.unwrap_err();
         assert!(error.to_string().starts_with("Codex App Server initialize failed: Connection failed"), "{error:#}");
         assert_eq!(fallback_reason(&error), "initialize_failed");
+    }
+
+    #[tokio::test]
+    async fn names_a_thread_codex_no_longer_has_as_a_failed_resume() {
+        let (node, opts) = process_options(CancellationToken::new());
+        let error = run_app_server(&node, &["-e".into(), FAKE_SERVER.into()], opts, json!({}), json!({}), Box::new(|_, _| false), Some("gone"))
+            .await.unwrap_err();
+        assert!(error.to_string().starts_with("Codex App Server thread/resume failed: no rollout found"), "{error:#}");
+        assert_eq!(fallback_reason(&error), "thread_resume_failed");
     }
 }

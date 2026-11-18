@@ -327,17 +327,32 @@ async function isolatedCodexHome(cwd: string, env: NodeJS.ProcessEnv): Promise<{
   const authFile = join(originalHome, "auth.json");
   const auth = await stat(authFile).catch(() => undefined);
   if (!auth?.isFile() || !auth.size) return { reason: "auth_unavailable" };
-  const home = await mkdtemp(join(tmpdir(), "scarlet-codex-"));
+  const home = codexHomeDir(cwd);
   try {
     await privateDirectory(home);
-    await symlink(authFile, join(home, "auth.json"), "file");
-    // The store locks around refresh commits. Use the same lock as the ordinary CLI.
-    await symlink(join(originalHome, "auth.lock"), join(home, "auth.lock"), "file");
+    // Only Scarlet writes configuration here. Codex's own state (its threads and their database) stays.
+    for (const config of ["config.toml", "managed_config.toml"]) {
+      if (await lstat(join(home, config)).catch(() => undefined)) return { reason: "isolation_unavailable" };
+    }
+    // Linked again on each run: the login may have moved since the last one. The store locks around refresh commits,
+    // so the lock is the ordinary CLI's too.
+    for (const [from, name] of [[authFile, "auth.json"], [join(originalHome, "auth.lock"), "auth.lock"]] as const) {
+      await rm(join(home, name), { force: true });
+      await symlink(from, join(home, name), "file");
+    }
     return { home };
   } catch {
-    await rm(home, { recursive: true, force: true });
     return { reason: "isolation_unavailable" };
   }
+}
+
+/**
+ * The run's own Codex home, beside its task folder: outside the folder the agent may write to, and the same for every
+ * attempt at the task (the folder is keyed by the run's first task id), so a run cut short or paused on a question
+ * resumes its thread. The host removes it once the task lands; the task folders' prune takes one left behind.
+ */
+export function codexHomeDir(cwd: string): string {
+  return `${cwd.replace(/[\\/]+$/, "")}.codex`;
 }
 
 const serverItemTypes: Record<string, string> = {
@@ -508,18 +523,22 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
         }
         send({ method: "initialized" });
         pending = 2;
-        send({ id: 2, method: "thread/start", params: { ephemeral: true, model, serviceTier } });
+        // The thread is kept in the run's private Codex home, so a run cut short or paused on a question resumes it.
+        send(opts.resumeSession
+          ? { id: 2, method: "thread/resume", params: { threadId: opts.resumeSession, model, serviceTier } }
+          : { id: 2, method: "thread/start", params: { ephemeral: false, model, serviceTier } });
       } else if (id === 2) {
         const thread = object(result?.thread);
         threadId = string(thread?.id);
         const profile = result?.activePermissionProfile;
         const approval = result?.approvalPolicy;
-        if (!threadId || thread?.ephemeral !== true || object(profile)?.id !== "scarlet" || approval !== "never") {
-          startupFailure = threadId ? "thread_policy_mismatch" : "thread_start_failed";
+        if (!threadId || thread?.ephemeral !== false || object(profile)?.id !== "scarlet" || approval !== "never" || (opts.resumeSession && threadId !== opts.resumeSession)) {
+          startupFailure = opts.resumeSession ? "thread_resume_failed" : threadId ? "thread_policy_mismatch" : "thread_start_failed";
           return complete();
         }
         model = string(result?.model) ?? model;
-        emit({ type: "thread.started", thread_id: threadId });
+        // The engine keeps the thread as the run's session, which an answer or a resume after a quit carries on in.
+        opts.onEvent({ type: "log", text: `Codex session started (${threadId})`, data: { kind: "init", threadId, sessionId: threadId } });
         turnRequested = true;
         pending = 3;
         send({ id: 3, method: "turn/start", params: { threadId, input: [{ type: "text", text: opts.instruction, text_elements: [] }] } });
@@ -541,9 +560,11 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
   // Startup can fail on older CLIs. Never retry a turn that may already have edited the project.
   if (!turnRequested && !outcome.aborted && !outcome.timedOut) {
     opts.onCodexFallback?.(startupFailure ?? "app_server_unavailable");
+    // A thread that can't be resumed, here or by `codex exec`, which keeps none: the host starts a fresh run.
+    if (opts.resumeSession) return { ok: false, summary: "", resumeFailed: true, error: `Codex could not resume its thread (${startupFailure ?? "app_server_unavailable"})` };
     return undefined;
   }
-  return codexResult(state, outcome, state.lastMessage, model, state.turnCompleted);
+  return codexResult(state, outcome, state.lastMessage, model, state.turnCompleted, threadId);
 }
 
 export async function runCodex(opts: RunAgentOptions): Promise<RunAgentResult> {
@@ -552,14 +573,11 @@ export async function runCodex(opts: RunAgentOptions): Promise<RunAgentResult> {
   await writePrivateFile(join(opts.cwd, "AGENTS.md"), opts.systemPrompt);
   const isolation = await isolatedCodexHome(opts.cwd, env).catch(() => ({ reason: "isolation_unavailable" as const }));
   if ("home" in isolation) {
-    try {
-      const result = await runCodexServer(opts, env, bin, isolation.home);
-      if (result) return result;
-    } finally {
-      await rm(isolation.home, { recursive: true, force: true });
-    }
+    const result = await runCodexServer(opts, env, bin, isolation.home);
+    if (result) return result;
   } else {
     opts.onCodexFallback?.(isolation.reason);
+    if (opts.resumeSession) return { ok: false, summary: "", resumeFailed: true, error: `Codex could not resume here (${isolation.reason})` };
   }
 
   const tmpDir = join(opts.cwd, ".scarlet");
@@ -594,9 +612,10 @@ export async function runCodex(opts: RunAgentOptions): Promise<RunAgentResult> {
   return codexResult(st, outcome, last, opts.model, outcome.code === 0 || st.turnCompleted);
 }
 
-function codexResult(st: CodexParseState, outcome: Awaited<ReturnType<typeof spawnLines>["done"]>, last: string | undefined, model: string | undefined, completed: boolean): RunAgentResult {
+function codexResult(st: CodexParseState, outcome: Awaited<ReturnType<typeof spawnLines>["done"]>, last: string | undefined, model: string | undefined, completed: boolean, sessionId?: string): RunAgentResult {
   const usage = usageWithModel(st.usage, model);
-  const early = earlyResult(st, outcome, { usage });
+  // A question carries the thread with it, so the answer resumes it.
+  const early = earlyResult(st, outcome, { usage, ...(sessionId && { sessionId }) });
   if (early) return early;
   // A failure line fails the run whatever it says, an empty reason included.
   const ok = st.failed === undefined && completed;
@@ -606,5 +625,6 @@ function codexResult(st: CodexParseState, outcome: Awaited<ReturnType<typeof spa
     error: ok ? undefined : st.failed ?? st.retryNotice ?? `codex exited with code ${outcome.code}${outcome.stderr ? `: ${outcome.stderr.trim().slice(-800)}` : ""}`,
     exitCode: outcome.code,
     usage,
+    ...(sessionId && { sessionId }),
   };
 }
