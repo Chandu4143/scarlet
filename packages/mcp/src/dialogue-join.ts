@@ -431,10 +431,11 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
     const i = levels ? Math.floor((t - levels.from) / levels.step) : -1;
     return !!levels && i >= 0 && i < levels.db.length && isDip(levels, i);
   });
-  // Not inside a word, and not past a whole one: a dip moves an edge to a word boundary, never across a word.
+  // Not inside a word, and not past a whole one or its middle: a dip moves an edge to a word boundary, never across a
+  // word, and so never takes out a word the range keeps or keeps one it takes out, as the trough's move above.
   const betweenWords = (timeline: number) => sources.every(s => {
     const t = timelineToSource(s.clip, timeline), from = Math.min(s.at, t), to = Math.max(s.at, t);
-    return !s.page.words.some(w => inWord(w, t) || (from <= w.start && w.end <= to));
+    return !s.page.words.some(w => inWord(w, t) || (from <= w.start && w.end <= to) || (from < (w.start + w.end) / 2 && (w.start + w.end) / 2 < to));
   });
   for (const next of [at, ...frames]) {
     if (Math.abs(next - at) > snapLimit + 1e-7 || (next !== at && crossesClip(at, next)) || !betweenWords(next)) continue;
@@ -1303,7 +1304,12 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
     // Below the level that counts as quiet, the recording cannot locate the word inside its timing.
     return peak && peak.db > dbfs(QUIET_RMS) ? peak.at : fallback;
   };
-  return { start: anchor(left, left.start), end: anchor(right, right.end) };
+  const bounds = { start: anchor(left, left.start), end: anchor(right, right.end) };
+  // A named word comes out when its middle does: that is how the cut's words, what it plays and the check for a word
+  // played twice all read it. A word too quiet to locate left its far end as the bound, and the edge went to the quiet
+  // after it: “nice you ‖ you can see” was placed past the “you” the model named, then refused for playing it twice (2026-11-17).
+  const named = (outer.start + outer.end) / 2;
+  return side === "start" ? { start: bounds.start, end: Math.min(bounds.end, named) } : { start: Math.max(bounds.start, named), end: bounds.end };
 }
 
 /**
