@@ -80,20 +80,20 @@ describe("dialogue plan", () => {
         : (t >= .4 && t < .9) || (i >= 130 && t < 3.3) ? -36 : -70;
       return 10 ** (db / 20);
     });
-    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.2, text: "time" },
-      { start: 1.2, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: "where" }, { start: 2.54, end: 2.7, text: "you" },
+    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.22, text: "time" },
+      { start: 1.22, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: "where" }, { start: 2.54, end: 2.7, text: "you" },
       { start: 2.8, end: 3.3, text: "would" }];
     sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, rms, peaks: rms, speechActivity: [{ start: .4, end: 1.64 }, { start: 2.38, end: 3.3 }] }) }];
     sources.words = async () => said;
     const plan = await planDialogueCuts({ tl, localPauses: false, unsureJoins: "cut", cuts: [cut({ mediaId: "mic", fromWord: 4, toWord: 5 })] }, sources);
-    expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
+    expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(36 / 30, 5), review: true }] });
     if (plan.outcome !== "ready") return;
     expect(plan.decisions[0]!.held).toContain("it waits for the editor as a call: record ask on it. Nothing else is needed on this cut. " +
       "As placed the join plays “… there was a time ‖ where you would …”. Kept, it plays “… was a time where would where you would …”.");
     // Given as the repeated “would” alone, with the voice in right after the cut, the range leaves “where ‖ where”
     // playing: the cut takes the first “where” too.
     const repeat = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 1.43, end: 2.37 })] }, sources);
-    expect(repeat).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
+    expect(repeat).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(36 / 30, 5), review: true }] });
     if (repeat.outcome === "ready") expect(repeat.decisions[0]!.held).toContain("took out the first “where” too, which the range as given left playing twice");
   });
 

@@ -20,7 +20,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - Cuts Scarlet places by time now leave only the pause your skill asks for after your last word, instead of whatever quiet was there.
 - A screen demo that ends or starts a frame or two off the camera's cut now changes on that cut, so your camera no longer flashes full frame between them.
 - Speech transcription settings show your preferred model, when Scarlet uses bundled Whisper, and how to set up CrisperWhisper.
-- When a restart begins on the word you had just said, the cut Scarlet brings you now plays that word once: before, you could hear yourself start it, a gap, then the word again.
+- When a restart begins on the word you had just said, the cut Scarlet brings you starts where that word begins: it used to start a frame or two later, so you could hear yourself start the word before the cut.
 
 ## November 16, 2026
 
