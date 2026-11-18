@@ -124,7 +124,8 @@ it("stays paused when the editor paused just as it took over, before the video i
 });
 
 it("plays on when it takes over from a video that is playing, also one paused and started again a moment before", async () => {
-  const play = vi.spyOn(player, "play").mockImplementation(() => {});
+  // Played for real: its play ends the transport's handover, which would otherwise play the file a second time.
+  const play = vi.spyOn(player, "play");
   // A new working cut, or its saved file, arriving while the video plays: nothing paused it.
   let before = videoBefore();
   void before.el.play();

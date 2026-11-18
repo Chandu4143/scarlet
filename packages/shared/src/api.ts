@@ -17,6 +17,8 @@
  *   POST   /projects                CreateProjectRequest → { project: Project }
  *   GET    /projects/:id                                 → ProjectDetail
  *   PATCH  /projects/:id            UpdateProjectRequest → { project: Project }
+ *   POST   /projects/:id/stop-editing                    → { project: Project, tasks: Task[] }
+ *   POST   /projects/:id/resume-editing                  → { project: Project, tasks: Task[] }
  *   DELETE /projects/:id                                 → {}
  *
  *  Media
@@ -70,7 +72,7 @@
  *   GET    /projects/:id/tasks?state=                    → { tasks: Task[] }
  *   GET    /tasks/:taskId                                → { task: Task, events: TaskEvent[] }
  *   GET    /tasks/:taskId/prompt?workDir=&fresh=         → TaskPrompt (what the agent is told; hosts call this before each run)
- *   POST   /tasks/:taskId/cancel                         → { task: Task }
+ *   POST   /tasks/:taskId/cancel?queuedOnly=1            → { task: Task } (queuedOnly is optional)
  *   POST   /tasks/:taskId/retry  RunChoice?              → { task: Task } (resume an interrupted request or retry a failure, on the model given)
  *   POST   /tasks/:taskId/answer    { text }             → { task: Task }     (human answers an agent question)
  *   GET    /projects/:id/usage?by=thread|task|agent|model|day → UsageResponse  (agent token usage, newest group first)
@@ -137,6 +139,7 @@ import { z } from "zod/v3";
 import {
   Author,
   Change,
+  CutAssessment,
   EditIntent,
   ChangeState,
   DEFAULT_PREVIEW_HEIGHT,
@@ -187,6 +190,7 @@ export type ProjectActivity = z.infer<typeof ProjectActivity>;
 export const ProjectSummary = z.object({
   id: Id,
   archived: z.boolean().optional(),
+  mediaPaused: Project.shape.mediaPaused,
   name: z.string(),
   settings: ProjectSettings,
   head: Id.nullable(),
@@ -294,6 +298,7 @@ export const ProposeChangeRequest = z.object({
   ops: z.array(TimelineOp).optional(),
   timeline: WritableTimeline.optional(),
   description: z.string().min(1),
+  reason: Change.shape.reason,
   noteIds: z.array(Id).optional(),
   taskId: Id.optional(),
   /** Override author (agent hosts set this to the agent/model that did the work). */
@@ -328,7 +333,7 @@ export const DialogueCutsRequest = ProposeChangeRequest.pick({ description: true
   range: TimeRange.optional(),
   kept: z.array(TimeRange).optional(),
   cuts: z.array(z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive(),
-    originalRange: TimeRange.optional(), review: z.boolean(), reason: z.string().min(1),
+    originalRange: TimeRange.optional(), review: z.boolean(), reason: z.string().min(1), summary: CutAssessment.shape.summary,
     /** Editorial classification, also used to enforce the scope of a local pause edit. */
     kind: DialogueCutKind.optional(),
     /** A doubt the editor must settle by listening or looking. Marks an applied cut as needing them until they keep it. */
@@ -351,6 +356,7 @@ export const StagedCutRevision = ProposeChangeRequest.pick({ taskId: true, autho
   start: z.number().finite().nonnegative(),
   end: z.number().finite().positive(),
   reason: z.string().trim().min(1).max(800),
+  summary: CutAssessment.shape.summary,
 });
 export type StagedCutRevision = z.infer<typeof StagedCutRevision>;
 
@@ -406,17 +412,32 @@ export const ReviseRequest = ModelTuning.extend({
   assignTo: z.string().optional(),
 });
 
-/** A doubt a run raises about an applied edit: named by its change and place, or found where `range` falls on the working cut. */
+/** A doubt about an applied edit, with the playback passage to inspect when it is known. */
 export const FlagEditRequest = z.object({
   check: z.string().trim().min(1).max(120),
-  range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().nonnegative() }).optional(),
+  range: TimeRange.optional(),
+  version: Id.optional(),
   changeId: Id.optional(),
   spot: z.number().int().nonnegative().optional(),
   taskId: Id.optional(),
 }).refine(b => (b.changeId !== undefined) === (b.spot !== undefined), "changeId and spot go together")
-  .refine(b => (b.changeId !== undefined) !== (b.range !== undefined), "Give either range or changeId with spot")
-  .refine(b => !b.range || b.range.end >= b.range.start, "range.end comes after range.start");
+  .refine(b => b.changeId !== undefined || b.range !== undefined, "Give range or changeId with spot")
+  .refine(b => b.version === undefined || b.range !== undefined, "Give range with version");
 export type FlagEditRequest = z.infer<typeof FlagEditRequest>;
+
+/**
+ * Edits the editor kept, by the identity their Keep is recorded under (`reviewRef` when the edit carries a later save's
+ * reason to look), with what they read on it. The engine fills the name and reason from the change when not given.
+ */
+export const KeepEditsRequest = z.object({
+  threadId: Id,
+  version: Id.optional(),
+  edits: z.array(z.object({ changeId: Id, spot: z.number().int().nonnegative(), recheck: z.string().max(64).optional(),
+    label: z.string().trim().min(1).max(180).optional(), check: z.string().trim().min(1).max(120).optional(), range: TimeRange.optional() })).min(1).max(500),
+});
+export type KeepEditsRequest = z.infer<typeof KeepEditsRequest>;
+/** An edit the editor kept, as a run of its request hears of it. */
+export interface KeptEdit { changeId: string; spot: number; label: string; check?: string; at: string; place?: { version: string; range: TimeRange } }
 
 // ---------------------------------------------------------------------------
 // Notes
@@ -661,9 +682,17 @@ export const TaskKind = z.enum([
   "skill_from_change", // write a SKILL.md capturing an approved change
   "skill_edit", // revise one skill as the editor described; not part of a project's conversation
   "learning_check", // read one request for a standing rule to offer; started with the request, beside it
+  "area_check", // look at one frame of a recording and say what of it viewers may see; started when a save needs it
   "transcribe", // server-side job, not dispatched to hosts
 ]);
 export type TaskKind = z.infer<typeof TaskKind>;
+
+/** Requests that edit the project's video, including requests about a note or an existing edit. */
+export const PROJECT_EDIT_TASK_KINDS: readonly TaskKind[] = ["edit", "note", "revise"];
+
+export function isProjectEditTask(task: { kind: TaskKind }): boolean {
+  return PROJECT_EDIT_TASK_KINDS.includes(task.kind);
+}
 
 export const TaskState = z.enum([
   "queued",
@@ -726,6 +755,8 @@ export const Task = z.object({
       learningId: Id.optional(),
       /** The request a learning_check task reads. A rule it offers is that request's. */
       checksTaskId: Id.optional(),
+      /** The frame an area_check task looks at: a recording and a source second. */
+      areaCheck: z.object({ mediaId: Id, at: Seconds }).optional(),
       time: Seconds.optional(),
       end: Seconds.optional(),
       clipIds: z.array(Id).optional(),
@@ -804,6 +835,10 @@ export const Task = z.object({
   retryTaskId: Id.optional(),
   /** Server-assigned original attempt whose workspace and progress this run continues. */
   resumeRootId: Id.optional(),
+  /** Insertion order from the engine, used to break ties between requests saved in the same millisecond. */
+  queueSequence: z.number().int().optional(),
+  /** This attempt was put back in line by the project's Stop control. It takes priority over waiting requests. */
+  resumesAfterProjectStop: z.boolean().optional(),
   /** Whether the selected cut was still staged when the request was made. Editing an applied cut uses the timeline. */
   stagedCutRevision: z.boolean().optional(),
   /**
@@ -833,6 +868,8 @@ export const Task = z.object({
   reply: z.string().optional(),
   error: z.string().optional(),
   createdAt: z.string().datetime().optional(),
+  /** Milliseconds spent working on closed claims. An active claim starts at startedAt. */
+  workedMs: z.number().int().nonnegative().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
 });
@@ -886,9 +923,14 @@ export function isLearningCheck(task: Pick<Task, "kind">): boolean {
   return task.kind === "learning_check";
 }
 
-/** A run that edits no video, so it stays out of the project's conversation and queue: a skill edit or a learning check. */
+/** The look at one frame for what viewers may see. It runs beside the request that needs it and edits no video. */
+export function isAreaCheck(task: Pick<Task, "kind">): boolean {
+  return task.kind === "area_check";
+}
+
+/** A run that edits no video, so it stays out of the project's conversation and queue: a skill edit, a learning check or an area check. */
 export function isAsideTask(task: Pick<Task, "kind">): boolean {
-  return isSkillEdit(task) || isLearningCheck(task);
+  return isSkillEdit(task) || isLearningCheck(task) || isAreaCheck(task);
 }
 
 export const TaskSkillDraft = z.object({
@@ -1108,8 +1150,7 @@ const TokenCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 /**
  * Tokens one agent run reported, normalized across CLIs. `inputTokens` excludes
  * cache reads and writes. `reasoningTokens` is the part of `outputTokens` spent on
- * reasoning, where the CLI reports it. Scarlet tracks tokens, not cost: runs use
- * the editor's subscription.
+ * reasoning, where the CLI reports it.
  */
 export const AgentUsage = z.object({
   model: z.string().min(1).max(200).optional(),
@@ -1130,6 +1171,8 @@ export type UsageGroupBy = z.infer<typeof UsageGroupBy>;
 
 export const UsageTotals = z.object({
   runs: z.number().int().nonnegative(),
+  /** Model IDs recorded for the runs of this task. Only included in per-task totals. */
+  models: z.array(z.string()).optional(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
   cacheReadTokens: z.number().int().nonnegative(),
@@ -1137,6 +1180,8 @@ export const UsageTotals = z.object({
   reasoningTokens: z.number().int().nonnegative(),
   /** Input, output and cache tokens together. */
   totalTokens: z.number().int().nonnegative(),
+  /** Standard API list-price equivalent for the task's reported usage. Null if any reported tokens cannot be priced. */
+  estimatedApiCostUsd: z.number().nonnegative().nullable().optional(),
   firstAt: z.string().nullable(),
   lastAt: z.string().nullable(),
 });

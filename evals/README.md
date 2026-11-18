@@ -49,6 +49,21 @@ coaching, and automatic removals in historical runs. Results are split by tier:
 - **Hand-analysis method.** `--kept-side` reads the loudest 50 ms on the kept side. "Per-cut edges" counts both
   edges of every listed cut, the way the original hand analysis did.
 
+**Showable area** (`showable.ts`, `showableMeasure.ts`). Whether a cut keeps a screen recording inside what the
+editor means viewers to see: the window being presented, without the desktop, other apps or a call beside it.
+
+- **Labels.** The editor confirms a box on a frame of the recording, once for each window layout. The file is
+  `{"schema":1,"recording":"<media id>","labels":[{"at":<second>,"area":{"left":0.08,"top":0.1,"right":0.84,"bottom":0.89}}]}`,
+  edges as fractions of the picture. List an edge under `soft` when the picture has no line there. Keep the
+  file with the case, never in the repository.
+- **Holds.** `--recording <file>` reads one frame every five seconds and records the stretches each box holds for:
+  every edge it needs is still a line where it was. A window that moves or resizes ends the hold, and that
+  time stays unlabelled until a box is confirmed for it.
+- **Score.** `--timeline <json>` looks at a version every half second. Of the labelled screen time on picture,
+  `outsideShare` shows anything more than 1% of the picture past its box and `farOutsideShare` more than 5%.
+  `worst` lists the moments to look at. A box can hold by chance on a different window with edges in the same
+  places, so check `worst` against frames before trusting a change in the score.
+
 **Pacing** (`pacing` in `metrics.ts`). What each version still plays, read from the transcript's words on that
 version's timeline: the source, the applied cut, the proposed cut and the reference.
 
@@ -59,14 +74,21 @@ version's timeline: the source, the applied cut, the proposed cut and the refere
   The second delivery must begin within three seconds of the first ending. For phrases over five words, the two
   starts must be within 25 seconds of each other. The reference count includes deliberate emphasis ("very, very").
 - A typed or silent demonstration is a gap here. The reference's own count is the floor a cut can reach.
+- **What the task left.** The headline gaps, dead air and doubled words are measured on the edit the task ended on:
+  the applied cut plus the task's own later changes (closing-check repairs, staged picks it applied). With an engine,
+  that is the head of the task's branch whenever one of the task's changes made it. `recommended…` and the
+  `restartsLeft`/`silencesLeft` counts take out, too, every staged cut still waiting for the editor that the agent
+  marked `cut`, including cuts staged on earlier versions: they go in with the editor's calls. `stagedWaiting` counts
+  those earlier-version cuts. Scored on the applied version, a pass whose closing check cut a 73-second wait was
+  charged for it (2026-11-17).
 
 **Held by Scarlet.** Staged cuts the agent submitted as `cut`: the measured edit needs review.
 
 **Against a reference** (the editor's final or approved cut). This section is scored at three operating points:
 
 - `applied`: the confident cuts alone.
-- `recommended`: applied plus the review items the AI marked `cut`.
-- `proposed`: applied plus every review item.
+- `recommended`: what the task left, less every staged item the AI marked `cut`.
+- `proposed`: what the task left, less every staged item.
 
 The metrics are:
 
@@ -291,6 +313,8 @@ runs. Results land in `results/runs/<time>/<case>/<config>/trial-<n>/` (`evaluat
 summary with `--summarize <dir>`.
 
 For audio-matched cases, read `recoveredWordRemovingCuts` against `editorWordRemovingCuts`, alongside `missingVerifiedWords`. A recovered cut joins the same two source-word occurrences across a splice. `matchedPauseErrorMs` averages absolute pause differences only on the `matchedAudioJoins` shared by both edits. Unmapped passages contribute no joins. A crossfade with quiet handles uses each word’s actual playback time. The scorer counts a crossfade touching speech as ambiguous and records unsupported mixes as unavailable.
+
+**Edges against the editor's own cuts** (`editorEdges` in `published-words.json`, `editorEdge…` in the headline). The waveform map gives each editor cut an out edge and an in edge in the recording, each with the window over which the cut sounds the same: the plausible boundary shift plus one frame. A candidate edge of the same side within 0.6 s of that window counts as the same cut. Inside the window it matches (`editorEdgesInWindow`, a fraction of `editorEdgesShared`). Outside, the frames at speech level between the candidate edge and the window are sound the candidate plays that the editor removed (`editorEdgePlaysRemovedSpeech`) or sound the editor kept that it drops (`editorEdgeDropsKeptSpeech`). Their sum is `editorEdgeSpeechMisses`, and `editorEdgeSpeechMissesOver100Ms` counts the ones you'd hear. Speech uses the edge classes above (the recording's 85th percentile level minus 18 dB) on the grading evidence's levels. Both sides are where the sound switches. The editor's comes from the published audio, which on Muse switches a frame after the picture cut (41 of 46 clear cuts). The candidate's is where each clip is heard, the middle of its audio fade: Scarlet's dialogue audio runs a frame past each picture edge and crossfades over two frames, and that handle's own edges are silent. Read at the handles, every Muse in-edge looked a frame early and every out-edge a frame late. No word time enters this measure, so it is the one to read when comparing transcripts or aligners. The pause and join metrics above place their targets with the grading words. To use it on a case built with `--published-media`, map the published video with `tools/match_audio.py` and freeze the case with that map as its reference.
 
 For a change to the prompt, model or transcription, run three fresh trials per configuration. Each
 trial requests a digest of the ordered word occurrences and timings actually read by the editing tools.

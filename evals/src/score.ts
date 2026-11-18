@@ -14,16 +14,23 @@ import {
 import { pictureAt } from "./layout.ts";
 import { comparePicture, summarizePicture, type PictureComparison, type PictureSample, type PictureSummary } from "./picture.ts";
 import { comparePublishedJoinSpacing, type PublishedReference } from "./published.ts";
-import { keptSource, playedWords, sourceSpan, timelineRangeToSource, type MediaInfo, type SourceRange } from "./timeline.ts";
+import { dividedJoins, keptSource, playedWords, sourceSpan, sourceToTimeline, timelineRangeToSource, wordsWithout, type DividedJoin, type MediaInfo, type SourceRange } from "./timeline.ts";
 
 export interface ScoreInput {
   media: MediaInfo[];
-  timelines: { source: Timeline; applied: Timeline; proposed: Timeline; reviewBase?: Timeline; plan?: Timeline };
+  timelines: { source: Timeline; applied: Timeline; proposed: Timeline; reviewBase?: Timeline; plan?: Timeline;
+    /** The edit the task left playing, when its own later changes moved it on from `applied`. */
+    final?: Timeline };
   appliedChange?: Change;
   /** A run saved in parts: every applied part with the version it started from, in order. Replaces appliedChange. */
   appliedParts?: Array<{ change: Change; from: Timeline }>;
   reviewChange?: Change;
   review?: ReviewChangeExport;
+  /**
+   * Cuts the task left staged for review on other versions than the scored review's, still waiting for the editor. They
+   * go in with the editor's calls, so what the editor gets counts them.
+   */
+  waiting?: ReviewChangeExport[];
   plan?: SubmittedPlan;
   /** Every submitted plan with the version it was decided on. Replaces plan and timelines.plan. */
   plans?: Array<{ plan: SubmittedPlan; timeline: Timeline }>;
@@ -65,13 +72,21 @@ interface PacingScore {
   source: PacingSummary;
   applied: PacingSummary;
   proposed: PacingSummary;
+  /** The edit the task left playing, when its own later changes moved it on from the applied version. */
+  final?: PacingSummary;
+  /** The edit the task left with every staged cut the agent recommended cutting taken out too: what the editor gets by accepting its picks. */
+  recommended?: PacingSummary;
   reference?: PacingSummary;
   sharedJoins?: Record<"applied" | "proposed", ReturnType<typeof comparePublishedJoinSpacing>>;
   appliedGaps: PacingGap[];
   appliedRepeats: PacingRepeat[];
+  /** The applied version's joins that took words out of a sentence, with the words either side: to read, for stray words and cut-off sentences. */
+  appliedDividedJoins: DividedJoin[];
+  /** The longest gaps of the edit the task left, when that is not the applied version. */
+  finalGaps?: PacingGap[];
 }
 export interface Score {
-  versions: { source: string; applied: string; proposed: string };
+  versions: { source: string; applied: string; proposed: string; final?: string };
   applied: Tier;
   review: ReviewTier | null;
   pacing: PacingScore;
@@ -202,14 +217,33 @@ export function scoreRun(input: ScoreInput): Score {
       sharedJoins: { applied: comparePublishedJoinSpacing(published, appliedWords), proposed: comparePublishedJoinSpacing(published, proposedWords) },
     } : input.reference?.timeline && { reference: summary(pacing(words(input.reference.timeline))) }),
     appliedGaps: gapList.sort((a, b) => b.seconds - a.seconds).slice(0, 60), appliedRepeats: repeatList,
+    appliedDividedJoins: dividedJoins(timelines.applied, media, evidence),
   };
+  // What the task left playing: the edit it ended on, with its own later changes (closing repairs, picks it applied).
+  const left = timelines.final ?? timelines.applied;
+  const leftWords = timelines.final ? words(timelines.final) : appliedWords;
+  const { gapList: leftGapList, repeatList: _leftRepeats, ...leftPacing } = timelines.final ? pacing(leftWords) : { ...appliedPacing, gapList, repeatList };
+  if (timelines.final) { pacingScore.final = leftPacing; pacingScore.finalGaps = leftGapList.sort((a, b) => b.seconds - a.seconds).slice(0, 60); }
+  // Every staged cut still waiting for the editor: the scored review's unless the task applied it, and those it staged on
+  // earlier versions. They are placed by their source ranges, so they land on the edit the task left whatever version
+  // they were staged on; one whose footage that edit no longer plays takes nothing out.
+  const waiting = input.waiting ?? [];
+  const staged = [...(input.review && input.reviewChange?.state !== "approved" ? input.review.cuts : []), ...waiting.flatMap(w => w.cuts)];
+  const pickedSources = staged.filter(c => c.assessment?.verdict === "cut").flatMap(c => c.sources);
+  const recommendedPacing = staged.length || timelines.final
+    ? summary(pacing(wordsWithout(leftWords, sourceToTimeline(left, media, pickedSources)))) : undefined;
+  if (recommendedPacing) pacingScore.recommended = recommendedPacing;
 
-  // The agent's own call, before the editor: applied cuts plus the review items it recommended cutting.
-  const recommended = new Map(kA);
-  for (const c of input.review?.cuts ?? []) {
-    if (c.assessment?.verdict !== "cut") continue;
-    for (const s of c.sources) recommended.set(s.mediaId, subtract(recommended.get(s.mediaId) ?? [], [s]));
-  }
+  // The agent's own call, before the editor: what the task left, less the staged cuts it recommended cutting.
+  const without = (kept: Kept, sources: readonly SourceRange[]) => {
+    const out = new Map(kept);
+    for (const s of sources) out.set(s.mediaId, subtract(out.get(s.mediaId) ?? [], [s]));
+    return out;
+  };
+  const kLeft = timelines.final ? keptSource(timelines.final, media) : kA;
+  const recommended = without(kLeft, pickedSources);
+  // Every staged item cut. Without later changes or staged cuts from other versions, the proposed version is exactly that.
+  const kProposed = timelines.final || waiting.length ? without(kLeft, staged.flatMap(c => c.sources)) : kR;
 
   let reference: Score["reference"] = null;
   if (input.reference && (input.reference.published || input.reference.timeline || input.reference.labels?.length)) {
@@ -223,7 +257,7 @@ export function scoreRun(input: ScoreInput): Score {
       };
     };
     const { kept: _kept, played: _played, pieces: _pieces, picture: _picture, ...matched } = published ?? ({} as PublishedReference);
-    reference = { label: input.reference.label, ...(published && { published: matched }), operatingPoints: { applied: point(kA), recommended: point(recommended), proposed: point(kR) } };
+    reference = { label: input.reference.label, ...(published && { published: matched }), operatingPoints: { applied: point(kA), recommended: point(recommended), proposed: point(kProposed) } };
   }
 
   const measured = input.reference?.published?.picture;
@@ -244,7 +278,8 @@ export function scoreRun(input: ScoreInput): Score {
   const usage = trace?.usage as { totalTokens?: number; inputTokens?: number; outputTokens?: number } | undefined;
   const tokens = usage ? (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)) || null : null;
   return {
-    versions: { source: timelines.source.version, applied: timelines.applied.version, proposed: timelines.proposed.version },
+    versions: { source: timelines.source.version, applied: timelines.applied.version, proposed: timelines.proposed.version,
+      ...(timelines.final && { final: timelines.final.version }) },
     applied, review, pacing: pacingScore, picture, plan, trace, reference,
     headline: {
       appliedCuts: applied.removal.cuts,
@@ -256,13 +291,23 @@ export function scoreRun(input: ScoreInput): Score {
       reviewSeconds: review?.removal.seconds ?? 0,
       reviewEdges: review?.edges.total ?? 0,
       reviewSpeechEdges: review?.edges.speech ?? 0,
-      needsYourCall: review?.ai.ask ?? null,
+      needsYourCall: review || waiting.length ? (review?.ai.ask ?? 0) + waiting.reduce((n, w) => n + w.cuts.filter(c => c.assessment?.verdict === "ask").length, 0) : null,
+      // Staged cuts on other versions than the scored review's, still waiting for the editor.
+      stagedWaiting: waiting.reduce((n, w) => n + w.cuts.length, 0),
       heldByScarlet: review?.heldByScarlet ?? null,
-      gapsLeft: appliedPacing.gaps.inside + appliedPacing.gaps.atJoins,
-      looseJoins: appliedPacing.gaps.atJoins,
-      deadAirSeconds: appliedPacing.gaps.excessSeconds,
-      repeatsLeft: appliedPacing.repeats.total,
-      repeatsAtJoins: appliedPacing.repeats.atJoins,
+      // What the task left playing, with its own changes after its last dialogue part.
+      gapsLeft: leftPacing.gaps.inside + leftPacing.gaps.atJoins,
+      looseJoins: leftPacing.gaps.atJoins,
+      deadAirSeconds: leftPacing.gaps.excessSeconds,
+      // Accepting the agent's picks on every staged cut still waiting. Without one that is what the task left.
+      recommendedDeadAirSeconds: (recommendedPacing ?? leftPacing).gaps.excessSeconds,
+      recommendedLooseJoins: (recommendedPacing ?? leftPacing).gaps.atJoins,
+      restartsLeft: (recommendedPacing ?? leftPacing).restarts,
+      silencesLeft: (recommendedPacing ?? leftPacing).silences,
+      // Joins that divide a sentence in the applied cut: each is one the closing check has the pass read.
+      dividedJoins: pacingScore.appliedDividedJoins.length,
+      repeatsLeft: leftPacing.repeats.total,
+      repeatsAtJoins: leftPacing.repeats.atJoins,
       sharedAppliedJoins: pacingScore.sharedJoins?.applied.shared ?? null,
       sharedAppliedJoinGapMedianAbsErrorMs: pacingScore.sharedJoins?.applied.medianAbsErrorMs ?? null,
       layoutAgreement: picture?.applied.layoutAgreement ?? null,

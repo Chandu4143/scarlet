@@ -315,9 +315,63 @@ it("ends the listen on release, and a thread preview takes over the transport", 
 
   release = player.audition(AFTER, FPS);
   const preview = player.previewRange({ start: 40, end: 50 }, FPS);
+  // A passage, like a listen, lets the playhead go anywhere.
   player.seek(60, true);
-  expect(usePlayerStore.getState().time).toBe(50);
+  expect(usePlayerStore.getState().time).toBe(60);
   preview();
+});
+
+it("stops an edit's passage at its end once, as a cut's listen: Play carries on from there and nothing stops it again", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  expect(video.currentTime).toBe(40);
+  reach(49);
+  reach(50.02);
+  expect(video.paused).toBe(true);
+  expect(usePlayerStore.getState().time).toBe(50);
+  player.play();
+  expect(video.currentTime).toBe(50);
+  expect(video.paused).toBe(false);
+  reach(55);
+  reach(56);
+  expect(video.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(56);
+  // Stepped back into it and played again, it runs through its end.
+  player.seek(45, true);
+  reach(49);
+  reach(51);
+  expect(video.paused).toBe(false);
+});
+
+it("plays on past an edit's passage from a point picked on the timeline, inside it or after it", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(42);
+  press(47);
+  expect(video.paused).toBe(false);
+  reach(49);
+  reach(51);
+  expect(video.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(51);
+
+  release();
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(42);
+  press(53);
+  expect(video.currentTime).toBe(53);
+  expect(video.paused).toBe(false);
+  reach(54);
+  expect(video.paused).toBe(false);
+});
+
+it("lets a skip past an edit's passage play on, and one before it play into it and stop at its end", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  player.seek(55, true);
+  reach(55.5);
+  reach(56);
+  expect(video.paused).toBe(false);
+  player.seek(35, true);
+  reach(49);
+  reach(50.02);
+  expect(video.paused).toBe(true);
 });
 
 it("plays After from media with the cut already out, running through the join without a seek", () => {
@@ -458,13 +512,13 @@ it("logs a play the window refused as a failure, and one a pause cut short as no
     const play = vi.spyOn(video, "play").mockRejectedValue(new DOMException("The request is not allowed by the user agent", "NotAllowedError"));
     player.play();
     await Promise.resolve();
-    expect(lines.at(-1)).toBe('transport play-failed error="NotAllowedError: The request is not allowed by the user agent"');
+    expect(lines.at(-1)).toMatch(/^play-failed el=v\d+ origin=transport name=NotAllowedError /);
     expect(levels.at(-1)).toBe("warn");
     play.mockRejectedValue(new DOMException("The play() request was interrupted by a call to pause()", "AbortError"));
     player.play();
     await Promise.resolve();
     stopAppLog();
-    expect(lines.at(-1)).toMatch(/^transport play-interrupted error="AbortError: /);
+    expect(lines.at(-1)).toMatch(/^play-interrupted el=v\d+ origin=transport name=AbortError /);
     expect(levels.filter(level => level === "warn")).toHaveLength(1);
   } finally {
     stopAppLog();
@@ -533,4 +587,94 @@ it("still plays from a point picked in a passage that ran to its end, after the 
   press(46);
   expect(video.currentTime).toBe(46);
   expect(video.paused).toBe(true);
+});
+
+/** Put up a new element on the transport, as a component that replaces the one on screen does. */
+function replace(src?: string) {
+  const next = document.createElement("video");
+  if (src) next.setAttribute("src", src);
+  document.body.append(next);
+  player.attach(next);
+  return next;
+}
+
+it("plays on in the element put up in place of one that was playing, from the same playhead", async () => {
+  player.seek(30, true);
+  player.play();
+  // The working cut changes: the element that was playing comes down without a pause, and a stream goes up for it.
+  const next = replace();
+  expect(next.paused).toBe(true);
+  await Promise.resolve();
+  expect(next.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(30);
+  next.remove();
+});
+
+it("plays a file put up in place of a playing one only once it knows its length, so it doesn't start from its top", async () => {
+  const ready = vi.spyOn(HTMLMediaElement.prototype, "readyState", "get").mockReturnValue(0);
+  player.seek(30, true);
+  player.play();
+  const next = replace("file.mp4");
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  ready.mockReturnValue(1);
+  next.dispatchEvent(new Event("loadedmetadata"));
+  expect(next.paused).toBe(false);
+  next.remove();
+});
+
+it("leaves the element put up in place of a paused one paused", async () => {
+  player.seek(30, true);
+  const next = replace();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+});
+
+it("doesn't play on when nothing went up in the playing element's place, or the playhead moved meanwhile", async () => {
+  player.seek(30, true);
+  player.play();
+  // The video closed: a later element is for something else.
+  player.detach();
+  await Promise.resolve();
+  let next = replace();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+  // Another project opened at its own playhead.
+  player.play();
+  player.detach();
+  usePlayerStore.getState().setTime(0);
+  next = replace();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+});
+
+it("leaves a handover to a pause that comes before the new element plays", async () => {
+  player.seek(30, true);
+  player.play();
+  const next = replace();
+  player.pause();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+});
+
+it("carries an edit's passage on playing when the element under it is replaced while it plays", async () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(44);
+  expect(video.paused).toBe(false);
+  // The element comes down first, then the passage is let go, and both are taken up again on the new element.
+  player.detach();
+  release();
+  const next = document.createElement("video");
+  document.body.append(next);
+  player.attach(next);
+  release = player.previewRange({ start: 40, end: 50 }, FPS, undefined, true);
+  expect(next.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(44);
+  await Promise.resolve();
+  expect(next.paused).toBe(false);
+  next.remove();
 });

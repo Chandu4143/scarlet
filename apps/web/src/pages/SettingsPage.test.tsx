@@ -147,7 +147,8 @@ it("says who is signed in once on General, in the card, and has no default to pi
   expect(el.querySelectorAll("#hosts")).toHaveLength(1);
   expect(el.querySelector(".settings-page")!.firstElementChild!.nextElementSibling!.id).toBe("hosts");
   // The model is picked in the selector, which a default here never changed once one was picked.
-  expect([...el.querySelectorAll("form label")].map(label => label.textContent)).toEqual(["Transcribe speech with"]);
+  expect(el.querySelector("form h2")?.textContent).toBe("Speech transcription");
+  expect([...el.querySelectorAll<HTMLLabelElement>("form label")].map(label => [label.htmlFor, label.textContent])).toEqual([["tr-provider", "Preferred model"]]);
   // The one choice left is saved as it is made, and nothing else goes with it.
   await selectOption(transcribeWith(), "CrisperWhisper 2.0 (default)");
   expect(save).toHaveBeenCalledExactlyOnceWith({ transcription: expect.objectContaining({ provider: "whispercpp", localModel: "crisperwhisper" }) });
@@ -268,6 +269,42 @@ it("saves a General dropdown as it is chosen, with no Save to press", async () =
   expect(el.querySelector('[aria-current="true"]')?.textContent).toBe("About");
 });
 
+it.each(["Advanced", "← Projects"])("waits for General to save before going to %s", async destination => {
+  let finish!: () => void;
+  const save = vi.spyOn(api, "updateSettings").mockImplementation(patch => new Promise(resolve => {
+    finish = () => {
+      const saved = { ...settings, ...patch };
+      vi.mocked(api.settings).mockResolvedValue({ settings: saved, transcriptionAvailable: true });
+      resolve({ settings: saved });
+    };
+  }));
+  await open();
+  await selectOption(transcribeWith(), "CrisperWhisper 2.0 (default)");
+  expect(save).toHaveBeenCalledOnce();
+  await press(destination);
+  expect(el.querySelector('[aria-current="true"]')?.textContent).toBe("General");
+  expect(el.textContent).toContain("Saving…");
+  await act(async () => finish());
+  expect(el.querySelector('[aria-current="true"]')?.textContent ?? el.textContent)
+    .toBe(destination === "Advanced" ? destination : "Project library");
+});
+
+it("shows a General save error if the editor tried to change tabs during the save", async () => {
+  let fail!: () => void;
+  vi.spyOn(api, "updateSettings").mockImplementation(() => new Promise((_resolve, reject) => {
+    fail = () => reject(new Error("Engine unreachable"));
+  }));
+  await open();
+  await selectOption(transcribeWith(), "CrisperWhisper 2.0 (default)");
+  await press("Advanced");
+  await act(async () => fail());
+  expect(el.querySelector('[aria-current="true"]')?.textContent).toBe("General");
+  expect(el.querySelector('form [role="alert"]')?.textContent).toBe("Engine unreachable");
+  expect(transcribeWith().textContent).toContain("OpenAI Whisper");
+  await press("Advanced");
+  expect(el.querySelector('[aria-current="true"]')?.textContent).toBe("Advanced");
+});
+
 it("shows the bundled fallback for first-install CrisperWhisper and opens its pinned model files through the desktop", async () => {
   vi.mocked(api.settings).mockResolvedValue({ settings: freshLocalSettings, transcriptionAvailable: true });
   vi.mocked(api.localModelStatus).mockResolvedValue({ state: "ready", selected: "crisperwhisper", active: "whispercpp", fallback: true });
@@ -275,15 +312,53 @@ it("shows the bundled fallback for first-install CrisperWhisper and opens its pi
   await open();
   expect(transcribeWith().textContent).toBe("CrisperWhisper 2.0 (default)");
   expect(el.querySelector('form [role="status"]')?.textContent).toContain("Using bundled Whisper");
-  expect(el.textContent).toContain("Commercial use requires a separate license.");
   const guide = el.querySelector<HTMLDetailsElement>("form details")!;
-  await act(async () => guide.querySelector("summary")!.click());
+  const summary = guide.querySelector("summary")!;
+  expect(guide.open).toBe(false);
+  expect(summary.textContent).toContain("Set up CrisperWhisper");
+  const license = "Commercial use requires a separate license.";
+  expect(el.querySelector("form")?.textContent).toContain(license);
+  expect([...guide.children].filter(child => child !== summary).some(child => child.textContent?.includes(license))).toBe(false);
+  await act(async () => summary.click());
   expect(guide.open).toBe(true);
   expect(guide.textContent).toContain("Python 3.12");
   expect(guide.textContent).toContain("downloads the runtime libraries");
   await press("CrisperWhisper 2.0 large model files");
   expect(browse).toHaveBeenCalledWith("https://huggingface.co/nyralabs/CrisperWhisper2.0_large/tree/f4334f6e8193f2691212d49b20fa12d370e13896");
 });
+
+it("names the bundled Whisper fallback while its download is still in progress", async () => {
+  vi.mocked(api.settings).mockResolvedValue({ settings: freshLocalSettings, transcriptionAvailable: true });
+  vi.mocked(api.localModelStatus).mockResolvedValue({
+    state: "downloading", selected: "crisperwhisper", active: "whispercpp", fallback: true, received: 35, total: 100,
+  });
+  await open();
+  expect(transcribeWith().textContent).toContain("CrisperWhisper");
+  const status = el.querySelector('form [role="status"]')?.textContent;
+  expect(status).toMatch(/bundled Whisper/i);
+  expect(status).toMatch(/download/i);
+  expect(status).toContain("35%");
+  expect(status).not.toMatch(/using bundled Whisper/i);
+});
+
+it("shows where audio goes when switching between cloud, bundled and custom transcription", async () => {
+  vi.spyOn(api, "updateSettings").mockImplementation(async patch => ({ settings: { ...settings, ...patch } }));
+  await open();
+  const form = el.querySelector("form")!;
+  const cloud = "Audio is sent to OpenAI for transcription.";
+  const local = "Audio stays on this computer.";
+  expect(form.textContent).toContain(cloud);
+  expect(form.textContent).not.toContain(local);
+  await selectOption(transcribeWith(), "Whisper large-v3-turbo (bundled)");
+  expect(form.textContent).toContain(local);
+  expect(form.textContent).not.toContain(cloud);
+  await selectOption(transcribeWith(), "Custom local model");
+  expect(form.textContent).toContain("Scarlet passes audio to the selected local runtime.");
+  expect(form.textContent).not.toContain(local);
+});
+
+const setupButton = (label: string) => [...el.querySelectorAll<HTMLButtonElement>("form details button")]
+  .find(button => button.textContent?.trim() === label)!;
 
 it("cancels the native folder picker without starting or saving an installation", async () => {
   vi.mocked(api.settings).mockResolvedValue({ settings: freshLocalSettings, transcriptionAvailable: true });
@@ -296,7 +371,7 @@ it("cancels the native folder picker without starting or saving an installation"
   expect(pick).toHaveBeenCalledExactlyOnceWith("Choose the CrisperWhisper model folder");
   expect(install).not.toHaveBeenCalled();
   expect(save).not.toHaveBeenCalled();
-  expect(el.querySelector<HTMLButtonElement>("form details .btn-ghost")?.disabled).toBe(false);
+  expect(setupButton("Install from folder…").disabled).toBe(false);
 });
 
 it("can retry an installation error and keeps showing a pending install when General reopens", async () => {
@@ -317,9 +392,8 @@ it("can retry an installation error and keeps showing a pending install when Gen
   await press("About");
   await press("General");
   await expand();
-  const pending = el.querySelector<HTMLButtonElement>("form details .btn-ghost")!;
+  const pending = setupButton("Installing CrisperWhisper…");
   expect(pending.disabled).toBe(true);
-  expect(pending.textContent).toBe("Installing CrisperWhisper…");
   await act(async () => pending.click());
   expect(pick).toHaveBeenCalledTimes(2);
   vi.mocked(api.localModelStatus).mockResolvedValue({ state: "ready", selected: "crisperwhisper", active: "crisperwhisper", fallback: false });

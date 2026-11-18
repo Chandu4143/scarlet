@@ -6,10 +6,10 @@ import { z } from "zod/v3";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ScarletApiError, type ProjectDetail, type ScarletClient, type ScarletToolName, type WaveformResponse } from "@scarlet/shared";
 import { timelineDuration, type Project, type Timeline, type TranscriptWord } from "@scarlet/timeline";
-import { auditJoin, formatTimelineTranscript, newJoins, timelineJoins, timelineWords, type JoinAudit, type TimelineJoin } from "./timeline-perception.js";
+import { auditJoin, formatTimelineTranscript, heardOnlyVerbatim, joinTook, newJoins, timelineJoins, timelineWords, type JoinAudit, type TimelineJoin, type TimelineWord } from "./timeline-perception.js";
 import { pictureEntranceReader } from "./picture-entrance.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
-import { json, text } from "./tool-result.js";
+import { json, noteEvidenceMiss, text } from "./tool-result.js";
 import { OTHER_INPUT } from "./analysis.js";
 
 type ToolRegistrar = <Shape extends z.ZodRawShape>(name: ScarletToolName, description: string, shape: Shape,
@@ -25,7 +25,7 @@ interface PerceptionDeps {
   peekTimeline(version: string): Promise<Timeline>;
   /** The portion of an edited transcript actually returned to the agent. */
   readPassage(version: string, range: { start: number; end: number }): void;
-  getProject(): Promise<ProjectDetail>;
+  getProject(): Promise<Pick<ProjectDetail, "project">>;
   /** A media's words in transcript_get order (index = stable word index), or null without a transcript. */
   /** With `through`, only words whose times are final up to that source second: it rejects while alignment hasn't reached it. */
   transcriptWords(mediaId: string, prepareMissing?: boolean, through?: number): Promise<TranscriptWord[] | null>;
@@ -110,6 +110,25 @@ export function registerPerception(deps: PerceptionDeps) {
     return audits;
   }
 
+  /**
+   * What the scan's saved verbatim words play in these words' stretch that the transcript doesn't have. A recording
+   * with no saved pages there, or a read that fails, adds nothing: the scan reads no more for this.
+   */
+  async function heardOnly(tl: Timeline, transcripts: Map<string, TranscriptWord[]>, shown: TimelineWord[]) {
+    if (!shown.length) return [];
+    const range = { start: shown[0]!.start, end: shown.at(-1)!.end };
+    const verbatim = new Map<string, TranscriptWord[]>();
+    await Promise.all([...new Set(shown.map(w => w.mediaId))].map(async mediaId => {
+      const source = shown.filter(w => w.mediaId === mediaId).map(w => transcripts.get(mediaId)![w.index]!);
+      const from = Math.max(0, Math.min(...source.map(w => w.start)) - 2), to = Math.max(...source.map(w => w.end)) + 2;
+      const saved = await client.dialogueVerbatimWords(deps.projectId, { mediaId, from, to }).catch(() => undefined);
+      if (saved?.words.length) verbatim.set(mediaId, saved.words);
+    }));
+    if (!verbatim.size) return [];
+    const heard = timelineWords(tl, verbatim, range);
+    return heardOnlyVerbatim(shown, heard, w => verbatim.get(w.mediaId)![w.index]!);
+  }
+
   async function readTranscript({ version, from, to, detail }: { version?: string; from?: number; to?: number; detail: "lines" | "words" }) {
     const [tl, { project }] = await Promise.all([deps.getTimeline(version), deps.getProject()]);
     const duration = timelineDuration(tl);
@@ -136,18 +155,18 @@ export function registerPerception(deps: PerceptionDeps) {
     if (shown.length) deps.readPassage(tl.version, { start: Math.max(0, range.start),
       end: shown.length < words.length ? shown.at(-1)!.end : Math.min(duration, range.end) });
     const body = formatTimelineTranscript(shown, joins.filter(j => !shown.length || j.at <= shown.at(-1)!.end + 1e-3 || shown.length === words.length),
-      { detail, fps: project.settings.fps, all });
+      { detail, fps: project.settings.fps, all, removed: join => joinTook(join, transcripts), heard: await heardOnly(tl, transcripts, shown) });
     const more = words.length > limit ? `\nShowing ${limit} of ${words.length} words; continue with from=${(shown.at(-1)!.end + 0.001).toFixed(3)}.` : "";
     return text(`Version ${tl.version}, ${range.start.toFixed(2)}–${range.end.toFixed(2)} of ${duration.toFixed(2)} s timeline: ${words.length} words, ${joins.length} joins.\n${body}${more}`);
   }
 
   tool("timeline_transcript",
-    "What the audience hears on a timeline version (default head): transcript words in playback order with TIMELINE seconds, and a ‖ line at every join between kept source ranges showing the source jump and the words either side. Each mediaId line identifies the source of the #indices that follow. Use this mediaId and those transcript_get indices in dialogue_check_join or dialogue_apply_cuts. lines groups words between pauses and joins (`time #firstIndex text`); words lists `start-end #index word` for exact edges. Read it after an edit to check that sentences still read naturally across each join. A word heard only on the input a recording's dialogue isn't on (a producer on a call, playback) reads " + OTHER_INPUT + ": it is not the speaker.",
+    "What the audience hears on a timeline version (default head): transcript words in playback order with TIMELINE seconds, and a ‖ line at every join between kept source ranges showing the source jump, the words either side and the words the join took out of the recording (took). Each mediaId line identifies the source of the #indices that follow. Use this mediaId and those transcript_get indices in dialogue_check_join or dialogue_apply_cuts. lines groups words between pauses and joins (`time #firstIndex text`); words lists `start-end #index word` for exact edges. Read it after an edit to check that sentences still read naturally across each join. A word heard only on the input a recording's dialogue isn't on (a producer on a call, playback) reads " + OTHER_INPUT + ": it is not the speaker. The transcript tidies a restart or a stutter away, and a `+ heard` line is where the dialogue scan's saved verbatim reading hears words it left out: their TIMELINE seconds, mediaId and source seconds, and the words around them as heard. They play like any other: cut them by those timeline seconds, or by removeRepeat when dialogue_check_repeats lists them.",
     { version: z.string().optional(), from: z.number().min(0).optional().describe("Timeline seconds"), to: z.number().min(0).optional().describe("Timeline seconds"),
       detail: z.enum(["lines", "words"]).default("lines") }, readTranscript);
 
   tool("timeline_join_audit",
-    "Measure joins on a changeId's saved version, or a version (default head) with optional at (join times) or from/to. Each audible track reports out.lastWord and its aligned source end, out.wordEndToJoin (timeline seconds from that word to the cut, at the center of a crossfade), voice activity, clipped words, and a verdict. pictureEntrance.gapMs measures from the first displayed frame of the incoming take to its first aligned spoken word. Positive means a wait, negative means the voice leads the picture. A trimmed word or an unverified picture has no score. Use this with the brief and the sound at the edge when deciding whether to shorten a wait. airAfter/airBefore count quiet at each handle that voice detection also calls quiet. levelQuiet counts low-level sound at those handles independently. The RMS strip gives dBFS in 20 ms steps either side with the level jump in dB.",
+    "Measure joins on a changeId's saved version, or a version (default head) with optional at (join times) or from/to. Each audible track reports out.lastWord and its aligned source end, out.wordEndToJoin (timeline seconds from that word to the cut, at the center of a crossfade), voice activity, clipped words, and a verdict. pictureEntrance.gapMs measures from the first displayed frame of the incoming take to its first aligned spoken word. Positive means a wait, negative means the voice leads the picture. A trimmed word or an unverified picture has no score. Use this with the brief and the sound at the edge when deciding whether to shorten a wait. airAfter/airBefore count quiet at each handle that voice detection also calls quiet. voiceOnCut marks an incoming edge on the first sound after a silence in its recording: the word plays whole with no air before it. removed is the seconds of one recording taken out at the join: across a long one the speaker's position and energy can differ either side. levelQuiet counts low-level sound at those handles independently. The RMS strip gives dBFS in 20 ms steps either side with the level jump in dB.",
     { changeId: z.string().optional(), version: z.string().optional(), at: z.array(z.number().min(0)).max(MAX_AUDITS).optional(),
       from: z.number().min(0).optional(), to: z.number().min(0).optional() },
     async ({ changeId, version, at, from, to }) => {
@@ -208,7 +227,10 @@ export function registerPerception(deps: PerceptionDeps) {
         deps.readWaveform(mediaId, lo, hi, points),
         deps.transcriptWords(mediaId, false, hi).catch(without(`failed to read the words of ${mediaId} for its profile`, null)),
         client.get<Record<string, unknown>>(`/projects/${encodeURIComponent(deps.projectId)}/media/${encodeURIComponent(mediaId)}/loudness${qs ? `?${qs}` : ""}`)
-          .catch((err: unknown) => ({ unavailable: err instanceof ScarletApiError ? err.message : String(err) })),
+          .catch((err: unknown) => {
+            noteEvidenceMiss("loudness");
+            return { unavailable: err instanceof ScarletApiError ? err.message : String(err) };
+          }),
       ]);
       const words = all?.map((w, index) => ({ ...w, index })).filter(w => w.end > lo && w.start < hi) ?? null;
       // A transcript saved and still being aligned has its words, but pauses and retakes are measured from their times,
@@ -251,7 +273,7 @@ export function registerPerception(deps: PerceptionDeps) {
     });
 
   tool("faces",
-    "Where the faces are in a video's frame over time, found from its picture. Each face is followed as a track, numbered by when it first appears: a track follows position from frame to frame, not who it is, so two people who swap places swap tracks, and a face that leaves and comes back over the same place keeps its number. `spans` split each track's time where its face moves or turns: `start`-`end` in SOURCE seconds; `box` [left, top, right, bottom] as fractions of the frame, holding the face throughout the span (the detector's box runs from about the hairline to just under the chin, inside the ears: the hair above and the shoulders below are outside it); `yaw`, roughly where it looks, in degrees from facing the camera, positive toward the frame's right, to the nearest 5; and the detector's `confidence` (0..1). `tracks` gives each track's first and last second in the range, its seconds on screen, its usual box and the detector's usual confidence (a face in a picture or a pattern on a shelf can be found too, usually less surely), and `frame` the video's width and height in pixels, for a box's shape; `track` lists one track's spans. Frames are looked at twice a second, and four times where faces move; a face under about 2% of the frame's width, turned past profile or seen only for a moment can be missed. A video is read once and kept: a range not read yet is read now, and the answer says how much was read when it returns, while track numbers can still change; call again for the rest. Spans are listed in time order, 200 at a time; `offset` pages on. timeline_at maps source seconds to the edit." +
+    "Where the faces are in a video's frame over time, found from its picture. Each face is followed as a track, numbered by when it first appears: a track follows position from frame to frame, not who it is, so two people who swap places swap tracks, and a face that leaves and comes back over the same place keeps its number. `spans` split each track's time where its face moves or turns: `start`-`end` in SOURCE seconds; `box` [left, top, right, bottom] as fractions of the frame, holding the face throughout the span (the detector's box runs from about the hairline to just under the chin, inside the ears: the hair above and the shoulders below are outside it); `eyes` [x, y], the point midway between the eyes as fractions of the frame, where it usually is through the span; `yaw`, roughly where it looks, in degrees from facing the camera, positive toward the frame's right, to the nearest 5; and the detector's `confidence` (0..1). `tracks` gives each track's first and last second in the range, its seconds on screen, its usual box and eyes and the detector's usual confidence (a face in a picture or a pattern on a shelf can be found too, usually less surely), and `frame` the video's width and height in pixels, for a box's shape; `track` lists one track's spans. Frames are looked at twice a second, and four times where faces move; a face under about 2% of the frame's width, turned past profile or seen only for a moment can be missed. A video is read once and kept: a range not read yet is read now, and the answer says how much was read when it returns, while track numbers can still change; call again for the rest. Spans are listed in time order, 200 at a time; `offset` pages on. timeline_at maps source seconds to the edit." +
       (deps.seesFrames ? " media_frame at a span's start second shows the frame its box was measured on." : ""),
     { mediaId: z.string(), from: z.number().min(0).optional(), to: z.number().min(0).optional(),
       track: z.number().int().min(1).optional().describe("Only this track's spans"),

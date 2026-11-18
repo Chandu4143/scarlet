@@ -7,6 +7,7 @@ import type { MediaAsset, Timeline } from "@scarlet/timeline";
 import { cutWords, mapWords, sourceWords, selectionRange, indexWordTimes, type MappedWord } from "../../lib/transcriptMap";
 import { usePlayerStore } from "../../stores/player";
 import { useProjectStore } from "../../stores/project";
+import { useShownCutStore } from "../../stores/shownCut";
 import { useUiStore, type AgentContext } from "../../stores/ui";
 import { EmptyState, Icon, Spinner } from "../ui/primitives";
 
@@ -41,7 +42,7 @@ const WordParagraph = memo(function WordParagraph({ words, from, to }: {
   return <p className="reading-passage">{words.map((w, i) => {
     const key = wordKey(w);
     return <Fragment key={key}>{i > 0 && " "}<span data-w={w.index} data-word-key={key} role="button" tabIndex={-1}
-      aria-label={w.cut ? `${w.word.text} (unused in edit)` : w.word.text}
+      data-log-label="Transcript word" data-log-control="transcript-word" aria-label={w.cut ? `${w.word.text} (unused in edit)` : w.word.text}
       className={`rounded px-[2px] py-0.5 -mx-px cursor-pointer hover:bg-raised data-[current]:bg-hi data-[current]:text-bg data-[current]:hover:bg-hi ${w.cut ? "line-through text-dim decoration-dim/70" : "text-fg"} ${w.index >= from && w.index <= to ? "bg-hi-dim" : ""}`}
       title={w.cut ? `Unused in edit · source ${clock(w.word.start)}` : `${clock(w.placements[0]!.start)}${w.word.speaker ? ` · ${w.word.speaker}` : ""}`}>
       {w.word.text}
@@ -56,7 +57,8 @@ const WordParagraph = memo(function WordParagraph({ words, from, to }: {
 export function TranscriptPane({ source, draft, onAsk }: { draft?: Timeline; source?: MediaAsset; onAsk(words: AgentContext): void }) {
   const project = useProjectStore(s => s.current?.project);
   const projectMedia = useProjectStore(s => s.current?.media ?? emptyMedia);
-  const projectTimeline = useProjectStore(s => s.current?.timeline);
+  // The working cut on screen, which holds while the video plays, so the words lit are the ones heard.
+  const projectTimeline = useShownCutStore(s => s.timeline);
   const setAgentContext = useUiStore((s) => s.setAgentContext);
   const focusComposer = useUiStore((s) => s.focusComposer);
   const [selected, setSelected] = useState<{ from: string; to: string } | null>(null);

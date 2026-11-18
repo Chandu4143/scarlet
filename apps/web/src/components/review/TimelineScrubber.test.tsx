@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { TimelineScrubber } from "./TimelineScrubber";
+import { TimelineScrubber, type TimelineGap } from "./TimelineScrubber";
 
 /** The timeline by itself, a thousand pixels wide, with no pictures or sound to draw. */
 let root: Root;
@@ -56,20 +56,33 @@ it("reads a press against the stretch the timeline showed when it began, though 
   expect(picks).toEqual([107.6]);
 });
 
+it("greys the footage the playing side steps over, tags each gap where its tag fits, and hands a press in one to the caller", async () => {
+  const pressed: [string, number][] = [];
+  const gap = (start: number, end: number, label: string, shortLabel: string): TimelineGap => ({ start, end, label, shortLabel, title: label, skipped: true });
+  // Zoomed to 1:40–1:50, 100 px a second, with three cuts' footage on the version shown and one far off.
+  await act(async () => root.render(
+    <TimelineScrubber start={0} duration={3000} playhead={100} frameAt={() => undefined} onSeek={t => seeks.push(t)} onScrubStart={() => released}
+      highlight={{ view: { start: 100, end: 110 }, band: { start: 102, end: 102.5 } }} onGap={(g, time) => pressed.push([g.label, time])}
+      gaps={[gap(101, 101.5, "Cut at 1:41", "1:41"), gap(103, 106, "Cut at 1:43", "1:43"), gap(108, 108.2, "Cut at 1:48", "1:48"), gap(200, 201, "Cut at 3:20", "3:20")]} />));
+  await zoomed();
+  const gaps = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-gap")];
+  expect(gaps().map(g => [g.style.left, g.classList.contains("is-skipped"), g.getAttribute("aria-hidden")])).toEqual([
+    ["10%", true, "true"], ["30%", true, "true"], ["80%", true, "true"]]);
+  // Whole where it fits, else its time, else nothing: a tag cut off mid-word reads as a mistake.
+  expect(gaps().map(g => g.querySelector(".simple-timeline-gap-label")?.textContent ?? "")).toEqual(["1:41", "Cut at 1:43", ""]);
+  // A press inside one plays it from there, and doesn't scrub.
+  await act(async () => { gaps()[1]!.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, button: 0, isPrimary: true, clientX: 450, bubbles: true })); });
+  expect(pressed).toEqual([["Cut at 1:43", 104.5]]);
+  expect(seeks).toEqual([]);
+  expect(released).not.toHaveBeenCalled();
+});
+
 it("follows a drag across the stretch it began in", async () => {
   await show();
   await pointer("pointerdown", 100);
   await pointer("pointerup", 500);
   expect(seeks).toEqual([300, 1500]);
   expect(picks).toEqual([1500]);
-});
-
-it("points its controls' button at the controls only while they are open", async () => {
-  await show();
-  const button = container.querySelector<HTMLButtonElement>('[aria-label="Timeline controls"]')!;
-  expect(button.getAttribute("aria-controls")).toBeNull();
-  await act(async () => button.click());
-  expect(document.getElementById(button.getAttribute("aria-controls")!)).not.toBeNull();
 });
 
 it("reveals a typed timestamp outside the zoomed window without seeking the player", async () => {

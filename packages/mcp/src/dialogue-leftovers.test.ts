@@ -33,7 +33,7 @@ describe("what a saved part still plays", () => {
     // There is a minute between takes in the recording, one second once the cut is out.
     expect(partLeftovers(words, [], [], transcripts).repeats).toEqual([]);
     expect(partLeftovers(words, [{ start: 3.5, end: 62.2 }], [], transcripts).repeats).toEqual([
-      { mediaId: "mic", source: 1, fromWord: 0, toWord: 5, text: [...phrase, ...phrase].join(" "), atJoin: true },
+      { mediaId: "mic", source: 1, fromWord: 0, toWord: 5, text: [...phrase, ...phrase].join(" "), atJoin: true, pause: 1 },
     ]);
   });
 
@@ -43,8 +43,8 @@ describe("what a saved part still plays", () => {
     // The cut takes “uh” out and leaves “is is”.
     const { repeats } = partLeftovers(words, [{ start: 3.15, end: 3.55 }], [], transcripts);
     expect(repeats).toEqual([
-      { mediaId: "mic", source: 0, text: "here's the plate here's the plate.", fromWord: 0, toWord: 2, atJoin: false },
-      { mediaId: "mic", source: 2.8, text: "is is", fromWord: 7, toWord: 7, atJoin: true },
+      { mediaId: "mic", source: 0, text: "here's the plate here's the plate.", fromWord: 0, toWord: 2, atJoin: false, pause: .2 },
+      { mediaId: "mic", source: 2.8, text: "is is", fromWord: 7, toWord: 7, atJoin: true, pause: .1 },
     ]);
     // “good. Good” ends one sentence and starts the next. With the first saying cut, nothing repeats.
     expect(partLeftovers(words, [{ start: -1, end: 1.1 }, { start: 2.75, end: 3.55 }], [], transcripts).repeats).toEqual([]);
