@@ -2177,6 +2177,47 @@ it("checks a join under a picture that has no sound, without asking the engine f
   }
 });
 
+it("says what a join plays, so a check that takes out the whole retake shows the broken first take it keeps", async () => {
+  const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform, transcripts: mock.state.transcripts };
+  const isolated = await connect();
+  // "there was a time where would … where you would occasionally see": the first take drops "you". Only the span that
+  // takes out the pause and the whole retake has quiet at both edges (2026-11-17).
+  const said: Array<[string, number, number]> = [["there", .2, .34], ["was", .34, .48], ["a", .48, .56], ["time", .56, .78], ["where", .78, 1.0],
+    ["would", 1.0, 1.2], ["where", 1.92, 2.12], ["you", 2.12, 2.28], ["would", 2.38, 2.9], ["occasionally", 3.06, 3.74], ["see", 3.74, 4.02]];
+  const words = said.map(([text, start, end]) => ({ text, start, end }));
+  mock.state.transcripts = { m1: { ...transcript, segments: [{ id: "s1", start: 0, end: 6, text: said.map(w => w[0]).join(" "), words }] } };
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "broken-take";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 6, 0)];
+  mock.state.timeline = tl;
+  mock.state.waveform = (mediaId, from, to, points) => {
+    const levels = Array.from({ length: points }, (_, i) => {
+      const t = from + (i + .5) * (to - from) / points;
+      return words.some(w => w.start <= t && t < w.end) ? .2 : .001;
+    });
+    return { mediaId, from, to, peaks: levels, rms: levels, speechActivity: words };
+  };
+  try {
+    const check = JSON.parse(textOf(await isolated.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, start: 1.25, end: 3.0 } }) as CallToolResult));
+    expect(check.removes).toBe("where you would");
+    expect(check.plays).toBe("… there was a time where would ‖ occasionally see …");
+    // Saved by its seconds, the same range applies with clean edges, and the report says what it took and left.
+    mock.state.extra = (req, res) => {
+      if (!req.path.endsWith("/dialogue-detections") && !req.path.endsWith("/dialogue-cuts")) return false;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(req.path.endsWith("/dialogue-cuts") ? { changes: [] } : { segments: [], acoustic: [] }));
+      return true;
+    };
+    const applied = await isolated.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Keep the first setup",
+      cuts: [{ start: check.start, end: check.end, kind: "retake", decision: "cut", reason: "Keep the first setup through “would”." }] } }) as CallToolResult;
+    expect(JSON.parse(textOf(applied)).gate.decisions).toContainEqual(expect.objectContaining({ cut: 0, removes: "where you would",
+      plays: "… there was a time where would ‖ occasionally see …" }));
+  } finally {
+    await isolated.close();
+    Object.assign(mock.state, original);
+  }
+});
+
 it("inspects a split word and submits only the exact timing and disposition the agent chooses", async () => {
   const original = { extra: mock.state.extra, timeline: mock.state.timeline, waveform: mock.state.waveform };
   const isolated = await connect();

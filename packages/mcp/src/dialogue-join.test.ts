@@ -515,6 +515,53 @@ describe("native retake boundaries", () => {
   });
 });
 
+describe("a restart that begins on the word the first take broke off after", () => {
+  // “there was a time where would … where you would occasionally see”, with the levels of the recording it came from
+  // in 20 ms steps: “time” runs into the first “where” through its “m” (-37 dBFS), and the second “where” starts out of
+  // a pause. An edge at that trough played “time” clipped; one 0.05 s later played clean (2026-11-17).
+  const first = [-45.4, -51.4, -53.1, -47.7, -45.4, -43, -42, -32.7, -30.4, -29.2, -28.1, -27.5, -29.2, -37.2, -36.7, -37, -35.6, -33.3, -33.7, -37.9, -40.9, -40.4,
+    -39.1, -38.5, -38.1, -39.4, -39.9, -38.9, -37.9, -36.6, -36.4, -42.7, -42.8, -45, -51.2, -58.4, -64.8, -66.6, -60.9, -66.7, -67.6, -71, -73.7];
+  const second = [-74.6, -44.4, -37.4, -33.7, -31.9, -32.4, -36.7, -39.5, -40.3, -41.7, -42.3, -40.7];
+  const page = (again = "where"): JoinPage => {
+    // The recording from 770.5 s: the first table starts at 771.40 s (0.9 here), the second at 772.86 s (2.36).
+    const db = Array.from({ length: 250 }, (_, i) => {
+      const t = i * .02;
+      if (t >= .9 - 1e-9 && i - 45 < first.length) return first[i - 45]!;
+      if (i >= 118 && i - 118 < second.length) return second[i - 118]!;
+      return (t >= .4 && t < .9) || (i >= 130 && t < 3.3) ? -36 : -70;
+    });
+    const rms = db.map(v => 10 ** (v / 20));
+    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.2, text: "time" },
+      { start: 1.2, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: again }, { start: 2.54, end: 2.7, text: "you" },
+      { start: 2.8, end: 3.3, text: "would" }];
+    return { mediaId: "mic", start: 0, end: 5, edges: joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: .4, end: 1.64 }, { start: 2.38, end: 3.3 }] }) };
+  };
+
+  it("offers a start where the first delivery begins, matched to the second on their sound", () => {
+    const { p, tl } = fixture();
+    // The words “where would”, by their timings: no quiet to start in.
+    const held = checkDialogueJoin(tl, p, { start: 1.2, end: 2.34 }, [page()]);
+    expect(held.status).toBe("review");
+    // The second “where” sounds from 2.40 s and the two match 1.20 s apart, so the first begins at 1.20 s: the cut
+    // starts on the first frame 15 ms past it, where the “m” of “time” has played out.
+    expect(held.sameWordJoin).toMatchObject({ start: expect.closeTo(37 / 30, 5), end: 2.34, word: "where" });
+    expect(held.sameWordJoin!.reason).toContain("the editor's to hear");
+  });
+
+  it("holds a cut saved there for the editor, with no word clipped", () => {
+    const { p, tl } = fixture();
+    const placed = checkDialogueJoin(tl, p, { start: 37 / 30, end: 2.34 }, [page()]);
+    expect(placed).toMatchObject({ status: "review", sameWord: "where", start: expect.closeTo(37 / 30, 5), end: 2.34 });
+    expect(placed.inWord).toBeUndefined();
+    expect(placed.reason).toContain("the editor hears it");
+  });
+
+  it("offers nothing when the take resumes on another word", () => {
+    const { p, tl } = fixture();
+    expect(checkDialogueJoin(tl, p, { start: 1.2, end: 2.34 }, [page("when")]).sameWordJoin).toBeUndefined();
+  });
+});
+
 describe("a clip edge in sound", () => {
   // “…logo” runs straight into “by” with one 20 ms dip between. Seconds later an “uh” the transcript has no word
   // for ends 100 ms before “obviously”. “apple” has a stop inside it and “tree” follows with no pause.
