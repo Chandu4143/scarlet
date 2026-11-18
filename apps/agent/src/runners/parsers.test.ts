@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildClaudeCommand, claudeCanRunBare, claudeRunUsage, newClaudeState, parseClaudeLine } from "./claude.js";
-import { buildCodexCommand, codeModeYieldSupported, newCodexState, parseCodexLine, tomlInlineTable, tomlString } from "./codex.js";
+import { buildCodexCommand, newCodexState, parseCodexLine, tomlInlineTable, tomlString } from "./codex.js";
 import { buildGeminiCommand, newGeminiState, parseGeminiLine } from "./gemini.js";
 import { quoteForCmd, spawnLines, spawnSpec } from "./spawn.js";
 import { briefInput, isQuestionTool, prettyToolName, type RunnerEvent } from "./types.js";
@@ -248,21 +248,6 @@ describe("codex exec --json parser", () => {
       expect(cmd.args).toContain(`permissions.scarlet.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="write"},${tomlString(resolved)}="read"}`);
       expect(cmd.args).toContain("permissions.scarlet.network.enabled=false");
       expect(cmd.args).not.toContain("danger-full-access");
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
-  it.skipIf(process.platform === "win32")("lets a script run as long as a tool waits, on a Codex that takes the setting", () => {
-    const dir = mkdtempSync(join(tmpdir(), "scarlet-codex-"));
-    try {
-      const fake = (name: string, body: string) => { const path = join(dir, name); writeFileSync(path, `#!/bin/sh\n${body}\n`); chmodSync(path, 0o755); return path; };
-      // A Codex that knows the key exits cleanly; one that doesn't refuses it under --strict-config.
-      const takes = fake("codex-new", 'case "$*" in *features.code_mode.default_exec_yield_time_ms=240000*) exit 0;; esac; exit 2');
-      const refuses = fake("codex-old", "echo 'Error: unknown configuration field' >&2; exit 1");
-      expect(codeModeYieldSupported(takes)).toBe(true);
-      expect(codeModeYieldSupported(refuses)).toBe(false);
-      expect(codeModeYieldSupported(join(dir, "missing"))).toBe(false);
-      expect(buildCodexCommand({ instruction: "x", systemPrompt: "SYS", mcp, cwd: "/w" }, takes, "/w/.scarlet").args.join(" "))
-        .toContain("-c features.code_mode.default_exec_yield_time_ms=240000");
-      expect(buildCodexCommand({ instruction: "x", systemPrompt: "SYS", mcp, cwd: "/w" }, refuses, "/w/.scarlet").args.join(" ")).not.toContain("code_mode");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   it("builds -c overrides as valid TOML", () => {

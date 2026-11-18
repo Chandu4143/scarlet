@@ -321,41 +321,7 @@ fn codex_executable(bin: &str) -> Option<String> {
     }
 }
 
-/// How long a Codex script runs before it hands control back to the model, in milliseconds. Codex's default is 10–30 s,
-/// shorter than many of Scarlet's tools take (a save that waits for area checks, a contact-sheet batch, faces), and each
-/// hand-back is a model turn that re-reads the whole context to call `wait`: 173 of 1,357 pass turns, about 20M tokens,
-/// from Nov 16 to 18 2026. It matches Scarlet's tool wait (`toolWaitSeconds`, capabilities.ts), under the 300 s tool timeout.
-const CODE_MODE_YIELD_MS: u64 = 240_000;
-
-/// Whether this Codex takes `features.code_mode.default_exec_yield_time_ms`. One that doesn't refuses the key under
-/// --strict-config and would fail every run, so it is asked once per binary: App Server exits at once on closed stdin,
-/// with an error for a key it doesn't know (about 40 ms).
-fn code_mode_yield_supported(bin: &str) -> bool {
-    use std::collections::HashMap;
-    use std::sync::OnceLock;
-    static KNOWN: OnceLock<Mutex<HashMap<(String, Option<std::time::SystemTime>), bool>>> = OnceLock::new();
-    let key = (bin.to_string(), std::fs::metadata(bin).and_then(|m| m.modified()).ok());
-    if let Some(&known) = KNOWN.get_or_init(Default::default).lock().unwrap().get(&key) { return known; }
-    let probe = || -> Option<bool> {
-        let home = tempfile::Builder::new().prefix("scarlet-codex-probe-").tempdir().ok()?;
-        let mut child = std::process::Command::new(bin)
-            .args(["app-server", "--strict-config", "-c", &format!("features.code_mode.default_exec_yield_time_ms={CODE_MODE_YIELD_MS}")])
-            .env("CODEX_HOME", home.path())
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-            .spawn().ok()?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Some(status) = child.try_wait().ok()? { return Some(status.success()); }
-            if std::time::Instant::now() > deadline { let _ = child.kill(); let _ = child.wait(); return Some(false); }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    };
-    let supported = probe().unwrap_or(false);
-    KNOWN.get_or_init(Default::default).lock().unwrap().insert(key, supported);
-    supported
-}
-
-fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>, yield_config: bool) -> Vec<String> {
+fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>) -> Vec<String> {
     let executable_read = executable.map(|path| format!(",{}=\"read\"", toml_string(path))).unwrap_or_default();
     // Forward slashes keep the TOML readable and work for node on Windows.
     let to_toml = |p: &str| p.replace('\\', "/");
@@ -388,9 +354,6 @@ fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>, yield_config: bool) 
         "-c".into(),
         r#"shell_environment_policy.exclude=["SCARLET_*"]"#.into(),
     ]);
-    if yield_config {
-        args.extend(["-c".into(), format!("features.code_mode.default_exec_yield_time_ms={CODE_MODE_YIELD_MS}")]);
-    }
     args
 }
 
@@ -409,7 +372,7 @@ pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_ti
         "--ephemeral".into(),
     ];
     let executable = codex_executable(bin);
-    args.extend(codex_tool_args(mcp, executable.as_deref(), code_mode_yield_supported(executable.as_deref().unwrap_or(bin))));
+    args.extend(codex_tool_args(mcp, executable.as_deref()));
     args.extend([
         "--output-last-message".into(),
         last_message_path.to_string_lossy().to_string(),
@@ -436,9 +399,9 @@ pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_ti
     CodexCommand { cmd: RunnerCommand { file: executable.unwrap_or_else(|| bin.into()), args, stdin: Some(instruction.to_string()), files }, last_message_path }
 }
 
-fn app_server_args(opts: &RunOptions, executable: Option<&str>, yield_config: bool) -> Vec<String> {
+fn app_server_args(opts: &RunOptions, executable: Option<&str>) -> Vec<String> {
     let mut args = vec!["app-server".into(), "--strict-config".into()];
-    args.extend(codex_tool_args(&opts.mcp, executable, yield_config));
+    args.extend(codex_tool_args(&opts.mcp, executable));
     args.extend([
         "--disable".into(), "goals".into(),
         "-c".into(), "project_root_markers=[]".into(),
@@ -513,9 +476,7 @@ async fn try_app_server(opts: &RunOptions, bin: &str, home: &Path) -> Option<Run
     let show_plan = opts.plan;
     let mut sent_usage = None;
     let executable = codex_executable(bin);
-    let file = executable.as_deref().unwrap_or(bin);
-    let yield_config = code_mode_yield_supported(file);
-    let outcome = run_app_server(file, &app_server_args(opts, executable.as_deref(), yield_config), spawn, thread, turn, Box::new(move |method, params| {
+    let outcome = run_app_server(executable.as_deref().unwrap_or(bin), &app_server_args(opts, executable.as_deref()), spawn, thread, turn, Box::new(move |method, params| {
         let mut state = live_state.lock().unwrap();
         for event in app_server_events(method, params, &mut state) {
             if show_plan || event.kind != "plan" { on_event(event); }
@@ -762,32 +723,9 @@ mod tests {
         assert!(cmd.args.contains(&"permissions.scarlet.network.enabled=false".to_string()));
         assert!(!cmd.args.iter().any(|arg| arg.contains("danger-full-access")));
         let (opts, _) = crate::host::runner::testing::options("codex", dir.path(), None);
-        let args = app_server_args(&opts, Some(&resolved), false);
+        let args = app_server_args(&opts, Some(&resolved));
         assert!(args.contains(&format!("permissions.scarlet.filesystem={{\":root\"=\"deny\",\":minimal\"=\"read\",\":workspace_roots\"={{\".\"=\"write\"}},{path}=\"read\"}}", path = toml_string(&resolved))));
         assert!(args.contains(&"project_doc_max_bytes=4194304".to_string()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sets_the_code_mode_yield_only_for_a_codex_that_takes_it() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let fake = |name: &str, body: &str| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path.to_string_lossy().into_owned()
-        };
-        // A Codex that knows the key exits cleanly; one that doesn't refuses it under --strict-config.
-        let takes = fake("codex-new", r#"case "$*" in *features.code_mode.default_exec_yield_time_ms=240000*) exit 0;; esac; exit 2"#);
-        let refuses = fake("codex-old", "echo 'Error: unknown configuration field' >&2; exit 1");
-        assert!(code_mode_yield_supported(&takes));
-        assert!(!code_mode_yield_supported(&refuses));
-        assert!(!code_mode_yield_supported(&dir.path().join("missing").to_string_lossy()));
-        let yielding = build_codex_command(None, None, None, "SYS", "x", false, &mcp(), Path::new("/w"), &takes, Path::new("/w/.scarlet")).cmd;
-        assert!(yielding.args.windows(2).any(|p| p == ["-c", "features.code_mode.default_exec_yield_time_ms=240000"]));
-        let old = build_codex_command(None, None, None, "SYS", "x", false, &mcp(), Path::new("/w"), &refuses, Path::new("/w/.scarlet")).cmd;
-        assert!(!old.args.iter().any(|a| a.contains("code_mode")));
     }
 
     #[test]
