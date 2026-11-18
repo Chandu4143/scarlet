@@ -114,7 +114,11 @@ export function assignAreas(frames: number, duration: number, areas: readonly Sh
       if (fit < AREA_HOLDS_AT) return;
       if (!best || near < best.near || (near === best.near && fit > best.fit)) best = { index, fit, near };
     });
-    const index = best?.index ?? whole;
+    // A box holds on the frame it was given on, where the model looked, even when the edges read on this step's frame
+    // don't fit it: a window that moves a little within five seconds left its own second unset, and each save asked
+    // about the same frame again, four times (2026-11-18).
+    const own = best ? undefined : areas.findIndex(a => !wholePicture(a.area) && a.at >= from - 1e-6 && a.at < to + 1e-6);
+    const index = best?.index ?? (own !== undefined && own >= 0 ? own : whole);
     if (index === undefined) push(unset, from, to);
     else push(held[index]!.holds, from, to);
   }

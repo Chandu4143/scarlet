@@ -136,6 +136,9 @@ export function describeDiff(
   name: (clip: Clip) => string = clip => clip.label ?? clip.id,
 ): string[] {
   const out: string[] = [];
+  // A clip that only slid along the timeline moved because something before it changed: a pass of 7 cuts listed 200
+  // of them, one line each, in every prompt and save result that described it (2026-11-18). They are counted instead.
+  const slid = d.clips.filter((c): c is Extract<ClipDiff, { type: "modified" }> => c.type === "modified" && c.fields.length === 1 && c.fields[0] === "timelineIn");
   for (const c of d.clips) {
     switch (c.type) {
       case "added":
@@ -145,6 +148,13 @@ export function describeDiff(
         out.push(`Removed ${c.clip.kind} clip ${name(c.clip)} (${fmt(c.clip.timelineIn)}–${fmt(clipEnd(c.clip))})`);
         break;
       case "modified":
+        if (slid.length > 1 && slid.includes(c)) {
+          if (c === slid[0]) {
+            const at = slid.map(s => s.after.timelineIn);
+            out.push(`Moved ${slid.length} clips along the timeline with nothing else changed (now ${fmt(Math.min(...at))}–${fmt(Math.max(...at))})`);
+          }
+          break;
+        }
         out.push(`Changed ${c.fields.join(", ")} on ${name(c.after)} at ${fmt(c.after.timelineIn)}`);
         break;
       case "movedTrack":

@@ -426,8 +426,12 @@ export function cancelTask(ctx: Ctx, task: Task): Task {
   return saved;
 }
 
-/** CLIs whose sessions Scarlet resumes after an answer. Codex runs stay ephemeral, out of the user's Codex thread list. */
-export const RESUMABLE = new Set<string>(["claude"]);
+/**
+ * CLIs whose sessions Scarlet resumes after an answer or a quit. A Codex run keeps its thread in a private Codex home
+ * beside its task folder, out of the user's own Codex thread list. Started afresh, a pass resumed after a quit spent
+ * 120 more turns and 13.7M tokens finding its place again (2026-11-18).
+ */
+export const RESUMABLE = new Set<string>(["claude", "codex"]);
 
 /** What a run hears when it carries on in its own CLI session after Scarlet closed on it. */
 const INTERRUPTED = "Scarlet closed while you were working on this request, and it is open again. Carry on from where you stopped. " +

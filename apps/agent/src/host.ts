@@ -15,6 +15,7 @@ import { privateDirectory } from "./private-files.js";
 import type { AgentConfig } from "./config.js";
 import { CLI_AGENTS, detect as detectAgents, runnerEnv } from "./detect.js";
 import { runAgent as defaultRunAgent } from "./runners/index.js";
+import { codexHomeDir } from "./runners/codex.js";
 import { addUsage } from "./runners/usage.js";
 import { mcpEnv, nodeExecutable, resolveMcpCliPath } from "./runners/spawn.js";
 import { DEFAULT_STALL_MS, type McpSpec, type RunAgentFn, type RunAgentResult, type RunnerEvent } from "./runners/types.js";
@@ -378,6 +379,10 @@ export class AgentHost {
         const interrupted = (state === "cancelled" && this.stopped) || stopped;
         if (real && landed && !interrupted && !(this.opts.env ?? process.env).CLAUDE_CONFIG_DIR) {
           await removeClaudeSessions(real).catch((err) => this.log(`could not remove Claude sessions: ${errMsg(err)}`));
+        }
+        // A Codex run keeps its thread in a home beside the folder, on the same terms.
+        if (task.agent === "codex" && landed && !interrupted) {
+          await rm(codexHomeDir(cwd), { recursive: true, force: true }).catch((err) => this.log(`could not remove the Codex home: ${errMsg(err)}`));
         }
       }
     };

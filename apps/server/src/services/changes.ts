@@ -1284,7 +1284,9 @@ function assertStagedCallsStand(ctx: Ctx, project: Omit<Project, "media">, task:
       const named = taken.slice(0, 12).map(c => `${editorsCut(change, c.index)} at ${c.start.toFixed(2)}–${c.end.toFixed(2)} s`).join(", ");
       throw conflict("staged_cuts_changed", `This edit takes away the footage of ${taken.length === 1 ? "a staged cut" : `${taken.length} staged cuts`} that `
         + `${taken.length === 1 ? "waits" : "wait"} for the editor’s call in ${change.id} (${named}${taken.length > 12 ? ", …" : ""}; times on version ${base.version}). `
-        + "Nothing was saved. Leave that footage in this edit. Use dialogue_apply_cuts to update a staged cut Scarlet hasn't asked the editor about.");
+        // A pass sent the same edit here three times before it moved the cut with dialogue_revise_cut (2026-11-18).
+        + `Nothing was saved. Leave that footage in this edit. To move a staged cut's edges, use dialogue_revise_cut with changeId ${change.id} and its index (${taken.slice(0, 12).map(c => c.index).join(", ")}). `
+        + "dialogue_apply_cuts updates a staged cut Scarlet hasn't asked the editor about.");
     }
     located.sort((a, b) => a.range.start - b.range.start);
     for (let i = 1; i < located.length; i++) {
@@ -2385,8 +2387,11 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
       // only that nothing was found (2026-11-15). An option carries its doubt from when it is saved.
       const staged = ctx.repos.changes.get(body.changeId);
       if (staged?.projectId === projectId && staged.state === "ready") {
-        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` +
-          "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there.");
+        // A dialogue pass's staged cut is a call: the editor decides it whatever is flagged, and reads its reason as the note.
+        // A revision told to save a check with timeline_propose tried a review save next, refused too (2026-11-18).
+        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` + (staged.cutReasons?.length
+          ? "Its staged cuts are the editor's calls: a doubt about one goes in the reason you save it with (dialogue_revise_cut or dialogue_review_save), which the editor reads on its card."
+          : "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there."));
       }
       throw notFound(`edit ${body.spot} of change ${body.changeId} on the working cut`);
     }

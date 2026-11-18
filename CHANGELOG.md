@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A Codex edit that stopped when Scarlet closed, or that asked you something, now carries on where it was instead of starting over.
+- Requests about a long video, such as a few more frames on one cut, use far fewer tokens, and a pass no longer looks at the same screen frame again and again.
 - A cut after the end of a sentence now comes right after the last word, before the breath that follows it, so the video no longer holds while you look away.
 - Scarlet now notices when a screen recording switches windows or pages partway through a stretch it shows, so an insert no longer flashes another picture for a moment.
 - When Scarlet cuts from a screen demo to your camera, it now knows how long the screen keeps showing that demo and what you say over it, so it can keep the screen up while you're still talking about what's on it.

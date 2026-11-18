@@ -15,7 +15,7 @@ export interface McpSpec {
 }
 
 export type CodexFallbackReason = "api_key" | "project_config" | "home_unavailable" | "auth_unavailable" | "isolation_unavailable" |
-  "initialize_failed" | "thread_start_failed" | "thread_policy_mismatch" | "app_server_unavailable";
+  "initialize_failed" | "thread_start_failed" | "thread_resume_failed" | "thread_policy_mismatch" | "app_server_unavailable";
 
 export interface RunAgentOptions {
   agent: AgentId;

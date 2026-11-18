@@ -83,7 +83,7 @@ export const RepeatAuditRequest = z.object({
   version: z.string().min(1), startedAt: z.string().optional(),
   keep: z.array(z.object({ id: z.string().min(1), reason: z.string().trim().min(1).max(300) })).max(100).default([]),
   offset: z.number().int().nonnegative().default(0),
-  silencesFrom: z.number().finite().min(0.5).max(30).default(SILENCE_LEFT_SECONDS),
+  silencesFrom: z.number().finite().min(0.3).max(30).default(SILENCE_LEFT_SECONDS),
 });
 
 export const SheetOptions = {

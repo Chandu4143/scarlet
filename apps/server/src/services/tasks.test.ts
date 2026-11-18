@@ -147,13 +147,17 @@ it("resumes the Claude session that asked, with just the answer", async () => {
   expect(app.ctx.repos.tasks.get(task.id)?.session).toBeUndefined();
 });
 
-it("never resumes Codex, whose sessions would show in the user's Codex app", async () => {
+it("resumes a Codex run's thread after an answer, which its host keeps in a Codex home of the run's own", async () => {
   const task = await claimed("codex");
   await api("POST", `/tasks/${task.id}/question`, { startedAt: task.startedAt, text: "Which take?", sessionId: "thread-1" });
   await api("POST", `/tasks/${task.id}/answer`, { text: "The second take" });
   const prompt = (await api<TaskPrompt>("GET", `/tasks/${task.id}/prompt`)).body;
-  expect(prompt.resumeSession).toBeUndefined();
-  expect(prompt.systemPrompt).toContain("The second take");
+  expect(prompt.resumeSession).toBe("thread-1");
+  expect(prompt.instruction).toContain("The second take");
+  // A thread the host no longer has starts afresh, with the answer in the prompt.
+  const fresh = (await api<TaskPrompt>("GET", `/tasks/${task.id}/prompt?fresh=1`)).body;
+  expect(fresh.resumeSession).toBeUndefined();
+  expect(fresh.systemPrompt).toContain("The second take");
 });
 
 it("rejects editing requests for the api agent, which no host runs", async () => {

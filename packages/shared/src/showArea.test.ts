@@ -53,6 +53,16 @@ describe("where each area holds", () => {
     const { areas } = assignAreas(6, 27.5, [area(10, [0.3, 0.3, 0.5, 0.5], ["left", "top", "right", "bottom"])], fitsAt);
     expect(areas[0]!.holds).toEqual([[7.5, 12.5]]);
   });
+  it("holds a box on the frame it was given on when that step's edges don't fit it", () => {
+    // Given at 11 s on the window, where the frame read at 10 s shows nothing.
+    const { areas, unset } = assignAreas(6, 27.5, [area(0, box), area(11, box)], fitsAt);
+    expect(areas[1]!.holds).toEqual([[7.5, 12.5], [22.5, 27.5]]);
+    expect(unset).toEqual([[12.5, 22.5]]);
+    // A frame some box fits keeps going to it: the moved window given at 6 s, where the frame read at 5 s is the first.
+    const fit = assignAreas(6, 27.5, [area(0, box), area(6, moved)], fitsAt);
+    expect(areaAt(fit.areas, 6)?.at).toBe(0);
+    expect(fit.areas[1]!.holds).toEqual([[12.5, 22.5]]);
+  });
   it("does not need an edge marked as having no line", () => {
     const { areas } = assignAreas(6, 27.5, [area(0, [0.1, 0.1, 0.8, 0.7], ["bottom"])], fitsAt);
     expect(areas[0]!.holds).toEqual([[0, 7.5], [22.5, 27.5]]);

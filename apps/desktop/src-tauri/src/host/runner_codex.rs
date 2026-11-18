@@ -30,6 +30,8 @@ pub struct CodexState {
     pub usage: Option<AgentUsage>,
     turn_requested: bool,
     model: Option<String>,
+    /// The thread this run works in: the session a later run of the same task resumes.
+    thread_id: Option<String>,
     /// The plan last passed on, so one Codex repeats isn't sent twice.
     pub plan: Option<Vec<PlanStep>>,
 }
@@ -250,7 +252,14 @@ fn app_server_events(method: &str, params: &Value, st: &mut CodexState) -> Vec<R
     match method {
         "thread/started" => {
             st.model = params["model"].as_str().map(str::to_string);
-            codex_events("thread.started", params, st)
+            st.thread_id = params.pointer("/thread/id").and_then(Value::as_str).map(str::to_string);
+            let mut events = codex_events("thread.started", params, st);
+            // The engine keeps an App Server thread as the run's session, which an answer or a resume after a quit
+            // carries on in. `codex exec` threads are ephemeral and aren't named.
+            if let (Some(id), Some(Value::Object(data))) = (&st.thread_id, events.first_mut().and_then(|e| e.data.as_mut())) {
+                data.insert("sessionId".into(), json!(id));
+            }
+            events
         }
         "turn/requested" => {
             st.turn_requested = true;
@@ -406,9 +415,18 @@ fn app_server_args(opts: &RunOptions, executable: Option<&str>) -> Vec<String> {
     args
 }
 
+/// The run's own Codex home, beside its task folder: outside the folder the agent may write to, and the same for every
+/// attempt at the task (the folder is keyed by the run's first task id), so a run cut short or paused on a question
+/// resumes its thread. The host removes it with the run's other leftovers once the task lands, and the task folders'
+/// prune takes one left behind.
+pub fn codex_home_dir(run_dir: &Path) -> std::path::PathBuf {
+    let name = run_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    run_dir.with_file_name(format!("{name}.codex"))
+}
+
 /// App Server reads user configuration from CODEX_HOME. Give it a private directory
 /// with the existing login and its write lock linked so Codex still owns token refreshes.
-fn isolated_codex_home(opts: &RunOptions) -> std::result::Result<tempfile::TempDir, &'static str> {
+fn isolated_codex_home(opts: &RunOptions) -> std::result::Result<std::path::PathBuf, &'static str> {
     if api_key_vars("codex").iter().any(|key| env_get(&opts.env, key).is_some_and(|value| !value.is_empty())) {
         return Err("api_key");
     }
@@ -424,14 +442,22 @@ fn isolated_codex_home(opts: &RunOptions) -> std::result::Result<tempfile::TempD
     let auth = codex_home.join("auth.json");
     let metadata = auth.metadata().map_err(|_| "auth_unavailable")?;
     if !metadata.is_file() || metadata.len() == 0 { return Err("auth_unavailable"); }
-    let home = tempfile::Builder::new().prefix("scarlet-codex-").tempdir().map_err(|_| "isolation_unavailable")?;
-    crate::config::private_directory(home.path()).map_err(|_| "isolation_unavailable")?;
+    let home = codex_home_dir(&opts.cwd);
+    crate::config::private_directory(&home).map_err(|_| "isolation_unavailable")?;
+    // Only Scarlet writes configuration here. Codex's own state (its threads and their database) stays.
+    for config in ["config.toml", "managed_config.toml"] {
+        if std::fs::symlink_metadata(home.join(config)).is_ok() { return Err("isolation_unavailable"); }
+    }
     #[cfg(unix)]
     use std::os::unix::fs::symlink as link_file;
     #[cfg(windows)]
     use std::os::windows::fs::symlink_file as link_file;
-    link_file(auth, home.path().join("auth.json")).map_err(|_| "isolation_unavailable")?;
-    link_file(codex_home.join("auth.lock"), home.path().join("auth.lock")).map_err(|_| "isolation_unavailable")?;
+    // Linked again on each run: the login may have moved since the last one.
+    for (from, name) in [(auth, "auth.json"), (codex_home.join("auth.lock"), "auth.lock")] {
+        let link = home.join(name);
+        if std::fs::symlink_metadata(&link).is_ok() { std::fs::remove_file(&link).map_err(|_| "isolation_unavailable")?; }
+        link_file(from, link).map_err(|_| "isolation_unavailable")?;
+    }
     Ok(home)
 }
 
@@ -457,10 +483,15 @@ async fn try_app_server(opts: &RunOptions, bin: &str, home: &Path) -> Option<Run
         }
         report_usage(&on_usage, &mut sent_usage, state.usage.clone().map(|usage| usage.or_model(requested_model.as_deref())));
         std::mem::take(&mut state.should_stop)
-    })).await;
+    }), opts.resume_session.as_deref()).await;
     let mut state = std::mem::take(&mut *st.lock().unwrap());
     let outcome = match outcome {
         Ok(outcome) => outcome,
+        // A thread that can't be resumed, here or by the fallback, which keeps none: the host starts a fresh run.
+        Err(error) if opts.resume_session.is_some() && !state.turn_requested && !opts.cancel.is_cancelled() => {
+            log_fallback(opts, super::codex_app_server::fallback_reason(&error));
+            return Some(RunResult { resume_failed: true, error: Some(format!("{error:#}")), ..Default::default() });
+        }
         Err(error) if !state.turn_requested && !opts.cancel.is_cancelled() => {
             log_fallback(opts, super::codex_app_server::fallback_reason(&error));
             return None;
@@ -499,11 +530,17 @@ pub async fn run_codex(mut opts: RunOptions) -> RunResult {
     }
     match isolated_codex_home(&opts) {
         Ok(home) => {
-            if let Some(result) = try_app_server(&opts, &bin, home.path()).await {
+            if let Some(result) = try_app_server(&opts, &bin, &home).await {
                 return result;
             }
         }
-        Err(reason) => log_fallback(&opts, reason),
+        Err(reason) => {
+            log_fallback(&opts, reason);
+            // `codex exec` keeps no thread to resume.
+            if opts.resume_session.is_some() {
+                return RunResult { resume_failed: true, error: Some(format!("Codex could not resume here: {reason}")), ..Default::default() };
+            }
+        }
     }
     let st = Arc::new(Mutex::new(CodexState::default()));
     let st2 = st.clone();
@@ -542,7 +579,8 @@ pub async fn run_codex(mut opts: RunOptions) -> RunResult {
 
 fn codex_result(s: CodexState, model: Option<&str>, outcome: &super::spawn::SpawnOutcome, last: Option<String>, allow_clean_exit: bool) -> RunResult {
     let usage = s.usage.map(|usage| usage.or_model(model));
-    if let Some(result) = cut_short(&s.texts, s.question.as_ref(), s.question_posted, outcome, &RunResult { usage: usage.clone(), ..Default::default() }) {
+    // A question carries the thread with it, so the answer resumes it.
+    if let Some(result) = cut_short(&s.texts, s.question.as_ref(), s.question_posted, outcome, &RunResult { usage: usage.clone(), session_id: s.thread_id.clone(), ..Default::default() }) {
         return result;
     }
     let ok = s.failed.is_none() && (s.turn_completed || (allow_clean_exit && outcome.code == Some(0)));
@@ -556,6 +594,7 @@ fn codex_result(s: CodexState, model: Option<&str>, outcome: &super::spawn::Spaw
         },
         exit_code: outcome.code,
         usage,
+        session_id: s.thread_id.clone(),
         ..Default::default()
     }
 }
@@ -768,7 +807,7 @@ read -r request
 printf '%s\n' '{"id":1,"result":{}}'
 read -r request
 read -r request
-printf '%s\n' '{"id":2,"result":{"thread":{"id":"t1","ephemeral":true},"model":"resolved-model","approvalPolicy":"never","activePermissionProfile":{"id":"scarlet"}}}'
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"t1","ephemeral":false},"model":"resolved-model","approvalPolicy":"never","activePermissionProfile":{"id":"scarlet"}}}'
 read -r request
 case "$request" in *'"text":"Cut the pauses"'*'"text_elements":[]'*) ;; *) exit 4 ;; esac
 cat <<'EVENTS'
@@ -805,6 +844,54 @@ cat >/dev/null
             assert_eq!(reports[1].model.as_deref(), Some("resolved-model"));
             assert_eq!(result.usage.as_ref(), reports.last());
             assert_eq!(std::fs::read_to_string(auth).unwrap(), "{}");
+            // The thread is the run's session, kept in a home beside the task folder for the next run to resume.
+            assert_eq!(result.session_id.as_deref(), Some("t1"));
+            let home = codex_home_dir(dir.path());
+            assert!(std::fs::symlink_metadata(home.join("auth.json")).unwrap().file_type().is_symlink());
+            std::fs::remove_dir_all(home).unwrap();
+        }
+
+        #[tokio::test]
+        async fn resumes_the_thread_a_run_left_and_asks_for_a_fresh_run_when_it_is_gone() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let auth_home = tempfile::tempdir().unwrap();
+            std::fs::write(auth_home.path().join("auth.json"), "{}").unwrap();
+            let bin = dir.path().join("fake-app-server");
+            std::fs::write(&bin, r#"#!/bin/sh
+set -eu
+test "$1" = app-server
+read -r request
+printf '%s\n' '{"id":1,"result":{}}'
+read -r request
+read -r request
+case "$request" in *'"method":"thread/resume"'*'"threadId":"t1"'*) ;; *) printf '%s\n' '{"id":2,"error":{"code":-32600,"message":"no rollout found"}}'; exit 0 ;; esac
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"t1","ephemeral":false},"model":"m","approvalPolicy":"never","activePermissionProfile":{"id":"scarlet"}}}'
+read -r request
+case "$request" in *'"text":"The editor answered'*) ;; *) exit 4 ;; esac
+cat <<'EVENTS'
+{"id":3,"result":{"turn":{"id":"turn2"}}}
+{"method":"item/completed","params":{"threadId":"t1","turnId":"turn2","item":{"type":"agentMessage","phase":"final_answer","text":"Kept the take."}}}
+{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"turn2","status":"completed"}}}
+EVENTS
+cat >/dev/null
+"#).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let run = |session: &str| {
+                let (mut opts, _) = options("codex", dir.path(), Some(bin.to_string_lossy().into_owned()));
+                opts.env.insert("CODEX_HOME".into(), auth_home.path().to_string_lossy().into_owned());
+                opts.timeout = Some(std::time::Duration::from_secs(10));
+                opts.instruction = "The editor answered: \"keep it\"".into();
+                opts.resume_session = Some(session.into());
+                run_codex(opts)
+            };
+            let resumed = run("t1").await;
+            assert!(resumed.ok && !resumed.resume_failed, "{resumed:?}");
+            assert_eq!((resumed.summary.as_str(), resumed.session_id.as_deref()), ("Kept the take.", Some("t1")));
+            // A thread Codex no longer has runs nothing, and no `codex exec` fallback: the host starts afresh.
+            let gone = run("t0").await;
+            assert!(gone.resume_failed && !gone.ok, "{gone:?}");
+            std::fs::remove_dir_all(codex_home_dir(dir.path())).unwrap();
         }
 
         #[tokio::test]

@@ -794,6 +794,13 @@ impl HostRuntime {
                 log::warn!("task {task_id}: could not remove its Claude sessions: {e}");
             }
         }
+        // A Codex run keeps its thread in a home beside the folder, on the same terms.
+        let codex_home = runner_codex::codex_home_dir(&dir);
+        if landed && !interrupted && std::fs::symlink_metadata(&codex_home).is_ok_and(|m| m.is_dir()) {
+            if let Err(e) = std::fs::remove_dir_all(&codex_home) {
+                log::warn!("task {task_id}: could not remove its Codex home: {e}");
+            }
+        }
         // Handed over once its folder is clean: the attempt that resumes the run works in the same folder.
         if let Some(body) = handover {
             self.undelivered.hand_over(task_id, body);
