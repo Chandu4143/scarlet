@@ -858,12 +858,15 @@ export function sameWordJoin(tl: Timeline, project: Pick<Project, "media" | "set
   if (match < SAME_WORD_MATCH) return;
   const lag = shift * step;
   // Where the first delivery begins in the recording: the second's first sound, the matched distance earlier. The word
-  // before has ended there, which no trough or word timing says when the two run together. The cut starts on the first
-  // frame a little past it, so that word's last sound plays out under the fade: on the recording this was built on,
-  // an edge 0.03 s before that point played the word clipped, and edges 0.02 s and 0.05 s after it played clean.
+  // before has ended there, which no trough or word timing says when the two run together. The cut starts on the
+  // frame nearest that point, with nothing added. It first went to the first frame 15 ms or more past it, a margin
+  // taken from one line ("time where", where an edge 0.03 s early played "time" clipped and 0.02 s late played clean).
+  // On "which is nice you can see the rough, you can see the shadows" that put the cut 0.04 s into the first "you":
+  // the editor heard himself start a word before the cut, and picked the frame nearest the matched start by ear. That
+  // frame is within the range he called clean on the first line too (2026-11-17). Scarlet still can't hear either.
   const begins = from + onset * step - lag, fps = project.settings.fps;
-  const start = Math.ceil(sourceToTimeline(out, begins + .015) * fps - 1e-7) / fps, source = timelineToSource(out, start), end = range.end;
-  if (source > begins + .055 || source >= middle(first) || source <= out.sourceIn || end - start < 2 / fps) return;
+  const start = Math.round(sourceToTimeline(out, begins) * fps) / fps, source = timelineToSource(out, start), end = range.end;
+  if (source >= middle(first) || source <= out.sourceIn || end - start < 2 / fps) return;
   const span = (clip: MediaClip, w: Word) => ({ start: round3(sourceToTimeline(clip, w.start)), end: round3(sourceToTimeline(clip, w.end)) });
   return { start, end, word: plain(second), first: span(out, first), second: span(back, second), lag: round3(lag), match: Math.round(match * 100) / 100, ...(takesFirst && { takesFirst }) };
 }

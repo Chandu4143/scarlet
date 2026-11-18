@@ -531,34 +531,34 @@ describe("a restart that begins on the word the first take broke off after", () 
       return (t >= .4 && t < .9) || (i >= 130 && t < 3.3) ? -36 : -70;
     });
     const rms = db.map(v => 10 ** (v / 20));
-    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.2, text: "time" },
-      { start: 1.2, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: again }, { start: 2.54, end: 2.7, text: "you" },
+    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.22, text: "time" },
+      { start: 1.22, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: again }, { start: 2.54, end: 2.7, text: "you" },
       { start: 2.8, end: 3.3, text: "would" }];
     return { mediaId: "mic", start: 0, end: 5, edges: joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: .4, end: 1.64 }, { start: 2.38, end: 3.3 }] }) };
   };
 
   it("offers a start where the first delivery begins, matched to the second on their sound", () => {
     const { p, tl } = fixture();
-    // The words “where would”, by their timings: no quiet to start in.
-    const held = checkDialogueJoin(tl, p, { start: 1.2, end: 2.34 }, [page()]);
+    // The words “where would”, by their timings, which sit 20 ms late: no quiet to start in.
+    const held = checkDialogueJoin(tl, p, { start: 1.22, end: 2.34 }, [page()]);
     expect(held.status).toBe("review");
     // The second “where” sounds from 2.40 s and the two match 1.20 s apart, so the first begins at 1.20 s: the cut
-    // starts on the first frame 15 ms past it, where the “m” of “time” has played out.
-    expect(held.sameWordJoin).toMatchObject({ start: expect.closeTo(37 / 30, 5), end: 2.34, word: "where" });
+    // starts on the frame nearest it, with no margin added.
+    expect(held.sameWordJoin).toMatchObject({ start: expect.closeTo(36 / 30, 5), end: 2.34, word: "where" });
     expect(held.sameWordJoin!.reason).toContain("the editor's to hear");
   });
 
   it("holds a cut saved there for the editor, with no word clipped", () => {
     const { p, tl } = fixture();
-    const placed = checkDialogueJoin(tl, p, { start: 37 / 30, end: 2.34 }, [page()]);
-    expect(placed).toMatchObject({ status: "review", sameWord: "where", start: expect.closeTo(37 / 30, 5), end: 2.34 });
+    const placed = checkDialogueJoin(tl, p, { start: 36 / 30, end: 2.34 }, [page()]);
+    expect(placed).toMatchObject({ status: "review", sameWord: "where", start: expect.closeTo(36 / 30, 5), end: 2.34 });
     expect(placed.inWord).toBeUndefined();
     expect(placed.reason).toContain("the editor hears it");
   });
 
   it("offers nothing when the take resumes on another word", () => {
     const { p, tl } = fixture();
-    expect(checkDialogueJoin(tl, p, { start: 1.2, end: 2.34 }, [page("when")]).sameWordJoin).toBeUndefined();
+    expect(checkDialogueJoin(tl, p, { start: 1.22, end: 2.34 }, [page("when")]).sameWordJoin).toBeUndefined();
   });
 });
 
