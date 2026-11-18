@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 18, 2026
+
+- When you ask Scarlet to keep a video's original sound, it no longer plays that sound a second time on another track, which made it louder.
+
 ## November 17, 2026
 
 - There’s more space between the edit summary and the For you and See all tabs.
@@ -102,7 +106,6 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 14, 2026
 
-- When you ask Scarlet to keep a video's original sound, it no longer plays that sound a second time on another track, which made it louder.
 - Scarlet can read the pages you ask for in a PDF style guide on Mac and Windows, including consecutive pages that look alike.
 
 - Ask Scarlet for a motion graphic, like a lower third or a title, and it makes one in your style and lays it over the picture as an edit you can revise.

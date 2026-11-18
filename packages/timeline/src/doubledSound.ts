@@ -22,11 +22,14 @@ export interface LouderDoubledSound extends DoubledSound {
    * copy.
    */
   level: { before: number; after: number };
+  /** Every clip playing that moment in sync over the stretch, whose volumes add up to `level.after`. */
+  copies: string[];
   /**
-   * The clip to turn down over the stretch, and the volume that brings the copies back to the base's level there: the
-   * clip the edit added or changed, so what the base already played elsewhere stays as it was.
+   * The clips to turn down over the stretch, and the volume for each that brings the copies back to the base's level
+   * there: first the clip the edit added or changed, so what the base already played elsewhere stays as it was, then as
+   * many more as it takes when that one at 0 still leaves the stretch louder, as three copies where the base played one.
    */
-  turnDown: { clipId: string; volume: number };
+  turnDown: { clipId: string; volume: number }[];
 }
 
 // The two copies line up to well under an audio sample at 48 kHz. Any farther apart is an offset someone placed, which
@@ -114,17 +117,18 @@ function playedAt(heard: readonly Heard[], pairs: readonly Pair[], at: number) {
   const root = (h: Heard): Heard => { const up = group.get(h) ?? h; return up === h ? h : root(up); };
   const layered = pairs.filter(p => covers(p.source, at));
   for (const p of layered) group.set(root(p.a), root(p.b));
-  const stacks = new Map<Heard, { level: number; pairs: Pair[] }>();
+  const stacks = new Map<Heard, { level: number; pairs: Pair[]; copies: Heard[] }>();
   for (const h of new Set(layered.flatMap(p => [p.a, p.b]))) {
-    const stack = stacks.get(root(h)) ?? { level: 0, pairs: [] };
+    const stack = stacks.get(root(h)) ?? { level: 0, pairs: [], copies: [] };
     stack.level += h.clip.volume;
+    stack.copies.push(h);
     stacks.set(root(h), stack);
   }
   for (const p of layered) stacks.get(root(p.a))!.pairs.push(p);
   return { played: playing.length > 0, loudest, stacks: [...stacks.values()] };
 }
 
-interface Stretch { start: number; end: number; before: number; after: number }
+interface Stretch { start: number; end: number; before: number; after: number; copies: Heard[] }
 
 /** Whether `next` has `clip` as `before` had it: same place, same piece of the same recording, same volume. */
 function unchanged(before: Timeline | null, next: Timeline, clip: MediaClip): boolean {
@@ -173,8 +177,8 @@ export function introducedDoubledSound(before: Timeline | null, next: Timeline, 
           const stretches = louder.get(p) ?? [];
           const last = stretches.at(-1);
           if (last && Math.abs(last.end - edges[i - 1]!) < PLAYS && Math.abs(last.before - base) < SAME_LEVEL &&
-            Math.abs(last.after - stack.level) < SAME_LEVEL) last.end = edges[i]!;
-          else stretches.push({ start: edges[i - 1]!, end: edges[i]!, before: base, after: stack.level });
+            Math.abs(last.after - stack.level) < SAME_LEVEL && sameCopies(last.copies, stack.copies)) last.end = edges[i]!;
+          else stretches.push({ start: edges[i - 1]!, end: edges[i]!, before: base, after: stack.level, copies: stack.copies });
           louder.set(p, stretches);
         }
       }
@@ -183,18 +187,40 @@ export function introducedDoubledSound(before: Timeline | null, next: Timeline, 
   const key = (a: string, b: string) => [a, b].sort().join(" ");
   const oldPairs = new Set(was.pairs.map(p => key(p.a.clip.id, p.b.clip.id)));
   const found = now.pairs.flatMap(p => (louder.get(p) ?? []).map(s => ({ p, s, isNew: !oldPairs.has(key(p.a.clip.id, p.b.clip.id)) })));
+  const changed = (h: Heard) => !unchanged(before, next, h.clip);
+  // Three copies are three pairs over one stretch, and one report with its whole fix says it once.
+  const said = new Set<string>();
   // A pair `before` already had is reported only when no new pair layers the same stretch: that one is the addition.
   return found.filter(f => f.isNew || !found.some(o => o.isNew && o.p.mediaId === f.p.mediaId && o.s.start < f.s.end && o.s.end > f.s.start))
+    .filter(({ p, s }) => {
+      const stretch = [p.mediaId, s.start, s.end, ...s.copies.map(h => h.clip.id).sort()].join(" ");
+      return !said.has(stretch) && !!said.add(stretch);
+    })
     .map(({ p, s }) => {
       // Turn down the copy the edit added or changed, so the mix the base had stays; with both or neither, the later one.
-      const quiet = [p.b, p.a].find(h => !unchanged(before, next, h.clip)) ?? p.b;
+      // When that one at 0 still leaves the stretch louder, the next copy the edit added or changed, the later first,
+      // and only then one the base had: each named copy alone would leave the model refused again.
+      const quiet = [p.b, p.a].find(changed) ?? p.b;
+      const rest = s.copies.filter(h => h !== quiet).sort((x, y) => Number(changed(y)) - Number(changed(x)) || y.start - x.start);
+      const turnDown: { clipId: string; volume: number }[] = [];
+      let excess = s.after - s.before;
+      for (const h of [quiet, ...rest]) {
+        if (excess <= SAME_LEVEL) break;
+        const by = Math.min(h.clip.volume, excess);
+        turnDown.push({ clipId: h.clip.id, volume: Math.round((h.clip.volume - by) * 1e6) / 1e6 });
+        excess -= by;
+      }
       const overlap = { start: sourceToTimeline(p.a.clip, s.start), end: sourceToTimeline(p.a.clip, s.end) };
       return { mediaId: p.mediaId, clipIds: [p.a.clip.id, p.b.clip.id] as [string, string],
         // Exact seconds, so a split there leaves no sliver of either copy louder or turned down.
         overlap, source: { start: s.start, end: s.end },
         level: { before: round3(s.before), after: round3(s.after) },
-        turnDown: { clipId: quiet.clip.id, volume: Math.round(Math.max(0, quiet.clip.volume - (s.after - s.before)) * 1e6) / 1e6 } };
+        copies: s.copies.map(h => h.clip.id), turnDown };
     });
+}
+
+function sameCopies(a: readonly Heard[], b: readonly Heard[]) {
+  return a.length === b.length && a.every(h => b.includes(h));
 }
 
 function round3(n: number) {

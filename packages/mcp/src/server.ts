@@ -181,32 +181,37 @@ function newClipEdges(before: Timeline | null, next: Timeline, media: ReadonlyAr
   return edges;
 }
 
-const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that stretch would play louder than the edit started. Make the change named for it, which turns down the copy the edit added or changed over that stretch alone and leaves the mix the edit started from everywhere else, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
+const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that stretch would play louder than the edit started. Make the change named for it, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone and leaves the mix the edit started from everywhere else, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
 
 /**
- * A louder stretch as the refusal names it, with the change that turns down the copy the edit added or changed there
- * alone: split off just that stretch of it, so what it plays before and after stays as it was.
+ * A louder stretch as the refusal names it, with the change that turns down each copy it names there alone: split off
+ * just that stretch of it, so what it plays before and after stays as it was.
  */
 export function doubledSoundText(d: LouderDoubledSound, next: Timeline): string {
   const clips = new Map(next.tracks.flatMap(t => t.clips.map(c => [c.id, c] as const)));
-  const [a, b] = d.clipIds.map(id => clips.get(id) as MediaClip);
   const t = (n: number) => String(+n.toFixed(6));
   const { start: from, end: to } = d.overlap;
-  const pair = `clips ${a!.id} and ${b!.id} both play ${d.mediaId} from ${t(d.source.start)} to ${t(d.source.end)} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
-  const quiet = clips.get(d.turnDown.clipId) as MediaClip;
-  const volume = t(d.turnDown.volume);
-  // An id for a piece split off it that no clip has yet.
-  const fresh = (name: string) => { let id = `${quiet.id}-${name}`; for (let n = 2; clips.has(id); n++) id = `${quiet.id}-${name}-${n}`; return id; };
-  const before = quiet.timelineIn < from - 1e-6, after = clipEnd(quiet) > to + 1e-6;
-  if (!before && !after) return `${pair}: ${quiet.id} plays only there, so set its volume to ${volume}`;
-  if (!before) {
+  const copies = d.copies.length > 2 ? `${d.copies.slice(0, -1).join(", ")} and ${d.copies.at(-1)} all` : `${d.clipIds[0]} and ${d.clipIds[1]} both`;
+  const pair = `clips ${copies} play ${d.mediaId} from ${t(d.source.start)} to ${t(d.source.end)} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
+  const turnDown = ({ clipId, volume: v }: LouderDoubledSound["turnDown"][number]) => {
+    const quiet = clips.get(clipId) as MediaClip;
+    const volume = t(v);
+    // An id for a piece split off it that no clip has yet.
+    const fresh = (name: string) => { let id = `${quiet.id}-${name}`; for (let n = 2; clips.has(id); n++) id = `${quiet.id}-${name}-${n}`; return id; };
+    const before = quiet.timelineIn < from - 1e-6, after = clipEnd(quiet) > to + 1e-6;
+    if (!before && !after) return `${quiet.id} plays only there, so set its volume to ${volume}`;
+    if (!before) {
+      const rest = fresh("after");
+      return `${quiet.id} plays on after that, so splitClip ${quiet.id} at ${t(to)} with newClipId ${rest}, which keeps the part after it as ${rest} with its sound, and set ${quiet.id}'s volume to ${volume}`;
+    }
+    const louder = fresh("louder");
+    if (!after) return `${quiet.id} plays before that as the edit started, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, which keeps the part before it as it was, and set ${louder}'s volume to ${volume}`;
     const rest = fresh("after");
-    return `${pair}: ${quiet.id} plays on after that, so splitClip ${quiet.id} at ${t(to)} with newClipId ${rest}, which keeps the part after it as ${rest} with its sound, and set ${quiet.id}'s volume to ${volume}`;
-  }
-  const louder = fresh("louder");
-  if (!after) return `${pair}: ${quiet.id} plays before that as the edit started, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, which keeps the part before it as it was, and set ${louder}'s volume to ${volume}`;
-  const rest = fresh("after");
-  return `${pair}: ${quiet.id} plays on either side of that, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, then splitClip ${louder} at ${t(to)} with newClipId ${rest}, which keeps the parts either side as they were, and set ${louder}'s volume to ${volume}`;
+    return `${quiet.id} plays on either side of that, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, then splitClip ${louder} at ${t(to)} with newClipId ${rest}, which keeps the parts either side as they were, and set ${louder}'s volume to ${volume}`;
+  };
+  // Turned down to 0, the first copy can still leave the stretch louder, as three copies where the base played one:
+  // the next is named too, so the fix done as it says is the whole fix.
+  return `${pair}: ${d.turnDown.map(turnDown).join("; and ")}`;
 }
 
 const OPS_DOC = `Op types (all times are seconds; timeline times are positions in the edit, source times are positions in the media file):
@@ -2954,7 +2959,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, the stretch that got louder and both levels. Make the change it names, which turns down the copy the edit added or changed over that stretch alone, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, the stretch that got louder and both levels. Make the change it names, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {
@@ -2981,6 +2986,18 @@ ${OPS_DOC}`,
       // or trimmed, a whole new timeline. One pass built its video from added clips, which nothing measured, and began
       // a clip inside the end of an “uh”; the revision the editor then asked for trimmed that join by one frame, into
       // the first sound of the next word, and said the word now played in full (2026-11-12).
+      // A second audible copy of the same moment of a recording doubles that sound in the mix. One edit asked to keep the
+      // original audio and played it twice as loud, on the video clip and again on A1 (#18). A directly requested edit
+      // applies as it's saved, so the model hears of it first, and an editor who asked for the layering still gets it.
+      // It reads no audio, so it runs before any of the edit's edges are measured and refuses sooner.
+      const refuseDoubledSound = async (next: Timeline) => {
+        if (layeredSound) return;
+        const doubled = await getProject()
+          .then(({ project }) => introducedDoubledSound(before, next, project.media))
+          .catch(without("failed to check the edit for sound it plays louder", [] as LouderDoubledSound[]));
+        if (doubled.length) throw new Error(doubled.slice(0, 6).map(d => doubledSoundText(d, next)).join("; ") +
+          `${doubled.length > 6 ? `; and ${doubled.length - 6} more` : ""}. ${DOUBLED_SOUND}`);
+      };
       const refuseEdgesInSound = async (base: Timeline | null, next: Timeline) => {
         const inside = await edgesInSound(base, next).catch(withoutUnlessPreparing("failed to measure the edit's new clip edges", [] as SoundingEdge[]));
         if (inside.length) throw new Error(inside.slice(0, 12).map(e => edgeInSoundText(e)).join("; ") +
@@ -3015,6 +3032,9 @@ ${OPS_DOC}`,
           v.ops = aligned;
         } else v.ops = await ripplesOnFrames(v.ops, before, frameChanges);
         body.ops = v.ops;
+        // Dry-run against the pinned base before deriving the picture from the synchronized clips.
+        const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);
+        await refuseDoubledSound(placed);
         // Dialogue removed here skips the edge placement and checks of dialogue_apply_cuts. Three removals on one pass
         // came this way, and an edge inside a sounding word is the clipped word the editor sends back. Each all-track
         // ripple is measured on the timeline it applies to, in order.
@@ -3037,8 +3057,6 @@ ${OPS_DOC}`,
           if (split.length) throw new Error(split.join("; ") +
             ". Nothing was saved. Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
         }
-        // Dry-run against the pinned base before deriving the picture from the synchronized clips.
-        const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);
         await refuseEdgesInSound(before, placed);
         if (inset) body.ops = [...v.ops, ...syncPictureOps((await getProject()).project, placed, inset)];
       } else {
@@ -3047,19 +3065,9 @@ ${OPS_DOC}`,
           return errorText(`Invalid timeline:\n${formatZodError(parsed.error)}`);
         }
         body.timeline = parsed.data;
+        await refuseDoubledSound(parsed.data);
         await refuseEdgesInSound(before, parsed.data);
         if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, inset));
-      }
-      // A second audible copy of the same moment of a recording doubles that sound in the mix. One edit asked to keep the
-      // original audio and played it twice as loud, on the video clip and again on A1 (#18). A directly requested edit
-      // applies as it's saved, so the model hears of it first, and an editor who asked for the layering still gets it.
-      if (!layeredSound) {
-        const next = body.timeline ?? applyOps(before ?? emptyTimeline(ctx.projectId), body.ops ?? []);
-        const doubled = await getProject()
-          .then(({ project }) => introducedDoubledSound(before, next, project.media))
-          .catch(without("failed to check the edit for sound it plays louder", [] as LouderDoubledSound[]));
-        if (doubled.length) throw new Error(doubled.slice(0, 6).map(d => doubledSoundText(d, next)).join("; ") +
-          `${doubled.length > 6 ? `; and ${doubled.length - 6} more` : ""}. ${DOUBLED_SOUND}`);
       }
       return propose(body, before, frameChanges);
     },

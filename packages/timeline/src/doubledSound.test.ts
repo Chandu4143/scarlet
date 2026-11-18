@@ -100,9 +100,9 @@ describe("doubled sound", () => {
     next.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-a" }));
     next.tracks[0]!.clips.push(makeMediaClip("media-a", 0, 2, 10, { id: "late-v" }));
     expect(introducedDoubledSound(once, next, media)).toEqual([{ mediaId: "media-a", clipIds: ["late-v", "late-a"],
-      overlap: { start: 10, end: 12 }, source: { start: 0, end: 2 }, level: { before: 1, after: 2 }, turnDown: { clipId: "late-a", volume: 0 } }]);
+      overlap: { start: 10, end: 12 }, source: { start: 0, end: 2 }, level: { before: 1, after: 2 }, copies: ["late-v", "late-a"], turnDown: [{ clipId: "late-a", volume: 0 }] }]);
     // From an empty timeline the report's two copies at unity are twice unity.
-    expect(introducedDoubledSound(null, reported(), media)).toEqual([{ ...doubledSound(reported(), media)[0]!, level: { before: 1, after: 2 }, turnDown: { clipId: "audio-clip", volume: 0 } }]);
+    expect(introducedDoubledSound(null, reported(), media)).toEqual([{ ...doubledSound(reported(), media)[0]!, level: { before: 1, after: 2 }, copies: ["video-clip", "audio-clip"], turnDown: [{ clipId: "audio-clip", volume: 0 }] }]);
   });
 
   it("leaves a copy of a moment the base already layered, at the level it played it", () => {
@@ -121,11 +121,11 @@ describe("doubled sound", () => {
       { op: "updateClip", clipId: "video-clip", patch: { volume: 1 } },
       { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } },
     ]);
-    expect(introducedDoubledSound(halves, raised, media)).toEqual([{ ...doubledSound(raised, media)[0]!, level: { before: 1, after: 2 }, turnDown: { clipId: "audio-clip", volume: 0 } }]);
+    expect(introducedDoubledSound(halves, raised, media)).toEqual([{ ...doubledSound(raised, media)[0]!, level: { before: 1, after: 2 }, copies: ["video-clip", "audio-clip"], turnDown: [{ clipId: "audio-clip", volume: 0 }] }]);
     // Raising one of them to 1 is 1.5.
     const one = applyOps(halves, [{ op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }]);
     // It comes back to 0.5, where the two add up to the 1 the base played, not to 0, which would leave it quieter.
-    expect(introducedDoubledSound(halves, one, media).map(d => [d.level, d.turnDown])).toEqual([[{ before: 1, after: 1.5 }, { clipId: "audio-clip", volume: 0.5 }]]);
+    expect(introducedDoubledSound(halves, one, media).map(d => [d.level, d.turnDown])).toEqual([[{ before: 1, after: 1.5 }, [{ clipId: "audio-clip", volume: 0.5 }]]]);
   });
 
   it("reports only the stretch an extended layer made louder, and turns down the layer there alone", () => {
@@ -133,11 +133,11 @@ describe("doubled sound", () => {
     const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })], [makeMediaClip("media-a", 0, 5, 0, { id: "layer" })]);
     const extended = applyOps(base, [{ op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } }]);
     expect(introducedDoubledSound(base, extended, media)).toEqual([{ mediaId: "media-a", clipIds: ["camera", "layer"],
-      overlap: { start: 5, end: 10 }, source: { start: 5, end: 10 }, level: { before: 1, after: 2 }, turnDown: { clipId: "layer", volume: 0 } }]);
+      overlap: { start: 5, end: 10 }, source: { start: 5, end: 10 }, level: { before: 1, after: 2 }, copies: ["camera", "layer"], turnDown: [{ clipId: "layer", volume: 0 }] }]);
     // With the layer first in the pair (on V1, the camera sound on A1), it is still the layer that is turned down.
     const flipped = timeline([makeMediaClip("media-a", 0, 5, 0, { id: "layer" })], [makeMediaClip("media-a", 0, 10, 0, { id: "camera" })]);
     const flippedExtended = applyOps(flipped, [{ op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } }]);
-    expect(introducedDoubledSound(flipped, flippedExtended, media).map(d => [d.clipIds, d.turnDown.clipId])).toEqual([[["layer", "camera"], "layer"]]);
+    expect(introducedDoubledSound(flipped, flippedExtended, media).map(d => [d.clipIds, d.turnDown.map(t => t.clipId)])).toEqual([[["layer", "camera"], ["layer"]]]);
   });
 
   it("reports one stretch per level: an edge elsewhere doesn't split it, and a different starting level does", () => {
@@ -154,15 +154,15 @@ describe("doubled sound", () => {
       { op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } },
     ]);
     expect(introducedDoubledSound(short, both, media).map(d => [d.overlap, d.level, d.turnDown])).toEqual([
-      [{ start: 5, end: 7 }, { before: 0.8, after: 1.8 }, { clipId: "layer", volume: 0 }],
-      [{ start: 7, end: 10 }, { before: 1, after: 1.8 }, { clipId: "layer", volume: 0.2 }],
+      [{ start: 5, end: 7 }, { before: 0.8, after: 1.8 }, [{ clipId: "layer", volume: 0 }]],
+      [{ start: 7, end: 10 }, { before: 1, after: 1.8 }, [{ clipId: "layer", volume: 0.2 }]],
     ]);
   });
 
   it("turns down the copy whose volume the edit raised, not the one it left alone", () => {
     const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })], [makeMediaClip("media-a", 0, 10, 0, { id: "layer", volume: 0.5 })]);
     const raised = applyOps(base, [{ op: "updateClip", clipId: "camera", patch: { volume: 1.5 } }]);
-    expect(introducedDoubledSound(base, raised, media).map(d => [d.level, d.turnDown])).toEqual([[{ before: 1.5, after: 2 }, { clipId: "camera", volume: 1 }]]);
+    expect(introducedDoubledSound(base, raised, media).map(d => [d.level, d.turnDown])).toEqual([[{ before: 1.5, after: 2 }, [{ clipId: "camera", volume: 1 }]]]);
   });
 
   it("leaves one clip's own volume, with no second copy", () => {
@@ -194,12 +194,52 @@ describe("doubled sound", () => {
     expect(introducedDoubledSound(layered, split, media)).toEqual([]);
   });
 
-  it("reports a third copy moved under two layered on purpose, by the pairs it makes, at 3 where the base played 2", () => {
+  it("reports a third copy moved under two layered on purpose once, by a pair it makes, at 3 where the base played 2", () => {
     const before = reported();
     before.tracks.push({ ...structuredClone(before.tracks[1]!), id: "a2", clips: [makeMediaClip("media-a", 0, 5.75, 20, { id: "third" })] });
     const next = applyOps(before, [{ op: "moveClip", clipId: "third", timelineIn: 0 }]);
-    expect(introducedDoubledSound(before, next, media).map(d => [d.clipIds, d.level])).toEqual([
-      [["video-clip", "third"], { before: 2, after: 3 }], [["audio-clip", "third"], { before: 2, after: 3 }],
+    expect(introducedDoubledSound(before, next, media).map(d => [d.clipIds, d.level, d.copies, d.turnDown])).toEqual([
+      [["video-clip", "third"], { before: 2, after: 3 }, ["video-clip", "audio-clip", "third"], [{ clipId: "third", volume: 0 }]],
+    ]);
+  });
+
+  it("names a second copy to turn down when the first at 0 still leaves the stretch louder, and the fix done as it says is the whole fix", () => {
+    const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })]);
+    // Three copies where the base played one: one report for the stretch, turning down both copies the edit added.
+    const three = structuredClone(base);
+    three.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 10, 0, { id: "layer" }));
+    three.tracks.push({ ...structuredClone(three.tracks[1]!), id: "a2", clips: [makeMediaClip("media-a", 0, 10, 0, { id: "layer-2" })] });
+    expect(introducedDoubledSound(base, three, media)).toEqual([{ mediaId: "media-a", clipIds: ["camera", "layer"],
+      overlap: { start: 0, end: 10 }, source: { start: 0, end: 10 }, level: { before: 1, after: 3 }, copies: ["camera", "layer", "layer-2"],
+      turnDown: [{ clipId: "layer", volume: 0 }, { clipId: "layer-2", volume: 0 }] }]);
+    const quiet = (tl: typeof base, turnDown: { clipId: string; volume: number }[]) =>
+      applyOps(tl, turnDown.map(t => ({ op: "updateClip" as const, clipId: t.clipId, patch: { volume: t.volume } })));
+    expect(introducedDoubledSound(base, quiet(three, introducedDoubledSound(base, three, media)[0]!.turnDown), media)).toEqual([]);
+
+    // The camera raised to 2 under a new copy at 1: the copy at 0 still leaves 2, so the camera comes back to 1 too.
+    const raised = applyOps(base, [{ op: "updateClip", clipId: "camera", patch: { volume: 2 } }]);
+    raised.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 10, 0, { id: "layer" }));
+    const [found] = introducedDoubledSound(base, raised, media);
+    expect([found!.level, found!.turnDown]).toEqual([{ before: 1, after: 3 }, [{ clipId: "layer", volume: 0 }, { clipId: "camera", volume: 1 }]]);
+    expect(introducedDoubledSound(base, quiet(raised, found!.turnDown), media)).toEqual([]);
+
+    // A copy the edit left alone is turned down last: a new copy at 0.5 and one at 1 under the camera, 2.5 where it was 1.
+    const halfAndOne = structuredClone(base);
+    halfAndOne.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 10, 0, { id: "half", volume: 0.5 }));
+    halfAndOne.tracks.push({ ...structuredClone(halfAndOne.tracks[1]!), id: "a2", clips: [makeMediaClip("media-a", 0, 10, 0, { id: "whole" })] });
+    expect(introducedDoubledSound(base, halfAndOne, media).map(d => d.turnDown)).toEqual([[{ clipId: "half", volume: 0 }, { clipId: "whole", volume: 0 }]]);
+  });
+
+  it("ends a stretch where one copy hands over to another at the same level, so each names the copy that plays there", () => {
+    const base = timeline([makeMediaClip("media-a", 0, 10, 0, { id: "camera" })]);
+    // A layer for all 10 s, and a third copy at 0.5 that is one clip for 0–5 s and another for 5–10 s: 2.5 throughout.
+    const next = structuredClone(base);
+    next.tracks[1]!.clips.push(makeMediaClip("media-a", 0, 10, 0, { id: "layer" }));
+    next.tracks.push({ ...structuredClone(next.tracks[1]!), id: "a2", clips: [makeMediaClip("media-a", 0, 5, 0, { id: "first", volume: 0.5 }),
+      makeMediaClip("media-a", 5, 10, 5, { id: "second", volume: 0.5 })] });
+    expect(introducedDoubledSound(base, next, media).map(d => [d.overlap, d.level.after, d.turnDown])).toEqual([
+      [{ start: 0, end: 5 }, 2.5, [{ clipId: "layer", volume: 0 }, { clipId: "first", volume: 0 }]],
+      [{ start: 5, end: 10 }, 2.5, [{ clipId: "layer", volume: 0 }, { clipId: "second", volume: 0 }]],
     ]);
   });
 });
