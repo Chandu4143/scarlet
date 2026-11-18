@@ -1,3 +1,4 @@
+import { toolAnnotations } from "@scarlet/mcp/annotations";
 import { beginRevision, DialogueScanPage, planText, taskNeedsTranscripts, taskPlan, taskRecoveryAction, type RunChoice, type Task } from "@scarlet/shared";
 import os from "node:os";
 import { mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
@@ -301,6 +302,21 @@ function unchecked(ctx: Ctx, change: Change): string {
   }
 }
 
+/** The edits an attempt tried to save after its last saved change and Scarlet refused, newest last, each said once. */
+function refusedSinceLastSave(ctx: Ctx, attempt: Task): string[] {
+  const events = ctx.repos.taskEvents.list(attempt.id);
+  const lastSave = events.findLastIndex(e => e.type === "change");
+  const said = new Set<string>();
+  for (const ev of events.slice(lastSave + 1)) {
+    const tool = typeof ev.data?.tool === "string" ? ev.data.tool.replace(/^scarlet\./, "") : "";
+    if (ev.type !== "log" || ev.data?.kind !== "tool_refused" || !tool || toolAnnotations(tool).readOnlyHint) continue;
+    const reason = ev.text.replace(/^Error:\s*/, "").replace(/\s+/g, " ").trim();
+    said.delete(`${tool}: ${reason.slice(0, 400)}`);
+    said.add(`${tool}: ${reason.slice(0, 400)}`);
+  }
+  return [...said].slice(-3);
+}
+
 function recoveryInstruction(ctx: Ctx, task: Task, rootId?: string): string {
   const run = rootId && runAttempts(task.projectId, rootId);
   const attempts = run ? ctx.repos.tasks.select(run.where, run.params, "created_at, rowid") : [task];
@@ -331,11 +347,19 @@ function recoveryInstruction(ctx: Ctx, task: Task, rootId?: string): string {
       progress.push(ev.text);
     }
   }
-  for (const text of progress.slice(-8)) lines.push(`Previous progress: ${text}`);
+  // A line said again and again in a row would fill the window and push out what came before it.
+  for (const text of progress.filter((t, i) => t !== progress[i - 1]).slice(-8)) lines.push(`Previous progress: ${text}`);
   const plan = taskPlan(ctx.repos.taskEvents.list(task.id, "lastPlanOrAnswer"));
   if (plan) lines.push("Your plan when it stopped:", planText(plan));
   for (const [mediaId, ranges] of scans) {
     lines.push(`Scanned source seconds on ${mediaId}: ${mergeRanges(ranges).map(r => `${r.start}–${r.end}`).join(", ")}`);
+  }
+  const unsaved = refusedSinceLastSave(ctx, attempts.at(-1)!);
+  if (unsaved.length) {
+    // A restart that lands just after a refused save leaves that work undone, and nothing in the saved changes says so
+    // (2026-11-18: the framing of a demo's last four minutes was refused, then the app restarted to update).
+    lines.push("Not saved when it stopped (Scarlet refused these after its last saved change, so that work is still to do):");
+    for (const text of unsaved) lines.push(`- ${text}`);
   }
   for (const c of savedChanges(ctx, attempts)) {
     // Scarlet closes a proposal when a later part or a revision takes its cuts over. The editor didn't turn it down:
