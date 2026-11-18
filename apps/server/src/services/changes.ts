@@ -2385,8 +2385,11 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
       // only that nothing was found (2026-11-15). An option carries its doubt from when it is saved.
       const staged = ctx.repos.changes.get(body.changeId);
       if (staged?.projectId === projectId && staged.state === "ready") {
-        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` +
-          "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there.");
+        // A dialogue pass's staged cut is a call: the editor decides it whatever is flagged, and reads its reason as the note.
+        // A revision told to save a check with timeline_propose tried a review save next, refused too (2026-11-18).
+        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` + (staged.cutReasons?.length
+          ? "Its staged cuts are the editor's calls: a doubt about one goes in the reason you save it with (dialogue_revise_cut or dialogue_review_save), which the editor reads on its card."
+          : "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there."));
       }
       throw notFound(`edit ${body.spot} of change ${body.changeId} on the working cut`);
     }

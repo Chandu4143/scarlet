@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Skill } from "@scarlet/shared";
-import { createProject, emptyTimeline, type Change } from "@scarlet/timeline";
+import { createProject, emptyTimeline, makeMediaClip, type Change } from "@scarlet/timeline";
 import { buildSystemPrompt, PLAN_STEPS, SCARLET_INTRO, stripFrontmatter } from "./prompt.js";
 
 const skill = (over: Partial<Skill> = {}): Skill => ({ id: "skl_house", name: "house-style", description: "Our house rules for interviews.",
@@ -139,6 +139,26 @@ describe("an editing prompt", () => {
     expect(buildSystemPrompt({ ...base, task: task({ time: 42, end: 51.5, markedRange: { start: 42, end: 51.5 } }) })).not.toContain("Stretch the editor marked");
     // With nothing recorded there is no context section.
     expect(buildSystemPrompt({ ...base, task: task({}) })).not.toContain("## Context");
+  });
+
+  it("lists a long timeline's clips only near where the request points, and a pass's diff not for one of its cuts", () => {
+    const timeline = emptyTimeline(project.id);
+    timeline.tracks[0]!.clips = Array.from({ length: 60 }, (_, i) => makeMediaClip("m1", i * 2, i * 2 + 2, i * 2, { id: `c${i}` }));
+    const near = buildSystemPrompt({ ...base, project: { project, timeline }, task: task({ time: 60, end: 62 }) });
+    expect(near).toContain("c30 ");
+    expect(near).not.toContain("c0 ");
+    expect(near).toContain("Listed: the clips within 15 s of 1:00.00–1:02.00, of 60. `timeline_get` lists every clip");
+    const whole = buildSystemPrompt({ ...base, project: { project, timeline }, task: task({}) });
+    expect(whole).not.toContain("c30 ");
+    expect(whole).toContain("The 60 clips aren't listed here");
+    // A short timeline is listed whole.
+    timeline.tracks[0]!.clips = timeline.tracks[0]!.clips.slice(0, 10);
+    expect(buildSystemPrompt({ ...base, project: { project, timeline }, task: task({ time: 60 }) })).toContain("c0 ");
+    const change = { id: "chg_3", projectId: project.id, fromVersion: "v1", toVersion: "v2", description: "Review 7 optional dialogue cuts", author: { type: "agent", name: "codex" },
+      noteIds: [], ranges: [{ start: 10, end: 11 }], state: "revising", renders: [] } as unknown as Change;
+    const pass = { change, description: ["Moved 200 clips along the timeline with nothing else changed (now 1.00–600.00)"] };
+    expect(buildSystemPrompt({ ...base, change: pass, task: task({ changeId: "chg_3", cutIndex: 0 }) })).not.toContain("Diff:");
+    expect(buildSystemPrompt({ ...base, change: pass, task: task({ changeId: "chg_3", editIndex: 0 }) })).toContain("Diff:\n- Moved 200 clips");
   });
 
   it("asks for a reason for every edit and puts the summary in the chat", () => {

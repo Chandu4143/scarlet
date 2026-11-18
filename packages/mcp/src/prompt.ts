@@ -206,6 +206,20 @@ export const PLAN_STEPS = `# Your steps
 
 Right after the sentence on what the request will come to, and before your first Scarlet tool call, lay out the steps you will take with your to-do tool, one short line each. Mark each step as you start it and as you finish it. Scarlet shows the editor that list while you work, so keep it as you first wrote it unless the work truly changes.`;
 
+/** How many clips a prompt lists one by one before it lists only those near the request's position. */
+const PROMPT_CLIPS = 40;
+
+/** The timeline seconds a request points at: the stretch marked, or the position or range given with it. */
+function requestRange(task: PromptContext["task"]): { start: number; end: number } | undefined {
+  const c = task?.context;
+  if (!c) return undefined;
+  const points = [
+    ...(c.markedRange && !c.markedRange.mediaId ? [c.markedRange.start, c.markedRange.end] : []),
+    ...(!c.mediaId && c.time !== undefined ? [c.time, c.end ?? c.time] : []),
+  ];
+  return points.length ? { start: Math.min(...points), end: Math.max(...points) } : undefined;
+}
+
 export function buildSystemPrompt(ctx: PromptContext): string {
   if (ctx.task?.kind === "skill_from_change") {
     const { skillName, changeId, version } = ctx.task.context;
@@ -233,8 +247,8 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     parts.push(`This harness prefixes Scarlet’s tool names with \`${caps.toolPrefix}\`. For example, call \`${caps.toolPrefix}project_get\` when a skill names \`project_get\`.`);
   }
 
-  // Project summary
-  const summary = typeof ctx.project === "string" ? ctx.project : summarizeProject(ctx.project.project, ctx.project.timeline);
+  // Project summary. A long timeline lists only the clips near where the request points, if it points anywhere.
+  const summary = typeof ctx.project === "string" ? ctx.project : summarizeProject(ctx.project.project, ctx.project.timeline, { most: PROMPT_CLIPS, near: requestRange(ctx.task) });
   parts.push(`# Project\n\n${summary}`);
 
   // Task
@@ -351,7 +365,8 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       `From version ${change.fromVersion} to ${change.toVersion}`,
       `Affected ranges: ${change.ranges.map((r) => `${r.start.toFixed(2)}–${r.end.toFixed(2)} s`).join(", ") || "none"}`,
     ];
-    if (desc.length) lines.push("Diff:", ...desc.map((d) => `- ${d}`));
+    // A request about one staged cut has that cut's range above: the whole pass's diff is not what it is about.
+    if (desc.length && ctx.task?.context?.cutIndex === undefined) lines.push("Diff:", ...desc.map((d) => `- ${d}`));
     lines.push(
       "",
       ctx.task?.context?.cutIndex !== undefined

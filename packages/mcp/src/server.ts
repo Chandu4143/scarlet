@@ -286,7 +286,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       });
       if (record?.change.intent !== "suggestion" || (!["ready", "revising"].includes(record.change.state) && !record.change.replacedBy)) return;
     }
-    return new Error(`This revises staged cut ${stagedCut.index} of ${stagedCut.changeId}. Save its new range with dialogue_revise_cut.`);
+    return new Error(`This revises staged cut ${stagedCut.index} of ${stagedCut.changeId}. Save its new range with dialogue_revise_cut. The revised cut goes back to the editor as a call with its reason as the note: what they should listen for belongs there, and nothing else needs saving.`);
   }
   // An explicit retry uses the footage the agent has actually read on this immutable version. A join
   // measures its two edges; a transcript read covers the returned passage between them.
@@ -962,9 +962,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
     // time one tool call has.
     const deadline = Date.now() + Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 30)) * 1000;
+    // A frame is asked about once per save: its answer doesn't change, and asking again cost a run each time (2026-11-18).
+    const looked = new Set<string>();
     for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
       const bySource = new Map<string, number[]>();
-      for (const n of found.noArea) bySource.set(n.mediaId, [...(bySource.get(n.mediaId) ?? []), n.look]);
+      for (const n of found.noArea) {
+        if (looked.has(`${n.mediaId}@${n.look}`)) continue;
+        looked.add(`${n.mediaId}@${n.look}`);
+        bySource.set(n.mediaId, [...(bySource.get(n.mediaId) ?? []), n.look]);
+      }
+      if (!bySource.size) break;
       const wait = Math.round((deadline - Date.now()) / 1000);
       const answers = await Promise.all([...bySource].map(async ([id, seconds]) => {
         const state = await client.post<RecordingAreas & { asked: number; answered: number }>(
@@ -2724,7 +2731,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }
   }
 
-  tool("dialogue_revise_cut", "Move a staged dialogue cut. Once a call is with the editor, its range can change only on their request about that cut. To trim the pause before a cut, give pauseAfterWord in seconds (0 for the end of the last kept word) instead of start and end. Scarlet locates that word, preserves the incoming edge and measures the word-to-join distance on the saved preview (outgoingPause.remainingSeconds): give the editor that measured time. For other moves give the full new range in TIMELINE seconds on the pass's fromVersion. It may extend past the old edges but must stay clear of neighboring staged cuts. If newer edits affect this passage, Scarlet returns the current version and its location when known. Inspect the current words with timeline_transcript or measure the new edges with dialogue_check_join, then pass that exact version and range to save on the current footage. If the requested result is clear, finish the revision. If it depends on which take the editor wants, task_question can ask that choice. To keep the current footage for the selected call, pass keep:true; when the passage has no current location, use its original range without version. The other cuts and decisions carry over. Measured nearby silence can adjust an edge. Write the reason for the editor in one short sentence. To move several cuts of one pass, list them as cuts in one call. Each moved cut's result has nearbyWords: the words either side of its saved edges as [timeline start, timeline end, text] on the version its times are on, the same reading dialogue_check_join returns, and removes and plays: the words it takes out and the join as the viewer hears it.",
+  tool("dialogue_revise_cut", "Move a staged dialogue cut. Once a call is with the editor, its range can change only on their request about that cut, and the revised cut goes back to them as a call with `reason` as its note: a doubt for them to listen for goes there, and needs no flag or review save. To trim the pause before a cut, give pauseAfterWord in seconds (0 for the end of the last kept word) instead of start and end. Scarlet locates that word, preserves the incoming edge and measures the word-to-join distance on the saved preview (outgoingPause.remainingSeconds): give the editor that measured time. For other moves give the full new range in TIMELINE seconds on the pass's fromVersion. It may extend past the old edges but must stay clear of neighboring staged cuts. If newer edits affect this passage, Scarlet returns the current version and its location when known. Inspect the current words with timeline_transcript or measure the new edges with dialogue_check_join, then pass that exact version and range to save on the current footage. If the requested result is clear, finish the revision. If it depends on which take the editor wants, task_question can ask that choice. To keep the current footage for the selected call, pass keep:true; when the passage has no current location, use its original range without version. The other cuts and decisions carry over. Measured nearby silence can adjust an edge. Write the reason for the editor in one short sentence. To move several cuts of one pass, list them as cuts in one call. Each moved cut's result has nearbyWords: the words either side of its saved edges as [timeline start, timeline end, text] on the version its times are on, the same reading dialogue_check_join returns, and removes and plays: the words it takes out and the join as the viewer hears it.",
     { changeId: z.string(), version: z.string().min(1).optional().describe("Exact version of an inspected current passage; omit for times on the pass's fromVersion"),
       index: z.number().int().nonnegative().optional(), start: z.number().finite().nonnegative().optional(), end: z.number().finite().nonnegative().optional(),
       crossfadeFrames: crossfadeFrames.describe("Total audio-only overlap in project frames for these revised cuts. Omit to keep the existing transition."),
