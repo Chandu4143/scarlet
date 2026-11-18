@@ -156,7 +156,9 @@ export function timelineWords(tl: Timeline, transcripts: Map<string, TranscriptW
 const HESITATION = /^(?:uh+|um+|uhm|ah+|er+|erm|hm+|mm+|mhm)$/;
 
 /** Words the verbatim reading plays where the transcript has none, with source seconds and a few words either side. */
-export interface HeardOnly { mediaId: string; start: number; end: number; source: TimeRange; text: string; context: string }
+export interface HeardOnly { mediaId: string; start: number; end: number; source: TimeRange; text: string; context: string;
+  /** The transcript word the run comes before, by its index. */
+  next: number }
 
 /**
  * Runs of words the scan's verbatim reading hears that the transcript doesn't have: a restart, a stutter or a false
@@ -184,7 +186,7 @@ export function heardOnlyVerbatim(said: readonly TimelineWord[], heard: readonly
         if (run.some(x => !HESITATION.test(key(x)))) {
           const first = source(run[0]!), end = source(run.at(-1)!);
           found.push({ mediaId, start: run[0]!.start, end: run.at(-1)!.end, source: { start: first.start, end: end.end },
-            text: run.map(x => x.text).join(" "), context: h.slice(Math.max(0, runFrom - 4), k + 4).map(x => x.text).join(" ") });
+            text: run.map(x => x.text).join(" "), context: h.slice(Math.max(0, runFrom - 4), k + 4).map(x => x.text).join(" "), next: s[match]!.index });
         }
       }
       runFrom = -1;

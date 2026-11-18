@@ -943,6 +943,32 @@ describe("transcript tools", () => {
     } finally { await editor.close(); mock.state.extra = before; }
   });
 
+  it("shows the words a saved word-for-word reading hears where the transcript tidied a restart away", async () => {
+    const before = mock.state.extra;
+    // The scan heard "welcome back, welcome, welcome back to the show": the transcript kept one "welcome back".
+    const heard = [["Um,", 3.0, 3.3], ["welcome", 3.6, 3.9], ["back,", 4.0, 4.3], ["welcome,", 4.32, 4.4], ["welcome", 4.42, 4.5], ["back", 4.52, 4.58], ["to", 4.6, 4.7], ["the", 4.7, 4.8], ["show.", 4.9, 5.3]];
+    let covered = [{ start: 0, end: 60 }];
+    mock.state.extra = (req, res) => {
+      if (!req.path.endsWith("/dialogue-verbatim")) return before?.(req, res) ?? false;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ words: heard.map(([text, start, end]) => ({ text, start, end })), covered }));
+      return true;
+    };
+    const editor = await connect();
+    try {
+      const read = textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", from: 3, to: 6 } }) as CallToolResult);
+      // The run sits ahead of the transcript word that follows it, in source seconds, and has no index.
+      expect(read).toMatch(/#6 4\.00-4\.30 back\n {2}\+ heard 4\.32-4\.58, not in the transcript: “welcome, welcome back” in “[^”]*”\n#7 /);
+      expect(read).not.toContain("Word-for-word reading saved for");
+      const json = JSON.parse(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", from: 3, to: 6, format: "json" } }) as CallToolResult));
+      expect(json.heard).toEqual([[4.32, 4.58, "welcome, welcome back", 7]]);
+      // A reading that stops short of the page says how far it has got.
+      covered = [{ start: 0, end: 4 }];
+      expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", from: 3, to: 6 } }) as CallToolResult))
+        .toContain("Word-for-word reading saved for 0–4 s of this page so far.");
+    } finally { await editor.close(); mock.state.extra = before; }
+  });
+
   it("reads cached words and empty ranges without starting transcription", async () => {
     const r = (await client.callTool({ name: "transcript_get", arguments: { mediaId: "m1", from: 0, to: 2 } })) as CallToolResult;
     expect(textOf(r)).toContain("#0 0.20-0.50 Hello");
@@ -954,8 +980,8 @@ describe("transcript tools", () => {
       .toContain("[0.20-1.80] #0-#3 Hello everyone welcome back.");
     const none = await client.callTool({ name: "transcript_get", arguments: { mediaId: "m1", from: 10 } }) as CallToolResult;
     expect(textOf(none)).toContain("No speech in that range");
-    // Reading which input each word came from is the only request a read makes: nothing starts transcription.
-    expect(mock.requests.filter(req => req.method === "POST").every(req => req.path.endsWith("/other-input"))).toBe(true);
+    // A read asks which input each word came from and what a saved scan heard word for word: nothing starts transcription.
+    expect(mock.requests.filter(req => req.method === "POST").every(req => req.path.endsWith("/other-input") || req.path.endsWith("/dialogue-verbatim"))).toBe(true);
   });
 
   it("marks the words and gap sound heard only on the input the dialogue isn't on", async () => {

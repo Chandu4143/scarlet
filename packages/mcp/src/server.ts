@@ -92,7 +92,7 @@ import { MediaPreparing, describeError, errorResult, errorText, formatZodError, 
 import { keptEditsNote } from "./editor-kept.js";
 import { registerPerception } from "./perception-tools.js";
 import { registerGraphics } from "./graphics-tools.js";
-import { sourceRangeToTimeline, sourceToTimeline, timelineWords } from "./timeline-perception.js";
+import { heardOnlyVerbatim, sourceRangeToTimeline, sourceToTimeline, timelineWords, type HeardOnly } from "./timeline-perception.js";
 import { PAUSE_FLOOR_SECONDS, partLeftovers } from "./dialogue-leftovers.js";
 import { GAP_SECONDS, QUIET_PHRASE_CONTEXT, describeGapSound, gapSound, quietPhrases, speakingLevel, type GapLevels, type GapSound, type QuietPhrase } from "./gap-sound.js";
 import { keptSilences, pictureReading, pictureWindows, silences, type Silence } from "./silences.js";
@@ -1462,6 +1462,21 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       picked.push({ ...word, index });
     }
     if (!picked.length) return `No speech in that range of ${mediaId} (${words.length} words, #0–#${words.length - 1}). Use waveform_get to inspect pauses.`;
+    // The transcript tidies a restart or a stutter away, and a pass that reads the recording here cuts from what it
+    // reads. Where a dialogue scan has saved its verbatim reading, the words it hears between two transcript words go
+    // in beside them. Nothing more is read for this, and a failed read adds nothing.
+    const span = { start: Math.max(0, picked[0]!.start - 2), end: picked.at(-1)!.end + 2 };
+    const verbatim = await client.dialogueVerbatimWords(ctx.projectId, { mediaId, from: span.start, to: span.end }).catch(() => undefined);
+    const heardRuns: HeardOnly[] = verbatim?.words.length ? heardOnlyVerbatim(picked.map(w => ({ mediaId, index: w.index, text: w.text, start: w.start, end: w.end })),
+      verbatim.words.map((w, index) => ({ mediaId, index, text: w.text, start: w.start, end: w.end })), w => w) : [];
+    // Each run is shown ahead of the transcript word that follows it.
+    const heardBefore = new Map<number, HeardOnly[]>();
+    for (const run of heardRuns) heardBefore.set(run.next, [...(heardBefore.get(run.next) ?? []), run]);
+    const heardLine = (x: HeardOnly) => `  + heard ${x.start.toFixed(2)}-${x.end.toFixed(2)}, not in the transcript: “${x.text}” in “${x.context}”`;
+    // How far the saved reading reaches, when it stops short of this page: later words may still hold a restart.
+    const reached = verbatim?.covered.filter(c => c.end > picked[0]!.start && c.start < picked.at(-1)!.end) ?? [];
+    const covers = reached.some(c => c.start <= picked[0]!.start + 1 && c.end >= picked.at(-1)!.end - 1);
+    const heardThrough = verbatim && !covers ? `Word-for-word reading saved for ${reached.length ? reached.map(c => `${c.start.toFixed(0)}–${c.end.toFixed(0)} s`).join(", ") : "none"} of this page so far. ` : "";
     // The continuation is outside the word list in both formats. A giant single imported
     // word still travels intact: stable indices address words, never fragments of a word.
     function page(render: (count: number, next?: number) => string) {
@@ -1481,7 +1496,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return page((count, next) => {
         const marked = picked.slice(0, count).filter(w => other.has(w.index)).map(w => w.index);
         return JSON.stringify({ mediaId, ...(estimates && { timesFinalThrough: round3(settled) }),
-          words: tuples.slice(0, count), ...(marked.length && { otherInput: marked }), ...(next !== undefined && { nextFromWord: next }) });
+          words: tuples.slice(0, count), ...(marked.length && { otherInput: marked }),
+          ...(heardRuns.length && { heard: heardRuns.filter(x => x.next <= picked[count - 1]!.index).map(x => [round3(x.start), round3(x.end), x.text, x.next]) }),
+          ...(next !== undefined && { nextFromWord: next }) });
       });
     }
     // What the recording holds in each gap between two words, by the index of the word after it.
@@ -1513,8 +1530,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         };
         for (const w of shown) {
           const prev = group.at(-1);
-          if (prev && (gapNote.has(w.index) || w.start - prev.end >= .6 || w.speaker !== prev.speaker || /[.?!]["”’)]*$/.test(prev.text.trim()))) flush();
+          if (prev && (gapNote.has(w.index) || heardBefore.has(w.index) || w.start - prev.end >= .6 || w.speaker !== prev.speaker || /[.?!]["”’)]*$/.test(prev.text.trim()))) flush();
           if (gapNote.has(w.index)) lines.push(gapNote.get(w.index)!);
+          for (const run of heardBefore.get(w.index) ?? []) lines.push(heardLine(run));
           group.push(w);
         }
         flush();
@@ -1522,18 +1540,19 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         let speaker: string | undefined;
         for (const w of shown) {
           if (gapNote.has(w.index)) lines.push(gapNote.get(w.index)!);
+          for (const run of heardBefore.get(w.index) ?? []) lines.push(heardLine(run));
           lines.push(`#${w.index} ${w.start.toFixed(2)}-${w.end.toFixed(2)}${w.speaker && w.speaker !== speaker ? ` ${w.speaker}:` : ""} ${said(w)}`);
           speaker = w.speaker;
         }
       }
       const more = next === undefined ? "" : `\nContinue with nextFromWord=${next}.`;
-      return `${mediaId}: words #${picked[0]!.index}–#${shown.at(-1)!.index} of ${words.length}, source seconds.${estimates ? ` ${estimates}` : ""}\n${lines.join("\n")}${more}`;
+      return `${mediaId}: words #${picked[0]!.index}–#${shown.at(-1)!.index} of ${words.length}, source seconds.${estimates ? ` ${estimates}` : ""}${heardThrough ? ` ${heardThrough.trim()}` : ""}\n${lines.join("\n")}${more}`;
     });
   }
 
   tool(
     "transcript_get",
-    `Word-timed transcript of a media asset in SOURCE seconds. Each word carries a stable index (#123): the same index transcript_search, timeline_transcript and dialogue_scan show, and the word reference dialogue_check_join and dialogue_apply_cuts accept. Word times locate words; cut edges go where the recording is silent, which the dialogue tools measure. In text, a gap of ${GAP_SECONDS} s or more between two words is followed by a line saying what the recording holds there: quiet, or how much of it is sound at speaking level that no word explains, with its source seconds. That sound is whatever the transcript left out: a word it missed, a cut-off start, a breath, a laugh, typing. On a recording with a mix and two isolated inputs, such as a microphone and the computer's sound, a word heard only on the input the dialogue isn't on reads \`${OTHER_INPUT}\` (a producer on a call, a remote guest, playback), and a gap's line says how much of its sound is on that input alone (a system chime, a remark from the call): neither is the speaker. A missing transcript is started or joined with the configured provider; if the call reports preparation, call again. Narrow with from/to seconds or fromWord/toWord. A long result includes nextFromWord: pass it back with the same range, granularity and format to read the next page. Text format: \`#index start-end word\` lines (word) or \`[start-end] #first-#last speaker: text\` lines (segment); json: [index, start, end, text, speaker] tuples, and otherInput listing the indices heard only on the other input. To read the same from/to range on several recordings, such as two microphones, list them as mediaIds instead of mediaId: each is read and paged on its own, in that order (text: one section each; json: \`reads\`), and one that couldn't be read says why in its place. Word indices belong to one recording, so a list takes from/to and no word indices: read on with mediaId and the nextFromWord its section gives.`,
+    `Word-timed transcript of a media asset in SOURCE seconds. Each word carries a stable index (#123): the same index transcript_search, timeline_transcript and dialogue_scan show, and the word reference dialogue_check_join and dialogue_apply_cuts accept. Word times locate words; cut edges go where the recording is silent, which the dialogue tools measure. In text, a gap of ${GAP_SECONDS} s or more between two words is followed by a line saying what the recording holds there: quiet, or how much of it is sound at speaking level that no word explains, with its source seconds. That sound is whatever the transcript left out: a word it missed, a cut-off start, a breath, a laugh, typing. On a recording with a mix and two isolated inputs, such as a microphone and the computer's sound, a word heard only on the input the dialogue isn't on reads \`${OTHER_INPUT}\` (a producer on a call, a remote guest, playback), and a gap's line says how much of its sound is on that input alone (a system chime, a remark from the call): neither is the speaker. The transcript tidies a restart or a stutter away. Where a dialogue scan has saved its word-for-word reading of the recording, a \`+ heard\` line (json: \`heard\`, [start, end, text, index of the word they come before]) gives the words it hears between two transcript words that the transcript left out, in source seconds, ahead of the word that follows them; they have no index, and they play like any other words. When that reading has not reached the whole page yet, the first line says how far it has. A missing transcript is started or joined with the configured provider; if the call reports preparation, call again. Narrow with from/to seconds or fromWord/toWord. A long result includes nextFromWord: pass it back with the same range, granularity and format to read the next page. Text format: \`#index start-end word\` lines (word) or \`[start-end] #first-#last speaker: text\` lines (segment); json: [index, start, end, text, speaker] tuples, and otherInput listing the indices heard only on the other input. To read the same from/to range on several recordings, such as two microphones, list them as mediaIds instead of mediaId: each is read and paged on its own, in that order (text: one section each; json: \`reads\`), and one that couldn't be read says why in its place. Word indices belong to one recording, so a list takes from/to and no word indices: read on with mediaId and the nextFromWord its section gives.`,
     {
       mediaId: z.string().optional(),
       mediaIds: RecordingList.optional().describe("Several recordings to read over the same from/to range in one call, instead of mediaId"),
