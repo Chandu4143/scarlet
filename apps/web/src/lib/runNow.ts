@@ -107,6 +107,8 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
       const query = field(input, "query");
       return typeof query === "string" && query.trim() ? `Searching the screen for “${query.trim().slice(0, 40)}”` : `Reading the text on screen${span(input, "from", "to")}`;
     }
+    case "screen_motion": return `Watching where the screen changes${span(input, "from", "to")}`;
+    case "screen_reading": return `Finding where the screen is read aloud${span(input, "from", "to")}`;
     case "faces": return `Finding where the faces are${span(input, "from", "to")}`;
     case "frame_contact_sheet": return `Looking at the picture${span(input)}`;
     case "frame_contact_sheet_batch": {

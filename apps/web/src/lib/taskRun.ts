@@ -90,6 +90,8 @@ const toolSteps: Record<string, StepSpec> = {
   audio_sync: { group: "sync", verb: "Lined up", doing: "Lining up", detail: () => "the sound", once: true },
   media_frame: picture, frame_contact_sheet: picture, frame_contact_sheet_batch: picture, screen_area: picture,
   screen_text: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
+  screen_reading: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
+  screen_motion: picture,
   faces: { group: "faces", verb: "Found", doing: "Finding", detail: () => "where the faces are", once: true },
   dialogue_check_repeats: sound,
   dialogue_check_join: { group: "joins", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} joins` : "a join", once: true },

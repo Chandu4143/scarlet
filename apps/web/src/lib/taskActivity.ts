@@ -29,6 +29,8 @@ const toolActivity: Record<string, string> = {
   dialogue_check_repeats: "Checking the finished dialogue for repeats",
   media_profile: "Measuring the sound",
   screen_text: "Reading the text on screen",
+  screen_reading: "Finding what is read off the screen",
+  screen_motion: "Watching where the screen changes",
   faces: "Finding where the faces are",
   timeline_propose: "Proposing edit",
   timeline_crossfade_audio: "Smoothing dialogue",

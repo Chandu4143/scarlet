@@ -7,6 +7,7 @@ import type { Ctx } from "../context.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { measuredLoudness } from "../render/loudness.js";
 import { faces } from "../services/faces.js";
+import { screenMotion } from "../services/screenMotion.js";
 import { screenText } from "../services/screenText.js";
 import { askAreas, editShowAreas, showArea, type ShowAreaEdit } from "../services/showArea.js";
 import { optionalNumberParam, requireMedia } from "./util.js";
@@ -68,6 +69,9 @@ export function perceptionRoutes(ctx: Ctx) {
   // to `wait` seconds (default 30) and says how much it has read, and the reading carries on for the next ask.
   r.get("/projects/:projectId/media/:mediaId/screen-text", readPicture("screen text", (media, range, opts, c) =>
     screenText(ctx, media, range, { ...opts, query: c.req.query("q") || undefined })));
+
+  // Where a video's picture changes in a range, second by second, read once and kept as screen text is.
+  r.get("/projects/:projectId/media/:mediaId/screen-motion", readPicture("screen motion", (media, range, opts) => screenMotion(ctx, media, range, opts)));
 
   // Where the faces are in a range of a video, found once and kept. A range not read yet is read now, as screen text is.
   r.get("/projects/:projectId/media/:mediaId/faces", readPicture("faces", (media, range, opts) => faces(ctx, media, range, opts)));
