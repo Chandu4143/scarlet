@@ -1,4 +1,4 @@
-import { taskDialogueOperation, matchesEdit, noteThread, DialogueScanPage, requestText, taskRecoveryAction, taskWasStopped, type Task, type TaskEvent, type Thread, type ThreadEdit } from "@scarlet/shared";
+import { closingCheckFailed, taskDialogueOperation, matchesEdit, noteThread, DialogueScanPage, requestText, taskRecoveryAction, taskWasStopped, type Task, type TaskEvent, type Thread, type ThreadEdit } from "@scarlet/shared";
 import { clock } from "./format";
 import { cutSummary, dialogueReceipt, mergeRanges, rangesOverlap, reviewReasons, type TimeRange, type Author, type Change, type Note } from "@scarlet/timeline";
 import { appliedEditSummary } from "../components/review/cutReviewDetails";
@@ -234,6 +234,12 @@ export function threadConversation(thread: Thread, notes: Note[], events: Record
         out.push({ kind: "agent", at: t.finishedAt ?? t.createdAt ?? "", text, fullText: full === text ? undefined : full,
           author: { type: "agent", id: t.agent, name: t.agent, model: t.model } });
       }
+    }
+    // The pass finished and its closing check for repeats couldn't run. The pass stands; the check can be run again.
+    if (closingCheckFailed(t)) {
+      const available = !thread.active && !thread.question && !t.retryTaskId;
+      out.push({ kind: "system", at: t.finishedAt ?? t.createdAt ?? "", text: "The closing check for repeats didn’t run.", tone: "warn",
+        action: available ? { taskId: t.id, label: "Retry edit" } : undefined });
     }
     if (t.state === "failed" || t.state === "cancelled") {
       const stopped = t.state === "cancelled";

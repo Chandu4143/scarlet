@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A first pass that finished its work no longer says "Couldn’t finish" when only its closing check for repeats failed to run; it says the check didn’t run, with Retry to run it again.
+- A request that failed after saving some of its work now offers Resume, to pick up where it left off.
 - Scarlet no longer leaves a stumbled restart playing because the transcript hid it: before tightening a pause, it now hears any words the transcript dropped there and decides on them.
 - Backspace in an empty message box now takes off its time tag, also when an edit is open, and ⌘Z puts it back.
 - Punch-ins on a talking head are milder across a cut inside a sentence, and no longer pull back out before the sentence ends.

@@ -51,11 +51,16 @@ describe("what a run that ended early offers", () => {
     expect(taskRecoveryAction(task({ state: "done", needsTranscripts: ["m1"] }), true)).toBe("resume");
   });
 
-  it("retries a run that failed before saving anything, resumes one that was already a resumed run, and offers nothing once an edit exists", () => {
+  it("retries a run that failed before saving anything, and resumes one that was already a resumed run or saved an edit", () => {
     expect(taskRecoveryAction(task(), false)).toBe("retry");
     expect(taskRecoveryAction(task({ resumeRootId: "t0" }), false)).toBe("resume");
-    expect(taskRecoveryAction(task(), true)).toBeUndefined();
-    expect(taskRecoveryAction(task({ changeIds: ["chg_1"] }), false)).toBeUndefined();
+    expect(taskRecoveryAction(task(), true)).toBe("resume");
+    expect(taskRecoveryAction(task({ changeIds: ["chg_1"] }), false)).toBe("resume");
+  });
+
+  it("retries the closing check of a finished pass that couldn't run it", () => {
+    expect(taskRecoveryAction(task({ state: "done", repeatAudit: { version: "v1", returns: 1, failed: "401" } }), true)).toBe("retry");
+    expect(taskRecoveryAction(task({ state: "done", repeatAudit: { version: "v1", returns: 1 } }), true)).toBeUndefined();
   });
 
   it("offers nothing for a transcription, a run that produced a skill, or one that finished or still runs", () => {

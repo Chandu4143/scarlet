@@ -7933,6 +7933,22 @@ it("keeps a request about one cut in the conversation while it's paused for a tr
   expect(stands()).toEqual([STAGED[0]!.reason, "Paused", "Transcribe"]);
 });
 
+it("keeps a pass finished when its closing check couldn't run, with Retry after the line that says so", async () => {
+  finishedPass();
+  data = { ...data, tasks: data.tasks.map(t => t.id === "task_done"
+    ? { ...t, reply: "Saved a tighter first cut.", repeatAudit: { version: "v2", returns: 1, failed: "unexpected status 401 Unauthorized" } } : t) };
+  const retryTask = vi.fn().mockResolvedValue(undefined);
+  useProjectStore.setState({ current: data, retryTask });
+  await show();
+  await act(async () => {});
+  const unit = container.querySelector<HTMLElement>('.unit[data-run="task_done"]')!;
+  expect(unit.querySelector(".unit-msg .unit-state")?.textContent ?? "").not.toBe("Couldn’t finish");
+  const line = [...unit.querySelectorAll(".req-say.is-note")].find(p => p.textContent?.startsWith("The closing check for repeats didn’t run."))!;
+  expect(line.textContent).toBe("The closing check for repeats didn’t run.Retry");
+  await click(buttonIn(line as HTMLElement, "Retry")!);
+  expect(retryTask).toHaveBeenCalledWith("task_done", { agent: "claude", model: "opus" });
+});
+
 it("keeps a stopped request about one call under its cut, with Resume once the pass is idle again, until that cut is asked about again", async () => {
   finishedPass();
   data = { ...data, changes: data.changes.map(c => c.id === "chg_ready" ? { ...c, cutReasons: STAGED.map(r => ({ start: r.start, end: r.end, reason: r.reason })) } : c) };

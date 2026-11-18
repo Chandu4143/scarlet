@@ -268,8 +268,8 @@ export function queueRepeatCheck(ctx: Ctx, task: Task, version: string, changeId
   // A previously finished pass may predate the persisted clock. Its latest claim is still measurable.
   const workedMs = closed.workedMs ?? pausedWork(ctx, task) ?? (task.startedAt && task.finishedAt
     ? Math.max(0, Date.parse(task.finishedAt) - Date.parse(task.startedAt)) : undefined);
-  const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
-    repeatAudit: { ...receipt, version, noFindings: undefined, returns: (receipt?.returns ?? 0) + 1 } });
+  const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined, error: undefined,
+    repeatAudit: { ...receipt, version, noFindings: undefined, failed: undefined, returns: (receipt?.returns ?? 0) + 1 } });
   ctx.db.afterCommit(() => ctx.log(`[task] repeat_check task=${logId(task.id)} project=${logId(task.projectId)} outcome=queued attempt=${queued.repeatAudit!.returns}`));
   ctx.bus.taskQueued({ taskId: task.id, projectId: task.projectId });
   return queued;
@@ -303,6 +303,14 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   if (task.kind === "skill_from_change" && body.state === "done" && !task.resultSkillId) {
     body = { state: "failed", error: "The requested skill was not saved. Request it again from the approved change." };
   }
+  // The pass had finished and only its closing check was running (2026-11-18: Codex refused the check's sign-in). The
+  // pass's work and words stand, so it finishes as done; the check that didn't run is said beside it, with Retry.
+  const checkFailed = body.state === "failed" && !body.engineLost && isDialoguePass(task) && !!task.reply && !!task.repeatAudit
+    ? body.error?.trim() || "The closing check stopped." : undefined;
+  if (checkFailed) {
+    task = { ...task, repeatAudit: { ...task.repeatAudit!, failed: checkFailed } };
+    body = { state: "done", changeIds: body.changeIds };
+  }
   const changeIds = [...new Set([...task.changeIds, ...(body.changeIds ?? [])])];
   const own = () => changeIds.flatMap(id => {
     const change = ctx.repos.changes.get(id);
@@ -322,7 +330,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     }
   }
   // Scheduled editor decisions above can advance playback too. The receipt must name the version that actually plays.
-  if (body.state === "done" && task.startedAt && (task.state === "claimed" || task.state === "running") && isDialoguePass(task)) {
+  if (body.state === "done" && !checkFailed && task.startedAt && (task.state === "claimed" || task.state === "running") && isDialoguePass(task)) {
     const project = ctx.repos.projects.get(task.projectId);
     if (project?.head && (!task.context.branch || project.branch === task.context.branch) && !unmetTranscriptWaits(ctx, task.id).length) {
       const timeline = resolveTimeline(ctx, project);
