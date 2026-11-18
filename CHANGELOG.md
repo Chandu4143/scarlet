@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 18, 2026
+
+- A request's estimated cost now shows for new models as soon as their prices are published, and counts the higher price of Fast and Ultrafast speeds; when Scarlet has no price yet, the hover names the model.
+
 ## November 17, 2026
 
 - Scarlet now sees where you read from the screen and where the screen is changing, so it frames screen demos on what you're actually doing.

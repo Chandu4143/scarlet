@@ -84,8 +84,19 @@ it("prices each run at its model's API rates and tells open windows the new tota
     [project, task.id, 3, 237, ["gpt-5.4", "gpt-6.1-sol", "halo-alpha"], null],
   ]);
   expect((await api.projectUsage(project, "task")).groups).toEqual([
-    expect.objectContaining({ key: task.id, totalTokens: 237, estimatedApiCostUsd: null }),
+    expect.objectContaining({ key: task.id, totalTokens: 237, estimatedApiCostUsd: null, unpricedModels: ["halo-alpha"] }),
   ]);
+});
+
+it("prices a run at the speed its edit was asked at, and names a speed it has no price for", async () => {
+  const project = (await api.createProject({ name: "Speeds" })).project.id;
+  const fast = (await api.createTask(project, { instruction: "x", kind: "edit", agent: "codex", model: "gpt-6.2-sol", serviceTier: "priority" })).task;
+  const ultra = (await api.createTask(project, { instruction: "x", kind: "edit", agent: "codex", model: "gpt-6.2-sol", serviceTier: "warp" })).task;
+  for (const task of [fast, ultra]) await api.recordTaskUsage(task.id, { model: "gpt-6.2-sol", inputTokens: 1_000_000, outputTokens: 1_000_000 });
+  const groups = Object.fromEntries((await api.projectUsage(project, "task")).groups.map(g => [g.key, g]));
+  expect(groups[fast.id]).toMatchObject({ estimatedApiCostUsd: expect.closeTo(24, 9) });
+  expect(groups[fast.id]?.unpricedModels).toBeUndefined();
+  expect(groups[ultra.id]).toMatchObject({ estimatedApiCostUsd: null, unpricedModels: ["gpt-6.2-sol at warp speed"] });
 });
 
 it("rejects bad counts, unknown tasks and unknown groupings, and is empty for a new project", async () => {
