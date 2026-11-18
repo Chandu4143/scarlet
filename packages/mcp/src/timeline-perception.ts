@@ -270,14 +270,13 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
 /** One measured source window: RMS and peaks 0..1 per bucket, and voice activity. */
 export interface Reading { from: number; to: number; peaks: number[]; rms?: number[]; speechActivity?: TimeRange[] }
 
-/** Less air than this after the last kept word usually clips its decay or the breath. */
-const MIN_AIR_AFTER = .06;
-/** Less air than this before kept speech resumes usually clips the onset. */
-const MIN_AIR_BEFORE = .04;
 /**
- * An incoming edge with no air can be a cut placed on the word's first sound (voiceIn 0): the recording is quiet for
- * ONSET_QUIET just before the edge, within ONSET_SLACK of it, so nothing of the word was cut off.
+ * An incoming edge with next to no air (under ONSET_AIR) can be a cut placed on the word's first sound (voiceIn 0): the
+ * recording is quiet for ONSET_QUIET just before the edge, within ONSET_SLACK of it, so nothing of the word was cut off.
+ * How much air a join leaves is otherwise reported as measured, airAfter and airBefore, and never judged here: a skill
+ * that asks for five hundredths of a second from word to word had most of its joins marked "check: only 0.03 s before".
  */
+const ONSET_AIR = .04;
 const ONSET_QUIET = .03, ONSET_SLACK = .02;
 /** A room-tone step this large between two quiet edges is audible as a change of room. */
 const ROOM_TONE_JUMP_DB = 6;
@@ -351,7 +350,7 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
   while (lead >= 0 && !n.quiet(lead) && (nEdge - lead) * n.step <= ONSET_SLACK + 1e-6) lead--;
   let quietBeforeEdge = 0;
   for (let i = lead; n.quiet(i); i--) quietBeforeEdge += n.step;
-  const voiceOnCut = airBefore < MIN_AIR_BEFORE && quietBeforeEdge >= ONSET_QUIET - 1e-6;
+  const voiceOnCut = airBefore < ONSET_AIR && quietBeforeEdge >= ONSET_QUIET - 1e-6;
   let outQuiet = 0, inQuiet = 0;
   for (let i = oEdge - 1; o.low(i); i--) outQuiet += o.step;
   for (let i = nEdge; n.low(i); i++) inQuiet += n.step;
@@ -381,10 +380,8 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
   if (clippedOut) issues.push(`cuts off ${name(clippedOut)}`);
   if (clippedIn) issues.push(`starts inside ${name(clippedIn)}`);
   if (!clippedOut && airAfter < 1e-6) issues.push(voiceOut ? "outgoing edge on speech" : "outgoing edge on sound");
-  else if (!clippedOut && airAfter < MIN_AIR_AFTER) issues.push(`only ${airAfter.toFixed(2)} s after ${name(lastWord) || "the last sound"}`);
   if (voiceOnCut) { /* The word starts on the cut and plays whole. */ }
   else if (!clippedIn && airBefore < 1e-6) issues.push(voiceIn ? "incoming edge on speech" : "incoming edge on sound");
-  else if (!clippedIn && airBefore < MIN_AIR_BEFORE) issues.push(`only ${airBefore.toFixed(2)} s before ${name(firstWord) || "the next sound"}`);
   // Room tone is only comparable when both 60 ms windows are quiet.
   if (airAfter >= .06 - 1e-6 && airBefore >= .06 - 1e-6 && Math.abs(jumpDb) >= ROOM_TONE_JUMP_DB &&
       Math.max(outLevel ?? -99, inLevel ?? -99) > AUDIBLE_ROOM_TONE_DB) issues.push(`room tone ${jumpDb > 0 ? "rises" : "drops"} ${Math.abs(jumpDb)} dB`);

@@ -11,8 +11,8 @@ import type { TimelineWord } from "./timeline-perception.js";
 
 /** The scan lists a stretch without words from this length. */
 const SILENCE_SECONDS = 1.5;
-/** A saved part reports a stretch without words it still plays from this length. */
-const KEPT_SILENCE_SECONDS = 2;
+/** A saved part reports a stretch without words it still plays from this length, unless the save names another: how long a silence may play is the skill's pace. */
+export const KEPT_SILENCE_SECONDS = 2;
 
 export interface Silence extends TimeRange {
   seconds: number;
@@ -110,8 +110,7 @@ interface KeptSilence { mediaId: string; source: TimeRange; start: number; end: 
  * Stretches without words that a saved part still plays and no decision covers. `words` are the version's words in
  * playback order inside the part's range; `decided` are its cut, review and keep ranges, all in timeline seconds.
  */
-export function keptSilences(tl: Timeline, words: TimelineWord[], decided: TimeRange[]): KeptSilence[] {
-  const min = KEPT_SILENCE_SECONDS;
+export function keptSilences(tl: Timeline, words: TimelineWord[], decided: TimeRange[], min = KEPT_SILENCE_SECONDS): KeptSilence[] {
   const clips = audibleMediaClips(tl);
   const out: KeptSilence[] = [];
   // A transcript can mark blank audio as a bracketed word. It is not speech.

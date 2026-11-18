@@ -87,4 +87,10 @@ describe("keptSilences", () => {
   it("drops a silence a decision trims below two seconds, and one that is kept or staged on purpose", () => {
     expect(keptSilences(tl, words, [{ start: 10.4, end: 17.8 }, { start: 18.6, end: 21 }, { start: 21.3, end: 24.4 }])).toEqual([]);
   });
+
+  it("lists from the length the save names, since how long a silence may play is the skill's pace", () => {
+    const decided = [{ start: 10.4, end: 17.8 }, { start: 18.6, end: 21 }, { start: 21.3, end: 24.4 }];
+    expect(keptSilences(tl, words, decided, 1.4)).toEqual([expect.objectContaining({ after: "Next", before: "up.", seconds: 1.5 })]);
+    expect(keptSilences(tl, words, decided, 5)).toEqual([]);
+  });
 });

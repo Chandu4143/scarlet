@@ -135,13 +135,15 @@ describe("join audit", () => {
     expect(audit.jumpDb).toBe(0);
   });
 
-  it("reports a clipped word, an edge on speech, tight air and a room-tone jump", () => {
+  it("reports a clipped word, an edge on speech and a room-tone jump, and measures tight air without judging it", () => {
     const clipped = auditJoin(1, 4, side, reading(3, 4.3, [[3.5, 4.2]]), reading(5.7, 7, [[6.2, 7]]),
       { out: words([["really", 3.6, 4.2]]), in: words([["next", 6.2, 6.5]]) });
     expect(clipped.verdict).toBe("check: cuts off “really”");
     expect(clipped.out.clipped).toBe("really");
     const onSpeech = auditJoin(1, 4, side, reading(3, 4.3, [[3.5, 3.97]]), reading(5.7, 7, [[5.9, 7]]));
-    expect(onSpeech.verdict).toBe("check: only 0.02 s after the last sound; incoming edge on speech");
+    // Two hundredths of air after the last sound is a pace a skill can ask for: it is measured, and the verdict leaves it alone.
+    expect(onSpeech.verdict).toBe("check: incoming edge on speech");
+    expect(onSpeech.airAfter).toBeCloseTo(.02, 2);
     const room = auditJoin(1, 4, side, reading(3, 4.3, [[3, 3.7]], .001), reading(5.7, 7, [[6.3, 7]], .004));
     expect(room.verdict).toBe("check: room tone rises 12 dB");
     // Two inaudible floors (a gated mic) differ without anyone hearing it.
