@@ -9,6 +9,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - There’s more space between the edit summary and the For you and See all tabs.
 - Edit numbers on the timeline are numbered dots and pills again; the zoom percentage and − / + stay on the ruler.
 - A pause Scarlet can’t shorten, such as one filled by a breath before your next line, no longer stops the other cuts saved with it.
+- A join cut to the tight pace your skill asks for is no longer reported back to Scarlet as one to check, and a skill can set how long a silence may play before a save lists it.
 - The built-in dialogue pass brings your voice in right after each cut, as Scarlet’s own pace does, instead of a tenth of a second later.
 - Click Refresh models in the model picker to check for newly available models while you work.
 - Edit numbers sit above the footage, and clicking the zoom percentage on the ruler fits the whole timeline.
