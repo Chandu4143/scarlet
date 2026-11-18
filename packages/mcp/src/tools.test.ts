@@ -326,6 +326,28 @@ describe("timeline_framing", () => {
     } finally { await c.close(); }
   });
 
+  it("shows all an inset shows of its recording, close up, when an edit crops it anew", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const tighter = { ...inset, cropTop: 0.02, cropBottom: 0.25, cropLeft: 0.2, cropRight: 0.2 };
+      const result = await ok(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "cam", patch: { transform: tighter } }],
+        description: "Tightened the camera inset", reason: "He asked for more of his face." });
+      const report = JSON.parse(textOf(result).split("\n")[0]!);
+      expect(report.insetLook).toEqual([{ mediaId: "m1", trackId: "v2", clips: 1, crop: [20, 2, 80, 75], at: [15] }]);
+      expect(report.insetLookNext).toContain("close up");
+      const asked = mock.requests.filter(r => r.path.endsWith("/media/m1/frame"));
+      expect(asked.map(r => Object.fromEntries(r.query))).toEqual([expect.objectContaining({ t: "15", w: "640", area: "20,2,80,75" })]);
+      expect(result.content.filter(part => part.type === "image")).toHaveLength(1);
+      // Moving it to another corner keeps its crop and size: nothing new to look at.
+      mock.requests.length = 0;
+      const moved = await ok(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "cam", patch: { transform: { ...inset, x: -0.326 } } }],
+        description: "Moved the camera inset left", reason: "The chart's legend is on the right." });
+      expect(JSON.parse(textOf(moved).split("\n")[0]!).insetLook).toBeUndefined();
+      expect(mock.requests.filter(r => r.path.endsWith("/media/m1/frame"))).toEqual([]);
+    } finally { await c.close(); }
+  });
+
   describe("with areas viewers may see on record", () => {
     // One window from 0 to 60 s of the screen recording: 10-80% across, 10-90% down. Nothing is set after that.
     const window = { at: 5, area: [0.1, 0.1, 0.8, 0.9], noLine: [], holds: [[0, 60]] };

@@ -1,7 +1,7 @@
 import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
 import { BRIEF_PICTURES_NEXT, flashesOntoCuts, MET_CUT_NEXT, newBriefPictures, type MetCut } from "./brief-pictures.js";
-import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
+import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
 import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
 import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
@@ -1025,6 +1025,37 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     for (const id of read?.unreadIds ?? []) cutsUnread.add(id);
     return { brief: newBriefPictures(before, made, project.media, project.settings, read?.cuts, fresh), unread: read?.unread ?? [] };
   }
+  /** One frame of a source recording, or of `area` of it in percent, `width` pixels wide. */
+  async function sourceFrame(mediaId: string, t: number, width: number, area?: readonly number[], grid?: boolean) {
+    const res = await client.withResource("media", mediaId, async path => {
+      const url = client.url(`${path}/frame?t=${t}&w=${width}${area ? `&area=${area.join(",")}` : ""}${grid ? "&grid=1" : ""}`);
+      const headers: Record<string, string> = {};
+      if (client.token) headers.Authorization = `Bearer ${client.token}`;
+      const response = await fetchImpl(url, { headers });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+        throw new ScarletApiError(response.status, body?.error?.code ?? "frame_failed", body?.error?.message ?? response.statusText);
+      }
+      return response;
+    });
+    return { data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: res.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
+  }
+  /** Close pictures of what each inset an edit set shows of its recording, labelled. */
+  async function insetLooks(before: Timeline | null, made: Timeline): Promise<{ insets: InsetToLook[]; content: ToolResult["content"] }> {
+    const { project } = await getProject();
+    const insets = insetsToLook(before, made, project.media, project.settings);
+    const content: ToolResult["content"] = [];
+    const percent = (n: number) => Math.round(n * 1000) / 10;
+    const looks = await Promise.all(insets.flatMap((inset, i) => inset.at.map(t =>
+      sourceFrame(inset.mediaId, t, INSET_LOOK_WIDTH, inset.crop.map(percent)).then(frame => ({ i, t, frame }))
+        .catch(error => { noteUnmeasured("pictures of the inset", error); return undefined; }))));
+    for (const look of looks) {
+      if (!look) continue;
+      content.push({ type: "text", text: `insetLook[${look.i}] at ${look.t.toFixed(2)} s of ${insets[look.i]!.mediaId}, all the inset shows:` },
+        { type: "image", data: look.frame.data, mimeType: look.frame.mimeType });
+    }
+    return { insets, content };
+  }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
     if (ctx.author.type === "agent") {
       const edits = body.timelineEdits ?? [];
@@ -1073,6 +1104,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const briefNow = made && !notApplied ? await briefOn(before, made).catch(error => { noteUnmeasured("the pictures this edit shows briefly", error); return undefined; }) : undefined;
     const brief = briefNow?.brief ?? [];
     const framedNow = made && !notApplied ? await framedOn(before, made).catch(error => { noteUnmeasured("the framing this edit made", error); return undefined; }) : undefined;
+    const insetNow = caps.images && made && !notApplied ? await insetLooks(before, made).catch(error => { noteUnmeasured("pictures of the inset", error); return undefined; }) : undefined;
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -1096,8 +1128,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(briefNow?.unread.length && { recordingCutsUnread: briefNow.unread }),
       ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
       ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
+      ...(insetNow?.content.length && { insetLook: insetNow.insets.map(i => ({ mediaId: i.mediaId, trackId: i.trackId, clips: i.clips,
+        crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
     };
-    return json(result);
+    const saved = json(result);
+    return insetNow?.content.length ? { ...saved, content: [...saved.content, ...insetNow.content] } : saved;
   }
 
   // The editor's Keeps of edits this request flagged, which the run hears of on its next tool call, a few seconds apart at most.
@@ -1464,23 +1499,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     async ({ mediaId, t, width, area, grid }) => {
       const w = width ?? 640;
       if (area && !(area[2]! - area[0]! >= 1 && area[3]! - area[1]! >= 1)) throw new Error("area is [left, top, right, bottom] in percent, at least 1 percent each way.");
-      const res = await client.withResource("media", mediaId, async path => {
-        const url = client.url(`${path}/frame?t=${t}&w=${w}${area ? `&area=${area.join(",")}` : ""}${grid ? "&grid=1" : ""}`);
-        const headers: Record<string, string> = {};
-        if (client.token) headers.Authorization = `Bearer ${client.token}`;
-        const response = await fetchImpl(url, { headers });
-        if (!response.ok) {
-          const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
-          throw new ScarletApiError(response.status, body?.error?.code ?? "frame_failed", body?.error?.message ?? response.statusText);
-        }
-        return response;
-      });
-      const buf = Buffer.from(await res.arrayBuffer());
-      const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+      const { data, mimeType } = await sourceFrame(mediaId, t, w, area, grid);
       return {
         content: [
           { type: "text", text: `Frame of ${mediaId} at ${t.toFixed(3)} s (${w}px wide${area ? `, ${area[0]}–${area[2]}% across and ${area[1]}–${area[3]}% down` : ""}${grid ? ", lines in percent of the whole picture" : ""}).` },
-          { type: "image", data: buf.toString("base64"), mimeType: mime },
+          { type: "image", data, mimeType },
         ],
       };
     },
