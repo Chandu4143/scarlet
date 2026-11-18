@@ -3357,6 +3357,76 @@ it("says what the recording holds between two words, in the transcript and in wh
   }
 });
 
+it("hands back a pause trim that takes only the quiet between takes the transcript tidied into one", async () => {
+  const original = { extra: mock.state.extra, waveform: mock.state.waveform, timeline: mock.state.timeline, transcripts: mock.state.transcripts };
+  const editor = await connect();
+  const tl = emptyTimeline(mock.state.project.id);
+  tl.version = "tidied";
+  tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 10, 0)];
+  mock.state.timeline = tl;
+  // Said: “In fact, what it would do, it was, it would, in fact, what it would do is … model. Next”. The transcript
+  // has “In fact, what it would do is”, its words stretched over the takes, and a pause between each.
+  const words = [{ text: "In", start: 1, end: 1.2 }, { text: "fact,", start: 1.3, end: 1.7 }, { text: "what", start: 1.9, end: 2.3 },
+    { text: "it", start: 3.6, end: 3.9 }, { text: "would", start: 5, end: 6.4 }, { text: "do", start: 6.4, end: 6.7 }, { text: "is", start: 6.8, end: 7 },
+    { text: "model.", start: 8, end: 8.4 }, { text: "Next", start: 9.4, end: 9.8 }];
+  const heard = [{ text: "In", start: 1, end: 1.2 }, { text: "fact,", start: 1.3, end: 1.7 }, { text: "what", start: 1.9, end: 2.1 },
+    { text: "it", start: 2.1, end: 2.2 }, { text: "would", start: 2.2, end: 2.45 }, { text: "do,", start: 2.5, end: 2.8 }, { text: "it", start: 2.8, end: 2.9 },
+    { text: "was,", start: 2.9, end: 3.1 }, { text: "it", start: 3.6, end: 3.75 }, { text: "would,", start: 3.85, end: 4.15 },
+    { text: "in", start: 5, end: 5.1 }, { text: "fact,", start: 5.15, end: 5.4 }, { text: "what", start: 5.5, end: 5.75 }, { text: "it", start: 5.85, end: 5.95 },
+    { text: "would", start: 6.05, end: 6.35 }, { text: "do", start: 6.4, end: 6.7 }, { text: "is", start: 6.8, end: 7 },
+    { text: "model.", start: 8, end: 8.4 }, { text: "Next", start: 9.4, end: 9.8 }];
+  // A breath right after “model.”, loud enough to read as speech, and no word in it.
+  const breath = { start: 8.4, end: 8.6 };
+  mock.state.transcripts = { m1: { id: "t1", mediaId: "m1", segments: [{ id: "s", text: words.map(w => w.text).join(" "), words, start: 1, end: 9.8 }] } };
+  mock.state.waveform = (mediaId, from, to, points) => {
+    const at = (i: number) => from + (i + .5) * (to - from) / points;
+    const levels = Array.from({ length: points }, (_, i) => [...heard, breath].some(w => w.start <= at(i) && at(i) < w.end) ? .2 : .001);
+    return { mediaId, from, to, peaks: levels, rms: levels, speechActivity: heard.map(w => ({ start: w.start, end: w.end })) };
+  };
+  let reads = 0;
+  mock.state.extra = (req, res) => {
+    let result;
+    if (req.path.endsWith("/dialogue-detections")) {
+      const { from, to, keptSide } = req.body as { from: number; to: number; keptSide?: { cachedOnly?: boolean } };
+      if (keptSide?.cachedOnly) result = { segments: [], acoustic: [], keptSideUnavailable: true };
+      else {
+        reads++;
+        result = { acoustic: [], segments: [{ words: heard.filter(w => from <= w.start && w.end <= to) }] };
+      }
+    } else if (req.path.endsWith("/dialogue-cuts")) result = { changes: [] };
+    else return false;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(result));
+    return true;
+  };
+  const apply = async (...cuts: object[]) => {
+    const r = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tightened", range: { start: 0, end: 10 }, cuts } }) as CallToolResult;
+    expect(r.isError, textOf(r)).toBeFalsy();
+    return JSON.parse(textOf(r));
+  };
+  try {
+    // The quiet the trim would take, between “was,” and the next “it”, holds no sound; the words beside it are the
+    // first take and the start of the second, which the transcript doesn't have. They are the model's to decide on.
+    const refused = await apply({ kind: "pause", reason: "Keep the sentence moving.", mediaId: "m1", afterWord: 2, leave: .1, decision: "cut" });
+    expect(refused.needsRevision).toBe(true);
+    expect(refused.disputedEdges).toEqual([{ cuts: [0], reason: "cuts[0]: The transcript has nothing between “what” and “it” (#2, #3) for 1.30 s, " +
+      "but the recording says “would do, it was, it” at 2.20–3.75 s in m1 (2.20–3.75 s on version tidied) there. " +
+      "A trim would take out only the quiet beside those words and leave them playing. A pause trim removes quiet only, so this one was not saved. " +
+      "Read on its own, 1.40–4.40 s in m1 (1.40–4.40 s on version tidied) says “what it would do, it was, it would,”, where the transcript has “what it”. " +
+      "Decide on those words as you would on any: a take said again is a retake to cut, and words that belong play as they are. " +
+      "To remove sound there, give the range in timeline seconds as the kind of cut it is." }]);
+    expect(reads).toBe(1);
+    expect(mock.state.timeline.version).toBe(tl.version);
+    // Sound beside a trim that the reading finds no word in, such as a breath, plays as it did: the trim saves.
+    const saved = await apply({ kind: "pause", reason: "Keep the sentence moving.", mediaId: "m1", afterWord: 7, leave: .1, decision: "cut" });
+    expect(saved.needsRevision).toBeUndefined();
+    expect(reads).toBe(2);
+  } finally {
+    Object.assign(mock.state, original);
+    await editor.close();
+  }
+});
+
 it("counts a silence as decided when its keep names words or its range is protected for the picture", async () => {
   const original = { extra: mock.state.extra, waveform: mock.state.waveform, timeline: mock.state.timeline, transcripts: mock.state.transcripts };
   const editor = await connect();

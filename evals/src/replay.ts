@@ -154,9 +154,9 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
       evidence, pages: () => evidence.scans, project: async () => project,
       words: async mediaId => (loaded.evidence.get(mediaId)?.words as TranscriptWord[] | undefined) ?? null,
       measure: async () => {}, crossfadeFrames: plan.crossfadeFrames,
-      sound: async (mediaId, range) => {
+      sound: async (mediaId, range, betweenWords) => {
         const page = levels.get(mediaId)?.find(p => p.from <= range.start && p.to >= range.end);
-        return page && gapSound(page, range, speakingLevel(page), 0);
+        return page && gapSound(page, range, speakingLevel(page), betweenWords ? undefined : 0);
       },
     };
     const cutsIn = plan.cuts.map(c => {
