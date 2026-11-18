@@ -339,7 +339,9 @@ export const DialogueCutsRequest = ProposeChangeRequest.pick({ description: true
     /** A doubt the editor must settle by listening or looking. Marks an applied cut as needing them until they keep it. */
     check: z.string().trim().min(1).max(120).optional(),
     /** Why Scarlet held a cut the agent sent to apply: what it measured. Kept apart from the agent's reason. */
-    held: z.string().trim().min(1).max(800).optional() })
+    held: z.string().trim().min(1).max(800).optional(),
+    /** Scarlet staged this cut because nothing it measures can settle its join: only the editor's ear can. No later cut takes its place. */
+    unheard: z.literal(true).optional() })
     .refine(c => !c.originalRange || (c.review && c.originalRange.start <= c.start && c.end <= c.originalRange.end),
       "A repaired range must be staged inside its originally proposed removal.")).min(1),
 });

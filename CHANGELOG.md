@@ -12,6 +12,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - The built-in dialogue pass brings your voice in right after each cut, as Scarlet’s own pace does, instead of a tenth of a second later.
 - Click Refresh models in the model picker to check for newly available models while you work.
 - Edit numbers sit above the footage, and clicking the zoom percentage on the ruler fits the whole timeline.
+- A cut Scarlet brings you because only your ear can settle its join stays in your review: a later cut of the same pass can no longer take its place.
 - Click the speed beside Full screen to open the player’s − and + controls.
 - Cuts Scarlet places by time now leave only the pause your skill asks for after your last word, instead of whatever quiet was there.
 - A screen demo that ends or starts a frame or two off the camera's cut now changes on that cut, so your camera no longer flashes full frame between them.
