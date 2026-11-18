@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import { ActivityEntry, AgentHost, GraphicTemplate, Learning, QuickAction, Render, Skill, SkillVersion, Task, TaskEvent, type QueueTask } from "@scarlet/shared";
+import type { PriceLookup } from "./modelPrices.js";
 import { Author, Change, Note, Transcript } from "@scarlet/timeline";
 import { now, type Db } from "../db.js";
 import { JsonStore } from "./store.js";
@@ -135,7 +136,7 @@ class TasksRepo extends JsonStore<Task> {
 
 type TaskRow = { json: string; rowid: number; created_at: string };
 
-export function createRepos(db: Db, defaultProvider: DefaultProvider = "none") {
+export function createRepos(db: Db, defaultProvider: DefaultProvider = "none", prices?: PriceLookup) {
   const changes = new JsonStore<Change>(db, "changes", Change, (c) => ({
     project_id: c.projectId,
     state: c.state,
@@ -174,7 +175,7 @@ export function createRepos(db: Db, defaultProvider: DefaultProvider = "none") {
     })),
     tasks,
     taskEvents: new TaskEventsRepo(db),
-    usage: new UsageRepo(db),
+    usage: new UsageRepo(db, prices),
     hosts: new JsonStore<AgentHost>(db, "agent_hosts", AgentHost, (h) => ({
       user_id: h.userId,
       last_seen_at: h.lastSeenAt ?? null,

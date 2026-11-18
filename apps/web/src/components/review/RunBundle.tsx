@@ -20,6 +20,10 @@ import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
 type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens" | "runs">;
 const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
 
+function listOf(items: string[]) {
+  return items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
+}
+
 function formatEstimatedCost(estimate: RunUsage["estimatedApiCostUsd"]) {
   if (estimate == null) return "Unavailable";
   return estimate > 0 && estimate < 0.01 ? `<${usd.format(0.01)}` : usd.format(estimate);
@@ -81,7 +85,7 @@ function Tokens({ usage, className, time, details = [] }: {
   const breakdown = tokenBreakdown({ ...usage, runs: undefined });
   const cost = formatEstimatedCost(usage.estimatedApiCostUsd);
   const costDescription = usage.estimatedApiCostUsd == null
-    ? "API pricing is unavailable for some or all of the reported usage."
+    ? usage.unpricedModels?.length ? `No price for ${listOf(usage.unpricedModels)} yet.` : "API pricing is unavailable for some or all of the reported usage."
     : "Reported tokens at standard API rates for short context and default cache duration.";
   const accessibleDetails = [...details.map(([name, value]) => `${name}: ${value}`), `Estimated API cost: ${cost}`].join(", ");
   return <><button ref={ref} type="button" className={`run-dim run-tokens${className ? ` ${className}` : ""}`} title=""
@@ -230,7 +234,7 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
     return duration === undefined ? [] : [duration];
   });
   const time = durations.length ? workTimeLabel(durations.reduce((total, ms) => total + ms, 0), working) : undefined;
-  const sum = (key: keyof RunUsage) => reports.reduce((total, usage) => total + (usage?.[key] ?? 0), 0);
+  const sum = (key: Exclude<keyof RunUsage, "unpricedModels">) => reports.reduce((total, usage) => total + (usage?.[key] ?? 0), 0);
   const totalTokens = sum("totalTokens");
   const usage = totalTokens ? {
     inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
@@ -238,6 +242,7 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
     totalTokens,
     estimatedApiCostUsd: reports.some(report => report?.totalTokens && report.estimatedApiCostUsd == null)
       ? null : sum("estimatedApiCostUsd"),
+    unpricedModels: [...new Set(reports.flatMap(report => report?.unpricedModels ?? []))],
   } : undefined;
   const models = new Set<string>();
   const efforts = new Set<string>();
