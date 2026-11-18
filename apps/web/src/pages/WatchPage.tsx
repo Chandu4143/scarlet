@@ -67,9 +67,13 @@ const MIN_RATE = 0.5;
 const MAX_RATE = 2;
 const RATE_STEP = 0.25;
 
-function stepPlaybackRate(direction: -1 | 1) {
+function stepPlaybackRate(direction: -1 | 1, wrap = false) {
   const rate = usePlayerStore.getState().rate;
-  const next = Math.min(MAX_RATE, Math.max(MIN_RATE, rate + direction * RATE_STEP));
+  let next = rate + direction * RATE_STEP;
+  // L goes round: past the fastest speed it starts again from the slowest, and Shift+L the other way.
+  if (wrap && next > MAX_RATE) next = MIN_RATE;
+  else if (wrap && next < MIN_RATE) next = MAX_RATE;
+  next = Math.min(MAX_RATE, Math.max(MIN_RATE, next));
   if (next !== rate) player.setRate(next);
 }
 
@@ -110,10 +114,10 @@ function PlaybackSpeed({ playable }: { playable: boolean }) {
       aria-label={`Playback speed, ${rate}×`} title="Playback speed" aria-expanded={open} aria-controls={open ? panelId : undefined}
       onClick={() => setOpen(shown => !shown)}>{rate}×<Icon name="down" size={10} /></button>
     {open && <div className="playback-speed-panel" id={panelId} role="group" aria-label="Playback speed" data-escape-owner>
-      <button type="button" className="btn-icon" aria-label="Decrease playback speed" aria-keyshortcuts="-" title="Decrease playback speed (−)"
+      <button type="button" className="btn-icon" aria-label="Decrease playback speed" aria-keyshortcuts="Shift+L" title="Decrease playback speed (Shift L)"
         disabled={!playable || rate <= MIN_RATE} onClick={() => stepPlaybackRate(-1)}>−</button>
       <output>{rate}×</output>
-      <button type="button" className="btn-icon" aria-label="Increase playback speed" aria-keyshortcuts="plus =" title="Increase playback speed (+)"
+      <button type="button" className="btn-icon" aria-label="Increase playback speed" aria-keyshortcuts="L" title="Increase playback speed (L)"
         disabled={!playable || rate >= MAX_RATE} onClick={() => stepPlaybackRate(1)}>+</button>
     </div>}
   </div>;
@@ -649,10 +653,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       e.preventDefault();
       // Held down, Space is one press: its repeats would flutter between play and pause.
       if (playable && !e.repeat) player.toggle();
-    } else if (e.key === "+" || e.key === "=" || e.key === "-") {
+    } else if (e.key.toLowerCase() === "l") {
       if (!playable || isComposing(e)) return;
       e.preventDefault();
-      stepPlaybackRate(e.key === "-" ? -1 : 1);
+      stepPlaybackRate(e.shiftKey ? -1 : 1, true);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       e.preventDefault();
       if (!playable || duration <= 0) return;

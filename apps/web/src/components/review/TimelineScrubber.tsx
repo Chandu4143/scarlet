@@ -5,7 +5,7 @@ import { api } from "../../lib/client";
 import { usePlayerStore } from "../../stores/player";
 import { useUiStore } from "../../stores/ui";
 import { arrowSeekTime, ignorePageShortcut, useHotkeys } from "../../lib/hotkeys";
-import { playbackClock } from "../../lib/format";
+import { clock, playbackClock } from "../../lib/format";
 import { playbackLog } from "../../lib/playbackLog";
 import type { ScrubRelease } from "../../lib/player";
 import { TimelineWaveform, type WaveformMedia } from "./TimelineWaveform";
@@ -317,6 +317,8 @@ function dotLabel(dots: readonly { n?: number }[], numbered: number, first: numb
  *  6.6 px a character) with room either side. A plain dot is 8 px. */
 const markWidth = (label?: string) => !label ? 8 : label.length <= 2 ? 17 : Math.round(label.length * 6.6 + 11);
 const MARK_GAP = 3;
+/** How finely the zoom slider moves. */
+const ZOOM_STEPS = 1000;
 /** A move of the playhead this far, in seconds or as a share of what the timeline shows, is a jump it glides through. */
 const GLIDE_FROM_SECONDS = 0.75;
 const GLIDE_FROM_SHARE = 0.03;
@@ -500,6 +502,12 @@ function TimelineSlider({ playhead, start, end, from, span, width, zoomSpace, se
   </div>;
 }
 
+/** Where the playhead is, out of the video's length. Only this re-renders on a playback tick. */
+function TimelineClock({ playhead, start, end, total }: { playhead?: number; start: number; end: number; total: number }) {
+  const position = usePlayerStore(s => timelinePosition(playhead ?? s.time, start, end));
+  return <span className="timeline-clock" aria-label="Playhead time">{clock(Math.floor(position - start))} <span>/ {clock(Math.floor(total))}</span></span>;
+}
+
 export function PlayerTimeline(props: Omit<TimelineScrubberProps, "playhead">) {
   return <TimelineScrubber {...props} />;
 }
@@ -545,23 +553,17 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const total = Number.isFinite(duration) ? Math.max(0, duration) : 0;
   const end = start + total;
   const slider = useRef<HTMLDivElement>(null);
-  const zoomRow = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const [zoomWidth, setZoomWidth] = useState(0);
   useLayoutEffect(() => {
     const el = slider.current!;
-    const controls = zoomRow.current!;
-    const measure = () => {
-      setWidth(el.clientWidth);
-      setZoomWidth(controls.offsetWidth);
-    };
+    const measure = () => setWidth(el.clientWidth);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
-    observer.observe(controls);
     return () => observer.disconnect();
   }, []);
-  const zoomSpace = zoomWidth ? zoomWidth + 6 : 0;
+  // The zoom lives in the row under the timeline, so the ruler runs the full width.
+  const zoomSpace = 0;
   const track = useRef<HTMLDivElement>(null);
   const [lens, setLens] = useState<ScrubLens>();
   const drag = useRef<{
@@ -734,8 +736,8 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const zoomPercent = span ? Math.round(total / span * 100) : 100;
   const handleZoomKey = (e: KeyboardEvent) => {
     if (!total || ignorePageShortcut(e, track.current)) return;
-    if (e.key === "]") zoomBy(2);
-    else if (e.key === "[") zoomBy(.5);
+    if (e.key === "+" || e.key === "=") zoomBy(2);
+    else if (e.key === "-" || e.key === "_") zoomBy(.5);
     else if (e.key === "0") fitRange();
     else return;
     e.preventDefault();
@@ -788,13 +790,27 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const sheet = useMemo(() => previewStrip ? { fps: previewStrip.fps, url: (frames: number[]) => stripUrl(previewStrip, frames) } : undefined, [previewStrip]);
   const marking = useRangeSelect({ slider, drag, from, span, start, end, fps, edges, frameAt, sheet, pictureAspect, range, onRange: onRange ?? noRange, onSeek,
     onScrubStart, onPress: selectPosition, beforeGesture: stopZoom });
-  const zoomControls = <div ref={zoomRow} className="timeline-zoom-row" role="group" aria-label="Timeline zoom"
-    title="Scroll or pinch over the timeline to zoom">
-    <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="[" title="Zoom out ([)" disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
-    <button type="button" className="timeline-zoom-level" aria-label={`${zoomPercent}% zoom, fit timeline`} aria-keyshortcuts="0" title="Fit timeline (0)"
-      disabled={intendedSpan >= total} onClick={() => fitRange()}>{zoomPercent}%</button>
-    <button type="button" className="timeline-zoom-step" aria-label="Zoom in" aria-keyshortcuts="]" title="Zoom in (])" disabled={intendedSpan <= minSpan} onClick={() => zoomBy(2)}>+</button>
+  // The slider runs from the whole video, at its left, to the closest zoom, on a log scale so each step looks the same.
+  const zoomRange = total > 0 && minSpan < total ? Math.log(total / minSpan) : 0;
+  const zoomValue = zoomRange && intendedSpan > 0 ? Math.round(Math.max(0, Math.min(1, Math.log(total / intendedSpan) / zoomRange)) * ZOOM_STEPS) : 0;
+  const zoomFoot = <div className="timeline-foot">
+    <TimelineClock playhead={playhead} start={start} end={end} total={total} />
+    <div className="timeline-zoom-row" role="group" aria-label="Timeline zoom" title="Scroll or pinch over the timeline to zoom">
+      <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="-" title="Zoom out (−)"
+        disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
+      <input type="range" className="timeline-zoom-slider" aria-label="Zoom" aria-keyshortcuts="0" title="Zoom (0 to fit)"
+        min={0} max={ZOOM_STEPS} step={1} value={zoomValue} disabled={!zoomRange} aria-valuetext={`${zoomPercent}%`}
+        style={{ "--zoom-at": `${zoomValue / ZOOM_STEPS * 100}%` } as CSSProperties}
+        onChange={e => {
+          const next = total / Math.exp(Number(e.currentTarget.value) / ZOOM_STEPS * zoomRange);
+          if (next > 0 && span > 0) zoomBy(span / next, undefined, true);
+        }} />
+      <button type="button" className="timeline-zoom-step" aria-label="Zoom in" aria-keyshortcuts="plus =" title="Zoom in (+)"
+        disabled={intendedSpan <= minSpan} onClick={() => zoomBy(2)}>+</button>
+      <output className="timeline-zoom-level" aria-label={`${zoomPercent}% zoom`}>{zoomPercent}%</output>
+    </div>
   </div>;
+
   return <div className="timeline-panel" onKeyDown={e => handleZoomKey(e.nativeEvent)}>
     <div ref={track} className={marking.marking ? "timeline-track is-marking" : "timeline-track"}><ScrubPreview suspended={!!lens} start={from} duration={span} pictureAspect={pictureAspect} frameAt={frameAt} hoverVideo={hoverVideo} note={markNote || undefined} pin={waiting?.time}>
     <TimelineSlider ref={slider} className="timeline-slider" playhead={playhead} start={start} end={end} from={from} span={span}
@@ -869,7 +885,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         frameAt={frameAt} sheet={sheet} pictureAspect={pictureAspect} />}
     </TimelineSlider>
   </ScrubPreview>
-    {zoomControls}
   </div>
+  {zoomFoot}
   </div>;
 }
