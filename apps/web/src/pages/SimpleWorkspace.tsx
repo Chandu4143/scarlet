@@ -452,12 +452,26 @@ const noNests: readonly Nest[] = [];
 type Spent = ReadonlyMap<string, string>;
 const noSpent: Spent = new Map();
 
-/** A finished request with one result opens its edit on the timeline. A collection opens a list to choose from. */
-function EditResultLink({ thread, actions, single, count, soFar, list: [open, setOpen], reveal }: {
-  thread: Thread; actions: ChatActions; single?: EditRef; count: number; soFar?: boolean; list: PassList; reveal(): void;
+/**
+ * A finished request with one result opens its edit on the timeline. A collection opens a list to choose from. One
+ * edit, or the edits so far while Scarlet works, is a link after the sentence (`place` "inline"). A finished
+ * collection is See all, a tab in the row where For you and See all sit when something waits on the editor
+ * (`place` "tab"), so it is in the same place either way. Each place draws only its own.
+ */
+function EditResultLink({ thread, actions, single, count, soFar, list: [open, setOpen], reveal, place }: {
+  thread: Thread; actions: ChatActions; single?: EditRef; count: number; soFar?: boolean; list: PassList; reveal(): void; place: "inline" | "tab";
 }) {
   const expanded = open === "all";
   const current = !!single && !!actions.showing && matchesEdit(actions.showing, single);
+  const isLink = (!!single && (!expanded || current)) || !!soFar;
+  if (isLink !== (place === "inline")) return null;
+  if (!soFar && !isLink) {
+    const label = count === 2 ? "See both" : "See all";
+    return <div className="simple-review-tabs" role="group" aria-label="Edit lists">
+      <button type="button" className="simple-review-tab" aria-pressed={expanded} title={expanded ? "Hide the edits" : "Show the edits in order"}
+        onClick={letGo(() => { if (!expanded) reveal(); setOpen(expanded ? undefined : "all"); })}>{label}</button>
+    </div>;
+  }
   if (single && (!expanded || current)) {
     const toggleEdit = () => {
       if (!current) return actions.openEdit(thread, single);
@@ -467,10 +481,9 @@ function EditResultLink({ thread, actions, single, count, soFar, list: [open, se
     return <button type="button" className="simple-pass-toggle" aria-current={current || undefined}
       title={current ? "Close this edit (Esc)" : "Show on the timeline"} onClick={letGo(toggleEdit)}>{current ? "Close edit" : "See edit"}</button>;
   }
-  const label = soFar ? `See ${count} ${count === 1 ? "edit" : "edits"} so far` : count === 2 ? "See both" : "See all";
-  return <button type="button" className="simple-pass-toggle" data-so-far={soFar || undefined} aria-expanded={expanded}
-    title={expanded ? "Hide the edits" : soFar ? "Show the edits Scarlet has made so far, in order" : "Show the edits in order"}
-    onClick={() => { if (!expanded) reveal(); setOpen(expanded ? undefined : "all"); }}>{expanded ? "Hide" : label}</button>;
+  return <button type="button" className="simple-pass-toggle" data-so-far aria-expanded={expanded}
+    title={expanded ? "Hide the edits" : "Show the edits Scarlet has made so far, in order"}
+    onClick={() => { if (!expanded) reveal(); setOpen(expanded ? undefined : "all"); }}>{expanded ? "Hide" : `See ${count} ${count === 1 ? "edit" : "edits"} so far`}</button>;
 }
 
 function ReviewListTabs({ need, canSeeAll, list: [open, setOpen], reveal, showNeeded }: {
@@ -665,8 +678,9 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   const soFar = (!!working || !!pass?.running) && !made;
   const canSeeAll = edits.length > 0 && (fullList || need < totalRows);
   const hasReview = need > 0 || sentBack > 0 || calls.some(row => row.sentBack);
-  const seeEvery = !hasReview && canSeeAll &&
-    <EditResultLink thread={thread} actions={actions} single={single} count={totalRows} soFar={soFar} list={listState} reveal={reveal} />;
+  const seeProps = { thread, actions, single, count: totalRows, soFar, list: listState, reveal };
+  const seeEvery = !hasReview && canSeeAll && <EditResultLink {...seeProps} place="inline" />;
+  const seeTab = !hasReview && canSeeAll && <EditResultLink {...seeProps} place="tab" />;
   const tabs = hasReview && <ReviewListTabs need={need} canSeeAll={canSeeAll} list={listState} reveal={reveal} showNeeded={showNeeded} />;
   const outsideList = <>
     {/* A request about a cut or edit whose row isn't listed right now still shows, under what the pass made. */}
@@ -683,6 +697,7 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   return <div ref={host} className="simple-pass" role="group" aria-label="Dialogue pass">
     {made && <Made parts={made} link={seeEvery} />}
     {filter !== "calls" && outsideList}
+    {filter !== "calls" && seeTab}
     {filter && <>{tabs}{rowList}</>}
     {filter === "calls" && outsideList}
     {pass?.error && <p className="simple-error" role="alert">{pass.error}</p>}
@@ -748,8 +763,9 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
   const listed = new Set(showsList ? groups.filter(group => !only || group.members.some(m => only(m.edit))).flatMap(group => group.members.map(m => editKey(m.edit))) : []);
   const canSeeAll = open === "all" || !allNeed;
   const hasReview = need > 0 || sentBack > 0;
-  const seeEvery = !hasReview && canSeeAll &&
-    <EditResultLink thread={thread} actions={actions} single={single} count={groups.length} soFar={working && !made} list={list} reveal={reveal} />;
+  const seeProps = { thread, actions, single, count: groups.length, soFar: working && !made, list, reveal };
+  const seeEvery = !hasReview && canSeeAll && <EditResultLink {...seeProps} place="inline" />;
+  const seeTab = !hasReview && canSeeAll && <EditResultLink {...seeProps} place="tab" />;
   const showNeeded = () => {
     setOpen(undefined);
     if (flagged.length && !flagged.some(edit => !!actions.showing && matchesEdit(actions.showing, edit))) actions.openEdit(thread, flagged[0]!);
@@ -763,6 +779,7 @@ function ThreadResult({ projectId, thread, edits, actions, aside, working, nests
         <ThreadAction projectId={projectId} thread={thread} edits={edits} onPlay={ref => actions.openEdit(thread, ref)} menuOnly menu={false} /></span>
     </div>
     {showsList && hasReview && <ReviewListTabs need={need} canSeeAll={canSeeAll} list={list} reveal={reveal} showNeeded={showNeeded} />}
+    {seeTab}
     {showsList && <ThreadEdits projectId={projectId} thread={thread} edits={edits} showing={actions.showing} only={only}
       onPlay={ref => actions.openEdit(thread, ref)}
       onHover={ref => actions.lightMark(undefined, ref && { threadId: thread.id, editKey: editKey(ref) })}
