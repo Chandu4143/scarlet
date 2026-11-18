@@ -7,10 +7,12 @@ import { QUIET_RMS, quietBuckets, quietRms } from "./gap-sound.js";
 import { MAX_CROSSFADE, timelineJoins, type JoinSide } from "./timeline-perception.js";
 
 type Word = Pick<TranscriptWord, "text" | "start" | "end">;
+/** A word as the join check reads it: where the recording has it, and, when that is not where the transcript times it, `timed`. */
+type JoinWord = Word & { timed?: TimeRange };
 interface Waveform { from: number; to: number; peaks: number[]; rms?: number[]; speechActivity?: TimeRange[] }
 /** Measured RMS level of the source in dBFS, one value per waveform bucket. */
 export interface AudioLevels { from: number; step: number; db: number[] }
-export interface JoinPage extends TimeRange { mediaId: string; audioStream?: number; edges?: { words: Word[]; quiet: TimeRange[]; valleys: TimeRange[]; voice: TimeRange[]; levels?: AudioLevels } }
+export interface JoinPage extends TimeRange { mediaId: string; audioStream?: number; edges?: { words: JoinWord[]; quiet: TimeRange[]; valleys: TimeRange[]; voice: TimeRange[]; levels?: AudioLevels } }
 export interface JoinCheck extends TimeRange {
   /** `snapped` moved an edge a few frames onto measured silence and is safe to apply as proposed. */
   status: "unchanged" | "snapped" | "adjusted" | "partial" | "review";
@@ -49,10 +51,84 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
     // Deep against this recording's floor too: a breath 10 dB over a very quiet room is under any fixed level.
     if (wf.rms[i]! <= Math.min(.002, quietBelow) && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
   }
-  const db = wf.rms.map(dbfs);
-  return { voice: wf.speechActivity, valleys, words: words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text)),
-    quiet, levels: { from: wf.from, step, db } };
+  const db = wf.rms.map(dbfs), levels = { from: wf.from, step, db };
+  const spoken = words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text));
+  return { voice: wf.speechActivity, valleys, words: onTheirSound(spoken, [...quiet, ...valleys.filter(v => v.end - v.start >= silentValley)], levels),
+    quiet, levels };
 }
+
+/**
+ * Words placed where the recording has them, when the transcript's timing can't be. A word timed too short to have been
+ * said, on sound it shares with a neighbour, beside a stretch of speech that no word explains, was said in that
+ * stretch: "Opus 5.5 · and the… · and GPT" was timed with “5.5” in 80 ms at the start of “and”, and the second of
+ * “five point five” before it carried no word. A cut of the restart was held for want of a quiet point between
+ * “5.5” and “and”, and the closing check then kept the restart, since the edge in the quiet before “and” seemed to take
+ * “5.5” with it (2026-11-17). The aligner has spelled numbers since, but a transcript keeps the times it was made with.
+ * A moved word keeps its transcript times as `timed`; every edge, note and nearby word reads where it sounds.
+ */
+function onTheirSound(words: Word[], silent: TimeRange[], levels: AudioLevels): JoinWord[] {
+  if (!levels.db.length || words.length < 2) return words;
+  const end = levels.from + levels.step * levels.db.length;
+  const sorted = [...levels.db].sort((a, b) => a - b);
+  const speech = sorted[Math.floor(sorted.length * .85)]!;
+  const index = (t: number) => Math.min(levels.db.length, Math.max(0, Math.round((t - levels.from) / levels.step)));
+  // Runs of speech: what lies between the measured silences, at a syllable's length and level. A silence shorter than
+  // a pause is inside a word or between two said in one breath: “five point five” has one.
+  const runs: TimeRange[] = [];
+  let at = levels.from;
+  for (const q of [...silent].filter(q => q.end - q.start >= silentValley).sort((a, b) => a.start - b.start)) {
+    if (q.start > at) runs.push({ start: at, end: q.start });
+    at = Math.max(at, q.end);
+  }
+  if (at < end) runs.push({ start: at, end });
+  const sounds = runs.filter(r => r.end - r.start >= MIN_WORD_SOUND && Math.max(...levels.db.slice(index(r.start), index(r.end))) >= speech - SYLLABLE_BELOW_DB);
+  const middle = (w: TimeRange) => (w.start + w.end) / 2;
+  const runOf = (t: number) => sounds.findIndex(r => r.start <= t && t < r.end);
+  const owns = (r: TimeRange, w: Word) => middle(w) >= r.start && middle(w) < r.end;
+  const placed: JoinWord[] = [...words];
+  words.forEach((w, i) => {
+    const syllables = spokenSyllables(w.text);
+    if (w.end - w.start >= syllables * SHORTEST_SYLLABLE) return;
+    const run = runOf(middle(w));
+    if (run < 0) return;
+    const prev = words[i - 1], next = words[i + 1];
+    // On sound a neighbour's timing holds too: the word is not where it is timed.
+    const shared = [prev, next].filter((n): n is Word => !!n && owns(sounds[run]!, n));
+    if (!shared.length) return;
+    // The next run of speech away from that neighbour, if no word is timed in it and it is long enough for this word.
+    const toward = shared.includes(next!) && !shared.includes(prev!) ? -1 : shared.includes(prev!) && !shared.includes(next!) ? 1 : 0;
+    if (!toward) return;
+    const beside = sounds[run + toward];
+    if (!beside) return;
+    // Of that run, the part no other word's timing reaches: a word said straight before it can share the run.
+    const others = words.filter(o => o !== w && o.end > beside.start && o.start < beside.end);
+    const free = toward < 0
+      ? { start: Math.max(beside.start, ...others.map(o => o.end)), end: beside.end }
+      : { start: beside.start, end: Math.min(beside.end, ...others.map(o => o.start)) };
+    if (others.some(o => o.end > free.start + WORD_SLACK && o.start < free.end - WORD_SLACK)) return;
+    // Nor past the word timed next to it on that side: the words keep the order they were said in.
+    const across = toward < 0 ? prev : next;
+    if (across && (toward < 0 ? across.end > free.start + WORD_SLACK : across.start < free.end - WORD_SLACK)) return;
+    const length = free.end - free.start;
+    if (length < syllables * SHORTEST_SYLLABLE || length > syllables * LONGEST_SYLLABLE + WORD_SLACK * 2) return;
+    placed[i] = { text: w.text, start: free.start, end: free.end, timed: { start: w.start, end: w.end } };
+  });
+  return placed;
+}
+
+/** How many syllables a transcript word takes to say, at least: a numeral's digits are said too. */
+function spokenSyllables(text: string) {
+  const t = text.toLowerCase().replace(/[^a-z0-9.%$]/g, "").replace(/\.$/, "");
+  const digits = (t.match(/[0-9]/g) ?? []).length + (t.match(/[0-9]\.[0-9]/g) ?? []).length + 2 * (t.match(/[%$]/g) ?? []).length;
+  const vowels = (t.replace(/[^a-z]/g, "").replace(/e$/, "").match(/[aeiouy]+/g) ?? []).length;
+  return Math.max(1, digits + vowels);
+}
+/** No syllable is said in less than this. */
+const SHORTEST_SYLLABLE = .06;
+/** A stretch longer than this per syllable holds more than the word. */
+const LONGEST_SYLLABLE = .45;
+/** How far a neighbour's timing may reach into a run of speech that still has no word of its own. */
+const WORD_SLACK = .05;
 
 const reach = .75, wordMargin = .02, quietMargin = .03;
 
@@ -1074,6 +1150,17 @@ export function quietFrameNote(asked: TimeRange, placed: TimeRange): string | un
   return `${moved.map(side => `Moved the ${side} from ${s3(asked[side])} to ${s3(placed[side])}`).join(" and ")}, onto a quiet frame: the recording is quiet at the edge, and the whole frame it would be saved on has sound.`;
 }
 
+/** Where the page places a transcript word that it moved onto its sound (onTheirSound), if it did. */
+function onSound(word: Word, page: JoinPage["edges"] | undefined): Word | undefined {
+  const moved = page?.words.find(w => w.timed && w.text === word.text && Math.abs(w.timed.start - word.start) < 1e-6 && Math.abs(w.timed.end - word.end) < 1e-6);
+  return moved && { text: moved.text, start: moved.start, end: moved.end };
+}
+
+function movedNote(word: Word, moved: Word, role: "kept" | "removed") {
+  return `The transcript times the ${role} “${plain(word)}” at ${round3(word.start)}–${round3(word.end)} s, too short to say it and on another word's sound; the recording has speech no word explains at ${
+    round3(moved.start)}–${round3(moved.end)} s beside it, and the edge is placed with “${plain(word)}” there.`;
+}
+
 /** A short word's far side can fall inside ASR's slack. Keep its strongest sound on the side the agent named. */
 function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed: Word, side: "start" | "end"): TimeRange {
   // A stretched timing can contain several attempts at the same word. The first and last resolved utterances
@@ -1105,6 +1192,11 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
   // The kept word beside each edge, where the recording says it is.
   const heard = (kept: Word | undefined, neighbour: Word | undefined, side: "start" | "end") => {
     if (!kept) return kept;
+    const moved = onSound(kept, pageAt(side === "end" ? kept.start : kept.end));
+    if (moved) {
+      retimed.push(movedNote(kept, moved, "kept"));
+      return moved;
+    }
     const found = soundingWord(pageAt(side === "end" ? kept.start : kept.end), kept, neighbour, side);
     if (!found) return kept;
     retimed.push(`The recording is quiet where the transcript times the kept “${plain(kept)}” (${round3(kept.start)}–${round3(kept.end)} s); its sound ${
@@ -1171,7 +1263,11 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
   // from the soundless one, "period." and a "Thank" nobody said had no pause between them, and the edge went to a dip
   // in the kept word's tail with half a second of silence just after it (2026-11-15).
   const sounds = (w: Word) => w.end > w.start;
-  const removed = words.slice(from, to + 1);
+  const removed = words.slice(from, to + 1).map(w => {
+    const moved = onSound(w, pageAt((w.start + w.end) / 2));
+    if (moved) retimed.push(movedNote(w, moved, "removed"));
+    return moved ?? w;
+  });
   const firstHeard = removed.find(sounds) ?? (after ? { ...first, start: after.start, end: after.start } : first);
   const lastHeard = removed.findLast(sounds) ?? (before ? { ...last, start: before.end, end: before.end } : last);
   let start = edge(before, firstHeard, "start"), end = edge(after, lastHeard, "end");
