@@ -552,7 +552,9 @@ export const Change = z.object({
     /** Why the editor should look or listen before keeping this applied cut. */
     check: z.string().trim().min(1).max(120).optional(),
     /** Why Scarlet held this cut for a closer look: what it measured at the edges. For the agent; the editor reads `reason`. */
-    held: z.string().optional() })).optional(),
+    held: z.string().optional(),
+    /** Nothing Scarlet measures can settle this cut's join, so it waits for the editor to hear it and no later cut replaces it. */
+    unheard: z.literal(true).optional() })).optional(),
   /** Second-pass recommendations on the immutable chronological cut-review plan. */
   cutAssessments: z.array(CutAssessment).optional(),
   /** A call rechecked against newer footage. Its index still identifies the same call in the original pass. */

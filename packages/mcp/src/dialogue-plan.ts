@@ -399,6 +399,8 @@ interface PlannedDecision extends TimeRange {
   check?: string;
   /** Why Scarlet held a cut the agent sent to apply: what it measured at the edges. The agent's reason stays its own. */
   held?: string;
+  /** Nothing Scarlet measures can settle this join (a same-word join): the cut waits for the editor, and the engine lets no later cut replace it. */
+  unheard?: true;
 }
 export type GateLine = Record<string, unknown> & { cut: number };
 
@@ -590,7 +592,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     if (placed) {
       unheard.add(c.input);
       inSound.set(c.input, { inWord: false, reason: placed.reason });
-      return adjust({ ...decided, start: placed.start, end: placed.end, review: true, held: placed.reason }, placed.reason);
+      return adjust({ ...decided, start: placed.start, end: placed.end, review: true, held: placed.reason, unheard: true }, placed.reason);
     }
     // Word edges without measured silence fall back to word timings, which is not a confident edge.
     const fallback = c.wordEdgeProblems?.length && !decided.review

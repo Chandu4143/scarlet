@@ -597,6 +597,11 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       for (const r of reasons) {
         const call = assessmentOf(change, r);
         if (call && (isPublishedCall(call) || call.askOrder !== undefined)) protectedCuts.set(r, `${change.id}:${call.index}`);
+        // A cut staged because nothing Scarlet measures can settle its join is the editor's to hear from the moment it is
+        // staged, recommendation or none: a pass staged the right cut of a restart, then applied a cut of the take that
+        // replaced it over the same footage half a minute later, and the review ended with no cut on the line (2026-11-17).
+        // A keep recorded on it is the model's own decision that the passage stays, and frees the footage.
+        else if (r.unheard && call?.verdict !== "keep" && !editorChoice(change, r)) protectedCuts.set(r, `${change.id}:unheard:${r.start}`);
         else if ((!call || call.provisional) && !editorChoice(change, r)) {
           const slot = inherited.find(span => covers(span, r));
           if (slot) protectedCuts.set(r, `${change.id}:pending:${slot.start}`);
@@ -630,8 +635,17 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       const clashes = carried.some(c => (!protectedSlot || c.protectedSlot !== protectedSlot) && overlaps(outer(c), outer(r)));
       if (protectedSlot && clashes)
         throw conflict("cut_changed", "Two earlier review slots now cover the same footage. Their existing reviews are still saved.");
-      if (!choice && (clashes || planned.some(c => overlaps(outer(c), outer(r))))) continue;
-      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, summary: r.summary, ...(r.held && { held: r.held }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
+      if (!choice && (clashes || planned.some(c => overlaps(outer(c), outer(r))))) {
+        // A cut this save sends over the same footage takes a staged cut's place: a plan often sends a staged cut again.
+        // One that takes only part of it leaves the rest playing with nothing staged there, and the agent is told.
+        const over = planned.filter(c => overlaps(outer(c), outer(r)));
+        const taken = mergeRanges(over.map(outer), 1e-6).reduce((n, c) => n + Math.max(0, Math.min(c.end, outer(r).end) - Math.max(c.start, outer(r).start)), 0);
+        // An edge moved a few frames is the same cut. A syllable or more left over is footage nobody decided.
+        const left = outer(r).end - outer(r).start - taken;
+        if (over.length && left >= LEFT_OF_STAGED_CUT) drop(change, r, `A cut in this save (${over.map(c => `${c.asked.start.toFixed(2)}–${c.asked.end.toFixed(2)} s`).join(", ")}) takes part of this staged cut's footage, so it left the review, and ${left.toFixed(2)} s of what it would have removed plays on.`);
+        continue;
+      }
+      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, summary: r.summary, ...(r.held && { held: r.held }), ...(r.unheard && { unheard: true as const }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
         ...(r.kind && { kind: r.kind }), ...(r.legacySuggest && { legacySuggest: true }), ...((current || protectedSlot) && { preserveEdges: true }), protectedSlot, ...(recoveredCuts.has(r) && { recovered: true }),
         ...(assessment && { assessment }), ...(choice && !lapsed ? { choice } : { asked: { start: r.start, end: r.end }, ...(lapsed && { lapsed }) }) });
     }
@@ -755,7 +769,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     // Staged cuts the editor hasn't called that now sit against footage they chose to keep. Their call covers them.
     const joined: TimeRange[] = [];
     if (optional.length) {
-      const reasons = optional.map(({ start, end, reason, summary, originalRange, kind, crossfade, legacySuggest, held }) => ({ start, end, reason, summary, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }) }));
+      const reasons = optional.map(({ start, end, reason, summary, originalRange, kind, crossfade, legacySuggest, held, unheard }) => ({ start, end, reason, summary, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }), ...(unheard && { unheard }) }));
       const { change } = persistProposal(ctx, user, projectId, { fromVersion: version, intent: "suggestion", autoApprove: false,
         ops: ops(optional), description: whole && own ? own : `Review ${optional.length} optional dialogue ${optional.length === 1 ? "cut" : "cuts"}`,
         taskId, author, noteIds }, ids[1], reasons, { fold });
@@ -1011,6 +1025,15 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     const autonomous = !scoped && (!!task || body.author?.type === "agent");
     if (autonomous && (was && (isPublishedCall(was) || was.askOrder !== undefined) || change.cutChoices?.some(c => c.index === index)))
       throw conflict("cut_with_editor", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s is with the editor. Only a revision they request can change this cut. ${CALL_WITH_EDITOR}`);
+    // A cut staged because nothing Scarlet measures can settle its join is the editor's to hear, where Scarlet placed it.
+    // A pass moved one onto the take that replaced the false start, where both edges were quiet, recorded it as a cut,
+    // and the broken take played with no call (2026-11-17). A keep is the model's own decision that the passage stays.
+    const unheard = !!change.cutReasons?.some(r => r.unheard && r.start < old.end - 1e-6 && r.end > old.start + 1e-6);
+    const aFrame = 1 / project.settings.fps;
+    const moves = Math.abs(range.start - old.start) > aFrame + 1e-6 || Math.abs(range.end - old.end) > aFrame + 1e-6;
+    if (autonomous && unheard && moves && !body.keep)
+      throw conflict("cut_unheard", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s waits for the editor to hear its join, so it stays where Scarlet placed it. `
+        + "Record ask on it with dialogue_review_save, with what to listen for, or keep if the passage belongs in the video as it was said.");
     const placement = placeRevision(ctx, project, change, review, index, body, range, task, scoped, named.fromVersion);
     if ("conflict" in placement) {
       const { reason, range } = placement.conflict;
@@ -1034,7 +1057,7 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
       const duration = r.crossfade ?? change.joinFades?.duration;
       return duration ? { ...r, crossfade: duration } : r;
     });
-    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }) });
+    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(unheard && !moves && { unheard: true as const }) });
     cutReasons.sort((a, b) => a.start - b.start);
     const { change: revised } = persistProposal(ctx, user, change.projectId, { fromVersion: change.fromVersion, intent: "suggestion", autoApprove: false,
       ops: [...ranges].reverse().map(r => ({ op: "rippleDelete" as const, start: r.start, end: r.end })),
@@ -1217,6 +1240,9 @@ function editorsCut(change: Change, index: number): string {
 }
 
 const capitalized = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
+
+/** A staged cut that a later cut of the same save takes part of has left this much of its footage playing: a syllable or more. */
+const LEFT_OF_STAGED_CUT = .15;
 
 /**
  * What to do with a finding about a call the editor holds. The same pass asked "Scarlet has locked edit 5 for your

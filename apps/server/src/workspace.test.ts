@@ -4413,6 +4413,43 @@ function crossfades(taskId: string) {
 
 const waitingPasses = () => workspace.ctx.repos.changes.select(`project_id = ? AND state = 'ready' AND json_extract(json, '$.intent') = 'suggestion'`, [project.id]);
 
+it("lets no later cut replace one staged for the editor's ear, and says when a save takes part of another staged cut", async () => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit, assess, listed } = dialoguePassInParts();
+  // Nothing Scarlet measures can settle the first cut's join, so it waits for the editor from the moment it is staged.
+  const { review } = await submit(base, [{ ...staged(8, 10), held: "The words run together.", unheard: true }, staged(14, 16)]);
+  expect(review.cutReasons![0]).toMatchObject({ start: 8, end: 10, unheard: true });
+  // A cut of the take beside it, sent to apply half a minute later, reaches into its footage. It is set aside.
+  const over = await submit(base, [{ ...staged(9, 12), review: false }]);
+  expect(over.heldForReview).toEqual([{ start: 9, end: 12 }]);
+  expect(ctx.repos.projects.header(project.id)!.head).toBe(base);
+  expect(await listed(over.review)).toEqual([[8, 10], [14, 16]]);
+  // Nor can the pass move it onto that take itself: where Scarlet placed it is what the editor is asked to hear.
+  const move = await api("POST", `/changes/${over.review.id}/staged-cuts/0`, { taskId: task.id, start: 9, end: 12, reason: "Both edges are quiet here." });
+  expect(move.status).toBe(409);
+  expect((await move.json()).error).toMatchObject({ code: "cut_unheard", message: expect.stringMatching(/waits for the editor to hear its join.*Record ask.*or keep/) });
+  expect(await listed(ctx.repos.changes.get(over.review.id)!)).toEqual([[8, 10], [14, 16]]);
+  // The other staged cut carries no such mark. A cut that moves its edge a frame is the same cut and takes its place quietly.
+  const frame = 1 / 30;
+  const moved = await submit(base, [staged(14, 16 - frame)]) as Awaited<ReturnType<typeof submit>> & { droppedFromReview?: unknown };
+  expect(moved.droppedFromReview).toBeUndefined();
+  expect((await listed(moved.review)).map(([start]) => start)).toEqual([8, 14]);
+  expect(moved.review.cutReasons!.find(r => r.start === 8)).toMatchObject({ unheard: true });
+  // One that takes half of it leaves the rest playing with nothing staged there, and the save says so.
+  const part = await submit(base, [{ ...staged(15, 17), review: false }]) as Awaited<ReturnType<typeof submit>> & { droppedFromReview?: Array<{ start: number; why: string }> };
+  expect(part.droppedFromReview).toEqual([expect.objectContaining({ start: 14, why: expect.stringMatching(/15\.00–17\.00 s.*1\.00 s of what it would have removed plays on/) })]);
+  // Once the model records that the passage stays as said, the footage is free again.
+  const still = ctx.repos.changes.get(part.changes.find(c => c.intent === "suggestion")!.id)!;
+  const at = still.cutReasons!.findIndex(r => r.unheard);
+  expect((await assess(still, [{ index: at, start: still.cutReasons![at]!.start, end: still.cutReasons![at]!.end, verdict: "keep", reason: "He means both." }])).status).toBe(200);
+  const head = ctx.repos.projects.header(project.id)!.head!;
+  const freed = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: head, description: "Part",
+    cuts: [{ start: 9, end: 12, review: false, reason: "The whole aside goes." }] });
+  expect(freed.status).toBe(201);
+  expect(await freed.json()).not.toHaveProperty("heldForReview");
+  expect(ctx.repos.projects.header(project.id)!.head).not.toBe(head);
+});
+
 it("hands off one call while the pass can still trim and assess its other cuts", async () => {
   const { ctx } = workspace;
   const { task, base, staged, submit, assess, listed } = dialoguePassInParts();
