@@ -11,6 +11,8 @@ import { pictureEntranceReader } from "./picture-entrance.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, noteEvidenceMiss, text } from "./tool-result.js";
 import { OTHER_INPUT } from "./analysis.js";
+import { screenReadings, type ScreenLine } from "./screen-reading.js";
+import { motionSpans, type MotionSecond } from "./screen-motion.js";
 
 type ToolRegistrar = <Shape extends z.ZodRawShape>(name: ScarletToolName, description: string, shape: Shape,
   handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<CallToolResult>) => void;
@@ -72,6 +74,60 @@ export function registerPerception(deps: PerceptionDeps) {
       if (words) map.set(id, words);
     }
     return map;
+  }
+
+  /**
+   * The recordings whose picture plays in a range of a timeline and their source seconds there: `mediaId`, or by default
+   * every one whose sound isn't heard (the screen beside a camera), else every one.
+   */
+  function pictureSources(tl: Timeline, project: Project, range: { start: number; end: number }, heardFrom: ReadonlySet<string>, mediaId?: string) {
+    const pictures = new Map<string, Array<{ sourceIn: number; sourceOut: number }>>();
+    for (const track of tl.tracks) if (track.kind === "video" && !track.hidden) for (const c of track.clips) {
+      if (c.kind !== "media" || c.enabled === false || project.media.find(m => m.id === c.mediaId)?.kind !== "video") continue;
+      if (c.timelineIn > range.end || c.timelineIn + (c.sourceOut - c.sourceIn) / (c.speed ?? 1) < range.start) continue;
+      pictures.set(c.mediaId, [...pictures.get(c.mediaId) ?? [], c]);
+    }
+    if (mediaId && !pictures.has(mediaId)) throw new Error(`${mediaId}'s picture doesn't play in ${range.start.toFixed(1)}-${range.end.toFixed(1)} s of version ${tl.version}.`);
+    const shown = mediaId ? [mediaId] : [...pictures.keys()].filter(id => !heardFrom.has(id));
+    return (shown.length ? shown : [...pictures.keys()]).map(id => {
+      const clips = pictures.get(id)!;
+      return { id, from: Math.max(0, Math.min(...clips.map(c => c.sourceIn)) - 1), to: Math.max(...clips.map(c => c.sourceOut)) + 1 };
+    });
+  }
+
+  /** A picture reading of each recording (`screen-text`, `screen-motion`), waiting up to `wait` seconds for what isn't read yet. */
+  async function readPictures<T>(kind: "screen-text" | "screen-motion", sources: Array<{ id: string; from: number; to: number }>, wait: number) {
+    const reads = await Promise.all(sources.map(async ({ id, from, to }) => ({ id,
+      read: await client.get<{ from: number; to: number; readSeconds: number; done: boolean; error?: string } & T>(
+        `/projects/${encodeURIComponent(deps.projectId)}/media/${encodeURIComponent(id)}/${kind}?from=${from}&to=${to}&wait=${wait}`) })));
+    const what = kind === "screen-text" ? "its text" : "its picture's changes";
+    const unread = reads.filter(({ read }) => !read.done).map(({ id, read }) =>
+      `${id}: ${read.readSeconds.toFixed(0)} of ${(read.to - read.from).toFixed(0)} s of ${what} read so far${read.error ? `, stopped: ${read.error}` : ", still reading: call again for the rest"}`);
+    return { reads, unread };
+  }
+
+  /**
+   * The readings aloud from the screen on a timeline (screen_reading), with how far each recording's text is read.
+   * `wait` is how many seconds a text not read yet may hold the answer. Undefined when the timeline plays no transcribed speech.
+   */
+  async function readingsOn(tl: Timeline, project: Project, range: { start: number; end: number }, opts: { mediaId?: string; wait: number }) {
+    const transcripts = await wordsFor(tl, project);
+    if (!transcripts.size) return undefined;
+    const heard = timelineWords(tl, transcripts, range);
+    const sources = pictureSources(tl, project, range, new Set(heard.map(w => w.mediaId)), opts.mediaId);
+    const { reads, unread } = await readPictures<{ spans: ScreenLine[] }>("screen-text", sources, opts.wait);
+    const readings = screenReadings(tl, heard, new Map(reads.map(({ id, read }) => [id, read.spans])))
+      .filter(r => r.to >= range.start && r.from <= range.end);
+    return { readings, ids: sources.map(s => s.id), unread };
+  }
+
+  /** Where the picture of each screen recording changes on a timeline (screen_motion), with how far each is read. */
+  async function motionOn(tl: Timeline, project: Project, range: { start: number; end: number }, opts: { mediaId?: string; wait: number }) {
+    const transcripts = await wordsFor(tl, project).catch(() => new Map<string, TranscriptWord[]>());
+    const heard = new Set(transcripts.size ? timelineWords(tl, transcripts, range).map(w => w.mediaId) : []);
+    const sources = pictureSources(tl, project, range, heard, opts.mediaId);
+    const { reads, unread } = await readPictures<{ seconds: MotionSecond[] }>("screen-motion", sources, opts.wait);
+    return { spans: motionSpans(tl, new Map(reads.map(({ id, read }) => [id, read.seconds])), range), ids: sources.map(s => s.id), unread };
   }
 
   /** Audit the given joins of `tl`. Missing measurements make the audit say so instead of guessing. */
@@ -272,6 +328,44 @@ export function registerPerception(deps: PerceptionDeps) {
       return text([head, ...lines, ...more].join("\n"));
     });
 
+  tool("screen_reading",
+    "Where the speaker reads aloud from the screen, on a version of the edit (default head): each reading is a run of the words heard that is found, in the same order, in the text on screen of a recording whose picture plays as they are said. `from`-`to` are TIMELINE seconds of the words, `source` the recording's seconds, `said` the words heard, `matched` how many of them were found on screen, `lines` the lines they were found on, and `box` the area those lines cover as [left, top, right, bottom] in percent of the SOURCE picture: the units of screen_text, and of timeline_framing's `show`. A stretch with no reading is one where the speaker says nothing that is on screen: a demo, a comment, or text read too loosely to match. The text on screen is read by a text recognizer, so a misread word can split a reading in two, and a number read aloud as words doesn't match its digits. `mediaId` chooses the recording whose text to match; by default every recording whose picture plays and whose sound isn't the one heard. A recording's text is read once and kept: while it is still being read, the answer says how far it has got; call again for the rest. Readings are listed in time order, 100 at a time; `offset` pages on.",
+    { version: z.string().optional(), from: z.number().min(0).optional().describe("Timeline seconds"), to: z.number().min(0).optional().describe("Timeline seconds"),
+      mediaId: z.string().optional().describe("The recording whose text on screen to match"),
+      offset: z.number().int().min(0).default(0) },
+    async ({ version, from, to, mediaId, offset }) => {
+      const [tl, { project }] = await Promise.all([deps.getTimeline(version), deps.getProject()]);
+      const range = { start: from ?? 0, end: to ?? timelineDuration(tl) };
+      const found = await readingsOn(tl, project, range, { mediaId, wait: 20 });
+      if (!found) return text(`Version ${tl.version} plays no transcribed speech.`);
+      const { readings, ids, unread } = found;
+      const pct = (box: readonly number[]) => box.map(n => Math.round(n * 1000) / 10);
+      const page = readings.slice(offset, offset + 100), left = readings.length - offset - page.length;
+      return json({ version: tl.version, range: [range.start, range.end], recordings: ids, readings: readings.length,
+        ...(unread.length && { reading: unread }),
+        list: page.map(r => ({ from: r.from, to: r.to, mediaId: r.mediaId, source: r.source, said: r.said.length > 160 ? `${r.said.slice(0, 157)}…` : r.said,
+          matched: r.matched, box: pct(r.box),
+          lines: r.lines.slice(0, 8).map(l => ({ text: l.text.slice(0, 80), box: pct(l.box) })), ...(r.lines.length > 8 && { moreLines: r.lines.length - 8 }) })),
+        ...(left > 0 && { next: `offset ${offset + page.length} for the next ${Math.min(100, left)}` }) });
+    });
+
+  tool("screen_motion",
+    "Where the picture of a recording changes, on a version of the edit (default head): the area a game plays in, a page that scrolls, a result that appears, the pointer moving. The recording is compared four times a second; each span is a run of seconds in which the same area keeps changing, `from`-`to` in TIMELINE seconds, `box` the area over the span as [left, top, right, bottom] in percent of the SOURCE picture (the units of screen_text and of timeline_framing's `show`), `share` the most of the picture that changed in one second, in percent, and `small` where changes the size of a pointer were away from that area, as [x, y] percent. A span whose box is small and whose share is a fraction of a percent is the pointer or a cursor alone. A stretch with no span holds still. It measures change, not meaning: a video playing in a corner changes as much as the thing being shown. `mediaId` chooses the recording; by default every recording whose picture plays and whose sound isn't the one heard. A recording is read once and kept: while it is still being read, the answer says how far it has got; call again for the rest. Spans are listed in time order, 150 at a time; `offset` pages on.",
+    { version: z.string().optional(), from: z.number().min(0).optional().describe("Timeline seconds"), to: z.number().min(0).optional().describe("Timeline seconds"),
+      mediaId: z.string().optional().describe("The recording whose picture to follow"),
+      offset: z.number().int().min(0).default(0) },
+    async ({ version, from, to, mediaId, offset }) => {
+      const [tl, { project }] = await Promise.all([deps.getTimeline(version), deps.getProject()]);
+      const range = { start: from ?? 0, end: to ?? timelineDuration(tl) };
+      const { spans, ids, unread } = await motionOn(tl, project, range, { mediaId, wait: 20 });
+      const pct = (n: number) => Math.round(n * 1000) / 10;
+      const page = spans.slice(offset, offset + 150), left = spans.length - offset - page.length;
+      return json({ version: tl.version, range: [range.start, range.end], recordings: ids, spans: spans.length,
+        ...(unread.length && { reading: unread }),
+        list: page.map(m => ({ from: m.from, to: m.to, mediaId: m.mediaId, box: m.box.map(pct), share: pct(m.share), ...(m.small && { small: m.small.map(p => p.map(pct)) }) })),
+        ...(left > 0 && { next: `offset ${offset + page.length} for the next ${Math.min(150, left)}` }) });
+    });
+
   tool("faces",
     "Where the faces are in a video's frame over time, found from its picture. Each face is followed as a track, numbered by when it first appears: a track follows position from frame to frame, not who it is, so two people who swap places swap tracks, and a face that leaves and comes back over the same place keeps its number. `spans` split each track's time where its face moves or turns: `start`-`end` in SOURCE seconds; `box` [left, top, right, bottom] as fractions of the frame, holding the face throughout the span (the detector's box runs from about the hairline to just under the chin, inside the ears: the hair above and the shoulders below are outside it); `eyes` [x, y], the point midway between the eyes as fractions of the frame, where it usually is through the span; `yaw`, roughly where it looks, in degrees from facing the camera, positive toward the frame's right, to the nearest 5; and the detector's `confidence` (0..1). `tracks` gives each track's first and last second in the range, its seconds on screen, its usual box and eyes and the detector's usual confidence (a face in a picture or a pattern on a shelf can be found too, usually less surely), and `frame` the video's width and height in pixels, for a box's shape; `track` lists one track's spans. Frames are looked at twice a second, and four times where faces move; a face under about 2% of the frame's width, turned past profile or seen only for a moment can be missed. A video is read once and kept: a range not read yet is read now, and the answer says how much was read when it returns, while track numbers can still change; call again for the rest. Spans are listed in time order, 200 at a time; `offset` pages on. timeline_at maps source seconds to the edit." +
       (deps.seesFrames ? " media_frame at a span's start second shows the frame its box was measured on." : ""),
@@ -300,6 +394,8 @@ export function registerPerception(deps: PerceptionDeps) {
 
   return {
     readTranscript,
+    readingsOn,
+    motionOn,
     /** Audit the joins at timeline times `at` on a version (e.g. a staged cut's join on its toVersion). */
     /**
      * Audit the join a cut left at timeline time `at` on a version (e.g. a staged cut's join on its

@@ -2,6 +2,7 @@ import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
 import { BRIEF_PICTURES_NEXT, flashesOntoCuts, MET_CUT_NEXT, newBriefPictures, type MetCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
+import { FRAMING_REPORT_NEXT, framingReport } from "./framing-report.js";
 import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
@@ -977,6 +978,23 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const refusal = showAreaRefusal(found);
     if (refusal) throw new Error(refusal);
   }
+  /**
+   * What an edit's framing shows, stretch by stretch, with the passages read aloud there that it leaves out or covers.
+   * Text not read yet doesn't hold the save up: the report says how far it has got.
+   */
+  async function framedOn(before: Timeline | null, made: Timeline) {
+    const { project } = await getProject();
+    const framed = framingReport(before, made, project.media, project.settings);
+    if (!framed.length) return { framed, unread: [] as string[] };
+    const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
+    const [found, moving] = await Promise.all([
+      perception.readingsOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("the passages read aloud from the screen", error); return undefined; }),
+      perception.motionOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("where the picture changes", error); return undefined; }),
+    ]);
+    const evidence = !!found?.readings.length || !!moving?.spans.length;
+    return { framed: evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans) : framed,
+      unread: [...found?.unread ?? [], ...moving?.unread ?? []] };
+  }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
     if (ctx.author.type === "agent") {
       const edits = body.timelineEdits ?? [];
@@ -1023,6 +1041,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
     const bare = made && !notApplied ? await getProject().then(({ project }) => backgroundShows(before, made, project.media, project.settings)).catch(() => []) : [];
     const brief = made && !notApplied ? await getProject().then(({ project }) => newBriefPictures(before, made, project.media, project.settings)).catch(() => []) : [];
+    const framedNow = made && !notApplied ? await framedOn(before, made).catch(error => { noteUnmeasured("the framing this edit made", error); return undefined; }) : undefined;
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -1044,6 +1063,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(bare.length && { backgroundShows: bare, backgroundNext: BACKGROUND_NEXT }),
       ...(brief.length && { briefPictures: brief.slice(0, 20), briefNext: BRIEF_PICTURES_NEXT }),
       ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
+      ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
     };
     return json(result);
   }
