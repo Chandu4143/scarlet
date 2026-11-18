@@ -6,7 +6,7 @@
 import { clipDuration, formatTimecode, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
 import type { PictureEntrance } from "./picture-entrance.js";
 import { normalizeTranscriptToken } from "@scarlet/shared";
-import { captionSourceClips, dbfs, isTag, wordsByMidpoint } from "./analysis.js";
+import { captionSourceClips, dbfs, heardText, isTag, wordsByMidpoint } from "./analysis.js";
 import { QUIET_PEAK, quietBuckets, quietRms } from "./gap-sound.js";
 
 // ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ export function sourceRangeToTimeline(tl: Timeline, mediaId: string, from: numbe
 // ---------------------------------------------------------------------------
 
 /** A transcript word placed on the timeline. `index` is its stable index in transcript_get for `mediaId`. */
-export interface TimelineWord { mediaId: string; index: number; text: string; start: number; end: number; speaker?: string }
+export interface TimelineWord { mediaId: string; index: number; text: string; start: number; end: number; speaker?: string; heard?: number }
 
 /** Words heard on a version, in playback order. `transcripts` holds each media's words in transcript_get order. */
 export function timelineWords(tl: Timeline, transcripts: Map<string, TranscriptWord[]>, range?: TimeRange): TimelineWord[] {
@@ -143,7 +143,8 @@ export function timelineWords(tl: Timeline, transcripts: Map<string, TranscriptW
       const start = round(clip.timelineIn + Math.max(0, w.start - clip.sourceIn) / speed);
       const end = round(clip.timelineIn + Math.min(clip.sourceOut - clip.sourceIn, w.end - clip.sourceIn) / speed);
       if (range && (end < range.start || start > range.end)) continue;
-      out.push({ mediaId: clip.mediaId, index, text: w.text.trim(), start, end: Math.max(start, end), ...(w.speaker && { speaker: w.speaker }) });
+      out.push({ mediaId: clip.mediaId, index, text: w.text.trim(), start, end: Math.max(start, end), ...(w.speaker && { speaker: w.speaker }),
+        ...(w.heard !== undefined && { heard: w.heard }) });
     }
   }
   out.sort((a, b) => a.start - b.start);
@@ -212,7 +213,7 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
   const flush = () => {
     if (!line.length) return;
     const head = line[0]!, who = line.find(w => w.speaker)?.speaker;
-    lines.push(`${head.start.toFixed(2)} #${head.index}${who ? ` ${who}:` : ""} ${line.map(w => w.text).join(" ")}`);
+    lines.push(`${head.start.toFixed(2)} #${head.index}${who ? ` ${who}:` : ""} ${line.map(heardText).join(" ")}`);
     line = [];
   };
   const allNumbers = opts.all && new Map(opts.all.map((join, i) => [join, i + 1]));
@@ -243,7 +244,7 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
     const gap = previous ? w.start - previous.end : 0;
     if (opts.detail === "words") {
       if (previous && gap >= pause) lines.push(`  (${gap.toFixed(2)} s)`);
-      lines.push(`${w.start.toFixed(2)}-${w.end.toFixed(2)} #${w.index}${w.speaker && w.speaker !== previous?.speaker ? ` ${w.speaker}:` : ""} ${w.text}`);
+      lines.push(`${w.start.toFixed(2)}-${w.end.toFixed(2)} #${w.index}${w.speaker && w.speaker !== previous?.speaker ? ` ${w.speaker}:` : ""} ${heardText(w)}`);
     } else {
       // Word-level speaker labels flicker on a shared mic; a new line needs a real handoff (a speaker change at a gap).
       const last = line.at(-1);

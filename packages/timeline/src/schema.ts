@@ -418,6 +418,12 @@ export const TranscriptWord = z.object({
   start: Seconds,
   end: Seconds,
   confidence: z.number().min(0).max(1).optional(),
+  /**
+   * How clearly the speech aligner hears this word's letters where it is placed: the mean peak probability of its
+   * letters, 0 to 1. A spoken word scores near 1. Near 0 the sound there is not this word: one the transcriber made up
+   * over a pause, or a hum or a reset it wrote down as a word. Absent where the aligner didn't try the word.
+   */
+  heard: z.number().min(0).max(1).optional(),
   speaker: z.string().optional(),
 });
 export type TranscriptWord = z.infer<typeof TranscriptWord>;

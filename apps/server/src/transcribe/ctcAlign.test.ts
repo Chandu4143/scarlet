@@ -305,9 +305,11 @@ describe("grouping and fallback", () => {
     });
   });
 
-  it("keeps a transcript untouched when nothing aligned, and clips runs at its open ends", () => {
+  it("keeps a transcript's times when nothing aligned, saying how faintly a tried word was heard, and clips runs at its open ends", () => {
     const segments = [segment(0, 3, [["a", 0, 1], ["b", 1, 2], ["c", 2, 3]])];
-    expect(applyTimings(segments, [undefined, null, { start: 2, end: 2.5, score: 0.1 }])).toEqual(segments);
+    const kept = applyTimings(segments, [undefined, null, { start: 2, end: 2.5, score: 0.1 }]);
+    expect(kept[0]!.words).toEqual([segments[0]!.words[0], segments[0]!.words[1], { ...segments[0]!.words[2], heard: 0.1 }]);
+    expect(kept[0]!.words[0]).toBe(segments[0]!.words[0]);
     const out = applyTimings(segments, [{ start: 1.5, end: 1.8, score: 0.9 }, undefined, undefined]);
     expect(out[0]!.words.map(w => [w.start, w.end])).toEqual([[1.5, 1.8], [1.8, 2], [2, 3]]);
   });
@@ -334,7 +336,7 @@ describe("transcript alignment", () => {
       return [[{ start: .2, end: .8, score: .95 }, { start: 1.2, end: 1.4, score: .9 }]] as never;
     });
     const words = await alignTranscript(ctx(), { source: "source.mov", wav, language: "ES-MX", segments, signal, emissions: file });
-    expect(words[0]!.words).toEqual([{ text: "¿Mañana?", start: .2, end: .8 }, { text: "sí.", start: 1.2, end: 1.4 }]);
+    expect(words[0]!.words).toEqual([{ text: "¿Mañana?", start: .2, end: .8, heard: .95 }, { text: "sí.", start: 1.2, end: 1.4, heard: .9 }]);
     await alignWords(ctx(), wav, segments, { language: "spanish", signal, emissions: { file, offset: 5, duration: 2, wav: async () => wav } });
     await alignWords(ctx(), wav, segments, { language: "en", signal, emissions: { file, wav: async () => wav } });
     expect(requests.map(r => r.language)).toEqual(["es", "es", undefined]);
@@ -355,7 +357,7 @@ describe("transcript alignment", () => {
     const out = await alignTranscript(ctx(), { source: "source.mov", wav: join(dir, "decoded.wav"), language: "en", segments, signal });
     expect(worker).toHaveBeenCalledTimes(3);
     expect(requests.map(r => [r.groups.length, r.after])).toEqual([[10, undefined], [10, 271.5], [4, 571.5]]);
-    expect(out[3]!.words).toEqual([{ text: "hello", start: 91.25, end: 91.5 }, { text: "2024", start: 92, end: 93 }]);
+    expect(out[3]!.words).toEqual([{ text: "hello", start: 91.25, end: 91.5, heard: .9 }, { text: "2024", start: 92, end: 93 }]);
     expect((await readdir(dir)).filter(f => f.endsWith(".json"))).toEqual([]);
     // One line for the whole transcript, once its last turn is done: each "hello" was placed and no "2024".
     expect(log.mock.calls).toEqual([[expect.stringMatching(/^\[align\] source\.mov: placed 24 of 48 words in \d+(ms|s)$/)]]);

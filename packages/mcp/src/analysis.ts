@@ -245,6 +245,16 @@ export const isTag = (text: string) => /^\s*\[.*\]\s*$/.test(text);
 /** How a transcript read marks a word heard only on the input a recording's dialogue isn't on: it is not the speaker. */
 export const OTHER_INPUT = "[other input]";
 
+/**
+ * A word the speech aligner hears this faintly or less where the transcript puts it reads with its score, as
+ * `all (heard 0.00)`. On one recording the published edit cut 54% of the words under it and 16% of the rest
+ * (2026-11-17): a hum written down as "all", a "Thank you" never said, a swallowed "a".
+ */
+export const FAINTLY_HEARD = 0.5;
+export function heardText(w: { text: string; heard?: number }): string {
+  return w.heard !== undefined && w.heard < FAINTLY_HEARD ? `${w.text.trim()} (heard ${w.heard.toFixed(2)})` : w.text.trim();
+}
+
 /** Linear level 0..1 → dBFS, floored at -99. Every audio tool reports levels this way. */
 export function dbfs(v: number): number {
   return Math.max(-99, Math.round(20 * Math.log10(v + 1e-7)));

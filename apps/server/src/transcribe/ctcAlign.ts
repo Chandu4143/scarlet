@@ -560,7 +560,10 @@ export function applyTimings(segments: readonly TranscriptSegment[], timings: Re
   return segments.map(seg => {
     const next = seg.words.map(w => {
       const timing = timings[at], t = times[at++]!;
-      const out = t.start === w.start && t.end === w.end ? w : { ...w, start: round(t.start), end: round(t.end) };
+      const heard = timing ? Math.min(1, Math.max(0, Math.round(timing.score * 100) / 100)) : undefined;
+      const moved = t.start !== w.start || t.end !== w.end;
+      const out = !moved && heard === w.heard ? w
+        : { ...w, ...(moved && { start: round(t.start), end: round(t.end) }), ...(heard !== undefined && { heard }) };
       if (timing) alignerHeard.set(out, timing.score >= minScore && timing.end >= timing.start);
       return out;
     });

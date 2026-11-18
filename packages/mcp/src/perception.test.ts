@@ -42,6 +42,14 @@ describe("timeline perception", () => {
     expect(missing).toEqual([{ start: 4, end: 6 }]);
   });
 
+  it("reads a word the aligner barely heard with its score, in lines and in words", () => {
+    const tl = cutTimeline();
+    const mic: TranscriptWord[] = words([["So", .5, .7], ["all", .8, 1.1], ["right", 1.2, 1.3]]).map((w, i) => ({ ...w, heard: [.98, 0, .5][i] }));
+    const placed = timelineWords(tl, new Map([["mic", mic]]));
+    expect(formatTimelineTranscript(placed, [], { detail: "lines", fps: 30 })).toContain("0.50 #0 So all (heard 0.00) right");
+    expect(formatTimelineTranscript(placed, [], { detail: "words", fps: 30 })).toContain("0.80-1.10 #1 all (heard 0.00)");
+  });
+
   it("reads the edit's words in playback order with stable indices and marks each join", () => {
     const tl = cutTimeline();
     const mic = words([["So", .5, .7], ["today", .8, 1.1], ["we", 1.2, 1.3], ["uh", 4.5, 4.8], ["Today", 6.3, 6.6], ["we", 6.7, 6.8], ["build.", 6.9, 7.3]]);
