@@ -57,6 +57,7 @@ import { aboutOne, aimOf, closingReply, lastAttempt, laterAttempts, notesStillAs
 import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut, isDialoguePass, isOpenPass, keepGoesTo, noRevisions, openPass, passRevision, reviewCalls, revisedCall, revisedFrom, revisionCut, savedChoices, waitsToPlay,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
 import { canPreviewMedia } from "../lib/upload";
+import { followEveryWorkingCut, showingWorkingCut, useShownCut } from "../stores/shownCut";
 import { useProjectStore } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
 import { messageTimestamps, type MessageClock } from "../lib/messageTimestamps";
@@ -1220,8 +1221,9 @@ export function SimpleWorkspace() {
     const { id, project, changes, tasks, notes, timeline, media, renderSettingsRevision, reviewStatus, reviewError, headError } = s.current;
     return { id, project, changes, tasks, notes, timeline, media, renderSettingsRevision, reviewStatus, reviewError, headError };
   }))!;
-  const { changes, tasks, notes, timeline, media } = current;
-  const head = current.project.head;
+  const { changes, tasks, notes, media } = current;
+  // The working cut on screen. While the video plays, the saves a pass makes under it wait until it stops.
+  const { head, timeline } = useShownCut();
   const fps = current.project.settings.fps;
   const approve = useProjectStore(s => s.approve);
   const setupOpen = useUiStore(s => s.agentSetupOpen);
@@ -1766,6 +1768,12 @@ export function SimpleWorkspace() {
       return again ? player.audition(listen, fps, true) : player.audition(listen, fps);
     });
   }, [audition, playedAudition, fps, listenPending, listenJoined?.version]); // eslint-disable-line react-hooks/exhaustive-deps
+  // An open call follows every new working cut, as its pass does (`followEveryWorkingCut`).
+  const callOpen = !!listening;
+  useLayoutEffect(() => {
+    followEveryWorkingCut(callOpen);
+    return () => followEveryWorkingCut(false);
+  }, [callOpen]);
   const listenSide = (side: Side) => {
     player.pause();
     if (listening && visit?.side === "before" && side === "after") setCallVisit({ ...visit, take: listening.take + 1, side: "after", at: visit.end });
@@ -3361,6 +3369,12 @@ export function SimpleWorkspace() {
   const trayOpen = useState(false);
   const rewordingItem = rewording && queuedItems.find(item => item.id === rewording.id);
   const previewVersion = appliedCut ? beforeCut!.version : callView ? callView.version : pinnedCallVersion ?? draftVersion;
+  // The player is on the working cut's own clock: nothing open that plays another version or a clip.
+  const onWorkingClock = !source && !draftVersion && !appliedCut && !listening;
+  useLayoutEffect(() => {
+    showingWorkingCut(onWorkingClock);
+    return () => showingWorkingCut(false);
+  }, [onWorkingClock]);
   const playerVersion = previewVersion ?? timeline?.version ?? head ?? undefined;
   const seekFromMessage = useRef<((time: number) => void) | null>(null);
   const previewTimeline = appliedCut ? beforeTimeline : callView ? callView.timeline : pinnedCallVersion ? callTimeline : draft;
