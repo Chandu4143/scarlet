@@ -17,6 +17,11 @@ describe("listMoments", () => {
     expect(moments[2]).toMatchObject({ key: "chg_pass/3", start: 30, end: 33 });
   });
 
+  it("names a moment for the cut Scarlet described, between two as large", () => {
+    const moments = listMoments([{ ...cut(0, 37, 1.4), label: "Cut" }, { ...cut(1, 37, 1.4), label: "Keep the response close to the cube movement." }]);
+    expect(moments.map(m => m.main.spot)).toEqual([1]);
+  });
+
   it("keeps apart edits that only touch, and an edit that runs much longer than another in it", () => {
     expect(listMoments([edit(0, 10, 14), edit(1, 14, 18)]).length).toBe(2);
     // A music bed under the whole video doesn't take every edit in it.

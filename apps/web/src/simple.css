@@ -686,8 +686,8 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .simple-pass-more:hover, .simple-pass-more[aria-expanded="true"] { color: var(--color-muted); text-decoration: underline; text-underline-offset: 3px; }
 /* The moment's own edits, under its row: no times, since they all play in its stretch, their words in line with the
    moment's, and a rule at their left as a request under its row has. */
-.simple-pass-list.is-moment { max-height: none; overflow: visible; margin: 0 0 2px 46px; padding-left: 4px; border-top: 0; border-left: 1px solid var(--color-line); }
-.simple-pass-list.has-hours .simple-pass-list.is-moment { margin-left: 60px; }
+.simple-pass-list.is-moment, .req .simple-pass-list.is-moment { max-height: none; overflow: visible; margin: 0 0 2px 46px; padding-left: 4px; border-top: 0; border-left: 1px solid var(--color-line); }
+.req .simple-pass-list.has-hours .simple-pass-list.is-moment { margin-left: 60px; }
 .simple-pass-list.is-moment > li > button { grid-template-columns: minmax(0, 1fr) auto; }
 .simple-pass-list > li > button.is-decided .simple-pass-label, .simple-pass-list > li > button.is-decided .simple-pass-time { color: var(--color-dim); }
 .simple-pass-tick { display: inline-block; margin-right: 6px; vertical-align: -1px; color: var(--color-muted); }

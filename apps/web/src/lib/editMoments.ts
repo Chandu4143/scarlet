@@ -10,6 +10,7 @@ export interface MomentEdit {
   beforeCut?: { removed: TimeRange };
   check?: string;
   marker?: unknown;
+  label?: string;
 }
 
 /**
@@ -48,11 +49,16 @@ export function overlapSignificantly(a: TimeRange, b: TimeRange) {
   return shared > 0 && shared >= shorter / 2 && longer <= shorter * LONGER;
 }
 
-/** A moment is named for its largest cut, else its longest edit, else its first. */
+/**
+ * A moment is named for its largest cut, else its longest edit, else its first. Between two that are as large, the one
+ * Scarlet said more about names it: a cut it described, not one that only reads "Cut".
+ */
 function mainOf<T extends MomentEdit>(members: T[]) {
-  const removed = (e: T) => e.beforeCut ? e.beforeCut.removed.end - e.beforeCut.removed.start : -1;
+  const removed = (e: T) => e.beforeCut ? Math.round((e.beforeCut.removed.end - e.beforeCut.removed.start) * 100) : -1;
   const length = (e: T) => { const s = editStretch(e); return s.end - s.start; };
-  return members.reduce((best, e) => removed(e) > removed(best) || (removed(e) === removed(best) && length(e) > length(best)) ? e : best);
+  const words = (e: T) => e.label?.trim().length ?? 0;
+  const rank = (a: T, b: T) => removed(a) - removed(b) || length(a) - length(b) || words(a) - words(b);
+  return members.reduce((best, e) => rank(e, best) > 0 ? e : best);
 }
 
 /**
