@@ -38,6 +38,7 @@ import { useNotePositions } from "../lib/useNotePositions";
 import type { ProgressFocus } from "../components/player/SimpleProgress";
 import { editFocus } from "../lib/editKind";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
+import { momentRange } from "../lib/editMoments";
 import { editKey } from "../lib/keptEdits";
 import { useTemplatesStore } from "../stores/templates";
 import { TransitionPicture } from "../components/agent/TemplateMenu";
@@ -54,6 +55,8 @@ interface ThreadTimelineView {
   threadId?: string;
   edits: ThreadEdit[];
   selected?: ThreadEdit;
+  /** The moment of a pass's list that's open, led by `selected`: it plays across all of its edits. */
+  selectedMoment?: { edits: ThreadEdit[] };
   originalChange?: Change;
   cutReview?: { cuts: ThreadEdit[] };
   framing?: { beforeVersion: string; cue?: number };
@@ -545,8 +548,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const framing = threadView?.framing;
   const cutReview = threadView?.cutReview;
   const selectedEdit = threadView?.selected;
+  // A moment of a pass's list plays across all of its edits, once.
+  const selectedMoment = threadView?.selectedMoment;
   const selectedPassage = selectedEdit && (!selectedEdit.beforeCut && selectedEdit.at === undefined
-    ? editPlaybackRange(selectedEdit.range, duration) : selectedEdit.range);
+    ? editPlaybackRange(selectedMoment ? momentRange(selectedMoment) : selectedEdit.range, duration) : selectedEdit.range);
   const originalChange = threadView?.originalChange;
   // A marker left for the editor changed nothing in the video, so it has no Before to read.
   const compared = selectedEdit?.marker ? undefined : selectedEdit;
