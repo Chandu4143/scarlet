@@ -40,7 +40,7 @@ Use a two-frame audio crossfade at dialogue joins and a straight picture cut. Br
 
 /frame-screen, with these changes.
 
-During a synchronized screen demo, my camera is an inset in the bottom right, at one size throughout. Start with the inset size you would otherwise use and scale it up by 20% in both dimensions, then crop the sides for a narrower frame. Aim for 1.5:1 (width to height), with room to go up to 2:1 if the framing needs it. Zoom in slightly more within the inset and trim a little more from the top of the frame, leaving a small margin above my head. Keep my full chest in frame throughout the demo. Round all four corners of the inset.
+During a synchronized screen demo, my camera is an inset at one size throughout. Aim for the bottom right every time: first frame the screen so the inset there covers nothing I read or use, and move it to another corner only for a stretch where no such framing works. Start with the inset size you would otherwise use and scale it up by 20% in both dimensions, then crop the sides for a narrower frame. Aim for 1.5:1 (width to height), with room to go up to 2:1 if the framing needs it. Zoom in slightly more within the inset and trim a little more from the top of the frame, leaving a small margin above my head. Keep my full chest in frame throughout the demo. Round all four corners of the inset.
 
 Show the whole of what I am presenting with the rest of the page it is on: the whole watch on its web page, not a close-up of its movement. When the page is taller than the video, crop into it; cropping is fine. A move every ten seconds or so is fine while I go from one thing to the next.
 

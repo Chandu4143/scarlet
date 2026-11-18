@@ -534,3 +534,93 @@ it("still plays from a point picked in a passage that ran to its end, after the 
   expect(video.currentTime).toBe(46);
   expect(video.paused).toBe(true);
 });
+
+/** Put up a new element on the transport, as a component that replaces the one on screen does. */
+function replace(src?: string) {
+  const next = document.createElement("video");
+  if (src) next.setAttribute("src", src);
+  document.body.append(next);
+  player.attach(next);
+  return next;
+}
+
+it("plays on in the element put up in place of one that was playing, from the same playhead", async () => {
+  player.seek(30, true);
+  player.play();
+  // The working cut changes: the element that was playing comes down without a pause, and a stream goes up for it.
+  const next = replace();
+  expect(next.paused).toBe(true);
+  await Promise.resolve();
+  expect(next.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(30);
+  next.remove();
+});
+
+it("plays a file put up in place of a playing one only once it knows its length, so it doesn't start from its top", async () => {
+  const ready = vi.spyOn(HTMLMediaElement.prototype, "readyState", "get").mockReturnValue(0);
+  player.seek(30, true);
+  player.play();
+  const next = replace("file.mp4");
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  ready.mockReturnValue(1);
+  next.dispatchEvent(new Event("loadedmetadata"));
+  expect(next.paused).toBe(false);
+  next.remove();
+});
+
+it("leaves the element put up in place of a paused one paused", async () => {
+  player.seek(30, true);
+  const next = replace();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+});
+
+it("doesn't play on when nothing went up in the playing element's place, or the playhead moved meanwhile", async () => {
+  player.seek(30, true);
+  player.play();
+  // The video closed: a later element is for something else.
+  player.detach();
+  await Promise.resolve();
+  let next = replace();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+  // Another project opened at its own playhead.
+  player.play();
+  player.detach();
+  usePlayerStore.getState().setTime(0);
+  next = replace();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+});
+
+it("leaves a handover to a pause that comes before the new element plays", async () => {
+  player.seek(30, true);
+  player.play();
+  const next = replace();
+  player.pause();
+  await Promise.resolve();
+  expect(next.paused).toBe(true);
+  next.remove();
+});
+
+it("carries an edit's passage on playing when the element under it is replaced while it plays", async () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(44);
+  expect(video.paused).toBe(false);
+  // The element comes down first, then the passage is let go, and both are taken up again on the new element.
+  player.detach();
+  release();
+  const next = document.createElement("video");
+  document.body.append(next);
+  player.attach(next);
+  release = player.previewRange({ start: 40, end: 50 }, FPS, undefined, true);
+  expect(next.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(44);
+  await Promise.resolve();
+  expect(next.paused).toBe(false);
+  next.remove();
+});

@@ -200,3 +200,25 @@ it("promotes the parked stream when the cut opens from another copy of its timel
   expect(open).toHaveBeenCalledOnce();
   expect(opened[0]!.session.dispose).not.toHaveBeenCalled();
 });
+
+it("plays on through a new version of the working cut, from where the editor was", async () => {
+  const { open, opened } = streams();
+  await show();
+  await act(async () => player.play());
+  const el = video();
+  const paused = vi.spyOn(el, "paused", "get").mockReturnValue(false);
+  // Closing a stream stops its video, as the engine's does.
+  vi.mocked(opened[0]!.session.dispose).mockImplementation(() => { paused.mockReturnValue(true); });
+  // An edit lands while the cut plays.
+  await act(async () => root.render(<CutStream project={project} timeline={timeline} version="next" onStart={onStart} />));
+  expect(opened[0]!.session.dispose).toHaveBeenCalledTimes(1);
+  expect(player.element()).toBe(el);
+  expect(open).toHaveBeenCalledTimes(2);
+  expect(opened[1]!.start).toBe(4);
+  expect(el.play).toHaveBeenCalledTimes(2);
+  // Paused by the editor, the next version stays paused.
+  await act(async () => player.pause());
+  await act(async () => root.render(<CutStream project={project} timeline={timeline} version="later" onStart={onStart} />));
+  expect(open).toHaveBeenCalledTimes(2);
+  expect(el.play).toHaveBeenCalledTimes(2);
+});

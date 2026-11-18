@@ -165,9 +165,11 @@ it("draws no diamond for a caption on the timeline, which marks only what needs 
   await act(async () => {});
   expect(container.querySelector(".timeline-ruler")?.textContent).not.toBe("");
   expect(container.querySelector(".timeline-markers, .timeline-marker")).toBeNull();
-  const controls = container.querySelectorAll(".timeline-track > [aria-label='Timeline zoom'] button");
-  expect([...controls].map(button => button.getAttribute("aria-label"))).toEqual(["Zoom out", "100% zoom, fit timeline", "Zoom in"]);
-  expect([...container.querySelectorAll(".timeline-track button")]).toEqual([...controls]);
+  // The zoom is in the row under the timeline, with the playhead's time: nothing on the timeline itself is a button.
+  const controls = container.querySelectorAll(".timeline-foot > [aria-label='Timeline zoom'] :is(button, input)");
+  expect([...controls].map(control => control.getAttribute("aria-label"))).toEqual(["Zoom out", "Zoom", "Zoom in"]);
+  expect(container.querySelector(".timeline-foot .timeline-clock")).not.toBeNull();
+  expect(container.querySelectorAll(".timeline-track button")).toHaveLength(0);
 });
 
 it("loads full steps only for live requests and upgrades a queued request when work begins", async () => {
@@ -183,7 +185,7 @@ it("loads full steps only for live requests and upgrades a queued request when w
   expect(load).toHaveBeenCalledWith(queued.id, "all");
 });
 
-it("opens the speed stepper from the monitor button and keeps +/− available with the stepper closed", async () => {
+it("opens the speed stepper from the monitor button and steps the speed with L, round from the fastest to the slowest, with the stepper closed", async () => {
   await show();
   const trigger = container.querySelector<HTMLButtonElement>('.monitor-controls button[title="Playback speed"]')!;
   const panel = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Playback speed"]');
@@ -203,7 +205,7 @@ it("opens the speed stepper from the monitor button and keeps +/− available wi
   await click(slower!);
   check(0.75);
   expect(panel()!.querySelector("output")?.textContent).toBe("0.75×");
-  await key(slower!, { key: "-" });
+  await key(slower!, { key: "L", shiftKey: true });
   expect(slower!.disabled).toBe(true);
   await click(faster!);
   check(0.75);
@@ -211,21 +213,25 @@ it("opens the speed stepper from the monitor button and keeps +/− available wi
   expect(panel()).toBeNull();
   expect(document.activeElement).toBe(trigger);
   await act(async () => slider.focus());
-  await key(slider, { key: "-" });
-  await key(slider, { key: "-" });
+  await key(slider, { key: "L", shiftKey: true });
   check(0.5);
-  await key(slider, { key: "+" });
-  await key(slider, { key: "=" });
+  await key(slider, { key: "l" });
+  await key(slider, { key: "l" });
   check(1);
-  for (const rate of [1.25, 1.5, 1.75, 2, 2]) {
-    await key(slider, { key: "+", shiftKey: true });
+  for (const rate of [1.25, 1.5, 1.75, 2, 0.5]) {
+    await key(slider, { key: "l" });
     check(rate);
   }
+  await key(slider, { key: "L", shiftKey: true });
+  check(2);
+  // − and + zoom the timeline now: they leave the speed alone.
+  await key(slider, { key: "-" });
+  await key(slider, { key: "+" });
   const input = document.createElement("textarea");
   container.append(input);
-  await key(input, { key: "-" });
-  await key(slider, { key: "-", metaKey: true });
-  await key(slider, { key: "-", ctrlKey: true });
+  await key(input, { key: "l" });
+  await key(slider, { key: "l", metaKey: true });
+  await key(slider, { key: "l", ctrlKey: true });
   check(2);
   expect(panel()).toBeNull();
   await click(trigger);
@@ -10398,7 +10404,7 @@ it("keeps an open edit's card up, paused, while its markers load again for a new
   await act(async () => {});
   expect(openTitle()).toBe("captions");
   // The editor paused it. Another request's edit then lands, and every request's markers are asked for again.
-  await act(async () => usePlayerStore.setState({ playing: false }));
+  await act(async () => player.pause());
   const play = vi.spyOn(player, "play");
   const passage = vi.spyOn(player, "previewRange");
   later.hold(later.earlier);
@@ -10436,6 +10442,7 @@ const openCutThenRevise = async () => {
   await act(async () => {});
   // Opening it played it once. The editor then paused it and sent a note on it.
   expect(spies.play).toHaveBeenCalledTimes(1);
+  await act(async () => player.pause());
   spies.play.mockClear();
   const lands = async (revised: object) => {
     listed = [{ label: "Keep the image test", ...revised, changeId: "chg_revised", spot: 0, previous: [{ changeId: "chg_approved_2", spot: 0 }] }];
@@ -10487,6 +10494,8 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await act(async () => {});
   expect(openTitle()).toBe("captions");
   expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  // The editor paused it, part-way through.
+  await act(async () => { player.seek(1.5, true); player.pause(); });
   play.mockClear();
   // The revision moves the captions and their surrounding preview later. The engine lists it in the same edit's place.
   edits.mockImplementation(async (_project, threadId) => ({ version: useProjectStore.getState().current!.project.head!,
@@ -10506,6 +10515,24 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await act(async () => {});
   expect(passage).toHaveBeenLastCalledWith({ start: 0.5, end: 3.5 }, expect.any(Number), undefined, false);
   expect(play).toHaveBeenCalledTimes(1);
+});
+
+it("plays an open edit on from where it was when a new working cut lands while it plays", async () => {
+  appliedEdits();
+  const passage = vi.spyOn(player, "previewRange");
+  await show();
+  await click(editRows("chg_approved_2")[1]!);
+  await act(async () => {});
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  await act(async () => player.seek(1.5, true));
+  const was = player.element()!;
+  expect(was.paused).toBe(false);
+  // Another request's edit lands while it plays: the player is put up again for the new working cut.
+  await headMoves("ver_next");
+  await act(async () => {});
+  expect(player.element()).not.toBe(was);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, true);
+  expect([player.element()!.paused, usePlayerStore.getState().time]).toEqual([false, 1.5]);
 });
 
 /** A request that made the three edits, with Scarlet's closing words, and nothing running. */
@@ -11199,7 +11226,7 @@ it("shows the whole timeline on any press on a request's band", async () => {
   const band = (changeId: string) => turnFor(changeId).querySelector<HTMLElement>(".unit-msg")!;
   // The band of the request already marked, then an earlier one's.
   for (const changeId of ["chg_later", "chg_approved_2"]) {
-    for (let i = 0; i < 3; i++) await press("]");
+    for (let i = 0; i < 3; i++) await press("+");
     expect(ruler()).not.toBe(whole);
     await click(band(changeId));
     await act(async () => {});

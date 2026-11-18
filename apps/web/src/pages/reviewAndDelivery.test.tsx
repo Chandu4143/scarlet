@@ -82,7 +82,15 @@ afterEach(async () => {
 const show = (element: ReactNode) => act(async () => root.render(element));
 const click = (element: HTMLElement) => act(async () => element.click());
 const labeled = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
-const zoomLevel = () => container.querySelector<HTMLButtonElement>(".timeline-zoom-level")!;
+const zoomLevel = () => container.querySelector<HTMLOutputElement>(".timeline-zoom-level")!;
+const zoomSlider = () => container.querySelector<HTMLInputElement>(".timeline-zoom-slider")!;
+// Dragging the zoom slider to its left end shows the whole video: there is no Fit button.
+const fitBySlider = () => act(() => {
+  const input = zoomSlider();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "0");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+});
 const exportButton = () => container.querySelector<HTMLButtonElement>('button[form="export-working-cut"]');
 const buttonByText = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === text);
 const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
@@ -313,7 +321,7 @@ it("writes the ruler's times as the player does, counting the hours past one", a
   expect(stamps()).toEqual(["0:00", "15:00", "30:00", "45:00", "1:00:00", "1:15:00"]);
 });
 
-it("keeps zoom controls on the timeline and draws no edit points, zoomed or not", async () => {
+it("keeps zoom controls in the row under the timeline and draws no edit points, zoomed or not", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(132);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -327,25 +335,27 @@ it("keeps zoom controls on the timeline and draws no edit points, zoomed or not"
   const rail = () => container.querySelector(".timeline-cuts, .timeline-cut, .timeline-cut-group");
   await render();
   expect(rail()).toBeNull();
-  const controls = container.querySelector(".timeline-track > [aria-label='Timeline zoom']");
+  const controls = container.querySelector(".timeline-foot > [aria-label='Timeline zoom']");
   const zoomIn = labeled("Zoom in");
   expect(controls?.contains(zoomIn)).toBe(true);
   expect(labeled("Timeline controls")).toBeNull();
   expect(labeled("Zoom out").disabled).toBe(true);
-  expect(zoomLevel().disabled).toBe(true);
+  expect(zoomLevel().textContent).toBe("100%");
+  expect(zoomSlider().value).toBe("0");
   expect(button("Show edit points")).toBeUndefined();
   const ruler = container.querySelector(".timeline-ruler")!;
   expect(ruler.textContent).toContain("2:00");
-  expect(ruler.textContent).not.toContain("2:30");
+  expect(ruler.textContent).toContain("3:00");
   expect(ruler.querySelector('.ruler-major[style*="75%"]')).toBeTruthy();
   await act(() => zoomIn.dispatchEvent(new PointerEvent("pointerdown", { button: 0, isPrimary: true, bubbles: true })));
   await click(zoomIn);
   expect(rail()).toBeNull();
-  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true, cancelable: true })));
+  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true, cancelable: true })));
   expect(zoomLevel().textContent).toBe("400%");
-  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true, cancelable: true })));
+  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "-", bubbles: true, cancelable: true })));
   expect(zoomLevel().textContent).toBe("200%");
-  await click(zoomLevel());
+  expect(Number(zoomSlider().value)).toBeGreaterThan(0);
+  await fitBySlider();
   expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
   expect(scrub).not.toHaveBeenCalled();
@@ -370,8 +380,8 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   const key = (name: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
   await render("ver_a", 200);
   const whole = stamps();
-  await key("]");
-  await key("]");
+  await key("+");
+  await key("+");
   // 4×: fifty seconds around the playhead.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
@@ -390,8 +400,8 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   await render("ver_d", 180);
   expect([stamps()[0], stamps().at(-1)]).toEqual([expect.stringMatching(/0:00$/), expect.stringMatching(/2:30$/)]);
   // A stretch the editor moved to with the playhead elsewhere stays in view too, until the playhead moves.
-  await key("]");
-  await key("]");
+  await key("+");
+  await key("+");
   const track = container.querySelector<HTMLElement>(".timeline-track")!;
   await act(() => { track.dispatchEvent(new WheelEvent("wheel", { deltaX: -800, bubbles: true, cancelable: true })); });
   const away = stamps();
@@ -471,7 +481,7 @@ it("draws crowded edits as one pill that zooms to its run on a press, and a dot 
   expect(seek).not.toHaveBeenCalled();
   expect(markers().map(m => m.textContent)).toEqual(["1", "2", "3", "4"]);
   // Back on the whole video, a press on a dot opens its edit; beside a marker a press scrubs as before.
-  await click(zoomLevel());
+  await fitBySlider();
   vi.spyOn(strip(), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await point("pointermove", 620);
   expect(strip().classList.contains("is-aimed")).toBe(false);
@@ -550,7 +560,7 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
     expect(frameAt).not.toHaveBeenCalled();
     await act(() => { vi.advanceTimersByTime(150); });
     expect(frameAt).toHaveBeenCalled();
-    await click(zoomLevel());
+    await fitBySlider();
     await act(() => vi.advanceTimersByTime(550));
     for (const [type, scale] of [["gesturestart", 1], ["gesturechange", 2], ["gesturechange", 3], ["gestureend", 3]] as const) {
       const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 200 });
@@ -560,10 +570,10 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
     expect(zoomLevel().textContent).toBe("300%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     const key = (value: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: value, cancelable: true })));
-    await key("]");
+    await key("+");
     await act(() => vi.advanceTimersByTime(550));
     expect(zoomLevel().textContent).toBe("600%");
-    await key("[");
+    await key("-");
     await act(() => vi.advanceTimersByTime(550));
     expect(zoomLevel().textContent).toBe("300%");
     await key("0");
@@ -1329,7 +1339,7 @@ it("adds a second zoom step to the one under way, and turns a zoom back from whe
   expect(zoomLevel().textContent).toBe("400%");
   await click(labeled("Zoom out"));
   await advance(60);
-  await click(zoomLevel()); // Reverse an in-flight zoom from its current pose.
+  await fitBySlider(); // Reverse an in-flight zoom from its current pose.
   await advance(500);
   expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();

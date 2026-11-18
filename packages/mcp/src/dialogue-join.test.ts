@@ -312,6 +312,33 @@ describe("native retake boundaries", () => {
     expect(plain.retimed).toEqual([]);
   });
 
+  it("reads a word timed too short to say, on its neighbour's sound, where the speech beside it has no word", () => {
+    // “Opus 5.5 · and the… · and GPT”, transcribed with “5.5” in 80 ms at the start of the first “and”, and the
+    // “five point five” after “Opus” carrying no word. Cutting the first “and” found no quiet between “5.5” and “and”.
+    const said = [{ start: 1, end: 1.3, text: "Opus" }, { start: 2.53, end: 2.61, text: "5.5" }, { start: 2.61, end: 2.85, text: "and" },
+      { start: 4, end: 4.16, text: "and" }, { start: 4.16, end: 4.5, text: "GPT" }];
+    const sounds = [{ start: 1, end: 2.2 }, { start: 2.5, end: 2.9 }, { start: 4, end: 4.5 }];
+    const rms = Array.from({ length: 250 }, (_, i) => sounds.some(v => v.start <= i / 50 && i / 50 < v.end) ? .1 : .0005);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds })!;
+    expect(edges.words[1]).toEqual({ text: "5.5", start: expect.closeTo(1.3), end: expect.closeTo(2.2), timed: { start: 2.53, end: 2.61 } });
+    const cut = wordCutRange(said, 2, 2, () => edges);
+    expect(cut.problems).toEqual([]);
+    expect(cut.start).toBeCloseTo(2.2 + AIR_AFTER_SPEECH);
+    expect(cut.end).toBeCloseTo(4 - AIR_BEFORE_SPEECH);
+    expect(cut.retimed).toEqual([expect.stringContaining("the kept “5.5” at 2.53–2.61 s, too short to say it")]);
+    // A word in that speech explains it, and a word as long as it sounds owns its timing: nothing moves.
+    const five = [...said.slice(0, 1), { start: 1.3, end: 2.2, text: "five" }, ...said.slice(1)];
+    expect(joinEvidence(five, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds })!.words.some(w => "timed" in w)).toBe(false);
+    // Nor does it move past another word: “and you know”, with “you” in 4 ms at the end of “and”, “know” in the quiet after
+    // it and both said in the speech that follows.
+    const order = [{ start: 1, end: 1.3, text: "and" }, { start: 1.3, end: 1.304, text: "you" }, { start: 1.304, end: 1.48, text: "know" }, { start: 2.3, end: 2.6, text: "right" }];
+    const later = [{ start: 1, end: 1.32 }, { start: 1.55, end: 1.95 }, { start: 2.3, end: 2.6 }];
+    const levelsLater = Array.from({ length: 250 }, (_, i) => later.some(v => v.start <= i / 50 && i / 50 < v.end) ? .1 : .0005);
+    expect(joinEvidence(order, { from: 0, to: 5, peaks: levelsLater, rms: levelsLater, speechActivity: later })!.words.some(w => "timed" in w)).toBe(false);
+    const short = said.map((w, i) => i === 1 ? { ...w, text: "a" } : w);
+    expect(joinEvidence(short, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds })!.words.some(w => "timed" in w)).toBe(false);
+  });
+
   it("saves a placed edge on the frame nearest to it inside the quiet it was measured in, and leaves it when none fits", () => {
     const same = (t: number) => t;
     // At 30 fps frames fall at 2.333 and 2.367 s. Rounded inward, a start at 2.35 s would be saved at 2.367.
