@@ -450,8 +450,8 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const editStart = approval ? (approvalChange ?? change)?.ranges[spot]?.start ?? editRange?.start ?? 0 : editRange?.start;
   const beforeShown = useRef(false);
   const beforeClip = useRef<BeforePlayback>(null);
-  // A click on the timeline outside the edit's passage stretches the passage to reach it, so the editor can hear
-  // a little earlier or later and stay on the edit and its zoomed timeline. Choosing an edit again resets it.
+  // A point picked on the timeline while Before plays leaves Before for After there, and the passage is stretched to
+  // reach it, so the editor stays on the edit and its zoomed timeline. Choosing an edit again resets it.
   const [reach, setReach] = useState<{ request: number; range: TimeRange; at: number; playing: boolean; edit: string; spot: number; original: TimeRange }>();
   const selectedForReach = threadView?.selected;
   const reached = reach && selectedForReach && reach.request === threadView.request && reach.edit === selectedForReach.changeId
@@ -468,17 +468,16 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     // A reframe's Before is a still of the moment the playhead is on, so it stays on the side it was on.
     const onBefore = !!selected && beforeShown.current;
     if (onBefore && beforeClip.current?.seek(at)) return;
-    const inside = !!range && at >= range.start && at <= range.end && !onBefore;
-    if (selected && range && !inside) {
-      if (!threadView.framing) setBeforeOf(undefined);
+    if (onBefore && selected && range) {
+      setBeforeOf(undefined);
       setReach({ request: threadView.request, at, edit: selected.changeId, spot: selected.spot, original: selected.range,
-        playing: onBefore ? !!beforeClip.current?.playing() : usePlayerStore.getState().playing,
+        playing: !!beforeClip.current?.playing(),
         range: { start: Math.min(range.start, at), end: Math.min(lastFrame, Math.max(range.end, at + REACH_AFTER_SECONDS)) } });
       return;
     }
-    // A point inside the passage is a plain seek, so it can be scrubbed. With no passage up there is nothing to
-    // stretch: that is a cut still waiting for the version it plays on. The arrows and the timeline are the player's
-    // all the same, and only Esc closes the cut, so the point is a plain seek too.
+    // On After a point anywhere is a plain seek, so it can be scrubbed: the edit's passage stops once at its end, and
+    // from a point the editor picks it plays on until they pause it, as a cut does. The arrows and the timeline are
+    // the player's all the same, and only Esc closes the edit.
     player.seek(Math.min(t, lastFrame), true);
     if (draft || cut) player.prepare();
   }, [threadView, draft, cut, lastFrame]);
@@ -542,7 +541,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const framing = threadView?.framing;
   const cutReview = threadView?.cutReview;
   const selectedEdit = threadView?.selected;
-  const selectedPassage = selectedEdit && (!framing && !selectedEdit.beforeCut && selectedEdit.at === undefined
+  const selectedPassage = selectedEdit && (!selectedEdit.beforeCut && selectedEdit.at === undefined
     ? editPlaybackRange(selectedEdit.range, duration) : selectedEdit.range);
   const originalChange = threadView?.originalChange;
   // A marker left for the editor changed nothing in the video, so it has no Before to read.
@@ -560,7 +559,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   useLayoutEffect(() => { if (!selectedEdit) setReach(undefined); }, [selectedEdit]);
   const playingBefore = before && !framing;
   const reviewPassage = selectedEdit && simple.reviewRange && !playingBefore ? editPlaybackRange(simple.reviewRange, duration) : undefined;
-  const reviewPoint = simple.reviewRange?.start;
   const passage = simple.holdPassage ? undefined : reached?.range ?? reviewPassage ?? selectedPassage;
   useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
   useLayoutEffect(() => { beforeShown.current = playingBefore; }, [playingBefore]);
@@ -584,22 +582,17 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     player.pause();
     setBeforeOf(before ? undefined : selectedKey);
   }} />;
-  // Choosing an edit plays its passage, and a click outside it carries on as it was. Anything else that sets the
-  // passage up again (a panel closing, a new working edit, the video's length arriving) leaves the playhead where
-  // it is, and paused if the editor paused it.
+  // Choosing an edit plays its passage, a reframe or zoom as any other. Anything else that sets the passage up again
+  // (a panel closing, a new working edit, the video's length arriving) leaves the playhead where it is, and paused if
+  // the editor paused it.
   const played = useRef<{ chosen: string; reached?: typeof reached }>(undefined);
   useLayoutEffect(() => {
-    // Before plays a clip of its own and a framing preview holds a still frame. Back on After, the passage plays from its top.
-    // A framing preview stretched by a skip or a click outside it goes on from that point, as any edit's passage does.
-    if (!passage || playingBefore || (framing && !reached)) played.current = undefined;
-    if ((playingBefore || (framing && !reached)) && simple.heard) simple.heard.current = undefined;
+    // Before plays a clip of its own. Back on After, the passage plays from its top.
+    if (!passage || playingBefore) played.current = undefined;
+    if (playingBefore && simple.heard) simple.heard.current = undefined;
     if (!passage || !active || !playable || !duration) return;
     // The clip moves the playhead as it plays. The player under it waits, and takes up from the playhead afterwards.
     if (playingBefore) return player.lendPlayhead({ pause: () => beforeClip.current?.pause() });
-    if (framing && !reached) {
-      const at = reviewPoint ?? framing.cue ?? usePlayerStore.getState().time;
-      return player.previewRange(passage, fps, at >= passage.start && at < passage.end ? at : passage.start);
-    }
     // An edit goes by its first version: a revision that lands under it is still the passage the editor chose.
     const first = selectedEdit?.previous[0] ?? selectedEdit;
     const chosen = `${first?.changeId}/${first?.spot}/${threadView?.request}`;
@@ -608,14 +601,15 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     played.current = { chosen, reached };
     if (simple.heard) simple.heard.current = chosen;
     if (reached) {
-      const release = player.previewRange(passage, fps, reached.at, again);
+      // The editor picked this point, so it plays on from there until they pause it.
+      const release = player.previewRange(passage, fps, reached.at, again, true);
       // A drag holds the video paused until it ends, and its release carries on as it was. The store still says
       // "playing" for the moment after the press paused it, so the stretch must not start it under the held pointer.
       if (!again && reached.playing && !usePlayerStore.getState().scrubGesture) player.play();
       return release;
     }
     return player.previewRange(passage, fps, undefined, again);
-  }, [threadView?.request, passage?.start, passage?.end, framing?.beforeVersion, framing?.cue, reviewPoint, playingBefore, selectedEdit?.at, active, playable, fps, selection, duration, reached]);
+  }, [threadView?.request, passage?.start, passage?.end, framing?.beforeVersion, playingBefore, selectedEdit?.at, active, playable, fps, selection, duration, reached]);
 
   // Decode the selected edit's paused frame, including effects and overlays.
   const editedVersion = draft?.version ?? head;

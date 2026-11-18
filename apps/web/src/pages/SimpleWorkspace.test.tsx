@@ -310,6 +310,9 @@ it("turns the Before clip's play button while its stream waits for a section, an
   await show();
   await click(rows()[2]!);
   await act(async () => {});
+  // It plays as soon as it opens, as any edit does. Paused, it shows the composed frame.
+  expect(usePlayerStore.getState().playing).toBe(true);
+  await act(async () => { player.pause(); });
   expect(container.querySelector('[alt="Frame after the framing edit"]')).not.toBeNull();
   const reframed = container.querySelector(".watch-monitor")!;
   const button = () => reframed.querySelector(".monitor-playback > button")!;
@@ -653,12 +656,14 @@ it("keeps a reframe's card open, on the side it was on, when → or a press on t
   await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
   await act(async () => {});
   expect(openTitle()).toBe("Camera full screen");
-  // Before holds the frame as it was framed before the edit.
+  // It plays from two seconds ahead of the edit, as a cut does. Before holds the frame as it was framed before the edit.
   await click(compareButton(editPanel()!));
-  expect([sideShown(), usePlayerStore.getState().time]).toEqual(["Before", 2]);
-  // → skips 5 seconds, past the end of the passage. The card stays up on Before and the timeline stays on the edit.
+  expect([sideShown(), usePlayerStore.getState().time]).toEqual(["Before", 0]);
+  // → skips 5 seconds, then 1 second three times with Shift, past the end of the passage at 0:07. The card stays up on
+  // Before and the timeline stays on the edit.
   await press("ArrowRight");
-  expect([openTitle(), sideShown(), usePlayerStore.getState().time]).toEqual(["Camera full screen", "Before", 7]);
+  for (let i = 0; i < 3; i++) await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true, bubbles: true })); });
+  expect([openTitle(), sideShown(), usePlayerStore.getState().time]).toEqual(["Camera full screen", "Before", 8]);
   expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
   // So does a press on the timeline ahead of the passage, at the left edge of the zoomed view.
   const slider = container.querySelector<HTMLElement>(".timeline-slider")!;
@@ -701,7 +706,7 @@ const captionsOnBefore = async () => {
 };
 const beforeStarts = () => act(async () => {
   Object.defineProperty(beforeClip(), "readyState", { configurable: true, value: 4 });
-  Object.defineProperty(beforeClip(), "duration", { configurable: true, value: 6 });
+  Object.defineProperty(beforeClip(), "duration", { configurable: true, value: 11 });
   beforeClip().dispatchEvent(new Event("loadedmetadata"));
 });
 /** The Before clip has played on to `seconds` from its top. */
@@ -729,22 +734,23 @@ it("keeps an edit that isn't a cut on Before through a skip or a press inside it
   await show();
   await click(appliedRows()[1]!);
   await act(async () => {});
-  expect([sideShown(), monitorClock()]).toEqual(["After", "0:04 / 0:16"]);
+  // It plays from two seconds ahead of the edit, as a cut does: its passage runs 0:02–0:13.
+  expect([sideShown(), monitorClock()]).toEqual(["After", "0:02 / 0:16"]);
   await click(compareButton(editPanel()!));
   await act(async () => {});
   await beforeStarts();
-  expect([sideShown(), playhead(), beforeClip().paused]).toEqual(["Before", 4, false]);
+  expect([sideShown(), playhead(), beforeClip().paused]).toEqual(["Before", 2, false]);
   // As the Before clip plays, the playhead crosses the edit's passage with it, and the clock stays the video's own,
   // in whole seconds: not the clip's range to the millisecond.
   await beforePlayedTo(0.5);
-  expect([playhead(), monitorClock()]).toEqual([4.5, "0:04 / 0:16"]);
+  expect([playhead(), monitorClock()]).toEqual([2.5, "0:02 / 0:16"]);
   // → skips 5 seconds on in the clip and ← 5 back, or 1 second with Shift. The edit stays on Before and plays on.
   await skipKey("ArrowRight");
-  expect([sideShown(), playhead(), monitorClock(), beforeClip().paused]).toEqual(["Before", 9.5, "0:09 / 0:16", false]);
+  expect([sideShown(), playhead(), monitorClock(), beforeClip().paused]).toEqual(["Before", 7.5, "0:07 / 0:16", false]);
   await skipKey("ArrowLeft");
-  expect([sideShown(), playhead()]).toEqual(["Before", 4.5]);
+  expect([sideShown(), playhead()]).toEqual(["Before", 2.5]);
   await skipKey("ArrowRight", true);
-  expect([sideShown(), playhead(), beforeClip().paused]).toEqual(["Before", 5.5, false]);
+  expect([sideShown(), playhead(), beforeClip().paused]).toEqual(["Before", 3.5, false]);
   // A press on the timeline inside the passage holds the clip while the pointer is down, then it plays on from there.
   let held: boolean | undefined;
   await pressTimeline(8, () => { held = beforeClip().paused; });
@@ -759,7 +765,7 @@ it("keeps an edit that isn't a cut on Before through a skip or a press inside it
   const played = beforeClip();
   await click(appliedRows()[1]!);
   await act(async () => {});
-  expect([sideShown(), playhead(), beforeClip() === played]).toEqual(["Before", 4, false]);
+  expect([sideShown(), playhead(), beforeClip() === played]).toEqual(["Before", 2, false]);
   // The same icon returns to After. The shortcut switches back to Before.
   await click(compareButton(editPanel()!));
   expect([sideShown(), beforeClip()]).toEqual(["After", null]);
@@ -780,17 +786,17 @@ it("goes to After at a point picked outside the passage on Before, where Before 
   // A press on the timeline just before the passage, while Before plays: the edit stays open, on After, and the
   // video plays from there once the pointer is up.
   let down: unknown;
-  await pressTimeline(3.5, () => { down = [sideShown(), video.paused]; });
+  await pressTimeline(1.5, () => { down = [sideShown(), video.paused]; });
   expect(down).toEqual(["After", true]);
-  expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 3.5, false]);
+  expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 1.5, false]);
   expect(beforeClip()).toBeNull();
-  // Before has played to 0:06.5. → lands at 0:11.5, past the passage's end: After again, playing on from that point.
+  // Before has played to 0:10.5. → lands at 0:15.5, past the passage's end: After again, playing on from that point.
   await click(compareButton(editPanel()!));
   await act(async () => {});
   await beforeStarts();
-  await beforePlayedTo(2.5);
+  await beforePlayedTo(8.5);
   await skipKey("ArrowRight");
-  expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 11.5, false]);
+  expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 15.5, false]);
   // Paused on Before, a skip out of the passage leaves After paused at that point.
   await click(compareButton(editPanel()!));
   await act(async () => {});
@@ -803,18 +809,18 @@ it("goes to After at a point picked outside the passage on Before, where Before 
   await act(async () => {});
   await beforeStarts();
   await press(" ");
-  await pressTimeline(3);
-  expect([sideShown(), playhead(), video.paused]).toEqual(["After", 3, true]);
+  await pressTimeline(1);
+  expect([sideShown(), playhead(), video.paused]).toEqual(["After", 1, true]);
   // A clip that played to the passage's end and stopped there wasn't paused by the editor: a press outside the
   // passage plays After from the point picked, as the same press does once After has run to the passage's end.
   await click(compareButton(editPanel()!));
   await act(async () => {});
   await beforeStarts();
-  await beforePlayedTo(6);
-  expect([sideShown(), beforeClip().paused, playhead()]).toEqual(["Before", true, 9.97]);
-  await pressTimeline(3, () => { down = [sideShown(), video.paused]; });
+  await beforePlayedTo(11);
+  expect([sideShown(), beforeClip().paused, playhead()]).toEqual(["Before", true, 12.97]);
+  await pressTimeline(1, () => { down = [sideShown(), video.paused]; });
   expect(down).toEqual(["After", true]);
-  expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 3, false]);
+  expect([openTitle(), sideShown(), playhead(), video.paused]).toEqual(["captions", "After", 1, false]);
 });
 
 it("aims a new edit at a pick on Before and After once the editor has taken the revision tag off", async () => {
@@ -834,7 +840,7 @@ it("aims a new edit at a pick on Before and After once the editor has taken the 
   await act(async () => {});
   await press(" ");
   await skipKey("ArrowRight", true);
-  expect([sideShown(), playhead(), pointTag()]).toEqual(["After", 5, ["At 0:05", true]]);
+  expect([sideShown(), playhead(), pointTag()]).toEqual(["After", 3, ["At 0:03", true]]);
 });
 
 it("goes to After at the point picked while Before is still opening, since there is no clip to move", async () => {
@@ -848,7 +854,7 @@ it("goes to After at the point picked while Before is still opening, since there
   await act(async () => {});
   expect([sideShown(), container.querySelector('.watch-monitor [role="status"]:not(.simple-on-video)')?.textContent]).toEqual(["Before", "Opening Before…"]);
   await skipKey("ArrowRight");
-  expect([openTitle(), sideShown(), playhead()]).toEqual(["captions", "After", 9]);
+  expect([openTitle(), sideShown(), playhead()]).toEqual(["captions", "After", 7]);
 });
 
 it("leaves the playhead to the Before clip while it shows, stops it with the video, and takes the video to where it got to", async () => {
@@ -868,14 +874,14 @@ it("leaves the playhead to the Before clip while it shows, stops it with the vid
   await act(async () => {});
   await videoAt(7.1, "pause");
   await videoAt(7.1, "seeked");
-  expect([sideShown(), playhead(), monitorClock()]).toEqual(["Before", 4, "0:04 / 0:16"]);
+  expect([sideShown(), playhead(), monitorClock()]).toEqual(["Before", 2, "0:02 / 0:16"]);
   // So does the open row pressed again.
   await beforeStarts();
   await beforePlayedTo(2);
   await click(appliedRows()[1]!);
   await act(async () => {});
   await videoAt(6, "seeked");
-  expect([sideShown(), playhead()]).toEqual(["Before", 4]);
+  expect([sideShown(), playhead()]).toEqual(["Before", 2]);
   // Revise and N stop the video for the editor to write: on Before that is the clip.
   await beforeStarts();
   expect(beforeClip().paused).toBe(false);
@@ -888,8 +894,8 @@ it("leaves the playhead to the Before clip while it shows, stops it with the vid
   // A clip that played to its end and stopped there wasn't paused by the editor: a press on the timeline plays from
   // the point picked, as on After.
   await press(" ");
-  await beforePlayedTo(6);
-  expect([beforeClip().paused, playhead()]).toEqual([true, 9.97]);
+  await beforePlayedTo(11);
+  expect([beforeClip().paused, playhead()]).toEqual([true, 12.97]);
   await pressTimeline(5);
   expect([sideShown(), playhead(), beforeClip().paused]).toEqual(["Before", 5, false]);
   // Esc closes the edit where Before got to, and the video under it goes there.
@@ -897,8 +903,8 @@ it("leaves the playhead to the Before clip while it shows, stops it with the vid
   const went = vi.spyOn(player, "seek");
   await press("Escape");
   expect(editPanel()).toBeNull();
-  expect(went.mock.calls.at(-1)).toEqual([7, true]);
-  expect(playhead()).toBe(7);
+  expect(went.mock.calls.at(-1)).toEqual([5, true]);
+  expect(playhead()).toBe(5);
   // The video's own clock is read again.
   await videoAt(7.5, "timeupdate");
   expect(playhead()).toBe(7.5);
@@ -1497,11 +1503,11 @@ it("opens a located review check where it needs a look, then replays the edit fr
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Assembled the opening and demos” at 0:10");
   expect(container.querySelector(".simple-timeline-cut.is-check")?.textContent).toBe("Check");
   expect(dot()?.style.left).toBe("50%");
-  expect(previews).toHaveBeenLastCalledWith({ start: 8.5, end: 11.5 }, expect.any(Number), undefined, false);
+  expect(previews).toHaveBeenLastCalledWith({ start: 8, end: 13 }, expect.any(Number), undefined, false);
   // Pressed, it plays that part again from its top.
   const seek = vi.spyOn(player, "seek"), play = vi.spyOn(player, "play");
   await click(checkButton()!);
-  expect(seek).toHaveBeenLastCalledWith(8.5, true);
+  expect(seek).toHaveBeenLastCalledWith(8, true);
   expect(play).toHaveBeenCalled();
 
   await click(buttonIn(editPanel()!, "Keep")!);
@@ -10472,17 +10478,17 @@ it("takes up an open cut as it was when its revision puts footage back, so it is
   const { audition, passage, play, lands } = await openCutThenRevise();
   const listens = audition.mock.calls.length;
   await lands({ range: { start: 9.6, end: 10.8 }, kind: "restore" });
-  // The card now has an edit's Before/After controls and the player includes the restored footage in its three-second preview.
+  // The card now has an edit's Before/After controls and the player includes the restored footage, with two seconds before it and up to three after.
   // It takes up the listen already in progress.
   expect(editPanel()!.querySelector(".edit-card-length.is-added")?.textContent).toBe("Added");
   expect(editPanel()!.querySelector(".edit-card-words")).toBeNull();
   expect(beforeIcon(editPanel()!)).toEqual(["", "Before", "false", "Play Before (\\)"]);
   expect(audition).toHaveBeenCalledTimes(listens);
-  expect(passage).toHaveBeenLastCalledWith({ start: 8.7, end: 11.7 }, expect.any(Number), undefined, true);
+  expect(passage).toHaveBeenLastCalledWith({ start: 7.6, end: 13.6 }, expect.any(Number), undefined, true);
   expect(play).not.toHaveBeenCalled();
   // Its row pressed again plays the passage from its top, as any edit's does.
   await click(turnFor("chg_approved_2").querySelector(".simple-edits .simple-edit")!);
-  expect(passage).toHaveBeenLastCalledWith({ start: 8.7, end: 11.7 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 7.6, end: 13.6 }, expect.any(Number), undefined, false);
   expect(play).toHaveBeenCalledTimes(1);
 });
 
@@ -10493,7 +10499,7 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.4 }, expect.any(Number), undefined, false);
   // The editor paused it, part-way through.
   await act(async () => { player.seek(1.5, true); player.pause(); });
   play.mockClear();
@@ -10507,13 +10513,13 @@ it("takes up an open edit that isn't a cut as it was when its revision moves its
   await headMoves("ver_revised");
   await act(async () => {});
   expect(openTitle()).toBe("captionsv2");
-  expect(passage).toHaveBeenLastCalledWith({ start: 0.5, end: 3.5 }, expect.any(Number), undefined, true);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.75 }, expect.any(Number), undefined, true);
   expect(play).not.toHaveBeenCalled();
   // Closed and opened again, it plays from its top.
   await press("Escape");
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
-  expect(passage).toHaveBeenLastCalledWith({ start: 0.5, end: 3.5 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.75 }, expect.any(Number), undefined, false);
   expect(play).toHaveBeenCalledTimes(1);
 });
 
@@ -10523,7 +10529,7 @@ it("plays an open edit on from where it was when a new working cut lands while i
   await show();
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
-  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.4 }, expect.any(Number), undefined, false);
   await act(async () => player.seek(1.5, true));
   const was = player.element()!;
   expect(was.paused).toBe(false);
@@ -10531,7 +10537,7 @@ it("plays an open edit on from where it was when a new working cut lands while i
   await headMoves("ver_next");
   await act(async () => {});
   expect(player.element()).not.toBe(was);
-  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, true);
+  expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.4 }, expect.any(Number), undefined, true);
   expect([player.element()!.paused, usePlayerStore.getState().time]).toEqual([false, 1.5]);
 });
 
@@ -10995,7 +11001,7 @@ it("keeps the call the editor is on, and the list of calls, when another call's 
   expect(passRows().map(r => r.querySelector(".simple-pass-label")?.textContent)).toEqual(["Starts in the pause.", "Breath before the price.", "Repeated aside."]);
 });
 
-it("keeps a passage stretched by a skip through a reload of its edit's markers, but not onto an edit that came back moved", async () => {
+it("keeps the playhead where a skip put it through a reload of its edit's markers, and onto an edit that came back moved", async () => {
   earlierRequestOnly();
   const later = laterRequest();
   await show();
@@ -11004,28 +11010,29 @@ it("keeps a passage stretched by a skip through a reload of its edit's markers, 
   await click(editRows("chg_approved_2")[1]!);
   await act(async () => {});
   expect(openTitle()).toBe("captions");
-  expect(passages).toHaveBeenLastCalledWith({ start: 0, end: 3 }, expect.any(Number), undefined, false);
-  // Skipping five seconds from the start stretches the three-second preview through two seconds after the playhead.
+  expect(passages).toHaveBeenLastCalledWith({ start: 0, end: 5.4 }, expect.any(Number), undefined, false);
+  // Skipping five seconds from the start is a plain seek: the passage stays as it was, and lets the playhead go.
   await act(async () => { player.pause(); });
-  await press("ArrowRight");
-  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 7 }, expect.any(Number), 5, false]);
-  // The working cut moves on, and the edit is where it was. The stretch stands, taken up again as it was left.
   passages.mockClear();
+  await press("ArrowRight");
+  expect([passages.mock.calls.length, playhead()]).toEqual([0, 5]);
+  // The working cut moves on, and the edit is where it was. Its passage is taken up again, with the playhead where it was.
   later.hold(later.earlier);
   await headMoves("ver_moved");
   await later.release();
   expect(openTitle()).toBe("captions");
-  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 7 }, expect.any(Number), 5, true]);
-  // It moves on again, and this time the edit comes back shorter: it was revised. The stretch was measured on the
-  // passage it had: kept, the transport stayed bound to seconds that are somewhere else now, and played from there.
-  // The edit's own passage is taken up, and still as the edit it was, not as one newly chosen.
+  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 5.4 }, expect.any(Number), undefined, true]);
+  expect(playhead()).toBe(5);
+  // It moves on again, and this time the edit comes back shorter: it was revised. Its new passage is taken up, still as
+  // the edit it was, not as one newly chosen.
   passages.mockClear();
   (later.lists[later.earlier] as { range: object }[])[1]!.range = { start: 0.2, end: 1.8 };
   later.hold(later.earlier);
   await headMoves("ver_moved_again");
   await later.release();
   expect(openTitle()).toBe("captions");
-  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 3 }, expect.any(Number), undefined, true]);
+  expect(passages.mock.calls.at(-1)).toMatchObject([{ start: 0, end: 4.8 }, expect.any(Number), undefined, true]);
+  expect(playhead()).toBe(5);
 });
 
 it("leaves full screen when Revise hands the keyboard to the message box, which full screen hides", async () => {

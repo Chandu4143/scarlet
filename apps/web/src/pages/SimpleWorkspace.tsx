@@ -774,6 +774,11 @@ function editRemoved(edit: Omit<ThreadEdit, "at">) {
 const tagOf = (label: string) => { const text = label.replace(/^the /, ""); return text.charAt(0).toUpperCase() + text.slice(1); };
 
 /** The player fills the screen, by the window's own full screen or the page's stand-in for it. Esc leaves that first. */
+/**
+ * Every passage a listen steps over: its own skips, and the cuts beyond it it steps over once the editor plays on. The
+ * playhead jumps across each of them, as the picture does, and never glides through one.
+ */
+const stepsOver = (listen: Audition | undefined) => listen?.beyond?.length ? [...listen.skips, ...listen.beyond] : listen?.skips;
 const inFullScreen = () => !!document.fullscreenElement || !!document.querySelector(".cut-preview[data-expanded]");
 
 /**
@@ -2356,7 +2361,17 @@ export function SimpleWorkspace() {
   // After plays the version the cut made. Once later batches, revisions or other requests have changed the video
   // since, it plays the video as it runs now, which has this cut's join and theirs: the same version for the card,
   // for the file and window prepared ahead of it, and for the clock that maps it onto this timeline.
-  const afterSource = useMemo(() => afterOf(madeBy, beforeCut?.version), [madeBy, beforeCut?.version, head]); // eslint-disable-line react-hooks/exhaustive-deps
+  const latestAfter = useMemo(() => afterOf(madeBy, beforeCut?.version), [madeBy, beforeCut?.version, head]); // eslint-disable-line react-hooks/exhaustive-deps
+  // While the cut plays, After stays on the version it started on. A pass applying its next cuts moves the video on
+  // every moment, and following it put up a new player each time, before the last had played a frame: nothing
+  // played. Once the editor pauses, or the cut changes or another opens, it takes up the video as it runs now.
+  const playingNow = usePlayerStore(s => s.playing);
+  const heldAfter = useRef<{ key?: string; source?: typeof latestAfter }>(undefined);
+  const afterKey = reviewingEdit && editPlaybackKey(reviewingEdit);
+  const afterSource = playingNow && latestAfter && heldAfter.current?.source && heldAfter.current.key === afterKey
+    ? heldAfter.current.source : latestAfter;
+  heldAfter.current = { key: afterKey, source: afterSource };
+  const holdingAfter = afterSource !== latestAfter;
   const appliedAfterVersion = afterSource?.version;
   const preparedEdit = reviewingEdit ? preparedCandidates.get(editPlaybackKey(reviewingEdit, appliedAfterVersion)) : undefined;
   const cutBefore = useReviewTimeline(current.id, beforeCut?.version, preparedEdit?.before.timeline ?? timeline);
@@ -2373,7 +2388,8 @@ export function SimpleWorkspace() {
   const cutAfter = useReviewTimeline(current.id, appliedAfterVersion,
     appliedAfterVersion === timeline?.version ? timeline : preparedEdit?.after.timeline ?? timeline);
   const afterTimeline = cutAfter.timeline;
-  const workingAfter = afterTimeline?.version === head ? afterTimeline : timeline?.version === head ? timeline : undefined;
+  const workingAfter = holdingAfter ? afterTimeline?.version === afterSource?.version ? afterTimeline : undefined
+    : afterTimeline?.version === head ? afterTimeline : timeline?.version === head ? timeline : undefined;
   // The pass's other cuts, in this cut's clock. Each goes by its time in the video as it runs now, as its row in the
   // pass's list and its tag in the message box do: "Cut at 3:04".
   const sameVersion = useMemo(() => appliedCut ? threadEdits.flatMap(e => e !== reviewingEdit && e.beforeCut?.version === beforeCut!.version
@@ -3514,7 +3530,7 @@ export function SimpleWorkspace() {
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
           <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : shownMarks, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
-            gaps: cutKey ? gaps : callGaps, skippedRanges: joinedPlayer?.clock.removed ?? (appliedListen ?? playedAudition)?.skips,
+            gaps: cutKey ? gaps : callGaps, skippedRanges: joinedPlayer?.clock.removed ?? stepsOver(appliedListen ?? playedAudition),
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
                 beforeWindow: preparedEdit?.before.window, afterWindow: preparedAfter?.window,

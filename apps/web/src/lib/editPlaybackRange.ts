@@ -1,11 +1,10 @@
-import type { TimeRange } from "@scarlet/timeline";
+import { CUT_LEAD_SECONDS, CUT_TAIL_SECONDS, type TimeRange } from "@scarlet/timeline";
 
-const MIN_EDIT_PREVIEW_SECONDS = 3;
-
-/** Play enough surrounding footage to make a brief edit perceptible. */
+/**
+ * An edit plays with the same lead-in and tail as a cut's listen, so every edit, cut or not, is heard coming in and
+ * going out the same way.
+ */
 export function editPlaybackRange(range: TimeRange, duration: number): TimeRange {
-  const context = (MIN_EDIT_PREVIEW_SECONDS - (range.end - range.start)) / 2;
-  if (context <= 0 || duration <= 0) return range;
-  const start = Math.max(0, Math.min(range.start - context, duration - MIN_EDIT_PREVIEW_SECONDS));
-  return { start, end: Math.min(duration, start + MIN_EDIT_PREVIEW_SECONDS) };
+  if (duration <= 0) return range;
+  return { start: Math.max(0, range.start - CUT_LEAD_SECONDS), end: Math.min(duration, range.end + CUT_TAIL_SECONDS) };
 }
