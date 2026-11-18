@@ -315,9 +315,63 @@ it("ends the listen on release, and a thread preview takes over the transport", 
 
   release = player.audition(AFTER, FPS);
   const preview = player.previewRange({ start: 40, end: 50 }, FPS);
+  // A passage, like a listen, lets the playhead go anywhere.
   player.seek(60, true);
-  expect(usePlayerStore.getState().time).toBe(50);
+  expect(usePlayerStore.getState().time).toBe(60);
   preview();
+});
+
+it("stops an edit's passage at its end once, as a cut's listen: Play carries on from there and nothing stops it again", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  expect(video.currentTime).toBe(40);
+  reach(49);
+  reach(50.02);
+  expect(video.paused).toBe(true);
+  expect(usePlayerStore.getState().time).toBe(50);
+  player.play();
+  expect(video.currentTime).toBe(50);
+  expect(video.paused).toBe(false);
+  reach(55);
+  reach(56);
+  expect(video.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(56);
+  // Stepped back into it and played again, it runs through its end.
+  player.seek(45, true);
+  reach(49);
+  reach(51);
+  expect(video.paused).toBe(false);
+});
+
+it("plays on past an edit's passage from a point picked on the timeline, inside it or after it", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(42);
+  press(47);
+  expect(video.paused).toBe(false);
+  reach(49);
+  reach(51);
+  expect(video.paused).toBe(false);
+  expect(usePlayerStore.getState().time).toBe(51);
+
+  release();
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  reach(42);
+  press(53);
+  expect(video.currentTime).toBe(53);
+  expect(video.paused).toBe(false);
+  reach(54);
+  expect(video.paused).toBe(false);
+});
+
+it("lets a skip past an edit's passage play on, and one before it play into it and stop at its end", () => {
+  release = player.previewRange({ start: 40, end: 50 }, FPS);
+  player.seek(55, true);
+  reach(55.5);
+  reach(56);
+  expect(video.paused).toBe(false);
+  player.seek(35, true);
+  reach(49);
+  reach(50.02);
+  expect(video.paused).toBe(true);
 });
 
 it("plays After from media with the cut already out, running through the join without a seek", () => {
