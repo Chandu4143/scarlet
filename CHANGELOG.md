@@ -11,6 +11,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - A pause Scarlet can’t shorten, such as one filled by a breath before your next line, no longer stops the other cuts saved with it.
 - The built-in dialogue pass brings your voice in right after each cut, as Scarlet’s own pace does, instead of a tenth of a second later.
 - Click Refresh models in the model picker to check for newly available models while you work.
+- The built-in dialogue skill says what to cut and leaves how to Scarlet’s tools: it no longer names them or repeats what Scarlet enforces.
 - Edit numbers sit above the footage, and clicking the zoom percentage on the ruler fits the whole timeline.
 - Click the speed beside Full screen to open the player’s − and + controls.
 - Cuts Scarlet places by time now leave only the pause your skill asks for after your last word, instead of whatever quiet was there.
