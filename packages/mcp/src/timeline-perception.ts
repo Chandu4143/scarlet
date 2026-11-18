@@ -312,14 +312,16 @@ export interface JoinAudit {
   verdict: string;
 }
 
-function bucketing(r: Reading) {
+function bucketing(r: Reading, words?: readonly TranscriptWord[]) {
   const n = (r.rms ?? r.peaks).length;
   const step = (r.to - r.from) / Math.max(1, n);
   // A span that only touches a bucket boundary (within float error) does not voice it.
   const voiced = (s: number, e: number) => (r.speechActivity ?? []).some(v => v.start < e - 1e-6 && v.end > s + 1e-6);
   const quietBelow = quietRms(r.rms ?? [], step);
   const low = (i: number) => i >= 0 && i < n && (r.rms?.[i] ?? 0) <= quietBelow && r.peaks[i]! <= QUIET_PEAK;
-  const still = r.rms ? quietBuckets(r.rms, r.peaks, r.from, step, r.speechActivity ?? [], quietBelow) : undefined;
+  // Measured as the join check places edges: a breath after a word is part of the quiet after it.
+  const spoken = words?.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text));
+  const still = r.rms ? quietBuckets(r.rms, r.peaks, r.from, step, r.speechActivity ?? [], quietBelow, spoken) : undefined;
   return {
     step,
     level: (i: number) => (i >= 0 && i < n ? dbfs(r.rms?.[i] ?? r.peaks[i]!) : undefined),
@@ -333,7 +335,7 @@ function bucketing(r: Reading) {
 /** Audit one track's join from two measured windows, one around each source edge. */
 export function auditJoin(join: number, at: number, side: TrackJoin, out: Reading, inn: Reading,
   words: { out?: TranscriptWord[]; in?: TranscriptWord[] } = {}): JoinAudit {
-  const o = bucketing(out), n = bucketing(inn);
+  const o = bucketing(out, words.out), n = bucketing(inn, words.in);
   const oEdge = o.index(side.out.source), nEdge = n.index(side.in.source);
   const reach = Math.round(STRIP_REACH / STRIP_STEP);
   // Resample both windows to the strip's 20 ms grid by nearest bucket.
@@ -385,8 +387,8 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
   if (voiceOnCut) { /* The word starts on the cut and plays whole. */ }
   else if (!clippedIn && airBefore < 1e-6) issues.push(voiceIn ? "incoming edge on speech" : "incoming edge on sound");
   else if (!clippedIn && airBefore < MIN_AIR_BEFORE) issues.push(`only ${airBefore.toFixed(2)} s before ${name(firstWord) || "the next sound"}`);
-  // Room tone is only comparable when both 60 ms windows are quiet.
-  if (airAfter >= .06 - 1e-6 && airBefore >= .06 - 1e-6 && Math.abs(jumpDb) >= ROOM_TONE_JUMP_DB &&
+  // Room tone is only comparable when both 60 ms windows are quiet and at room level: a breath after a word is air, not room tone.
+  if (airAfter >= .06 - 1e-6 && airBefore >= .06 - 1e-6 && outQuiet >= .06 - 1e-6 && inQuiet >= .06 - 1e-6 && Math.abs(jumpDb) >= ROOM_TONE_JUMP_DB &&
       Math.max(outLevel ?? -99, inLevel ?? -99) > AUDIBLE_ROOM_TONE_DB) issues.push(`room tone ${jumpDb > 0 ? "rises" : "drops"} ${Math.abs(jumpDb)} dB`);
   return {
     join, at: round(at), trackId: side.trackId, ...(side.overlap && { overlap: side.overlap }),
