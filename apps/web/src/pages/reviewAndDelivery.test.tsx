@@ -26,7 +26,7 @@ import { CutPreview } from "./WatchPage";
 import { usePlayerStore } from "../stores/player";
 import * as cutStream from "../lib/cutStream";
 import { desktop } from "../lib/desktop";
-import { ExportSheet } from "../components/review/ExportVideo";
+import { ExportSheet, LOADING_LATEST_EDIT } from "../components/review/ExportVideo";
 import { resumeExports, useExports } from "../lib/exportJobs";
 import { ExportStarNotice } from "../components/shell/ExportStarNotice";
 
@@ -1345,12 +1345,15 @@ it("waits for the timeline of a new head before it exports captions", async () =
   await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
   expect(exportButton()!.disabled).toBe(false);
   // An edit lands while the sheet is open: the head moves before its timeline is loaded.
+  expect(container.textContent).not.toContain(LOADING_LATEST_EDIT);
   await act(async () => useProjectStore.setState({ current: { ...data, project: { ...data.project, head: "v-next" } } }));
   expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(LOADING_LATEST_EDIT);
   await act(async () => useProjectStore.setState({ current: {
     ...data, project: { ...data.project, head: "v-next" }, timeline: { ...data.timeline!, version: "v-next" },
   } }));
   expect(exportButton()!.disabled).toBe(false);
+  expect(container.textContent).not.toContain(LOADING_LATEST_EDIT);
 });
 
 it("offers a caption track picker only when more than one caption track is visible", async () => {

@@ -12,6 +12,9 @@ import { PreferenceSelect } from "../ui/PreferenceSelect";
 type ExportQuality = RenderRequest["quality"] | "best";
 
 /** The export's quality levels, smallest first. Original quality encodes in software; High uses the computer's video encoder. */
+/** While the loaded timeline is behind the project's head, caption export waits for it. */
+export const LOADING_LATEST_EDIT = "Loading the latest edit before exporting captions…";
+
 const QUALITY: Record<ExportQuality, { label: string; hint: string }> = {
   preview: { label: "Compressed", hint: "A smaller file for sharing a draft. Softer picture." },
   delivery: { label: "High", hint: "Looks the same as the original, in a smaller file." },
@@ -166,6 +169,7 @@ function ExportForm({ current, hasCut, onClose }: { current: ProjectData; hasCut
         </details> : null}
       </fieldset>
     </form>
+    {!running && timelineBehind && <p className="mt-3 text-xs text-muted" role="status">{LOADING_LATEST_EDIT}</p>}
     {!running && <InlineError>{noCaptionTrack ? NO_CAPTION_TRACK :
       noCaptionsInRange ? NO_CAPTIONS_IN_RANGE :
       !hasCut ? "There’s no video to export yet." :

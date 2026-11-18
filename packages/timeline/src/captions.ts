@@ -89,9 +89,12 @@ export function formatCaptionTime(seconds: number, decimal: "," | "."): string {
   return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secs, 2)}${decimal}${pad(millis, 3)}`;
 }
 
-/** Keep multi-line cues, but drop blank or whitespace-only lines: either one ends a SubRip or WebVTT cue early. */
+/**
+ * Keep multi-line cues, but drop blank or whitespace-only lines: either one ends a SubRip or WebVTT cue early. A `-->`
+ * in the text reads as a timing line in both formats, so it is written as an arrow.
+ */
 function cueText(text: string): string {
-  return text.replace(/\r\n?/g, "\n").split("\n").filter(line => line.trim()).join("\n");
+  return text.replace(/\r\n?/g, "\n").replace(/-->/g, "→").split("\n").filter(line => line.trim()).join("\n");
 }
 
 function escapeVtt(text: string): string {

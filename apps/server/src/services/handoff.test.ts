@@ -22,7 +22,7 @@ it("gives each source, generated solid and subtitle file a distinct name in the 
     timeline.tracks = [
       { ...makeTrack("video", "Video", "video"), clips: [makeMediaClip("upload", 0, 2, 0),
         { id: "solid", kind: "color", color: "#ff0000", timelineIn: 2, timelineOut: 4, enabled: true, opacity: 1 }] },
-      captions("first", "First caption"), captions("second", "Second caption"),
+      captions("first", "First caption"), captions("second", "Second\n  \ncaption"),
     ];
 
     const folder = join(root, "Transfer");
@@ -35,7 +35,7 @@ it("gives each source, generated solid and subtitle file a distinct name in the 
       expect(xml).toMatchObject({ text: expect.stringContaining(pathToFileURL(join(folder, "Media", name)).href) });
     }
     const subtitleFiles = files.filter(file => file.path.endsWith(".srt"));
-    expect(subtitleFiles).toMatchObject([{ text: expect.stringContaining("First caption") }, { text: expect.stringContaining("Second caption") }]);
+    expect(subtitleFiles).toMatchObject([{ text: expect.stringContaining("First caption") }, { text: expect.stringContaining("Second\ncaption") }]);
     const readme = files.find(file => file.path === "Read me.txt");
     for (const file of subtitleFiles) expect(readme).toMatchObject({ text: expect.stringContaining(file.path) });
   } finally {

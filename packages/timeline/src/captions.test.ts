@@ -52,15 +52,15 @@ describe("caption sidecars", () => {
     expect(timelineToVtt(tl)).toContain("01:01:01.500 --> 01:01:03.250");
   });
 
-  it("keeps multi-line text, writes special characters, and escapes them only in WebVTT", () => {
+  it("keeps multi-line text, writes special characters, escapes them only in WebVTT, and turns --> into an arrow", () => {
     const tl = cut([
       line("multi", 0, 1, "Hello\r\n\nthere"),
       line("chars", 1, 2, "A < B & C --> D"),
     ]);
     expect(timelineToSrt(tl)).toContain("Hello\nthere");
-    expect(timelineToSrt(tl)).toContain("A < B & C --> D");
+    expect(timelineToSrt(tl)).toContain("A < B & C → D");
     expect(timelineToVtt(tl)).toContain("Hello\nthere");
-    expect(timelineToVtt(tl)).toContain("A &lt; B &amp; C --&gt; D");
+    expect(timelineToVtt(tl)).toContain("A &lt; B &amp; C → D");
     expect(timelineToVtt(tl)).not.toContain("A < B");
   });
 
