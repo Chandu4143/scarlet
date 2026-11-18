@@ -1,7 +1,7 @@
 import { DialogueScanPage, requestText, type Task, type TaskEvent } from "@scarlet/shared";
 import { cutSummary, mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { appliedEditSummary } from "../components/review/cutReviewDetails";
-import { clock, lengthLabel, plural } from "./format";
+import { clock, lengthLabel, plural, tokenLabel } from "./format";
 import { editConfirmation, inputMediaIds, taskChatText, toolName, waitLabels, waitTools } from "./taskActivity";
 
 /**
@@ -355,6 +355,19 @@ export function workTimeLabel(ms: number, working: boolean): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * What the requests about one cut or edit took, for the hover of the word its row ends on: their active time and,
+ * with `usage` (when tokens show), the tokens they reported, and nothing else. The request itself leaves the chat once
+ * it's done, so the row is where this still reads. None when nothing was recorded.
+ */
+export function spentLabel(attempts: readonly Task[], events: Record<string, readonly TaskEvent[]>,
+  usage: Record<string, { totalTokens: number }> | undefined, now = Date.now()): string | undefined {
+  const times = attempts.flatMap(task => { const ms = workTime(task, events[task.id] ?? [], now); return ms === undefined ? [] : [ms]; });
+  const time = times.length ? workTimeLabel(times.reduce((total, ms) => total + ms, 0), attempts.some(t => t.state === "claimed" || t.state === "running")) : undefined;
+  const tokens = usage ? attempts.reduce((total, task) => total + (usage[task.id]?.totalTokens ?? 0), 0) : 0;
+  return [time, tokens ? tokenLabel(tokens) : undefined].filter(Boolean).join(" · ") || undefined;
 }
 
 /** One line in an opened run: a step and how long it took, or an update from the agent. */
