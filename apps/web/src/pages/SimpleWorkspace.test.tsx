@@ -1090,7 +1090,7 @@ it("keeps a flagged edit's row to its amber number and its name: the reason is o
   const turn = turnFor("chg_approved_2");
   const row = () => [...turn.querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")][2]!;
   // No line under the row says why it asks for a look. Hovering the row does, as on a pass's row.
-  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-check", "3wrap", CHECK]);
+  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-check", "3wrapEdit", CHECK]);
   expect(turn.querySelector(".simple-edits")!.textContent).not.toContain(CHECK);
   // Its card says it, inside Scarlet's sentence.
   await click(row());
@@ -1098,7 +1098,7 @@ it("keeps a flagged edit's row to its amber number and its name: the reason is o
   expect(editPanel()!.querySelector(".edit-card-title")?.textContent).toBe(SUMMARY);
   // Kept, the badge fills, and the row is still one line.
   await press("k");
-  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-kept", "3wrap", CHECK]);
+  expect([row().querySelector(".edit-badge")?.className, row().textContent, row().title]).toEqual(["edit-badge is-kept", "3wrapEdit", CHECK]);
 });
 
 it("reviews only the edits Scarlet flagged, then leaves nothing to press", async () => {

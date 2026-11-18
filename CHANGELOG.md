@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 17, 2026
 
+- Every edit in a request's list now ends with a word for what it did, and a camera punch-in next to a demo reads Zoom instead of nothing.
+
 - There’s more space between the edit summary and the For you and See all tabs.
 - Edit numbers on the timeline are numbered dots and pills again; the zoom percentage and − / + stay on the ruler.
 - A pause Scarlet can’t shorten, such as one filled by a breath before your next line, no longer stops the other cuts saved with it.

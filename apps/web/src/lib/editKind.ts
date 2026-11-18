@@ -11,6 +11,14 @@ export function editKindWord(edit: Pick<ThreadEdit, "kind">): string | undefined
   return edit.kind && WORDS[edit.kind];
 }
 
+/**
+ * The word at the end of an edit's row in a list, so every row has one: what it did, "To do" for a marker left for the
+ * editor, or "Edit" for an assembly or a mix of several things.
+ */
+export function editRowWord(edit: Pick<ThreadEdit, "kind" | "marker">): string {
+  return editKindWord(edit) ?? (edit.marker ? "To do" : "Edit");
+}
+
 /** The card shows why Scarlet made the edit and what to check. */
 export function editNote(edit: Pick<ThreadEdit, "label" | "check" | "summary" | "reason" | "recheck" | "marker" | "todo" | "reviewSays">, reviewFirst = false): string {
   // A marker changed nothing the editor sees or hears: what it asks of them is the point, so it comes first. A revision
