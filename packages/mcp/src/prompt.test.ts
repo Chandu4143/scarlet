@@ -180,6 +180,13 @@ describe("an editing prompt", () => {
     expect(buildSystemPrompt({ ...base, task: task({ editIndex: 2, cutIndex: 1 }) })).not.toMatch(/Selected edit index|Staged cut being revised/);
   });
 
+  it("tells a revision of a moment every edit in it", () => {
+    const told = buildSystemPrompt({ ...base, task: task({ changeId: "chg_3", editIndex: 0, time: 29.2, end: 33.5,
+      momentEdits: [{ changeId: "chg_3", spot: 1, label: "Rubik's Cube inset" }, { changeId: "chg_4", spot: 0 }] }) });
+    expect(told).toContain(`- The editor's words are about the whole moment this edit is in, which plays as one change and also has: edit index 1 of chg_3 ("Rubik's Cube inset"); edit index 0 of chg_4. Which of them the words mean is for you to work out.`);
+    expect(buildSystemPrompt({ ...base, task: task({ changeId: "chg_3", editIndex: 0 }) })).not.toContain("whole moment");
+  });
+
   it("gives the model the tool names its harness exposes", () => {
     expect(buildSystemPrompt({ ...base, task: task({}) })).toContain("call `mcp__scarlet__project_get`");
     for (const agent of ["codex", "gemini", "another"]) {

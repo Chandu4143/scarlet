@@ -5178,6 +5178,89 @@ it("draws a pass's rows and any other request's rows as one row, and a revised e
   }
 });
 
+/** A pass whose list has a moment: three edits on the cube's reveal that play as one change, between two of their own. */
+const passWithMoment = (flagged: boolean) => {
+  const later = appliedPass(flagged);
+  (later.lists[later.earlier] as object[]).splice(0, 1,
+    { changeId: "chg_approved_2", spot: 3, label: "Cube reveal", range: { start: 4, end: 7 }, previous: [], kind: "zoom" },
+    { changeId: "chg_approved_2", spot: 4, label: "Cube inset", range: { start: 4, end: 8 }, previous: [], kind: "reframe" },
+    { changeId: "chg_approved_2", spot: 5, label: "First cube turn", range: { start: 4.5, end: 6.5 }, previous: [], kind: "zoom" });
+  return later;
+};
+const listRows = () => [...turnFor("chg_approved_2").querySelectorAll<HTMLElement>(".simple-pass-list:not(.is-moment) > li > button")];
+const momentRows = () => [...turnFor("chg_approved_2").querySelectorAll<HTMLElement>(".simple-pass-list.is-moment > li > button")];
+const rowText = (row: HTMLElement) => row.querySelector(".simple-pass-words")!.textContent;
+const openPassRow = () => turnFor("chg_approved_2").querySelector<HTMLElement>('.simple-pass-list > li > button[aria-current="true"] .simple-pass-words')?.textContent;
+
+it("lists a pass's edits that overlap as one moment, with its own edits under it on a press and Keep on what's picked", async () => {
+  passWithMoment(false);
+  await show();
+  await act(async () => {});
+  await click(passToggle());
+  await act(async () => {});
+  // Every edit: the moment is one row, at its first edit's time, named for its longest edit, with what else it holds.
+  expect(listRows().map(row => [row.querySelector(".simple-pass-time")!.textContent, rowText(row), row.querySelector(".simple-pass-more")?.textContent ?? ""]))
+    .toEqual([["0:00", "captions", ""], ["0:04", "Cube inset", "+ 2 edits"], ["0:11", "wrap", ""]]);
+  expect(momentRows()).toEqual([]);
+  // "+ 2 edits" unfolds its edits under the row, with no times, in the order they play, and folds them again.
+  const more = () => listRows()[1]!.querySelector<HTMLElement>(".simple-pass-more")!;
+  await click(more());
+  expect([more().getAttribute("aria-expanded"), editPanel()]).toEqual(["true", null]);
+  expect(momentRows().map(row => [row.querySelector(".simple-pass-time"), rowText(row)])).toEqual([[null, "Cube reveal"], [null, "Cube inset"], [null, "First cube turn"]]);
+  await click(more());
+  expect(momentRows()).toEqual([]);
+  // The moment's row opens the moment: one card for all three, which says so, and the box is aimed at all of it.
+  await click(listRows()[1]!);
+  await act(async () => {});
+  expect([openPassRow(), editPanel()?.querySelector(".edit-card-length")?.textContent]).toEqual(["Cube inset", "3 edits"]);
+  const aim = useUiStore.getState().agentContext as AgentContext;
+  expect([aim.editIndex, aim.time, aim.end, aim.momentEdits?.map(e => e.spot)]).toEqual([4, 4, 8, [3, 5]]);
+  // ↑ and ↓ go from moment to moment, not through the moment's edits one by one.
+  await press("ArrowUp");
+  expect(openPassRow()).toBe("captions");
+  await press("ArrowDown");
+  expect([openPassRow(), editPanel()?.querySelector(".edit-card-length")?.textContent]).toEqual(["Cube inset", "3 edits"]);
+  await press("ArrowDown");
+  expect(openPassRow()).toBe("wrap");
+  // One of its edits, picked from under the row, is that edit alone: Keep keeps just it.
+  await click(more());
+  await click(momentRows()[2]!);
+  await act(async () => {});
+  expect([editPanel()?.querySelector(".edit-card-length")?.textContent, momentRows()[2]!.getAttribute("aria-current")]).toEqual(["Zoom", "true"]);
+  expect((useUiStore.getState().agentContext as AgentContext).momentEdits).toBeUndefined();
+  await press("k");
+  await act(async () => {});
+  expect(momentRows().map(row => row.className)).toEqual(["", "", "is-decided"]);
+  expect(listRows()[1]!.className).not.toBe("is-decided");
+  // On the moment's row, Keep keeps the rest of it at once, and the row is ticked.
+  await click(listRows()[1]!);
+  await act(async () => {});
+  await press("k");
+  await act(async () => {});
+  expect(listRows()[1]!.className).toBe("is-decided");
+  expect(listRows()[1]!.querySelector(".simple-pass-tick")).not.toBeNull();
+});
+
+it("keeps a moment the video plays through while the pass's list is open, and never an edit that asks for a look", async () => {
+  passWithMoment(true);
+  await show();
+  await act(async () => {});
+  await click(passToggle());
+  await act(async () => {});
+  expect(listRows().map(rowText)).toEqual(["captions", "Cube inset", "wrap"]);
+  // The video plays from 3 s to the end, past the moment and "wrap", which asks for a look.
+  const plays = (time: number, playing = true) => act(async () => { usePlayerStore.setState({ time, playing }); });
+  await plays(3, false);
+  for (let t = 3; t <= 16; t += 0.5) await plays(t);
+  await act(async () => {});
+  expect(listRows().map(row => [rowText(row), row.className])).toEqual([["captions", ""], ["Cube inset", "is-decided"], ["wrap", ""]]);
+  // A jump over a moment isn't watching it.
+  await plays(0, false);
+  await plays(0.1);
+  await plays(3);
+  expect(listRows()[0]!.className).toBe("");
+});
+
 it("says on a pass's row when its cut is being revised, kept or not, and that it came back revised until it is kept", async () => {
   const later = appliedPass(true);
   const thread = threadWith("chg_approved_2");

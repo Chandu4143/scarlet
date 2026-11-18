@@ -749,6 +749,11 @@ export const Task = z.object({
       editIndex: z.number().int().nonnegative().optional(),
       /** The selected edit's number in the editor's list, which is how they and Scarlet's replies refer to it. */
       editNumber: z.number().int().positive().optional(),
+      /**
+       * The other edits in the moment the editor's words are about, when they were looking at a moment of the list and
+       * not one edit: edits whose stretches overlap and play as one change. `time` and `end` span the whole moment.
+       */
+      momentEdits: z.array(z.object({ changeId: Id, spot: z.number().int().nonnegative(), label: z.string().max(400).optional() })).max(50).optional(),
       /** Slug authorized by the editor when requesting a skill from an approved change. */
       skillName: SkillSlug.optional(),
       /** The skill the editor asked Scarlet to revise. */

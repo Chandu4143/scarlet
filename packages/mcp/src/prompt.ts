@@ -292,6 +292,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       if (about?.reason?.trim()) ctxLines.push(`- Why you made this edit: "${about.reason.trim()}"`);
       if (about?.check?.trim()) ctxLines.push(`- What you asked the editor to check on this edit: "${about.check.trim()}"`);
     }
+    // The editor looked at a moment of the list, where edits that overlap play as one change, and wrote about all of it.
+    if (c.momentEdits?.length) {
+      const others = c.momentEdits.map(e => `edit index ${e.spot} of ${e.changeId}${e.label?.trim() ? ` ("${e.label.trim()}")` : ""}`).join("; ");
+      ctxLines.push(`- The editor's words are about the whole moment this edit is in, which plays as one change and also has: ${others}. Which of them the words mean is for you to work out.`);
+    }
     if (c.changeId && c.cutIndex !== undefined) ctxLines.push(`- Staged cut being revised: index ${c.cutIndex} of ${c.changeId}. \`dialogue_revise_cut\` saves its new range.`);
     if (c.changeId && c.cutIndex !== undefined && ctx.replacedPass) ctxLines.push(`- The request names this cut in ${ctx.replacedPass}, the pass as the editor saw it. A revision or a later part of the pass replaced that pass since with ${c.changeId}, where the cut is index ${c.cutIndex} and may have moved.`);
     if (c.reviewAllCuts) ctxLines.push("- The editor requested individual review of every cut.");

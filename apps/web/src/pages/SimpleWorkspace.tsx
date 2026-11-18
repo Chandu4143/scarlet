@@ -43,6 +43,7 @@ import { readTimeline } from "../lib/timelineCache";
 import { appLog } from "../lib/appLog";
 import { clock as clockLabel, clockRange, lengthLabel, plural, removedSeconds } from "../lib/format";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
+import { listMoments, momentRange, type Moment } from "../lib/editMoments";
 import { madeSentence, type SentencePart } from "../lib/madeSentence";
 import { editFocus, editKindWord, editNote, editRowWord } from "../lib/editKind";
 import { player, type Audition } from "../lib/player";
@@ -225,9 +226,16 @@ interface ChatActions {
   listening?: Listening;
   listen(change: Change, assessment: CutAssessment): void;
   play(thread: Thread, change: Change): void;
-  playEdit(edit: ThreadEdit): void;
-  /** Open one edit of a thread in its card on the timeline, loading the thread's markers first if needed. `from` is the request whose row asked. */
-  openEdit(thread: Thread, ref: EditRef, from?: string): void;
+  /** Open an edit as ↑ ↓ and Keep reach it: its moment, or with `single` that edit alone. */
+  playEdit(edit: ThreadEdit, single?: boolean): void;
+  /** The edit that's showing was picked on its own from under its moment's row, not as the moment. */
+  showingSingle?: boolean;
+  /**
+   * Open one edit of a thread in its card on the timeline, loading the thread's markers first if needed. `from` is the
+   * request whose row asked. A moment's main edit opens the whole moment; `single` opens that edit on its own, as a
+   * row under the moment's does.
+   */
+  openEdit(thread: Thread, ref: EditRef, from?: string, single?: boolean): void;
   review(change: Change): void;
   /** Turn off whatever the player is showing and go back to the whole timeline. */
   stopShowing(): void;
@@ -564,6 +572,10 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   const rerun = working ? thread.tasks.find(t => !!t.repeatAudit?.returns && !!t.startedAt && (t.state === "running" || t.state === "claimed")) : undefined;
   const fresh = useMemo(() => new Set(rerun ? thread.changes.filter(c => c.taskId === rerun.id && (c.createdAt ?? "") >= rerun.startedAt!).map(c => c.id) : []),
     [rerun, thread.changes]);
+  // In the list of every edit, edits that play as one change are one row, a moment. Its own edits open under it on a
+  // press of "+ 4 edits", and fold again on the next.
+  const moments = useMemo(() => listMoments(edits), [edits]);
+  const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
   const single = !working && !pass?.running && totalRows === 1 ? edits[0] : undefined;
   // A single preview follows the open card. An explicitly opened list keeps the timeline on the whole pass.
   const fullList = open === "all" && edits.length > 0;
@@ -650,13 +662,44 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
   // every edit after it. Until its cuts are applied, a pass that finished with no call to make says how many it proposes.
   const made: SentencePart[] | undefined = edits.length ? working ? undefined : madeSentence(edits, lengthLabel, true)
     : calls.length || quiet ? undefined : [{ strong: plural(count, "cut") }, " proposed."];
-  const placed = new Set(filter ? shown.map(row => row.key) : []);
+  // The list of every edit goes by moments, at the time of the first of its edits. The moment's row stands for all of
+  // them: ticked once they're all kept, Revising… while Scarlet is on one, and lit while the moment is open. Its own
+  // edits show only once it is unfolded, or while one of them is open on its own, each without a time: they all play
+  // in the moment's stretch. For you and the calls stay one edit a row.
+  type Row = (typeof rows)[number];
+  const momentOf = new Map<string, Moment<Omit<ThreadEdit, "at">>>();
+  if (filter === "all") for (const m of moments) if (m.edits.length > 1) for (const e of m.edits) momentOf.set(editKey(e), m);
+  const byKey = new Map(rows.map(row => [row.key, row]));
+  const drawn: { row: Row; members?: Row[]; more?: string; moment?: string; unfolded?: boolean }[] = [];
+  const momentsDrawn = new Set<string>();
+  for (const row of shown) {
+    const moment = momentOf.get(row.key);
+    if (!moment) { drawn.push({ row }); continue; }
+    if (momentsDrawn.has(moment.key)) continue;
+    momentsDrawn.add(moment.key);
+    const members = moment.members.flatMap(e => {
+      const member = byKey.get(editKey(e));
+      // One of its edits opened on its own from here is that edit alone: Keep and Revise are about it.
+      return member ? [{ ...member, on: member.on && !!actions.showingSingle, open: member.open && (() => actions.openEdit(thread, e, undefined, true)) } as Row] : [];
+    });
+    const main = byKey.get(moment.key) ?? row;
+    const others = moment.edits.filter(e => e !== moment.main);
+    const sent = members.find(m => m.word === "Revising…");
+    const more = others.length === 1 ? `+ ${(others[0]!.beforeCut ? "cut" : editKindWord(others[0] as ThreadEdit)?.toLowerCase()) ?? "1 edit"}` : `+ ${others.length} edits`;
+    drawn.push({ row: { ...main, displayAt: Math.min(...members.map(m => m.displayAt)), on: main.on && !actions.showingSingle,
+      decided: members.every(m => m.decided), word: sent?.word ?? main.word, busy: members.some(m => m.busy), revised: members.some(m => m.revised),
+      title: members.map(m => m.label).join("\n") } as Row, members, more, moment: moment.key,
+      unfolded: unfolded.has(moment.key) || members.some(m => m.on) });
+  }
+  const placed = new Set(filter ? drawn.flatMap(({ row, members }) => [row.key, ...members?.map(m => m.key) ?? []]) : []);
+  const fold = (key: string) => setUnfolded(was => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
   // A list that leads with times widens their column for all its rows once one of them is past an hour ("1:02:07").
   const hours = filter !== "calls" && shown.some(row => clockLabel(row.displayAt).length > 5);
   const rowList = filter && <ol ref={list} className={filter === "calls" ? "simple-pass-list is-short" : hours ? "simple-pass-list has-hours" : "simple-pass-list"}
     aria-label={filter === "calls" ? "Calls that need you" : filter === "need" ? "Edits that need you" : "Every edit"}>
-    {shown.map(row => <li key={row.key}><button type="button" className={row.on ? "is-on" : row.decided ? "is-decided" : undefined} aria-current={row.on || undefined}
-      data-log-control="open-pass-item" data-log-label="Pass item" disabled={!row.open} title={row.title || row.label} onClick={letGo(() => row.open?.())}
+    {drawn.map(({ row, members, more, moment, unfolded: open }) => <li key={row.key}><button type="button" className={row.on ? "is-on" : row.decided ? "is-decided" : undefined} aria-current={row.on || undefined}
+      data-log-control="open-pass-item" data-log-label={moment ? "Moment" : "Pass item"} disabled={!row.open} title={row.title || row.label} onClick={letGo(() => row.open?.())}
+      aria-label={more ? `${clockLabel(row.displayAt)} ${row.label}, ${more.replace("+ ", "and ")}` : undefined}
       onPointerEnter={() => actions.lightMark(row.mark, row.hover)} onPointerLeave={() => actions.lightMark()}>
       {/* The calls are the short list: a call is its number, Scarlet's note and, once it's settled, sent back or
           revised, a word for where it stands. An edit that asks for a look is listed with them by its number too,
@@ -665,7 +708,10 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       {filter === "calls" && row.num ? <EditBadge n={row.num} check={row.needs} />
         : <span className={row.needs ? "simple-pass-time is-need" : "simple-pass-time"}>{clockLabel(row.displayAt)}{row.needs && <span>, needs you</span>}</span>}
       <span className="simple-pass-label">{filter === "calls" ? row.label : <>{row.decided && !row.needs && <span className="simple-pass-tick" aria-label="Decided"><Icon name="check" size={10} /></span>}<span className="simple-pass-words">{row.label}</span>
-        {row.version > 0 && <EditVersion n={row.version} hover={spent.get(row.key)} />}{row.fresh && <small className="edit-version is-new">New</small>}</>}</span>
+        {row.version > 0 && <EditVersion n={row.version} hover={spent.get(row.key)} />}{row.fresh && <small className="edit-version is-new">New</small>}
+        {/* What else the moment holds, which unfolds its edits under the row and folds them again. */}
+        {more && moment && <span className="simple-pass-more" aria-expanded={!!open} title={open ? "Hide its edits" : "Show its edits"}
+          onClick={e => { e.stopPropagation(); fold(moment); }}>{more}</span>}</>}</span>
       {/* The word a row ends on (v2, Approved, Revising…) says on hover what the requests about its cut or edit took:
           their time and tokens, nothing else. The rest of the row keeps the row's own hover. */}
       {filter === "calls" ? row.state && <span className={row.busy ? "simple-pass-value working-text" : "simple-pass-value"} title={spent.get(row.key)}>{row.state}</span>
@@ -673,7 +719,19 @@ function PassSummary({ projectId, thread, edits, actions, aside, list: listState
       {/* An applied edit sent back, or come back revised, says so after its amount, as a row of any other request's
           list does: amber once it is back and waits on the editor, quiet while Scarlet is on it. */}
       {filter !== "calls" && row.word && <span className={`simple-pass-check${row.revised ? "" : " is-kept"}${row.busy ? " working-text" : ""}`} title={spent.get(row.key)}>{row.word}</span>}
-    </button>{nests.filter(nest => nest.key === row.key).map(nest => nest.node)}</li>)}
+    </button>
+    {/* Folded, a request about any of the moment's edits sits under the moment's row; unfolded, under its edit's. */}
+    {nests.filter(nest => nest.key === row.key || (!open && !!members?.some(m => m.key === nest.key))).map(nest => nest.node)}
+    {open && members && <ol className="simple-pass-list is-moment" aria-label="Edits in this moment">
+      {members.map(m => <li key={m.key}><button type="button" className={m.on ? "is-on" : m.decided ? "is-decided" : undefined} aria-current={m.on || undefined}
+        data-log-control="open-pass-item" data-log-label="Edit in a moment" disabled={!m.open} title={m.title || m.label} onClick={letGo(() => m.open?.())}
+        onPointerEnter={() => actions.lightMark(m.mark, m.hover)} onPointerLeave={() => actions.lightMark()}>
+        <span className="simple-pass-label">{m.decided && !m.needs && <span className="simple-pass-tick" aria-label="Decided"><Icon name="check" size={10} /></span>}<span className="simple-pass-words">{m.label}</span>
+          {m.version > 0 && <EditVersion n={m.version} hover={spent.get(m.key)} />}</span>
+        {m.value && <span className={m.busy && !m.word ? "simple-pass-value working-text" : "simple-pass-value"} title={spent.get(m.key)}>{m.value}</span>}
+        {m.word && <span className={`simple-pass-check${m.revised ? "" : " is-kept"}${m.busy ? " working-text" : ""}`} title={spent.get(m.key)}>{m.word}</span>}
+      </button>{nests.filter(nest => nest.key === m.key && m.key !== row.key).map(nest => nest.node)}</li>)}
+    </ol>}</li>)}
   </ol>;
   // The full list includes the pass's calls. A pass with no applied edits has only the calls to show.
   const soFar = (!!working || !!pass?.running) && !made;
@@ -1316,7 +1374,7 @@ export function SimpleWorkspace() {
   // box to be aimed at what's open again.
   const [aimAgain, setAimAgain] = useState(0);
   // The request the editor went to, and an edit of it waiting to play once its markers load.
-  const [focus, setFocus] = useState<{ threadId: string; changeId?: string; spot?: number }>();
+  const [focus, setFocus] = useState<{ threadId: string; changeId?: string; spot?: number; single?: boolean }>();
   // The list each request has open in the chat: every edit, or just the ones that need the editor. ↑ and ↓ read it.
   const [lists, setLists] = useState<Record<string, OpenList>>({});
   // One list of every edit is open at a time, so two "Hide" links never stand for one timeline: opening another
@@ -1365,7 +1423,7 @@ export function SimpleWorkspace() {
     const edit = focus.spot !== undefined
       ? threadTimeline.edits.find(e => matchesEdit(e, { changeId: focus.changeId!, spot: focus.spot! }))
       : threadTimeline.edits.find(e => belongsTo(e, { id: focus.changeId } as Change));
-    if (edit) { chooseEdit.current(edit, "chat"); setAimAgain(n => n + 1); }
+    if (edit) { chooseEdit.current(edit, "chat", focus.single); setAimAgain(n => n + 1); }
     setFocus({ threadId: focus.threadId });
   }, [focus, threadTimeline.edits, threadTimeline.loading, threadTimeline.threadId]);
 
@@ -2100,6 +2158,7 @@ export function SimpleWorkspace() {
       && !!t.context.changeId && (t.context.cutIndex !== undefined || t.context.editIndex !== undefined)).length,
     pass: undefined,
     showing,
+    showingSingle: threadTimeline.single,
     showingFrom: openedFrom && showing && matchesEdit(showing, openedFrom.ref) ? openedFrom.run : undefined,
     marked: focusThread?.id,
     mark(threadId) {
@@ -2156,20 +2215,22 @@ export function SimpleWorkspace() {
       if (thread.id !== focus?.threadId) wentSince.current = newest;
       setFocus({ threadId: thread.id, changeId: change.id });
     },
-    playEdit(edit) {
+    playEdit(edit, single) {
       startVisit();
       player.pause();
       setSourceChoice({ id: "", play: false });
       setReviewId(undefined);
       setListening(undefined);
-      threadTimeline.choose(edit, "chat");
+      threadTimeline.choose(edit, "chat", single);
       setAimAgain(n => n + 1);
     },
-    openEdit(thread, ref, from) {
+    openEdit(thread, ref, from, single) {
       // The edit that's open, pressed again, plays again from the top: its card and the timeline's zoom stay. A cut
       // starts over as the video runs, unlit; any other edit keeps its side. Esc is what closes it. A cut plays under
-      // this view's own listen; any other edit under the player's.
-      if (showing && matchesEdit(showing, ref) && thread.id === focus?.threadId) {
+      // this view's own listen; any other edit under the player's. A moment's main edit picked on its own from under
+      // the moment's row, or the moment picked again from its row, is opened anew.
+      const sameWay = threadTimeline.single === !!single;
+      if (showing && matchesEdit(showing, ref) && thread.id === focus?.threadId && sameWay) {
         setOpenedFrom(from ? { run: from, ref: { changeId: ref.changeId, spot: ref.spot } } : undefined);
         player.pause();
         if (cutKey) setCutSide(prev => ({ key: cutKey, side: "after", take: (prev?.key === cutKey ? prev.take : 0) + 1 }));
@@ -2185,11 +2246,11 @@ export function SimpleWorkspace() {
       setListening(undefined);
       if (thread.id === focus?.threadId && !threadTimeline.loading) {
         const edit = threadTimeline.edits.find(e => matchesEdit(e, ref));
-        if (edit) { threadTimeline.choose(edit, "chat"); setAimAgain(n => n + 1); return; }
+        if (edit) { threadTimeline.choose(edit, "chat", single); setAimAgain(n => n + 1); return; }
       }
       reloadFailedMarkers(thread);
       if (thread.id !== focus?.threadId) wentSince.current = newest;
-      setFocus({ threadId: thread.id, changeId: ref.changeId, spot: ref.spot });
+      setFocus({ threadId: thread.id, changeId: ref.changeId, spot: ref.spot, ...single && { single } });
     },
     listOpen(threadId, open, moved) {
       setOpenList(current => open ? threadId : current === threadId ? undefined : current);
@@ -2450,9 +2511,13 @@ export function SimpleWorkspace() {
     .sort((a, b) => a.removed.start - b.removed.start), [sameVersion, since, appliedCut, threadEdits, fps]);
   const otherCuts = useMemo(() => otherEdits.map(o => o.removed), [otherEdits]);
   const othersKey = useMemo(() => JSON.stringify(otherCuts), [otherCuts]);
-  // Both sides use the same review window. After can travel farther on the source clock to play its kept tail.
-  const afterListen = useMemo(() => appliedCut && cutAudition(appliedCut, "after", beforeDuration, { others: otherCuts, beyond: true }),
-    [cutKey, appliedCut?.start, appliedCut?.end, beforeDuration, othersKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Both sides use the same review window. After can travel farther on the source clock to play its kept tail. A
+  // moment led by this cut plays on through the edits that run on from its join, so the moment is seen once, whole.
+  const momentJoin = reviewingEdit?.at ?? reviewingEdit?.range.start;
+  const momentTail = threadTimeline.selectedMoment && momentJoin !== undefined ? Math.max(0, threadTimeline.selectedMoment.end - momentJoin) : 0;
+  const afterListen = useMemo(() => appliedCut && cutAudition(appliedCut, "after", beforeDuration,
+    { others: otherCuts, beyond: true, ...momentTail > 0 && { tailFrom: appliedCut.end + momentTail } }),
+    [cutKey, appliedCut?.start, appliedCut?.end, beforeDuration, othersKey, momentTail]); // eslint-disable-line react-hooks/exhaustive-deps
   const appliedListen = useMemo(() => {
     if (!appliedCut) return;
     if (appliedSide === "after" && shownSide?.at === undefined) return afterListen;
@@ -2636,7 +2701,8 @@ export function SimpleWorkspace() {
     // Any other edit is drawn for what it did: a sound fix or a zoom keeps its footage, so After plays it.
     // A doubt Scarlet left is the passage it asks the editor to look at or hear: amber, as what waits on them is.
     : reviewRange ? focusAround(reviewRange, cutDuration ?? 0, "Check", { tone: "check" })
-    : shownEdit ? editFocus(shownEdit, cutDuration ?? 0) : undefined;
+    // A moment is drawn across all of its edits, as it plays.
+    : shownEdit ? editFocus(threadTimeline.selectedMoment ? { ...shownEdit, range: momentRange(threadTimeline.selectedMoment) } : shownEdit, cutDuration ?? 0) : undefined;
   const playerView = suggestion || appliedCut ? undefined : !listening && focusThread && !source ? threadTimeline : undefined;
   // Each applied edit's dot names it, says where it sits and how long it runs, and quotes the change it came from.
   const editDot = (thread: Thread, e: ThreadEdit, title: string, at: number): TimelineDot => {
@@ -2763,7 +2829,14 @@ export function SimpleWorkspace() {
   const shownIndex = reviewingEdit ? threadEdits.indexOf(reviewingEdit) : -1;
   // An edit made in several places is one edit, as the request's list shows it: one row, counted once in "1 of 3" and
   // in For you, and ↑ ↓ and Keep go from edit to edit. A pass lists each of its edits on a line of its own.
-  const editsByRow = threadTimeline.rows;
+  // A pass's list goes by moments: edits that play as one change are one row, kept together, and ↑ ↓ step from moment
+  // to moment. An edit of a moment opened on its own from under the moment's row is a row of its own, beside the
+  // moment's other edits, and Keep keeps just that one.
+  const openMoment = threadTimeline.single && reviewingEdit ? threadTimeline.moments?.find(m => m.edits.includes(reviewingEdit)) : undefined;
+  const editsByRow = useMemo(() => threadTimeline.moments
+    ? threadTimeline.moments.flatMap(m => m === openMoment ? m.members.map(e => [e]) : [m.edits]) : threadTimeline.rows,
+  [threadTimeline.moments, threadTimeline.rows, openMoment]);
+  const openOnItsOwn = (edit: ThreadEdit) => !!openMoment?.edits.includes(edit);
   const shownRow = reviewingEdit ? editsByRow.findIndex(row => row.includes(reviewingEdit)) : -1;
   const waitingEdit = (e: ThreadEdit) => !!e.check && !reviewed(e) && !revisingEdit(e);
   // A flagged edit not yet kept says its place among the ones still to check, as a call does.
@@ -2793,7 +2866,7 @@ export function SimpleWorkspace() {
     if (!next) return;
     // ↑ and ↓ reach the log as a bare key: this says which edit they went to.
     appLog("action", "step", { to: "edit", edit: threadEdits.indexOf(next) + 1, of: threadEdits.length, change: next.changeId });
-    actions.playEdit(next);
+    actions.playEdit(next, openOnItsOwn(next));
   }
   // Keep wraps through the flagged rows that still wait, then reaches the request’s first waiting call.
   // An unflagged edit goes on to the next row of the list that hasn't been kept: an unflagged edit, a flagged one that
@@ -2907,10 +2980,39 @@ export function SimpleWorkspace() {
     // An edit made in several places is kept in all of them: it is one edit, on one row.
     const row = editsByRow[shownRow] ?? [reviewingEdit];
     if (keepEdits(current.id, focusThread.id, row, head ?? undefined)) recordEditReview(current.id, threadTimeline.selectedTarget, "keep");
-    if (nextEditAfterKeep) actions.playEdit(nextEditAfterKeep);
+    if (nextEditAfterKeep) actions.playEdit(nextEditAfterKeep, openOnItsOwn(nextEditAfterKeep));
     else if (nextCallAfterKeep) actions.listen(pass!, nextCallAfterKeep);
     else closeEdit();
   }
+  // With a pass's list of every edit open, watching the video is the review: a moment the video plays through, from
+  // before it starts to past its end without a jump, is kept, all its edits at once. Only the moments that need no
+  // decision of the editor's are: one that asks for a look, or a spot marked for them, waits for their own Keep. While
+  // a cut, an edit or a call is open the player is on its own passage, and nothing is kept this way.
+  const watchedMoments = useMemo(() => {
+    if (!focusThread || lists[focusThread.id] !== "all" || !threadTimeline.moments || !passFocused) return [];
+    return threadTimeline.moments.filter(m => m.edits.every(e => !e.check && !e.marker) && m.edits.some(e => !reviewed(e) && !revisingEdit(e)));
+  }, [focusThread, lists, threadTimeline.moments, passFocused, reviewed, revisingEdit]);
+  const watching = watchedMoments.length > 0 && !reviewingEdit && !listening && !suggestion && !source;
+  const watchKeep = useRef({ watchedMoments, keep: (refs: ThreadEdit[]) => { if (focusThread) keepEdits(current.id, focusThread.id, refs, head ?? undefined); } });
+  watchKeep.current = { watchedMoments, keep: refs => { if (focusThread) keepEdits(current.id, focusThread.id, refs, head ?? undefined); } };
+  useEffect(() => {
+    if (!watching) return;
+    // Where the run of play now under way began. A seek, a skip or a pause starts a new one.
+    let from: number | undefined;
+    const done = new Set<string>();
+    return usePlayerStore.subscribe((now, was) => {
+      if (!now.playing) { from = undefined; return; }
+      if (!was.playing) from = Math.min(was.time, now.time);
+      else if (now.time < was.time - 0.05 || now.time - was.time > 1.5) from = now.time;
+      else from ??= was.time;
+      const start = from;
+      const seen = watchKeep.current.watchedMoments.filter(m => !done.has(m.key) && start <= m.start + 0.05 && now.time >= m.end - 0.05);
+      if (!seen.length) return;
+      for (const m of seen) done.add(m.key);
+      appLog("review", "watched", { moments: seen.length, at: now.time });
+      watchKeep.current.keep(seen.flatMap(m => m.edits));
+    });
+  }, [watching]);
   const editKeys = useRef({ stepEdit, closeEdit });
   editKeys.current = { stepEdit, closeEdit };
   useEffect(() => {
@@ -3044,7 +3146,10 @@ export function SimpleWorkspace() {
       {/* The note explains the choice and includes any cue for the editor to check. */}
       {/* It's on up to two lines, so an edit with a short note is a single line. A clipped note opens on a click. */}
       <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} />
-      {!beforeCut && shownKind && <span className={reviewingEdit.kind === "restore" ? "edit-card-length is-added" : "edit-card-length is-kind"}>{shownKind}</span>}
+      {/* A moment of a pass's list is its edits together: the pill says how many, and names them on hover. */}
+      {threadTimeline.selectedMoment ? <span className="edit-card-length is-kind" title={threadTimeline.selectedMoment.members.map(e => e.label).join("\n")}>
+        {threadTimeline.selectedMoment.edits.length} edits</span>
+        : !beforeCut && shownKind && <span className={reviewingEdit.kind === "restore" ? "edit-card-length is-added" : "edit-card-length is-kind"}>{shownKind}</span>}
       {/* Scarlet asks the editor to look or listen at a part of the video, which the timeline marks. It is a pill like the
           edit's kind, in amber: a press plays just that part, and its times are on hover. */}
       {reviewRange && <button type="button" className="edit-card-length is-check" onClick={playCheck}
@@ -3158,7 +3263,8 @@ export function SimpleWorkspace() {
   itemIsOpen.current = !!itemThread || !!openSuggestion;
   const editAim = (edit: ThreadEdit, change: Change): { target: AgentContext; label: string } => {
     const target = threadTimeline.selectedTarget;
-    if (target) return { target, label: `“${edit.label}” at ${clockLabel(edit.at ?? edit.range.start)}` };
+    const moment = threadTimeline.selectedMoment;
+    if (target) return { target, label: `${moment ? `${moment.edits.length} edits` : `“${edit.label}”`} at ${clockLabel(edit.at ?? edit.range.start)}` };
     const range = change.ranges[0];
     return { label: "this whole edit", target: { changeId: change.id, version: change.appliedVersion ?? change.toVersion, time: range?.start ?? 0, end: range?.end,
       clipIds: [], label: "Revision" } };

@@ -322,6 +322,9 @@ it("names what a sent message revised, in the words the box showed", () => {
   expect(revisionTarget(sent({ changeId: "edit", editIndex: 1, time: 65 }), [edit], [{ ...row, spot: 0 }])).toBe("the edit at 1:05");
   expect(revisionTarget(sent({ changeId: "edit", time: 0 }), [edit])).toBe("the whole edit");
   expect(revisionTarget(sent({ time: 12 }), [edit])).toBeUndefined();
+  // A moment of a pass's list is named as its row reads: how many edits, at its time.
+  const moment = { changeId: "edit", editIndex: 1, time: 64, end: 70, momentEdits: [{ changeId: "edit", spot: 2 }, { changeId: "edit", spot: 3 }] };
+  expect(revisionTarget(sent(moment), [edit], [{ ...row, at: 66.5, beforeCut: { version: "v0", removed: { start: 300, end: 306 } } }])).toBe("3 edits at 1:06");
 });
 
 describe("requestTarget", () => {
