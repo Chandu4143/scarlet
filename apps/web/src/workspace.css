@@ -255,15 +255,24 @@
 @keyframes waveform-grow { from { transform: scaleY(.15); opacity: .35; } }
 /* A half-width tile advances exactly one repeat so the ripple loops without a jump. */
 @keyframes waveform-travel { from { mask-position: 0% center; } to { mask-position: 100% center; } }
-.timeline-zoom-row { position: absolute; top: 0; right: 0; z-index: 5; display: flex; align-items: center; height: 20px; gap: 2px; padding-left: 6px; color: var(--color-fg); }
-.timeline-zoom-row::before { content: ""; position: absolute; left: 0; height: 14px; border-left: 1px solid #484745; }
-.timeline-zoom-row button { display: grid; place-items: center; height: 20px; border-radius: 4px; background: transparent; color: inherit; }
+.timeline-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 22px; margin-top: 6px; }
+.timeline-clock { color: var(--color-fg); font: 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timeline-clock > span { color: #8a867f; }
+.timeline-zoom-row { display: flex; align-items: center; gap: 4px; color: #aaa69e; }
+.timeline-zoom-row button { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 4px; background: transparent; color: inherit; font: 500 15px/1 var(--font-sans); }
 .timeline-zoom-row button:enabled { cursor: pointer; }
-.timeline-zoom-row button:enabled:hover { background: var(--color-raised); }
+.timeline-zoom-row button:enabled:hover { background: var(--color-raised); color: var(--color-fg); }
+.timeline-zoom-row button:disabled { color: #5d5b57; }
 .timeline-zoom-row button:focus-visible { outline: 2px solid var(--color-fg); outline-offset: -2px; }
-.timeline-zoom-step { width: 26px; font: 500 18px/1 var(--font-sans); }
-.timeline-zoom-step:disabled { color: #aaa9a7; }
-.timeline-zoom-level { min-width: 4ch; padding-inline: 3px; font: 500 13px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.timeline-zoom-slider { appearance: none; -webkit-appearance: none; width: 120px; height: 16px; margin: 0 2px; background: transparent; cursor: pointer; }
+.timeline-zoom-slider:disabled { cursor: default; opacity: .5; }
+.timeline-zoom-slider::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: linear-gradient(90deg, #aaa69e var(--zoom-at, 0%), #383735 var(--zoom-at, 0%)); }
+.timeline-zoom-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: #f1f1f1; }
+.timeline-zoom-slider::-moz-range-track { height: 3px; border-radius: 2px; background: #383735; }
+.timeline-zoom-slider::-moz-range-progress { height: 3px; border-radius: 2px; background: #aaa69e; }
+.timeline-zoom-slider::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: #f1f1f1; }
+.timeline-zoom-slider:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; border-radius: 4px; }
+.timeline-zoom-level { min-width: 4ch; margin-left: 2px; color: #8a867f; font: 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
 .timeline-filmstrip > div, .filmstrip-held > div { min-width: 0; overflow: hidden; background: var(--color-raised); }
 .timeline-filmstrip img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .timeline-filmstrip img[hidden] { display: none; }
