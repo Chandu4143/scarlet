@@ -2,7 +2,7 @@ import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
 import { BRIEF_PICTURES_NEXT, flashesOntoCuts, MET_CUT_NEXT, newBriefPictures, type MetCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
-import { FRAMING_REPORT_NEXT, framingReport } from "./framing-report.js";
+import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
 import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
@@ -115,6 +115,11 @@ const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this foot
 
 /** Source seconds read without saving a part before dialogue_scan reminds the agent that the editor is waiting. */
 const SAVE_REMINDER_SECONDS = 300;
+/**
+ * Seconds a save waits for the cuts of a recording it shows that aren't read yet. A recording is read once and kept:
+ * 60 s of a 4K screen recording takes about 1.5 s, all 25 minutes of one about 40 s (M-series, 2026-11-18).
+ */
+const CUTS_WAIT_SECONDS = 45;
 /** The latest staged pass of a run, and how many of its cuts still have no recommendation. */
 interface StagedReview { changeId: string; total: number; unchecked: number }
 /** How many of a pass's cuts have a recommendation that isn't provisional. */
@@ -994,13 +999,31 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const framed = framingReport(before, made, project.media, project.settings);
     if (!framed.length) return { framed, unread: [] as string[] };
     const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
-    const [found, moving] = await Promise.all([
+    const besideReach = besideSources(made, framed);
+    const [found, moving, beside] = await Promise.all([
       perception.readingsOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("the passages read aloud from the screen", error); return undefined; }),
       perception.motionOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("where the picture changes", error); return undefined; }),
+      besideReach.length ? perception.besideOn(made, project, besideReach, { start: range.start - BESIDE_MAX, end: range.end + BESIDE_MAX }, 0)
+        .catch(error => { noteUnmeasured("what the screen shows beside the framed stretches", error); return undefined; }) : undefined,
     ]);
-    const evidence = !!found?.readings.length || !!moving?.spans.length;
-    return { framed: evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans) : framed,
-      unread: [...found?.unread ?? [], ...moving?.unread ?? []] };
+    const evidence = !!found?.readings.length || !!moving?.spans.length || !!beside;
+    return { framed: evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed,
+      unread: [...new Set([...found?.unread ?? [], ...moving?.unread ?? [], ...beside?.unread ?? []])] };
+  }
+  /** Recordings whose cuts weren't read through when this run last saved: brief pictures at their cuts weren't reported then. */
+  const cutsUnread = new Set<string>();
+  /**
+   * The pictures an edit leaves on screen briefly, with those that a cut in the recording itself brings about. A
+   * recording's cuts are read once and kept, so only the first save that shows a recording waits for them.
+   */
+  async function briefOn(before: Timeline | null, made: Timeline) {
+    const { project } = await getProject();
+    const read = await perception.cutsOn(made, project, { wait: CUTS_WAIT_SECONDS })
+      .catch(error => { noteUnmeasured("where the recordings cut", error); return undefined; });
+    const fresh = new Set([...cutsUnread].filter(id => read?.cuts.has(id) && !read.unreadIds.includes(id)));
+    for (const id of fresh) cutsUnread.delete(id);
+    for (const id of read?.unreadIds ?? []) cutsUnread.add(id);
+    return { brief: newBriefPictures(before, made, project.media, project.settings, read?.cuts, fresh), unread: read?.unread ?? [] };
   }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
     if (ctx.author.type === "agent") {
@@ -1047,7 +1070,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
     const bare = made && !notApplied ? await getProject().then(({ project }) => backgroundShows(before, made, project.media, project.settings)).catch(() => []) : [];
-    const brief = made && !notApplied ? await getProject().then(({ project }) => newBriefPictures(before, made, project.media, project.settings)).catch(() => []) : [];
+    const briefNow = made && !notApplied ? await briefOn(before, made).catch(error => { noteUnmeasured("the pictures this edit shows briefly", error); return undefined; }) : undefined;
+    const brief = briefNow?.brief ?? [];
     const framedNow = made && !notApplied ? await framedOn(before, made).catch(error => { noteUnmeasured("the framing this edit made", error); return undefined; }) : undefined;
     await postEvent({
       type: "change",
@@ -1069,6 +1093,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(unframed.length && { unframedBeside: unframed, next: UNFRAMED_NEXT }),
       ...(bare.length && { backgroundShows: bare, backgroundNext: BACKGROUND_NEXT }),
       ...(brief.length && { briefPictures: brief.slice(0, 20), briefNext: BRIEF_PICTURES_NEXT }),
+      ...(briefNow?.unread.length && { recordingCutsUnread: briefNow.unread }),
       ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
       ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
     };

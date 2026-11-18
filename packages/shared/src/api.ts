@@ -1189,6 +1189,8 @@ export const UsageTotals = z.object({
   totalTokens: z.number().int().nonnegative(),
   /** Standard API list-price equivalent for the task's reported usage. Null if any reported tokens cannot be priced. */
   estimatedApiCostUsd: z.number().nonnegative().nullable().optional(),
+  /** What couldn't be priced, by model and any speed other than standard ("gpt-6.2-sol at Fast speed"). */
+  unpricedModels: z.array(z.string()).optional(),
   firstAt: z.string().nullable(),
   lastAt: z.string().nullable(),
 });

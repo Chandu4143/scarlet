@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "prebuild": "node scripts/gen-skills.mjs",
-    "build:sea": "node scripts/build-sea.mjs"
+    "build:sea": "node scripts/build-sea.mjs",
+    "prices:update": "tsx scripts/update-model-prices.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.6",

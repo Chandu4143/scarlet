@@ -498,6 +498,9 @@ it("ticks active time, updates reported tokens, and carries both metrics across 
   expect(tokens()?.getAttribute("aria-label")).toContain(`Models: Claude Opus 5.5, Claude Fable 5.2, Thinking effort: High, Provider default, Estimated API cost: ${usd.format(0.48)}`);
   report(resumed.id, { ...resumedUsage, models: ["unpriced-model"], estimatedApiCostUsd: null });
   expect(tokens()?.getAttribute("aria-label")).toContain("Estimated API cost: Unavailable");
+  expect(tokens()?.getAttribute("aria-description")).toBe("API pricing is unavailable for some or all of the reported usage.");
+  report(resumed.id, { ...resumedUsage, models: ["gpt-9-sol"], estimatedApiCostUsd: null, unpricedModels: ["gpt-9-sol at Fast speed"] });
+  expect(tokens()?.getAttribute("aria-description")).toBe("No price for gpt-9-sol at Fast speed yet.");
   view.rerender(<RequestMetrics attempts={[previous, { ...resumed, state: "done", workedMs: 3000, finishedAt: new Date().toISOString() }]} events={{}} />);
   act(() => vi.advanceTimersByTime(10_000));
   expect(tokens()?.textContent).toBe("12s · 1.4M tokens");

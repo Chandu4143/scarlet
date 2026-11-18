@@ -1,3 +1,5 @@
+import { ModelPrices, type PriceLookup, type Rates } from "./modelPrices.js";
+
 type TokenUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -6,10 +8,13 @@ type TokenUsage = {
 };
 
 // USD per million tokens at first-party standard rates for short prompts and the default cache TTL.
-type Rates = readonly [input: number, output: number, cacheRead: number, cacheWrite?: number];
+// Rates here take precedence over the price list in modelPrices.generated.ts and the one fetched while Scarlet runs,
+// so a model whose price depends on the date, or that the list has wrong, is priced by hand.
 
 const standardRates = new Map<string, Rates>([
   // https://developers.openai.com/api/docs/pricing
+  ["gpt-6.2-astra", [8, 40, 0.40, 10]],
+  ["gpt-6.2-sol", [2, 10, 0.10, 2.5]],
   ["gpt-6-astra", [10, 50, 1, 12.5]],
   ["gpt-6.1-sol", [2, 10, 0.10, 2.5]],
   ["gpt-6.1-terra", [1, 5, 0.05, 1.25]],
@@ -92,15 +97,36 @@ function ratesFor(model: string, at: string): Rates | undefined {
   }
 }
 
-export function estimateApiTokenCost(model: string | null, usage: TokenUsage, at: string): number | undefined {
+const SPEED_NAMES: Record<string, string> = { fast: "Fast", priority: "Fast", ultrafast: "Ultrafast", flex: "Flex" };
+const STANDARD_SPEEDS = new Set(["standard", "default", "auto"]);
+
+/** The speed a run used, or undefined for standard. */
+export function speedTier(serviceTier: string | null | undefined, fast?: boolean | null): string | undefined {
+  const tier = serviceTier ?? (fast ? "fast" : undefined);
+  return tier && !STANDARD_SPEEDS.has(tier) ? tier : undefined;
+}
+
+/** What the editor reads for a model and speed Scarlet has no price for. */
+export function priceLabel(model: string | null, tier?: string): string {
+  const name = model ?? "an unnamed model";
+  return tier ? `${name} at ${SPEED_NAMES[tier] ?? tier} speed` : name;
+}
+
+const bundledPrices = new ModelPrices();
+
+export function estimateApiTokenCost(model: string | null, usage: TokenUsage, at: string,
+  { tier, prices = bundledPrices }: { tier?: string; prices?: PriceLookup } = {}): number | undefined {
   const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = usage;
   if (!inputTokens && !outputTokens && !cacheReadTokens && !cacheWriteTokens) return 0;
+  if (!model) return undefined;
 
-  const rates = model ? ratesFor(model.replace(/^models\/(?=gemini-)/, ""), at) : undefined;
+  const id = model.replace(/^models\/(?=gemini-)/, "");
+  const rates = prices.rates(id, speedTier(tier), ratesFor(id, at));
   if (!rates) return undefined;
   const [input, output, cacheRead, cacheWrite] = rates;
+  if (cacheReadTokens && cacheRead === undefined) return undefined;
   if (cacheWriteTokens && cacheWrite === undefined) return undefined;
 
   // Use the stored billing categories. Any reported reasoning is already part of output.
-  return (inputTokens * input + outputTokens * output + cacheReadTokens * cacheRead + cacheWriteTokens * (cacheWrite ?? 0)) / 1_000_000;
+  return (inputTokens * input + outputTokens * output + cacheReadTokens * (cacheRead ?? 0) + cacheWriteTokens * (cacheWrite ?? 0)) / 1_000_000;
 }

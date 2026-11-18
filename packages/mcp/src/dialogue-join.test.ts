@@ -424,6 +424,27 @@ describe("native retake boundaries", () => {
     expect(cut.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
   });
 
+  it("starts the quiet after a word where its sound is back at room level, with the breath after it in the pause", () => {
+    // “finish” sounds to 1.44 s. The room, then a breath 20 dB under the voice to 1.66 s, with the detector on through
+    // it, then quiet until “first” at 1.8 s. Later, a soft sound in the quiet between “first” and “next”, after no word.
+    const rms = Array.from({ length: 500 }, (_, i) => voice.some(v => v.start <= i/100 && i/100 < v.end) ? .12
+      : (i >= 146 && i < 154) || (i >= 156 && i < 166) ? .006 : i >= 260 && i < 270 ? .006 : .0004);
+    const heard = [{ start: .98, end: 1.7 }, ...voice.slice(1)];
+    const evidence = (said: typeof words) => joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: heard })!;
+    const breath = evidence(words);
+    expect(breath.quiet[1]).toEqual({ start: expect.closeTo(1.44), end: expect.closeTo(1.8) });
+    // Without the words, the quiet waits for the breath and the detector to end.
+    expect(evidence([]).quiet[1]).toEqual({ start: expect.closeTo(1.7), end: expect.closeTo(1.8) });
+    // A soft sound between two silences that no word or speech comes before stays sound: it may be a word nobody timed.
+    expect(breath.quiet.slice(2, 4)).toEqual([{ start: expect.closeTo(2.26), end: expect.closeTo(2.6) }, { start: expect.closeTo(2.7), end: expect.closeTo(3.4) }]);
+    // Every way of asking for the cut puts its start before the breath: by words, by the pause, and in seconds.
+    const pace = { after: .04, before: .05 };
+    expect(wordCutRange(words, 1, 1, () => breath, undefined, pace).start).toBeCloseTo(1.48);
+    expect(pauseCutRange(words[0]!, words[1]!, () => breath, .1, pace, .03).start).toBeCloseTo(1.47);
+    const { p, tl } = fixture();
+    expect(checkDialogueJoin(tl, p, { start: 1.5, end: 3.3 }, [{ ...page, edges: breath }], undefined, pace)).toMatchObject({ status: "unchanged", start: 1.5 });
+  });
+
   it("resolves a word range to padded edges in the measured gaps beside it", () => {
     const at = () => page.edges;
     // Remove “first”: kept “finish” ends at 1.44 by the recording, “next” resumes at 3.4.

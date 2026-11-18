@@ -9,7 +9,7 @@ category: Picture and graphics
 While the screen recording is on picture, the frame holds what I'm doing or showing, and nothing else. The subject is the pane or panel it happens in, whole, with the title, labels and controls that belong to it: not a detail inside it, not the window around it, and not the desktop around that.
 
 - When I play, use or demo something, that pane fills the frame: the game, the preview, the canvas. Sidebars, chat panels, file lists, toolbars and the desktop around it stay out, even when they are part of the same window.
-- When I read or talk about text, the passage fills the frame, large enough to read along, and the frame follows it down the page.
+- Whenever text is on screen for the viewer to read, because I read it aloud, talk about it or show it (a post, a reply, a headline, a line of code, a screenshot or page shown over my camera), zoom in on it: the passage fills the frame, large enough to read along at the video's size, and the frame follows it down the page.
 - When I point at one thing (a chart, a post, a result, a line of code), that thing fills the frame, whole.
 
 What surrounds the subject stays out of the video: the desktop, the taskbar or dock, browser tabs and the address bar, other windows, a call, notifications. They come in only when they are what I'm showing.
@@ -20,7 +20,7 @@ What I'm saying and where the action is on screen decide the subject. When it mo
 
 Every change of subject is a smooth zoom, never a jump. When I start referring to something, push in on it: the move starts just as I mention it and settles within about a second, easing in and out. When I move on, pull back out to the wider view, or go straight to the next subject if I name one right away, with the same easing. A zoom out is as smooth as a zoom in.
 
-Hold each frame long enough to take in, at least a couple of seconds. If I touch on things faster than that, stay on a frame wide enough to hold them all instead of moving back and forth. The moves follow what I say, not the pointer.
+Hold each frame long enough to take in, at least a couple of seconds. If I touch on things faster than that, stay on a frame wide enough to hold them all instead of moving back and forth. The moves follow what I say, not the pointer. Zooming in on text keeps to the same restraint: one push in for a passage, not one per line or sentence. Following it down the page is a gentle move at the same size, and when I glance at several bits of text close together, hold one readable frame on all of them rather than hopping between them.
 
 Go tight by default, and no tighter than the subject: the whole pane, card, passage or chart I'm on stays in view. Push in on one part of it only when I single that part out, and come back out when I move on. A frame is tight enough when the text I'm reading is easy to read at the video's size; tighter than that only loses what surrounds the detail and softens the picture. Widen only when the viewer needs to see two things together, such as a prompt and its result side by side. The picture always fills the video, with no empty background beside it. It is the recording as it was recorded, moved and zoomed: don't rebuild the screen from pieces of it laid side by side. When the subject is taller or wider than the video's frame, show the part of it I'm using instead of letting what surrounds it in. Look at the framed video across the whole stretch, including mid-zoom, so the frame doesn't cut off a HUD, a control or a line I use a moment later.
 

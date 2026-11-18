@@ -108,6 +108,7 @@ async function runServe(argv: string[]) {
     prepareSourceProxies: true,
     backgroundCheckpoints: true,
     telemetry: { posthogKey: isSea() ? DEFAULT_POSTHOG_KEY : undefined },
+    modelPrices: { fetch },
   });
 
   const hostname = solo ? "127.0.0.1" : (process.env.SCARLET_HOST ?? "127.0.0.1");
