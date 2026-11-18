@@ -670,3 +670,14 @@
 .import-transcription-notice .simple-link { font-size: inherit; color: var(--color-fg); }
 /* A short sits under the video it was made from, set in from it. */
 .list .project-card.is-short { margin-left: 44px; }
+
+/* The files a new project will import, one row each, each with its own ×. */
+.new-project-files { margin-top: 8px; max-height: 168px; overflow-y: auto; font-size: 12px; }
+.new-project-files li { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 2px 0 8px; border-radius: 6px; }
+.new-project-files li:hover { background: var(--color-raised); }
+.new-project-files li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.new-project-file-remove { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: none;
+  color: var(--color-dim); cursor: pointer; }
+.new-project-files li:hover .new-project-file-remove, .new-project-file-remove:focus-visible { color: var(--color-muted); }
+.new-project-file-remove:hover { background: var(--color-line); color: var(--color-fg); }
+.new-project-file-remove:disabled { visibility: hidden; }
