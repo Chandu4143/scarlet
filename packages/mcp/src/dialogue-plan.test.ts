@@ -68,6 +68,30 @@ describe("dialogue plan", () => {
     if (plan.outcome === "ready") expect(plan.decisions[0]!.held).toBe("The words named run on into the ones beside them at the start and end: no pause or low point where they part, a join in running speech. As placed the join plays “… ready ‖ again …”. Kept, it plays “… ready now start over again …”.");
   });
 
+  it("starts a cut where a restart's repeated word begins and holds it for the editor, even when told to cut unsure joins", async () => {
+    // “there was a time where would … where you would”: the levels of the recording, in 20 ms steps (dialogue-join.test.ts).
+    const { tl, sources } = fixture();
+    const first = [-45.4, -51.4, -53.1, -47.7, -45.4, -43, -42, -32.7, -30.4, -29.2, -28.1, -27.5, -29.2, -37.2, -36.7, -37, -35.6, -33.3, -33.7, -37.9, -40.9, -40.4,
+      -39.1, -38.5, -38.1, -39.4, -39.9, -38.9, -37.9, -36.6, -36.4, -42.7, -42.8, -45, -51.2, -58.4, -64.8, -66.6, -60.9, -66.7, -67.6, -71, -73.7];
+    const second = [-74.6, -44.4, -37.4, -33.7, -31.9, -32.4, -36.7, -39.5, -40.3, -41.7, -42.3, -40.7];
+    const rms = Array.from({ length: 250 }, (_, i) => {
+      const t = i * .02;
+      const db = t >= .9 - 1e-9 && i - 45 < first.length ? first[i - 45]! : i >= 118 && i - 118 < second.length ? second[i - 118]!
+        : (t >= .4 && t < .9) || (i >= 130 && t < 3.3) ? -36 : -70;
+      return 10 ** (db / 20);
+    });
+    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.2, text: "time" },
+      { start: 1.2, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: "where" }, { start: 2.54, end: 2.7, text: "you" },
+      { start: 2.8, end: 3.3, text: "would" }];
+    sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, rms, peaks: rms, speechActivity: [{ start: .4, end: 1.64 }, { start: 2.38, end: 3.3 }] }) }];
+    sources.words = async () => said;
+    const plan = await planDialogueCuts({ tl, localPauses: false, unsureJoins: "cut", cuts: [cut({ mediaId: "mic", fromWord: 4, toWord: 5 })] }, sources);
+    expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
+    if (plan.outcome !== "ready") return;
+    expect(plan.decisions[0]!.held).toContain("Scarlet can't hear the result, so a cut saved on those seconds is the editor's to hear, as a call. " +
+      "As placed the join plays “… there was a time ‖ where you would …”. Kept, it plays “… was a time where would where you would …”.");
+  });
+
   it("meets an earlier join a cut stops a few frames short of, so no flash plays between them", async () => {
     // An earlier save joined mic 2.5 s to 3.0 s at 2.5 on the timeline. A cut of the quiet before that join stops 50 ms short of it.
     const { tl, sources } = laidOut([take(0, 2.5, 0), take(3, 5, 2.5)]);

@@ -23,6 +23,10 @@ export interface JoinCheck extends TimeRange {
   inSound?: Array<"start" | "end">;
   /** Of those, the edges inside a transcript word that is sounding there. */
   inWord?: Array<"start" | "end">;
+  /** Both edges are where sameWordJoin puts them: inside the word said on either side of the cut. */
+  sameWord?: string;
+  /** Where this removal could switch takes inside the word said on either side of it, when its start has no quiet. */
+  sameWordJoin?: TimeRange & { word: string; reason: string };
 }
 
 export function dialogueAudioStream(source: object) {
@@ -759,6 +763,98 @@ export function checkResumeQuote(tl: Timeline, project: Project, end: number, pa
  * Only narrow a retake by more than a fragment. The caller still owns its meaning, visual review and approval.
  */
 /** `air`: the room tone a range in seconds asked its join to leave (`leave`, `voiceIn`); its edges in quiet go there. */
+/** Two deliveries of one word match on their sound when their levels follow each other at least this closely (Pearson r). */
+const SAME_WORD_MATCH = .6;
+/** How far the recording's offset between the two deliveries may sit from the transcript's. */
+const SAME_WORD_SEARCH = .12;
+/** Levels under this are room tone to the match, so the depth of a silence doesn't decide it. */
+const SAME_WORD_FLOOR = -60;
+
+export interface SameWordJoin extends TimeRange {
+  word: string;
+  /** The two deliveries of the word, in timeline seconds. */
+  first: TimeRange;
+  second: TimeRange;
+  /** Seconds from a sound in the first delivery to the same sound in the second, and how closely their levels match. */
+  lag: number;
+  match: number;
+}
+
+/**
+ * Where a removal can switch takes inside a word said on either side of it. A restart often begins on the word the
+ * first take broke off after: "there was a time where would … where you would occasionally see". When the word before
+ * runs into the first "where" with no pause, the cut has no quiet to start in. The trough between them is the "m" of
+ * "time", and an edge placed there played "time" clipped; a pass then cut the retake instead, kept both takes, or
+ * dropped the sentence (2026-11-17). An editor cuts as the first "where" begins and lets the second follow: auditioned
+ * on that recording, an edge 0.05 s past the trough played clean. The second delivery starts out of a pause, so its
+ * first sound is measurable, and matching the two deliveries on their levels says where the first one's is: word
+ * timings at a restart are tens of milliseconds off.
+ *
+ * The range keeps its end, in the quiet before the second delivery, and gets this start. Undefined when the removal's
+ * first word isn't the next kept word, when there is quiet to start in, or when the two deliveries don't match.
+ */
+export function sameWordJoin(tl: Timeline, project: Pick<Project, "media" | "settings">, range: TimeRange, pages: JoinPage[]): SameWordJoin | undefined {
+  const { clips, streams } = dialogueClips(tl, project);
+  const clipAt = (at: number) => {
+    const found = clips.filter(c => c.timelineIn + 1e-6 < at && at < c.timelineIn + clipDuration(c) - 1e-6);
+    // One recording at one source second: several mics would each need their own match.
+    const [clip] = found;
+    return clip && found.every(c => c.mediaId === clip.mediaId && Math.abs(timelineToSource(c, at) - timelineToSource(clip, at)) < 1e-3) ? clip : undefined;
+  };
+  const out = clipAt(range.start), back = clipAt(range.end);
+  if (!out || !back || out.mediaId !== back.mediaId || Math.abs((out.speed ?? 1) - 1) > 1e-6 || Math.abs((back.speed ?? 1) - 1) > 1e-6) return;
+  const stream = dialogueAudioStream(out) ?? streams.get(out.mediaId);
+  if ((dialogueAudioStream(back) ?? streams.get(back.mediaId)) !== stream) return;
+  const tS = timelineToSource(out, range.start), tE = timelineToSource(back, range.end);
+  const page = [tS, tE].map(t => pageAt(pages, out.mediaId, stream, t)).find(p => p?.levels && pageReaches(p, tS - .3) && pageReaches(p, tE + .5));
+  const levels = page?.levels;
+  if (!page || !levels) return;
+  const words = [...page.words].sort((a, b) => a.start - b.start);
+  const first = words.find(w => w.end > tS + wordMargin), second = words.find(w => w.end > tE + wordMargin);
+  if (!first || !second || first === second || second.start < first.end - wordMargin || first.start > tS + .1) return;
+  if (first.start < out.sourceIn || second.end > back.sourceOut) return;
+  const token = normalizeTranscriptToken(first.text);
+  if (!token || isTag(first.text) || token !== normalizeTranscriptToken(second.text)) return;
+  // A pause before the first delivery is a clean place to start, and the usual placement finds it.
+  if (gaps(page).some(q => q.start < first.start + wordMargin && q.end > first.start - 3 * wordMargin)) return;
+  const { from, step, db } = levels;
+  const index = (t: number) => Math.floor((t - from) / step), centre = (i: number) => from + (i + .5) * step;
+  const level = (i: number) => i >= 0 && i < db.length ? Math.max(SAME_WORD_FLOOR, db[i]!) : undefined;
+  // The second delivery starts out of a pause: its first sound is where the level rises from quiet.
+  let onset = index(second.start - .1);
+  if (onset < 0 || db[onset]! > SPEECH_DBFS || soundAt(page, tE) !== "quiet" || tE > second.start + wordMargin + .1) return;
+  while (onset < db.length && centre(onset) < second.end && db[onset]! <= SPEECH_DBFS) onset++;
+  if (onset >= db.length || centre(onset) >= second.end) return;
+  const length = Math.min(15, Math.max(5, Math.round((second.end - centre(onset)) / step) + 2));
+  const heard = Array.from({ length }, (_, k) => level(onset + k));
+  if (heard.some(v => v === undefined)) return;
+  const correlation = (shift: number) => {
+    const before = heard.map((_, k) => level(onset + k - shift));
+    if (before.some(v => v === undefined)) return -1;
+    const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+    const x = before as number[], y = heard as number[], mx = mean(x), my = mean(y);
+    const spread = Math.sqrt(x.reduce((a, v) => a + (v - mx) ** 2, 0) * y.reduce((a, v) => a + (v - my) ** 2, 0));
+    return spread > 1e-9 ? x.reduce((a, v, k) => a + (v - mx) * (y[k]! - my), 0) / spread : -1;
+  };
+  const timed = Math.round((second.start - first.start) / step), search = Math.round(SAME_WORD_SEARCH / step);
+  let shift = timed, match = -1;
+  for (let k = -search; k <= search; k++) {
+    const r = correlation(timed + k);
+    if (r > match + 1e-9) { match = r; shift = timed + k; }
+  }
+  if (match < SAME_WORD_MATCH) return;
+  const lag = shift * step;
+  // Where the first delivery begins in the recording: the second's first sound, the matched distance earlier. The word
+  // before has ended there, which no trough or word timing says when the two run together. The cut starts on the first
+  // frame a little past it, so that word's last sound plays out under the fade: on the recording this was built on,
+  // an edge 0.03 s before that point played the word clipped, and edges 0.02 s and 0.05 s after it played clean.
+  const begins = from + onset * step - lag, fps = project.settings.fps;
+  const start = Math.ceil(sourceToTimeline(out, begins + .015) * fps - 1e-7) / fps, source = timelineToSource(out, start), end = range.end;
+  if (source > begins + .055 || source >= (first.start + first.end) / 2 || source <= out.sourceIn || end - start < 2 / fps) return;
+  const span = (clip: MediaClip, w: Word) => ({ start: round3(sourceToTimeline(clip, w.start)), end: round3(sourceToTimeline(clip, w.end)) });
+  return { start, end, word: plain(second), first: span(out, first), second: span(back, second), lag: round3(lag), match: Math.round(match * 100) / 100 };
+}
+
 export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange, pace: JoinPace = DEFAULT_PACE, air?: JoinPace): JoinCheck {
   return dialogueJoinChecker(tl, project, pages, pace)(range, namedWords, air);
 }
@@ -770,7 +866,7 @@ export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinP
   const fps = project.settings.fps, duration = timelineDuration(tl);
   const edge = (at: number, direction: 1 | -1, named?: number, air?: JoinPace) =>
     checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named, air ?? pace, !!air);
-  return (range: TimeRange, namedWords?: TimeRange, air?: JoinPace): JoinCheck => {
+  const judge = (range: TimeRange, namedWords?: TimeRange, air?: JoinPace): JoinCheck => {
     const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start, air) : { at: range.start };
     const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end, air) : { at: range.end };
     const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
@@ -790,6 +886,21 @@ export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinP
     return { start: left.at, end: right.at, status: problems ? "partial" : snapped ? "snapped" : "adjusted", ...(inSound.length && { inSound }), ...(inWord.length && { inWord }),
       reason: [(snapped ? (left.dip || right.dip ? "Placed on the recording: " : "Snapped to the recording's silence: ") : "Adjusted retake boundaries: ")+notes.join(", ")+".", problems,
         snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
+  };
+  return (range: TimeRange, namedWords?: TimeRange, air?: JoinPace): JoinCheck => {
+    const same = sameWordJoin(tl, project, range, pages);
+    if (!same) return judge(range, namedWords, air);
+    const said = "“" + same.word + "”";
+    // Saved where Scarlet put it, the join is what it is: neither edge moves, and no kept word is cut.
+    if (Math.abs(same.start - range.start) < 2e-3) return { start: same.start, end: same.end, status: "review", sameWord: same.word,
+      reason: `The cut starts as the first ${said} begins and the second ${said} follows it. The word before runs into the first with no pause, so its start was found by matching the two ` +
+        `${said}s on their sound. No kept word is cut as measured. Scarlet can't hear the join, and neither can you: the editor hears it.` };
+    const checked = judge(range, namedWords, air);
+    // A removal with quiet at both edges needs no other way in.
+    if (checked.status === "unchanged" || checked.status === "snapped") return checked;
+    return { ...checked, sameWordJoin: { start: same.start, end: same.end, word: same.word,
+      reason: `${said} is said again right after this removal, and the word before runs into the first one with no pause. Matched on their sound, the first ${said} begins at ` +
+        `${same.start.toFixed(3)} s: removing ${same.start.toFixed(3)}–${same.end.toFixed(3)} s takes out the same words and plays the word before whole. Scarlet can't hear the result, so a cut saved on those seconds is the editor's to hear, as a call.` } };
   };
 }
 

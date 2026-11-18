@@ -560,6 +560,8 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   // there. Of eighteen calls one pass handed the editor, fifteen were held this way, asked about as "listen for the end
   // of …", and most were a word or a few frames off (2026-11-16).
   const inSound = new Map<number, { reason: string; inWord: boolean }>();
+  /** Cuts whose join Scarlet placed without a measurement that says it plays clean: the editor's to hear. */
+  const unheard = new Set<number>();
   const decisions = removals.map(c => {
     const decided: PlannedDecision = { start: c.start, end: c.end, reason: c.reason, review: c.decision === "review", kind: c.kind,
       originalRange: undefined, ...(c.check && { check: c.check }), ...(c.summary && { summary: c.summary }) };
@@ -575,6 +577,16 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
         range: [r2(next.start), r2(next.end)], ...(moved && { from: [r2(c.start), r2(c.end)] }), evidence: found });
       return next;
     };
+    // A restart that begins on the word the first take broke off after, with no pause for the cut to start in: the
+    // cut starts where that word begins, found by matching it to the retake's, and waits for the editor, since
+    // nothing here can hear the join (sameWordJoin). A cut already there waits the same way.
+    const same = c.kind === "retake" && c.decision !== "keep" ? checkJoin({ start: c.start, end: c.end }, c.spoken, c.air) : undefined;
+    const placed = same?.sameWord ? { start: same.start, end: same.end, reason: same.reason ?? "" } : same?.sameWordJoin;
+    if (placed) {
+      unheard.add(c.input);
+      inSound.set(c.input, { inWord: false, reason: placed.reason });
+      return adjust({ ...decided, start: placed.start, end: placed.end, review: true, held: placed.reason }, placed.reason);
+    }
     // Word edges without measured silence fall back to word timings, which is not a confident edge.
     const fallback = c.wordEdgeProblems?.length && !decided.review
       ? { review: true, held: c.wordEdgeProblems.join(" ") } : undefined;
@@ -654,7 +666,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   // unsureJoins cut and applied ten such edges (2026-11-16).
   if (req.unsureJoins === "cut") decisions.forEach((d, i) => {
     const c = removals[i]!;
-    if (c.decision !== "cut" || !d.review || !d.held || d.held === CROSSES_SCOPE || inSound.get(c.input)?.inWord) return;
+    if (c.decision !== "cut" || !d.review || !d.held || d.held === CROSSES_SCOPE || inSound.get(c.input)?.inWord || unheard.has(c.input)) return;
     decisions[i] = { ...d, review: false, held: undefined, originalRange: undefined };
     const line = report.findLast(l => l.cut === c.input);
     if (line) Object.assign(line, { outcome: "cut", evidence: `Applied as placed, as unsureJoins asked: ${line.evidence}` });
