@@ -543,15 +543,18 @@ describe("a restart that begins on the word the first take broke off after", () 
     const held = checkDialogueJoin(tl, p, { start: 1.2, end: 2.34 }, [page()]);
     expect(held.status).toBe("review");
     // The second “where” sounds from 2.40 s and the two match 1.20 s apart, so the first begins at 1.20 s: the cut
-    // starts on the first frame 15 ms past it, where the “m” of “time” has played out.
-    expect(held.sameWordJoin).toMatchObject({ start: expect.closeTo(37 / 30, 5), end: 2.34, word: "where" });
+    // starts on the first frame 15 ms past it, where the “m” of “time” has played out, and ends the same 33 ms into the
+    // second. It takes out the 1.20 s between the two, and “where” plays once.
+    expect(held.sameWordJoin).toMatchObject({ start: expect.closeTo(37 / 30, 5), end: expect.closeTo(73 / 30, 5), word: "where" });
     expect(held.sameWordJoin!.reason).toContain("the editor's to hear");
   });
 
   it("holds a cut saved there for the editor, with no word clipped", () => {
     const { p, tl } = fixture();
-    const placed = checkDialogueJoin(tl, p, { start: 37 / 30, end: 2.34 }, [page()]);
-    expect(placed).toMatchObject({ status: "review", sameWord: "where", start: expect.closeTo(37 / 30, 5), end: 2.34 });
+    const placed = checkDialogueJoin(tl, p, { start: 37 / 30, end: 73 / 30 }, [page()]);
+    expect(placed).toMatchObject({ status: "review", sameWord: "where", start: expect.closeTo(37 / 30, 5), end: expect.closeTo(73 / 30, 5) });
+    // The same cut as a pass first gives it, ending in the quiet before the second delivery, is placed the same way.
+    expect(checkDialogueJoin(tl, p, { start: 37 / 30, end: 2.34 }, [page()])).toMatchObject({ sameWord: "where", end: expect.closeTo(73 / 30, 5) });
     expect(placed.inWord).toBeUndefined();
     expect(placed.reason).toContain("the editor hears it");
   });
