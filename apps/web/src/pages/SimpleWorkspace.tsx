@@ -3190,14 +3190,13 @@ export function SimpleWorkspace() {
   // An edit sent back for revision has no card until its new version lands: its note and its decisions are about the
   // version on its way out, and its row in the chat says Scarlet is on it. It stays open meanwhile: the message box is
   // still aimed at it, ↑ ↓ step on and Esc closes it.
-  // Cuts go back on the engine, with no request to Scarlet: the open cut, or every edit of the open moment when they
-  // are all cuts, placed on the video as it runs now.
-  const rejectedCuts = useMemo(() => {
+  // The engine puts back what it can with no request to Scarlet: the open edit, or every edit of the open moment,
+  // placed on the video as it runs now. A cut says where its join is and what it took out.
+  const rejectedEdits = useMemo(() => {
     if (!appliedTarget?.version || !threadTimeline.located || !reviewingEdit) return;
-    const open = threadTimeline.selectedMoment?.edits ?? [reviewingEdit];
-    const cuts = open.flatMap(e => e.beforeCut && e.at !== undefined
-      ? [{ changeId: e.changeId, spot: e.spot, label: e.label, at: e.at, before: { version: e.beforeCut.version, removed: e.beforeCut.removed } }] : []);
-    return cuts.length === open.length ? cuts : undefined;
+    return (threadTimeline.selectedMoment?.edits ?? [reviewingEdit]).map(e => ({ changeId: e.changeId, spot: e.spot, label: e.label, range: e.range,
+      ...(e.previous.length > 0 && { revised: true }),
+      ...(e.beforeCut && e.at !== undefined && { at: e.at, before: { version: e.beforeCut.version, removed: e.beforeCut.removed } }) }));
   }, [appliedTarget?.version, threadTimeline.located, threadTimeline.selectedMoment, reviewingEdit]);
   const editOpen = !!reviewingEdit;
   const openEditKey = reviewingEdit && editKey(reviewingEdit);
@@ -3248,7 +3247,7 @@ export function SimpleWorkspace() {
             edit, or the moment that's open, and goes on as Keep does. A spot marked for the editor changed nothing, so
             it has none. Each edit has its own: one on its way for the edit before doesn't hold this one's back. */}
         {appliedTarget && !shownMarker && <RejectEdit key={`reject ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget}
-          cuts={rejectedCuts} cutsOn={appliedTarget.version} onSent={sent => {
+          edits={rejectedEdits} editsOn={appliedTarget.version} onSent={sent => {
           follow.current = true;
           appLog("action", "reject-edit", { edit: shownIndex + 1, of: threadEdits.length, change: reviewingEdit.changeId });
           // ⌘Z takes the rejection back as it does a revision, and the card goes back to this edit.

@@ -26,7 +26,7 @@ const FEATURES = [
   ["POST", "/projects/:id/branches", "branch.create"],
   ["POST", "/projects/:id/versions/:v/restore", "version.restore"],
   ["POST", "/projects/:id/versions/:v/revert", "version.revert"],
-  ["POST", "/projects/:id/rejected-cuts", "edit.reject"],
+  ["POST", "/projects/:id/rejected-edits", "edit.reject"],
   ["POST", "/projects/:id/versions/:v/checkout", "version.checkout"],
 
   ["POST", "/projects/:id/changes", "change.propose"],

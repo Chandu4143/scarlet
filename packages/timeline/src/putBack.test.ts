@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { emptyTimeline, makeMediaClip, makeTrack } from "./builders.js";
 import { replayJoinFades } from "./joinCrossfade.js";
 import { applyOps } from "./ops.js";
-import { putBackCut } from "./putBack.js";
+import { putBackCut, putBackLooks } from "./putBack.js";
 import type { Timeline } from "./schema.js";
 import { clipEnd, timelineDuration } from "./time.js";
 
@@ -58,4 +58,27 @@ it("answers nothing where the join isn't the cut's own any more", () => {
   const music = makeTrack("audio", "Music", "a2");
   music.clips = [makeMediaClip("song", 0, 40, 0)];
   expect(putBackCut({ ...faded, tracks: [...faded.tracks, music] }, 10, 2, FPS)).toBeUndefined();
+});
+
+it("takes one punch-in off again, wherever its footage is now, and leaves what was set since", () => {
+  const { faded } = cutTwice();
+  const [a, b, c] = faded.tracks[0]!.clips.map(clip => clip.id);
+  const punch = { x: 0, y: 0, scale: 1.1, rotation: 0 };
+  const ops = [{ op: "updateClip" as const, clipId: b!, patch: { transform: punch } }, { op: "updateClip" as const, clipId: c!, patch: { transform: punch, opacity: 0.5 } }];
+  const punched = applyOps(faded, ops);
+  // Since then the second stretch was cut in two, and the editor's later request set the third clip's opacity again.
+  const later = applyOps(punched, [{ op: "rippleDelete", start: 20, end: 21 }, { op: "updateClip", clipId: c!, patch: { opacity: 0.8 } }]);
+  const both = [{ start: 10, end: 28 }, { start: 28, end: 57 }];
+  const looks = (timeline: Timeline) => timeline.tracks[0]!.clips.map(clip => clip.kind === "media" && [clip.transform?.scale, clip.opacity]);
+  expect(looks(later)).toEqual([[undefined, 1], [1.1, 1], [1.1, 1], [1.1, 0.8]]);
+  // The punch-in on the second stretch (10–28 s as the change saved it) comes off both of its pieces, and only them.
+  expect(looks(putBackLooks(later, faded, punched, ops, { start: 10, end: 28 }, both, FPS)!)).toEqual([[undefined, 1], [undefined, 1], [undefined, 1], [1.1, 0.8]]);
+  // The third stretch's punch-in comes off; the opacity set since stays.
+  expect(looks(putBackLooks(later, faded, punched, ops, { start: 28, end: 57 }, both, FPS)!)).toEqual([[undefined, 1], [1.1, 1], [1.1, 1], [undefined, 0.8]]);
+  // Nothing of the change plays in the first stretch, and a change that moved footage isn't only a look.
+  expect(putBackLooks(later, faded, punched, ops, { start: 0, end: 10 }, [...both, { start: 0, end: 10 }], FPS)).toBeUndefined();
+  expect(putBackLooks(later, faded, punched, [...ops, { op: "rippleDelete", start: 1, end: 2 }], { start: 10, end: 28 }, both, FPS)).toBeUndefined();
+  // A change that also set a clip outside the edits it named did more than those edits: Scarlet is asked.
+  expect(putBackLooks(later, faded, punched, ops, { start: 10, end: 28 }, [{ start: 10, end: 28 }], FPS)).toBeUndefined();
+  expect(a).toBe("picture");
 });

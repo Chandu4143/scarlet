@@ -37,7 +37,7 @@ export type ScarletApi = Pick<
   | "timeline"
   | "versions"
   | "historyEdit"
-  | "rejectCuts"
+  | "rejectEdits"
   | "otioUrl"
   | "handoff"
   | "changes"

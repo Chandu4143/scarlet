@@ -91,7 +91,9 @@ beforeEach(() => {
     tasks: db.tasks, taskEvents: db.taskEvents, versions: db.versions[PRJ]!,
     fullRenderKeys: { context: fullRenderContext(project), preview: db.renders.find(r => r.kind === "full")!.key, delivery: "current-delivery" },
   };
-  useProjectStore.setState({ current: data, status: "ready", load: vi.fn(), refreshHead: vi.fn(), loadTaskEvents: vi.fn().mockResolvedValue(undefined) });
+  useProjectStore.setState({ current: data, status: "ready", load: vi.fn(), refreshHead: vi.fn(), loadTaskEvents: vi.fn().mockResolvedValue(undefined),
+    // No engine here puts a rejected edit back itself, so the × asks Scarlet. Tests of the engine's own put-back answer it.
+    rejectEdits: vi.fn().mockRejectedValue(new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was.")) });
 });
 
 afterEach(async () => {
@@ -2097,15 +2099,15 @@ it("puts a rejected cut back on the engine at once, with no request to Scarlet, 
   appliedEdits();
   withCut();
   const createTask = vi.fn();
-  const rejectCuts = vi.fn().mockResolvedValue("ver_back");
+  const rejectEdits = vi.fn().mockResolvedValue("ver_back");
   const historyEdit = vi.fn().mockResolvedValue(undefined);
-  useProjectStore.setState({ createTask, rejectCuts, historyEdit });
+  useProjectStore.setState({ createTask, rejectEdits, historyEdit });
   await show();
   await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
   await click(rejectIcon());
   await act(async () => {});
-  expect(rejectCuts.mock.calls).toEqual([[threadWith("chg_approved_2").id, data.project.head, [{ changeId: "chg_approved_2", spot: 1, label: "captions", at: 2,
+  expect(rejectEdits.mock.calls).toEqual([[threadWith("chg_approved_2").id, data.project.head, [{ changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.5, end: 3.5 }, at: 2,
     before: { version: data.project.head, removed: { start: 2, end: 2.4 } } }]]]);
   expect(createTask).not.toHaveBeenCalled();
   expect(vi.mocked(api.recordEditReview).mock.calls).toEqual([[PRJ, { changeId: "chg_approved_2", spot: 1, decision: "undo" }]]);
@@ -2119,16 +2121,15 @@ it("puts a rejected cut back on the engine at once, with no request to Scarlet, 
 it("asks Scarlet to put a rejected cut back when the engine can't", async () => {
   appliedEdits();
   withCut();
-  const { ScarletApiError } = await import("@scarlet/shared");
   const createTask = vi.fn().mockResolvedValue({ id: "task_reject" });
-  const rejectCuts = vi.fn().mockRejectedValue(new ScarletApiError(409, "needs_scarlet", "This cut can’t be put back as it was."));
-  useProjectStore.setState({ createTask, rejectCuts });
+  const rejectEdits = vi.fn().mockRejectedValue(new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was."));
+  useProjectStore.setState({ createTask, rejectEdits });
   await show();
   await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
   await click(rejectIcon());
   await act(async () => {});
-  expect(rejectCuts).toHaveBeenCalledTimes(1);
+  expect(rejectEdits).toHaveBeenCalledTimes(1);
   expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({ context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, message: "Reject edit" }) }));
 });
 

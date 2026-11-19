@@ -6,7 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
-- Rejecting a cut puts its footage back at once, with no wait and no tokens: the cut is out of the video and off the timeline as soon as you press ×. Scarlet is only asked when it is another kind of edit, or a cut a later edit has changed.
+- Rejecting an edit undoes it at once, with no wait and no tokens, whenever Scarlet knows exactly what the edit changed: a cut, a change to how a shot looks or sounds, or a request's only edit. It is out of the video and off the timeline as soon as you press ×. Scarlet is only asked for the rest.
 - A rejected edit stays in its request's list with a × and "Rejected", and is no longer counted as a passage put back.
 - Each cut in a pass's list of edits now says what came out and where, such as "Shortened the pause after ‘okay’", instead of the same reason on every row.
 - The drawing tools sit in a row above the video instead of over the picture.

@@ -23,22 +23,23 @@ export function rejectInstruction(target: Pick<AgentContext, "editNumber" | "lab
     `Put back exactly what ${moment ? "they" : "it"} changed and leave every other edit as it is.`;
 }
 
-/** A cut as the engine needs it to put its footage back: where its join is in the video now, and what it took out. */
-export type RejectedCut = Parameters<ReturnType<typeof useProjectStore.getState>["rejectCuts"]>[2][number];
+/** An edit as the engine needs it to put back what it changed: where it is in the video now and, for a cut, what it took out. */
+export type RejectedEdit = Parameters<ReturnType<typeof useProjectStore.getState>["rejectEdits"]>[2][number];
 
 /**
  * Reject an applied edit: a small × after Keep on its card, named "Reject edit" on hover, as a call's × skips it.
- * A cut goes back on the engine, at once and with no model: it knows the footage the cut took out and where its join
- * is (`cuts`, located on the version `cutsOn`). Any other edit, or a cut whose join a later edit changed, is a request
- * to Scarlet to put back just that edit (or the whole moment that's open), with the same agent and the same target as
+ * Wherever the engine knows exactly what the edit changed it goes back there, at once and with no model: a cut's
+ * footage, a look an edit gave its clips, a whole request's only edit (`edits`, located on the version `editsOn`). An
+ * edit the engine can't put back itself, or one a later edit changed, is a request to Scarlet to put back just that
+ * edit (or the whole moment that's open), with the same agent and the same target as
  * typing it would. The editor pressed the × and wrote nothing, so that request reads "Reject edit" under its edit's
  * tag, in the chat and in the queue; what Scarlet is asked to do is the instruction, which is for the agent.
  */
-export function RejectEdit({ projectId, thread, target, cuts, cutsOn, onSent }: { projectId: string; thread: Thread; target: AgentContext;
-  cuts?: RejectedCut[]; cutsOn?: string; onSent(sent: { task?: Task; version?: string }): void }) {
+export function RejectEdit({ projectId, thread, target, edits, editsOn, onSent }: { projectId: string; thread: Thread; target: AgentContext;
+  edits?: RejectedEdit[]; editsOn?: string; onSent(sent: { task?: Task; version?: string }): void }) {
   const { effective, unavailableReason } = useAgentAvailability();
   const createTask = useProjectStore(s => s.createTask);
-  const rejectCuts = useProjectStore(s => s.rejectCuts);
+  const rejectEdits = useProjectStore(s => s.rejectEdits);
   const head = useProjectStore(s => s.current?.project.head ?? undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -48,14 +49,14 @@ export function RejectEdit({ projectId, thread, target, cuts, cutsOn, onSent }: 
     setBusy(true);
     setError("");
     try {
-      if (cuts?.length && cutsOn && cutsOn === head) {
+      if (edits?.length && editsOn && editsOn === head) {
         try {
-          const version = await rejectCuts(thread.id, cutsOn, cuts);
+          const version = await rejectEdits(thread.id, editsOn, edits);
           recordEditReview(projectId, target, "undo");
           onSent({ version });
           return;
         } catch (e) {
-          // The engine says when a cut isn't its to put back, or the video moved on meanwhile: Scarlet is asked then.
+          // The engine says when an edit isn't its to put back, or the video moved on meanwhile: Scarlet is asked then.
           if (!(e instanceof ScarletApiError) || e.status !== 409) throw e;
         }
       }

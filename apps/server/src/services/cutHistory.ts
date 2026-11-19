@@ -1,5 +1,5 @@
 import type { User } from "@scarlet/shared";
-import { diffTimelines, HistoryConflict, makeTimeMap, newId, planRevert, putBackCut, timelineDuration, type Change, type TimeRange } from "@scarlet/timeline";
+import { diffTimelines, HistoryConflict, makeTimeMap, newId, planRevert, putBackCut, putBackLooks, timelineDuration, type Change, type TimeRange } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
@@ -42,25 +42,62 @@ export function recordHistoryEdit(ctx: Ctx, user: User, projectId: string, targe
   }, "immediate")();
 }
 
-/** A cut the editor rejected: the edit it is, where its join is in the video now, and the footage it took out. */
-export interface RejectedCut {
-  changeId: string; spot: number; label: string; at: number;
-  before: { version: string; removed: TimeRange };
+/**
+ * An edit the editor rejected, as their list has it on the video now. A cut says where its join is and the footage it
+ * took out; any other edit says the stretch it plays in. `revised` is an edit that has had a revision: only what its
+ * latest version changed is known here.
+ */
+export interface RejectedEdit {
+  changeId: string; spot: number; label: string; range: TimeRange; revised?: boolean;
+  at?: number; before?: { version: string; removed: TimeRange };
 }
 
 /**
- * Reject applied cuts: the footage each took out goes back at its join, and every other edit stays as it is. No model
- * runs. It is refused (`needs_scarlet`) where a join isn't the cut's own any more, such as one a later edit laid a clip
- * across, or where the result doesn't play that footage whole: the editor's × asks Scarlet then.
+ * Reject applied edits with no model, wherever the engine knows exactly what they changed. A cut's footage goes back at
+ * its join. An edit of a change that only set how clips look or sound goes back to how those clips were. A change whose
+ * every edit is rejected comes out whole, as History's Undo takes it out. Every other edit stays as it is.
+ *
+ * It is refused (`needs_scarlet`) where the engine can't tell what an edit changed, where a later edit changed it
+ * since, or where the result doesn't play a cut's footage whole: the editor's × asks Scarlet then.
  */
-export function rejectCuts(ctx: Ctx, user: User, projectId: string, threadId: string, cuts: RejectedCut[], expectedHead: string, branch: string) {
+export function rejectEdits(ctx: Ctx, user: User, projectId: string, threadId: string, rejected: RejectedEdit[], expectedHead: string, branch: string) {
   return ctx.db.transaction(() => {
     const project = ensureProjectHead(ctx, projectId);
     const { head } = project, timeline = resolveTimeline(ctx, project);
     if (head !== expectedHead || project.branch !== branch) throw conflict("cut_changed", "The video changed. Try again.");
     const fps = project.settings.fps;
-    const unclear = () => conflict("needs_scarlet", "This cut can’t be put back as it was.");
+    const unclear = () => conflict("needs_scarlet", "This edit can’t be put back as it was.");
+    const cuts = rejected.filter((e): e is RejectedEdit & { at: number; before: NonNullable<RejectedEdit["before"]> } => e.at !== undefined && !!e.before);
+    const others = rejected.filter(e => e.at === undefined || !e.before);
     let result = timeline;
+    const byChange = new Map<string, RejectedEdit[]>();
+    for (const edit of others) byChange.set(edit.changeId, [...byChange.get(edit.changeId) ?? [], edit]);
+    for (const [changeId, edits] of byChange) {
+      const change = ctx.repos.changes.get(changeId);
+      const version = change?.appliedVersion ?? change?.toVersion;
+      if (!change || change.projectId !== projectId || change.state !== "approved" || !version || edits.some(e => e.revised)) throw unclear();
+      const named = change.timelineEdits;
+      const spots = new Set(edits.map(e => e.spot));
+      if (named?.length && named.length === spots.size && [...spots].every(spot => spot < named.length) && rejected.length === edits.length) {
+        // Every edit the change made is rejected and nothing else is: the change comes out, with what was made on it kept.
+        try {
+          result = planRevert(ctx.repos.versions.links(projectId), head, version, fps, id => resolveTimeline(ctx, project, id), id => ctx.repos.changes.get(id));
+        } catch (e) {
+          if (e instanceof HistoryConflict) throw unclear();
+          throw e;
+        }
+        continue;
+      }
+      const before = ctx.repos.versions.get(projectId, change.appliedOnto ?? change.fromVersion)?.timeline;
+      const after = ctx.repos.versions.get(projectId, version)?.timeline;
+      if (!before || !after || !change.ops?.length) throw unclear();
+      for (const edit of edits) {
+        const range = named?.[edit.spot]?.range;
+        const next = range && putBackLooks(result, before, after, change.ops, range, named!.map(item => item.range), fps);
+        if (!next) throw unclear();
+        result = next;
+      }
+    }
     // Last first, so the joins before each one are still where the editor saw them.
     const placed = [...cuts].sort((a, b) => b.at - a.at);
     for (const cut of placed) {
@@ -81,8 +118,18 @@ export function rejectCuts(ctx: Ctx, user: User, projectId: string, threadId: st
       edits.push({ label: cut.label.slice(0, 180), range: { start, end }, replaces: { changeId: cut.changeId, spot: cut.spot } });
       moved += length;
     }
-    if (Math.abs(timelineDuration(result) - timelineDuration(timeline) - moved) > 1 / fps) throw unclear();
-    const description = cuts.length > 1 ? `Rejected ${cuts.length} cuts` : `Rejected · ${cuts[0]!.label}`;
+    if (cuts.length && Math.abs(timelineDuration(result) - timelineDuration(timeline) - moved) > 1 / fps) throw unclear();
+    // Any other edit is listed where it played, on the video as it runs with the cuts' footage back.
+    const toResult = cuts.length ? makeTimeMap(timeline, result, fps) : undefined;
+    const end = timelineDuration(result);
+    for (const edit of others) {
+      const start = toResult ? toResult(edit.range.start, "right") ?? toResult(edit.range.start, "left") : edit.range.start;
+      const stop = toResult ? toResult(edit.range.end, "left") ?? toResult(edit.range.end, "right") : edit.range.end;
+      const from = Math.min(end, Math.max(0, start ?? edit.range.start));
+      edits.push({ label: edit.label.slice(0, 180), range: { start: from, end: Math.min(end, Math.max(from, stop ?? edit.range.end)) },
+        replaces: { changeId: edit.changeId, spot: edit.spot } });
+    }
+    const description = rejected.length > 1 ? `Rejected ${rejected.length} edits` : `Rejected · ${rejected[0]!.label}`;
     const author = actorFor(user);
     const id = newId("chg");
     const saved = storeVersion(ctx, projectId, result, { parent: head, author, description, changeId: id });
@@ -94,7 +141,7 @@ export function rejectCuts(ctx: Ctx, user: User, projectId: string, threadId: st
     ctx.bus.publish({ type: "change.updated", projectId, change });
     ctx.bus.publish({ type: "project.updated", projectId, project: updated });
     logActivity(ctx, { projectId, actor: author, type: "change.undone",
-      summary: description, data: { changeId: id, rejected: cuts.map(c => ({ changeId: c.changeId, spot: c.spot })), from: head, version: saved.version, branch } });
+      summary: description, data: { changeId: id, rejected: rejected.map(c => ({ changeId: c.changeId, spot: c.spot })), from: head, version: saved.version, branch } });
     return { project: updated, change };
   }, "immediate")();
 }

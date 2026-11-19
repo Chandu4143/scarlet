@@ -1,5 +1,5 @@
 import { z } from "zod/v3";
-import { recordHistoryEdit, rejectCuts } from "../services/cutHistory.js";
+import { recordHistoryEdit, rejectEdits } from "../services/cutHistory.js";
 import { Hono } from "hono";
 import { clipById, describeDiff, diffTimelines, newId, toOtio, type Change } from "@scarlet/timeline";
 import type { AppEnv } from "../auth.js";
@@ -71,12 +71,12 @@ export function timelineRoutes(ctx: Ctx) {
     });
   }
 
-  r.post("/projects/:id/rejected-cuts", async c => {
-    const range = z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).refine(r => r.end > r.start);
+  r.post("/projects/:id/rejected-edits", async c => {
+    const range = z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).refine(r => r.end >= r.start);
     const body = await jsonBody(c, z.object({ expectedHead: z.string(), branch: z.string(), threadId: z.string(),
-      cuts: z.array(z.object({ changeId: z.string(), spot: z.number().int().nonnegative(), label: z.string().trim().min(1), at: z.number().nonnegative(),
-        before: z.object({ version: z.string(), removed: range }) })).min(1).max(32) }));
-    return c.json(rejectCuts(ctx, c.var.user, c.req.param("id"), body.threadId, body.cuts, body.expectedHead, body.branch));
+      edits: z.array(z.object({ changeId: z.string(), spot: z.number().int().nonnegative(), label: z.string().trim().min(1), range, revised: z.boolean().optional(),
+        at: z.number().nonnegative().optional(), before: z.object({ version: z.string(), removed: range.refine(r => r.end > r.start) }).optional() })).min(1).max(32) }));
+    return c.json(rejectEdits(ctx, c.var.user, c.req.param("id"), body.threadId, body.edits, body.expectedHead, body.branch));
   });
 
   r.get("/projects/:id/versions/:a/diff/:b", (c) => {

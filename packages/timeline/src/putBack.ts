@@ -1,4 +1,4 @@
-import type { Clip, MediaClip, Timeline } from "./schema.js";
+import type { Clip, MediaClip, Timeline, TimeRange } from "./schema.js";
 import { shiftClip, straightenCrossfades } from "./ops.js";
 import { clipEnd } from "./time.js";
 
@@ -59,4 +59,59 @@ export function putBackCut(head: Timeline, at: number, length: number, fps: numb
     if (m.time >= at - near) m.time += length;
   }
   return tl;
+}
+
+const TIMING = new Set(["sourceIn", "sourceOut", "timelineIn", "timelineOut", "speed", "id", "kind", "mediaId"]);
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * The timeline with one edit's look taken off again: an edit of a change that only set how clips look or sound (a
+ * punch-in's framing, a level), and moved nothing in time. `before` and `after` are the versions the change was made on
+ * and made; `range` is the edit's stretch on `after`. Each clip the change touched there goes back to how it was before,
+ * wherever its footage is in the video now, a property at a time, and only where it still is as the change left it: what
+ * a later edit set since stays.
+ *
+ * It answers nothing where the change did more than that, where it also set clips outside the edits it named (`named`:
+ * a pass of punch-ins that framed every other shot to match, where "as it was before" would leave this stretch framed
+ * unlike its neighbours), where the footage has since joined other footage in one clip, or where nothing of the edit
+ * is left to take off, so the caller can ask Scarlet instead.
+ */
+export function putBackLooks(head: Timeline, before: Timeline, after: Timeline, ops: ReadonlyArray<Record<string, unknown>>, range: TimeRange,
+  named: readonly TimeRange[], fps: number): Timeline | undefined {
+  const patched = new Map<string, Set<string>>();
+  for (const op of ops) {
+    if (op.op !== "updateClip" || typeof op.clipId !== "string" || !op.patch || typeof op.patch !== "object") return;
+    const keys = Object.keys(op.patch);
+    if (keys.some(key => TIMING.has(key))) return;
+    const had = patched.get(op.clipId) ?? new Set<string>();
+    for (const key of keys) had.add(key);
+    patched.set(op.clipId, had);
+  }
+  const was = new Map(before.tracks.flatMap(track => track.clips.map(clip => [clip.id, clip] as const)));
+  const tl = structuredClone(head);
+  const near = 1 / fps;
+  let undone = 0;
+  for (const track of after.tracks) for (const made of track.clips) {
+    const keys = patched.get(made.id);
+    if (!keys) continue;
+    // A clip belongs to the edit its middle plays in: one clip is never part of two edits.
+    const middle = (made.timelineIn + clipEnd(made)) / 2;
+    if (!named.some(r => middle >= r.start && middle <= r.end)) return;
+    if (made.kind !== "media" || middle < range.start || middle > range.end) continue;
+    const old = was.get(made.id);
+    if (!old || old.kind !== "media") return;
+    const now = tl.tracks.find(t => t.id === track.id);
+    for (const clip of now?.clips ?? []) {
+      if (clip.kind !== "media" || clip.mediaId !== made.mediaId || clip.sourceOut <= made.sourceIn + near * made.speed || clip.sourceIn >= made.sourceOut - near * made.speed) continue;
+      // Footage that has since joined footage from outside the edit in one clip can't take the look back alone.
+      if (clip.sourceIn < made.sourceIn - near * made.speed || clip.sourceOut > made.sourceOut + near * made.speed) return;
+      const open = clip as unknown as Record<string, unknown>, set = made as unknown as Record<string, unknown>, prior = old as unknown as Record<string, unknown>;
+      for (const key of keys) {
+        if (!same(open[key], set[key]) || same(open[key], prior[key])) continue;
+        if (prior[key] === undefined) delete open[key]; else open[key] = structuredClone(prior[key]);
+        undone++;
+      }
+    }
+  }
+  return undone ? tl : undefined;
 }

@@ -544,10 +544,10 @@ export class MockClient implements ScarletApi {
     const list = (this.db.versions[projectId] ?? []).map((v) => ({ ...v, isHead: v.version === head }));
     return this.latency({ versions: list });
   }
-  /** The sample project has no engine to put a cut back: the × asks Scarlet, as it does wherever the engine can't. */
-  async rejectCuts(): Promise<{ project: Project; change: Change }> {
+  /** The sample project has no engine to put an edit back: the × asks Scarlet, as it does wherever the engine can't. */
+  async rejectEdits(): Promise<{ project: Project; change: Change }> {
     this.requireAuth();
-    throw new ScarletApiError(409, "needs_scarlet", "This cut can’t be put back as it was.");
+    throw new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was.");
   }
   async historyEdit(projectId: string, target: string, action: "revert" | "restore", expectedHead: string, branch: string) {
     this.requireAuth();
