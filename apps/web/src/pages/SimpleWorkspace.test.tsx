@@ -4574,7 +4574,9 @@ it("shows Scarlet on two calls at once: each row has its own actions, alongside 
   await event(d => ({ ...d, tasks: [...d.tasks, callRequest("task_aside", 2, { kind: "edit" as const, instruction: "Keep the aside.", ...started() })] }));
   await act(async () => {});
   expect(document.querySelector(".queue-row")).toBeNull();
-  expect(container.querySelector(".queue-editing-action")?.textContent).toBe("Pause");
+  // Pause sits with Stop at the right of each request Scarlet has. Nothing sits over the message box.
+  expect(container.querySelector(".queue-tray")).toBeNull();
+  expect([...container.querySelectorAll(".subunit .unit-pause-edit")].map(b => b.getAttribute("aria-label"))).toEqual(["Pause editing", "Pause editing"]);
   // The pass's heading says how many Scarlet is on, beside what still needs the editor.
   const word = block().querySelector(".unit-msg .unit-word")!;
   expect(word.textContent).toBe("Working on 2 at once");
@@ -6789,7 +6791,25 @@ it("shows active time in the band before Stop this edit, with one line of what t
   expect(cancelTask).toHaveBeenCalledWith("task_running");
 });
 
-it("pauses project editing, keeps the paused request in the chat, and continues from the same control", async () => {
+it("holds Resume in the tray when editing is paused with only requests waiting their turn, and nothing for a running project", async () => {
+  idle();
+  const base = data.tasks.find(t => t.id === "task_running")!;
+  const queued = { ...base, id: "next_edit", instruction: "Add a title.", context: { message: "Add a title." }, state: "queued" as const,
+    question: null, startedAt: undefined, finishedAt: undefined };
+  data = { ...data, project: { ...data.project, editingPaused: true }, tasks: [...data.tasks.filter(t => t !== base), queued] };
+  const resumeEditing = vi.fn().mockResolvedValue(undefined);
+  useProjectStore.setState({ current: data, resumeEditing });
+  await show();
+  const tray = container.querySelector<HTMLElement>(".queue-tray")!;
+  expect(tray.querySelector(".queue-head")?.textContent).toBe("Editing paused · 1 queued");
+  expect(container.querySelector(".unit-pause-edit")).toBeNull();
+  const resume = tray.querySelector<HTMLButtonElement>(".queue-editing-action")!;
+  expect(resume.textContent).toBe("Resume");
+  await click(resume);
+  expect(resumeEditing).toHaveBeenCalledExactlyOnceWith(PRJ);
+});
+
+it("pauses project editing from the band beside Stop, keeps the paused request in the chat, and resumes from the same control", async () => {
   idle();
   const base = data.tasks.find(t => t.id === "task_running")!;
   const now = new Date().toISOString();
@@ -6810,10 +6830,19 @@ it("pauses project editing, keeps the paused request in the chat, and continues 
   useProjectStore.setState({ current: data, stopEditing, resumeEditing, cancelTask });
   await show();
   const tray = () => container.querySelector<HTMLElement>(".queue-tray")!;
-  const projectControl = () => tray().querySelector<HTMLButtonElement>(".queue-editing-action")!;
-  expect(projectControl().textContent).toBe("Pause");
-  expect(projectControl().title).toMatch(/^Pause all editing in this project\./);
-  expect(tray().querySelector(".queue-footer")?.lastElementChild).toBe(projectControl());
+  const unit = () => container.querySelector<HTMLElement>(`.unit[data-run="${running.id}"]`);
+  // Pause, then Resume, sits beside Stop at the right of the request's band. The tray has no line of its own for it.
+  const projectControl = () => unit()!.querySelector<HTMLButtonElement>(".unit-msg .unit-actions .unit-pause-edit")!;
+  // Each is an icon alone. Its name shows over it at once, as the keyboard or the pointer reaches it, with no wait.
+  expect([projectControl().textContent, projectControl().getAttribute("aria-label"), projectControl().title]).toEqual(["", "Pause editing", ""]);
+  expect(projectControl().getAttribute("aria-description")).toMatch(/^All editing in this project stops\./);
+  expect(document.querySelector(".button-tip")).toBeNull();
+  await act(async () => projectControl().focus());
+  expect(document.querySelector(".button-tip")?.textContent).toBe("Pause editing");
+  await act(async () => projectControl().blur());
+  expect(document.querySelector(".button-tip")).toBeNull();
+  expect(projectControl().nextElementSibling?.getAttribute("aria-label")).toMatch(/^Stop this edit/);
+  expect(tray().querySelector(".queue-editing-action, .queue-editing-status")).toBeNull();
   await click(projectControl());
   expect(stopEditing).toHaveBeenCalledExactlyOnceWith(PRJ);
   // The tray lists only what is waiting its turn. The paused request stays where it was in the chat, and says Paused.
@@ -6822,19 +6851,21 @@ it("pauses project editing, keeps the paused request in the chat, and continues 
     .toEqual([["Next", "Add a title."]]);
   expect(tray().querySelector(".queue-head")?.textContent).toBe("Editing paused · 1 queued");
   expect(tray().querySelector(".queue-paused")?.textContent).toBe("Editing paused");
-  expect(projectControl().textContent).toBe("Continue");
-  const unit = () => container.querySelector<HTMLElement>(`.unit[data-run="${running.id}"]`);
+  expect(tray().querySelector(".queue-editing-action")).toBeNull();
+  expect(projectControl().getAttribute("aria-label")).toBe("Resume editing");
   expect(unit()?.closest(".simple-pin")).toBeNull();
   expect(unit()?.querySelector(".unit-msg .unit-word")?.textContent).toBe("Paused");
   expect(unit()?.querySelector(".req-status")).toBeNull();
   // Stop this edit ends the paused request alone.
-  await click(unit()!.querySelector<HTMLButtonElement>(".unit-actions .unit-stop-edit")!);
+  await click(unit()!.querySelector<HTMLButtonElement>('.unit-actions [aria-label^="Stop this edit"]')!);
   expect(cancelTask).toHaveBeenCalledExactlyOnceWith(interrupted.id);
+  // Why Resume failed is said under the request, as Stop's is, until the same press works.
   await click(projectControl());
-  expect(container.querySelector('.simple-banner[role="status"]')?.textContent).toBe("The engine isn’t answering.");
+  expect(unit()!.querySelector('.unit-error[role="alert"]')?.textContent).toBe("The engine isn’t answering.");
   await click(projectControl());
   expect(resumeEditing.mock.calls).toEqual([[PRJ], [PRJ]]);
-  expect(projectControl().textContent).toBe("Pause");
+  expect(unit()!.querySelector(".unit-error")).toBeNull();
+  expect(projectControl().getAttribute("aria-label")).toBe("Pause editing");
   expect(container.querySelector(`.simple-pin .unit[data-run="${running.id}"]`)).not.toBeNull();
   expect(tray().querySelector(".queue-text")?.textContent).toBe("Add a title.");
 });
@@ -6851,8 +6882,9 @@ it("keeps a question answerable while project editing is paused", async () => {
   await show();
   const unit = container.querySelector(`.unit[data-run="${base.id}"]`)!;
   expect([...unit.querySelectorAll(".req-say")].map(el => el.textContent)).toEqual([`${question}Answer`]);
-  expect(container.querySelector(".queue-paused")?.textContent).toBe("Editing paused");
-  expect(container.querySelector(".queue-editing-action")?.textContent).toBe("Continue");
+  // Resume is on the band of the request that asks, beside Stop: the tray has nothing to say.
+  expect(container.querySelector(".queue-tray")).toBeNull();
+  expect(unit.querySelector(".unit-pause-edit")?.getAttribute("aria-label")).toBe("Resume editing");
 });
 
 it("says what a run picked up again is doing while a request sent in its thread before that still waits", async () => {
@@ -7382,7 +7414,7 @@ it("fixes the request Scarlet is on above the message box, moves it into the con
   expect(unit("task_zoom")!.querySelector('.req-now [role="status"]')).not.toBeNull();
   expect(unit("task_zoom")!.querySelector('[aria-label^="Stop this edit"]')).not.toBeNull();
   expect(container.querySelector(".queue-row")).toBeNull();
-  expect(container.querySelector(".queue-editing-action")?.textContent).toBe("Pause");
+  expect(unit("task_zoom")!.querySelector(".unit-pause-edit")?.getAttribute("aria-label")).toBe("Pause editing");
   // A request asked meanwhile leaves the box as it was, starting a new edit.
   const asked = { ...data.tasks.find(t => t.id === "task_zoom")!, id: "task_asked", instruction: "Add captions.", state: "queued" as const,
     context: { message: "Add captions." }, createdAt: new Date(Date.now() + 2000).toISOString(), startedAt: undefined };
@@ -10215,7 +10247,7 @@ it("underlines the chat actions, makes edit result links stand out, and keeps am
       context: { threadId: "task_paused", message: "Cut the pauses." }, createdAt: new Date().toISOString() },
       { ...d.tasks.find(t => t.id === "task_done")!, id: "task_transcribing", kind: "transcribe" as const, agent: "api" as const, state: "running" as const, changeIds: [], summary: null,
         instruction: "Transcribe cam", context: { mediaId: "cam" }, createdAt: new Date().toISOString(), finishedAt: undefined }] }));
-    const projectStop = getComputedStyle(container.querySelector(".queue-editing-action")!);
+    const projectStop = getComputedStyle(container.querySelector(".unit-pause-edit")!);
     expect([projectStop.color, projectStop.textDecoration, projectStop.borderTopWidth]).toEqual(["silver", "", "0px"]);
     expect(look("Finish when ready")).toBe("silver underline gray");
     const review = turnFor("chg_approved_2");
