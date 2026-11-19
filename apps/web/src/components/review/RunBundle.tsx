@@ -7,7 +7,7 @@ import { tokenBreakdown, tokenLabel } from "../../lib/format";
 import { useProjectStore } from "../../stores/project";
 import { useUiStore } from "../../stores/ui";
 import { runProgress } from "../../lib/runProgress";
-import { runNow } from "../../lib/runNow";
+import { runNow, STARTING } from "../../lib/runNow";
 import { runningTranscription, transcriptionProgressLabel, transcriptsProgress } from "../../lib/transcriptionProgress";
 import { runAim, runIsActive, runItems, runLines, runSummary, workTime, workTimeLabel, type RunItem, type RunLine } from "../../lib/taskRun";
 import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
@@ -284,8 +284,12 @@ function WorkingRun({ task, events: all, changes, callNumber, say, result, onSto
     const progress = transcriptsProgress(tasks ?? [], media ?? [], ids);
     return progress && progress.stage !== "queued" ? transcriptionProgressLabel(progress) : undefined;
   }, [doing, events, tasks, media]);
+  // A run cut short, by Scarlet closing or restarting or by a pause, carries on under a new task. Until that attempt
+  // makes its first call the line says so: the editor who just reopened Scarlet sees the edit wasn't started over.
+  const pickingUp = !!task.resumeRootId && !rerun && !voice && (!doing || doing === STARTING);
   const words = transcripts ? `Transcribing the recordings · ${transcripts}`
-    : doing ?? (voice ? voicePhase[voice.phase] : task.state === "claimed" ? "Getting started" : WORKING);
+    : pickingUp ? PICKING_UP
+    : doing ?? (voice ? voicePhase[voice.phase] : task.state === "claimed" ? STARTING : WORKING);
   return <div className="req" data-state="working" aria-label="Scarlet’s work" aria-busy>
     {aim && <div className="req-said req-lead"><Said className="req-say" text={aim.text} /></div>}
     <div className="req-row req-now">
@@ -382,6 +386,7 @@ function FinishedRun({ task, finalChange, say, told, result, recovery, summary, 
 
 /** What the line says when nothing names the work of the moment. */
 const WORKING = "Working on your edit";
+const PICKING_UP = "Picking up where it left off";
 
 /** How a run that didn't finish ended, in the words its block says: paused for its transcripts, stopped, or failed. */
 export function runEnded(task: Task) {
