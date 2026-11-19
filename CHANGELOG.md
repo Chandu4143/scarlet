@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- Transcripts no longer make up a word where a sentence runs across one two-minute stretch of the recording into the next, so Scarlet won't cut real lines to remove it. Videos transcribed before this update keep their transcripts until you transcribe them again.
 - A click on the edge of the chat that doesn't drag it no longer fixes the chat's width, so it keeps following the window.
 - Two-finger scroll and zoom on the timeline keep working after a pinch that ended while you were dragging.
 - Space plays a Before again after its picture had to fall back to the saved clip.
