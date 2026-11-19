@@ -182,10 +182,10 @@ it("sends only extracted dialogue windows to the selected cloud provider and get
   expect(result.status).toBe(200);
   expect(await result.json()).toMatchObject({ segments: [{ words: [{ start: 60.1, end: 60.5, detectedSpeaker: 1 }] }],
     otherVoiceTurns: [{ text: "hello" }], speakerTurns: [{ speaker: 1 }] });
-  // The recording is decoded once, whole, and stays on this machine. The window cut from it is uploaded (a WAV
-  // header here, since the fixture's decode is empty), then the other voice's window.
-  expect(extract.mock.calls.map(call => call[2])).toEqual([{ audioStream: undefined }, expect.objectContaining({ start: 60, duration: 60, audioStream: 1 })]);
-  expect(sizes).toEqual([44, 20]);
+  // The recording is decoded once, whole, and stays on this machine, and so is the other voice's track. The window
+  // cut from each is uploaded (a WAV header here, since the fixture's decodes are empty).
+  expect(extract.mock.calls.map(call => call[2])).toEqual([{ audioStream: undefined }, { audioStream: 1 }]);
+  expect(sizes).toEqual([44, 44]);
   expect((upload.mock.calls[0]![1]!.body as FormData).get("prompt")).toContain("Um");
   expect((upload.mock.calls[1]![1]!.body as FormData).has("prompt")).toBe(false);
   expect((await request("detections", 60)).ok).toBe(true);

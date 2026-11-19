@@ -13,6 +13,7 @@ import { useProjectStore } from "../../stores/project";
 import { usePlayerStore } from "../../stores/player";
 import { useUiStore } from "../../stores/ui";
 import { findWords, TranscriptPane } from "./TranscriptPane";
+import { forgetTranscriptPages } from "./useTranscriptWindow";
 
 const duration = 60;
 const db = buildDb();
@@ -40,12 +41,35 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  // These tests give one transcript ID different words from test to test, which a real transcript never has.
+  forgetTranscriptPages();
   vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
 async function mount() {
   await act(async () => root.render(<MemoryRouter><TranscriptPane source={source} onAsk={() => {}} /></MemoryRouter>));
 }
+
+it("reads a finished transcript once, however often the column is mounted again for a new working cut", async () => {
+  await mount();
+  const read = vi.mocked(api.transcript).mock.calls.length;
+  expect(read).toBeGreaterThan(0);
+  expect(container.querySelector("[data-w]")!.textContent).toBe("word0");
+  // A new working cut gives the column a new key: it is mounted again, and shows the words it had with nothing to wait for.
+  await act(async () => root.render(<MemoryRouter><TranscriptPane key="next" source={source} onAsk={() => {}} /></MemoryRouter>));
+  expect(container.querySelector("[data-w]")!.textContent).toBe("word0");
+  expect(api.transcript).toHaveBeenCalledTimes(read);
+});
+
+it("reads words that are still being aligned again, since they move under the same transcript", async () => {
+  const words = (from: number) => ({ id: "test-transcript", mediaId: source.id, aligning: { through: 0 }, segments: [{ id: "segment-" + from, start: from, end: from + 60,
+    text: "Spoken words", words: [{ text: "word" + from, start: from, end: from + 1 }] }] });
+  vi.mocked(api.transcript).mockImplementation(async (_id, q) => words(q?.from ?? 0));
+  await mount();
+  const read = vi.mocked(api.transcript).mock.calls.length;
+  await act(async () => root.render(<MemoryRouter><TranscriptPane key="next" source={source} onAsk={() => {}} /></MemoryRouter>));
+  expect(vi.mocked(api.transcript).mock.calls.length).toBe(read * 2);
+});
 const at = (n: number) => container.querySelector<HTMLElement>(`[data-w="${n}"]`)!;
 const button = (text: string) => [...container.querySelectorAll("button")].find(b => b.textContent?.trim() === text);
 async function search(text: string) {

@@ -105,7 +105,8 @@ class Browser {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
   private readonly listeners = new Set<(m: CdpMessage) => void>();
-  private buffer = Buffer.alloc(0);
+  /** The pieces of a message still arriving. A 4K frame comes as hundreds of them, and they are joined once, at its end. */
+  private parts: Buffer[] = [];
   private exited: Error | undefined;
   private rejectGone: (error: Error) => void = () => undefined;
   /** Rejects once Chrome has exited or been closed, with why. */
@@ -149,10 +150,12 @@ class Browser {
   }
 
   private read(chunk: Buffer) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    for (let end = this.buffer.indexOf(0); end >= 0; end = this.buffer.indexOf(0)) {
-      const message = JSON.parse(this.buffer.subarray(0, end).toString("utf8")) as CdpMessage;
-      this.buffer = this.buffer.subarray(end + 1);
+    let from = 0;
+    for (let end = chunk.indexOf(0); end >= 0; end = chunk.indexOf(0, from)) {
+      this.parts.push(chunk.subarray(from, end));
+      const message = JSON.parse((this.parts.length === 1 ? this.parts[0]! : Buffer.concat(this.parts)).toString("utf8")) as CdpMessage;
+      this.parts = [];
+      from = end + 1;
       if (message.id !== undefined) {
         const waiter = this.pending.get(message.id);
         this.pending.delete(message.id);
@@ -160,6 +163,7 @@ class Browser {
         else waiter?.resolve(message.result ?? {});
       } else for (const listen of this.listeners) listen(message);
     }
+    if (from < chunk.length) this.parts.push(chunk.subarray(from));
   }
 
   private fail(error: Error) {
