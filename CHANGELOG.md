@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- While you're still talking about a demo or reacting to it, your screen stays up instead of cutting to your camera; your camera comes back once you've moved on.
 - Each model in the model picker sits on one line, with hidden models listed below the active ones.
 - When you start a line over, the transcript now times the word you kept on the take you finished, so cutting the false start no longer takes that word with it (“now, now, if I had, now even if” kept its last “now”).
 - A cut Scarlet saved without its own summary is named in the list by the words beside it (“Shortened the pause after “okay””), so a pass's rows no longer all read the same.
