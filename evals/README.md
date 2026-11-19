@@ -31,9 +31,10 @@ replays of the model's real requests through today's code) and compares with the
 
 ## The dialogue scorecard
 
-`scorecard.ts` turns scored passes into a percentage for each factor of a dialogue cut (cut accuracy, lines kept, no
-mid-word cuts, dead air, cut count, space at a cut, no restarts left in, known mistakes) and one overall figure, read
-against the published video. Give it one run for its card or two to compare them. See [DIALOGUE.md](DIALOGUE.md).
+`scorecard.ts` turns scored passes into a percentage for each factor of a dialogue cut (cut decisions, take choice,
+lines kept, same cuts, mid-word cuts, pauses, dead air, cut count, space at a cut, restarts left in, stutter cuts,
+known mistakes), one overall figure and a count of the mistakes a viewer would notice, read against the published
+video decision by decision (`cutDetail.ts`). Give it one run for its card or two to compare them. See [DIALOGUE.md](DIALOGUE.md).
 
 ## What it measures
 
