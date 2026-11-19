@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A new B-roll skill writes down what should be on screen at each spot first, so you choose what gets found or made before Scarlet spends time on it.
 - Transcripts now keep the words you stumbled over and said again, like "the Coco, the Coca-Cola logo", so Scarlet can cut the false start instead of mistaking it for a pause.
 - Scarlet now looks closely at your camera inset each time it crops it, so it can see when your head is cut off or you look too small.
 - A first pass that finished its work no longer says "Couldn’t finish" when only its closing check for repeats failed to run; it says the check didn’t run, with Retry to run it again.
