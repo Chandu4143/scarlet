@@ -94,6 +94,9 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
   // Versions the run checked joins on, to compare those checks with later parts. A case may not store them.
   const checked = events.flatMap(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "dialogue_check_join"
     && typeof (e.data?.input as { version?: unknown } | undefined)?.version === "string" ? [(e.data!.input as { version: string }).version] : []);
+  // And the versions it flagged edits on, to place each flag in the recordings.
+  checked.push(...events.flatMap(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "edit_flag"
+    && typeof (e.data?.input as { version?: unknown } | undefined)?.version === "string" ? [(e.data!.input as { version: string }).version] : []));
   for (const v of new Set(checked)) if (!timelines.has(v)) await timeline(v).catch(() => undefined);
   let reviewExport: ReviewChangeExport | undefined, reviewSource: Artifacts["reviewSource"] = "none";
   if (review && !(partial && (!timelines.has(review.fromVersion) || !timelines.has(review.toVersion)))) {

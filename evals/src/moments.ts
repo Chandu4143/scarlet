@@ -36,6 +36,8 @@ export interface LeftEdit {
   kept: Record<string, Range[]>;
   removed: Record<string, Range[]>;
   staged: SourceRange[];
+  /** Applied edits the pass flagged for the editor to check. */
+  flagged?: SourceRange[];
 }
 
 export type MomentOutcome = "right" | "asked" | "wrong";
@@ -78,7 +80,10 @@ export function scoreMoments(moments: readonly Moment[], evidence: ReadonlyMap<s
     const read = (ranges: readonly Range[]) => spoken(words.filter(w => inside(middle(w), ranges)).map(w => w.text).join(" "));
     const played = read(kept);
     const staged = left.staged.filter(s => s.mediaId === m.mediaId && overlap(s, m) > 0);
-    if (!staged.length) return { id: m.id, outcome: accepted.includes(played) ? "right" : "wrong", played };
+    const right = accepted.includes(played);
+    // A flagged edit is applied and the editor is asked to check it: a wrong one there reaches them.
+    const flagged = !right && (left.flagged ?? []).some(s => s.mediaId === m.mediaId && overlap(s, m) > 0);
+    if (!staged.length) return { id: m.id, outcome: right ? "right" : flagged ? "asked" : "wrong", played };
     const after = read(subtract(kept, merge(staged)));
     return { id: m.id, outcome: "asked", played, approved: { played: after, right: accepted.includes(after) } };
   });
