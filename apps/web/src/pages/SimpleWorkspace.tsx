@@ -1982,7 +1982,7 @@ export function SimpleWorkspace() {
   const [writeRequest, setWriteRequest] = useState(0);
   function startRevision(thread: Thread, target: AgentContext, label: string) {
     // A message being spoken is in the box until it is out. Aiming the box builds it again, which would drop the
-    // recording without a word: Revise waits, as Move here and the tag's × do.
+    // recording without a word: Revise waits, as the tag's × does.
     if (useUiStore.getState().speaking) return;
     player.pause();
     aimAt(thread, target, label);
@@ -3290,7 +3290,7 @@ export function SimpleWorkspace() {
     const ui = useUiStore.getState();
     const carry = why === "take" || why === "new";
     // A message being spoken can't be brought along: its recording is in this box, and aiming the box elsewhere builds
-    // it again, which would drop it. Move here and the tag's × wait until it is out.
+    // it again, which would drop it. The tag's × waits until it is out.
     if (carry && ui.speaking) return;
     // Only spaces or line breaks are no message to keep aimed: opening an edit takes the aim off such a box, as off an
     // empty one, so it follows what's open the same way.
@@ -3393,9 +3393,7 @@ export function SimpleWorkspace() {
     if (key && name) targetNames.current.set(key, name);
     return name;
   };
-  // The tag in the box says which cut or edit it is aimed at, so the line that names the aim is for screen readers.
-  // It shows when the aim isn't what's open: a message being written is still aimed where it was, or the editor aimed
-  // the box by hand.
+  // The tag in the box says which cut or edit it is aimed at, so the line that names the aim is for screen readers only.
   const aimed = agentContext && agentContext !== "whole" ? agentContext : undefined;
   const aimedAtItem = !!aimed && (aimed.cutIndex !== undefined || aimed.editIndex !== undefined);
   // The tag reads as the same request does in the queue and on its message once sent: "Cut at 2:05".
@@ -3733,12 +3731,9 @@ export function SimpleWorkspace() {
                 <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>}
             </div>
             <div ref={setPinHost} className="simple-pin" aria-label="Working on now" />
-            {!rewordingItem && (replyThread || !aimMatches) && <div className={aimMatches ? "simple-target is-quiet" : "simple-target"} role="status">
-              <span title={aimLabel}>{aimLabel}</span>
-              {/* The message being written comes along to what's open. One being spoken can't: it waits until it is out. */}
-              {!aimMatches && <button type="button" className="simple-link" disabled={speaking}
-                title={speaking ? "Waits until what you’re saying is sent" : undefined} onClick={() => settleAim.current("take")}>
-                {selected === "new" ? "New edit instead" : "Move here"}</button>}
+            {/* The tag in the box shows where a message goes. This line says it for screen readers only. */}
+            {!rewordingItem && (replyThread || !aimMatches) && <div className="simple-target" role="status">
+              <span>{aimLabel}</span>
             </div>}
             {composer}
           </div>

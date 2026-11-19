@@ -58,13 +58,10 @@
 
 .simple-row-text { color: var(--color-fg); overflow-wrap: anywhere; }
 
-.simple-target { display: flex; align-items: center; gap: 10px; padding: 8px 18px 0; font-size: 12px; color: var(--color-muted); border-top: 1px solid var(--color-line); }
-/* The box is aimed at what the chat shows, which the list already marks: the line is there for screen readers only. */
-.simple-target.is-quiet { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.simple-target.is-quiet + .composer-dock { border-top: 1px solid var(--color-line); padding-top: 12px; }
-.simple-pin:has(> .unit:not([hidden])) + .simple-target.is-quiet + .composer-dock { border-top: 0; padding-top: 9px; }
-.simple-target span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.simple-target + .composer-dock { border-top: 0; padding-top: 6px; }
+/* The tag in the box shows where a message goes: the line that names it is there for screen readers only. */
+.simple-target { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.simple-target + .composer-dock { border-top: 1px solid var(--color-line); padding-top: 12px; }
+.simple-pin:has(> .unit:not([hidden])) + .simple-target + .composer-dock { border-top: 0; padding-top: 9px; }
 
 .simple-decide { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 clamp(16px, 2vw, 28px) 16px; padding: 9px 10px 9px 14px;
   border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-panel); font-size: 12.5px; color: var(--color-muted); }
@@ -564,7 +561,6 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 /* With nothing under way and no pass waiting on the editor, nothing is fixed here. */
 .simple-pin:not(:has(> .unit:not([hidden]))) { display: none; }
 .simple-pin:has(> .unit:not([hidden])) + .composer-dock { border-top: 0; padding-top: 9px; }
-.simple-pin:has(> .unit:not([hidden])) + .simple-target { border-top: 0; }
 /* Fixed here, a long message keeps to two lines so the spot holds its place. Its title carries the rest. */
 .simple-pin .unit-msg p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 

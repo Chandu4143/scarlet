@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- The "Starting a new edit" and "Move here" line above the message box is gone. The box's tag already says where a message goes.
 - Stopping a request Scarlet is working on is one click again, on Stop at the right of the request, instead of inside a ⋯ menu.
 - Pausing the video now writes its time at the start of the message box, so your next request is about the moment you stopped on.
 - The time a request is about shows alone in the message box, without "At".
