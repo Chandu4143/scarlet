@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A cut Scarlet couldn't place cleanly is no longer swapped for a cut of different words without asking you.
 - Transcripts no longer make up a word where a sentence runs across one two-minute stretch of the recording into the next, so Scarlet won't cut real lines to remove it. Videos transcribed before this update keep their transcripts until you transcribe them again.
 - An edit's card has a small × after Keep again: Reject edit has Scarlet put that edit back and moves on to the next one.
 - Pausing with a cut or an edit open shows the time you stopped on in the message box. The message is still about that cut or edit, and Scarlet knows which moment you mean.
