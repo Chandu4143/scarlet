@@ -7,7 +7,6 @@ import type { DialogueDetections, ServerSettings } from "@scarlet/shared";
 import type { MediaAsset, TimeRange } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
-import { extractWav } from "../render/ffmpeg.js";
 import { UhmDetector } from "../transcribe/uhm.js";
 import { getTranscriptionProvider } from "../transcribe/index.js";
 import { readAcousticWindow } from "../transcribe/acousticWords.js";
@@ -293,7 +292,10 @@ export function dialogueDetector(ctx: Ctx) {
             const turns = otherVoiceTurns(measured.energy, roles, from, to);
             result.otherVoiceTurns = [];
             if (turns.length) {
-              await extractWav(file, wav, { start: from, duration: to - from, audioStream: roles.other - 1, signal });
+              // The other voice's minute comes from one decode of its track, shared with the pages before and after it,
+              // as the page's own does: cut from the source, each page of a long recording took ffmpeg most of a second.
+              const other = await recordingWav(ctx, file, signal, roles.other - 1);
+              try { await other.writeWindow(wav, from, to); } finally { other.release(); }
               const isolated = await inWhisperLane(() => transcribeWindow(wav));
               const words = isolated.segments.flatMap(s => s.words);
               result.otherVoiceTurns = turns.map(turn => ({ ...turn, text: words.filter(w => {
