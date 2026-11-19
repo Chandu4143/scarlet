@@ -1,8 +1,9 @@
 //! One-click sign-in for the agent CLIs with the user's own subscription:
-//! runs `claude auth login --claudeai` (Claude Pro/Max) or `codex login`
-//! (ChatGPT plan) headless. Both CLIs open the system browser themselves and
-//! print a fallback URL; Claude also accepts a pasted code on stdin when the
-//! browser hand-off doesn't come back. Progress is emitted on
+//! runs `claude auth login --claudeai` (Claude Pro/Max), `codex login`
+//! (ChatGPT plan), or `agy acp --login` (Google AI / Gemini) headless.
+//! Claude and Codex open the system browser themselves and print a fallback URL;
+//! `agy acp --login` prints a Google sign-in URL (which Scarlet opens in the
+//! browser) and accepts the authorization code on stdin. Progress is emitted on
 //! `agent-login://status`; on success the agent list is re-detected.
 
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
@@ -36,7 +38,7 @@ pub struct LoginStatus {
     /// Sign-in page, in case the browser didn't open on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The CLI accepts a pasted authorization code (Claude's manual fallback).
+    /// The CLI accepts a pasted authorization code (Claude's manual fallback and Gemini's OAuth code).
     pub accepts_code: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -47,6 +49,7 @@ pub fn login_command(agent: &str) -> Option<(&'static str, &'static [&'static st
     match agent {
         "claude" => Some(("claude", &["auth", "login", "--claudeai"])),
         "codex" => Some(("codex", &["login"])),
+        "gemini" => Some(("agy", &["acp", "--login"])),
         _ => None,
     }
 }
@@ -130,7 +133,7 @@ impl LoginManager {
         let stdin = child.stdin.take().map(|pipe| Arc::new(Mutex::new(pipe)));
         let cancel = CancellationToken::new();
 
-        let accepts_code = agent == "claude";
+        let accepts_code = matches!(agent, "claude" | "gemini");
         let waiting = LoginStatus { agent: agent.to_string(), state: "waiting".into(), url: None, accepts_code, message: None };
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -169,6 +172,9 @@ impl LoginManager {
                         }
                         if let Some(url) = extract_url(&line).filter(|u| is_sign_in_url(u)) {
                             if url_seen.set(url.clone()).is_ok() {
+                                if agent == "gemini" && url.starts_with("https://") {
+                                    let _ = me.app.opener().open_url(&url, None::<&str>);
+                                }
                                 me.report(&attempt, LoginStatus { agent: agent.clone(), state: "waiting".into(), url: Some(url), accepts_code, message: None });
                             }
                         }
@@ -310,9 +316,10 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_and_codex_have_one_click_sign_in() {
+    fn claude_codex_and_gemini_have_one_click_sign_in() {
         assert_eq!(login_command("claude").unwrap().1, &["auth", "login", "--claudeai"]);
         assert_eq!(login_command("codex").unwrap(), ("codex", &["login"][..]));
-        assert!(login_command("gemini").is_none());
+        assert_eq!(login_command("gemini").unwrap(), ("agy", &["acp", "--login"][..]));
+        assert!(login_command("other").is_none());
     }
 }

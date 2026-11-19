@@ -12,7 +12,7 @@ import { AgentSignIn, canSignIn, useLocalHost } from "../shell/AgentSignIn";
 import { Icon } from "../ui/primitives";
 import { MENU_ITEM_CLASS } from "../shell/WorkspaceNavigation";
 
-export const NO_AGENT_REASON = "Sign in with Claude or ChatGPT to let Scarlet edit";
+export const NO_AGENT_REASON = "Sign in with Claude, ChatGPT or Google to let Scarlet edit";
 
 // A provider on two hosts can offer different settings for the same model.
 function supportedOptions(profiles: ModelOptions[], effort?: string, serviceTier?: string, preferSpeed = false) {
@@ -36,7 +36,7 @@ function optionLabel(option: { id: string; label?: string }) {
   return option.label ?? option.id.charAt(0).toUpperCase() + option.id.slice(1);
 }
 
-const effortRanks = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+const effortRanks = ["none", "minimal", "low", "medium", "high", "xhigh", "extra", "max", "ultra"];
 
 /** How far up the model's own effort scale an effort sits, from 0 (lowest offered) to 1 (highest). */
 function effortLevel(efforts: { id: string }[], effort?: string) {
@@ -72,7 +72,8 @@ export function useAgentAvailability() {
   const hosts = useHostsStore((s) => s.hosts);
   const customOpenaiModels = useHostsStore((s) => s.customOpenaiModels);
   const customClaudeModels = useHostsStore((s) => s.customClaudeModels);
-  const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels);
+  const customGeminiModels = useHostsStore((s) => s.customGeminiModels);
+  const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels, customGeminiModels);
   const pick = useUiStore((s) => s.agent);
   const hidden = useModelPreferences((s) => s.hidden);
   const available = modelChoices(agents);

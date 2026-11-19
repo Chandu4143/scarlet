@@ -40,14 +40,14 @@ pub async fn agent_install(state: State<'_, AppState>, agent: String) -> Result<
     Ok(result)
 }
 
-/// One-click subscription sign-in for an agent CLI ("claude" or "codex"). The CLI
-/// opens the browser; progress arrives on `agent-login://status`.
+/// One-click subscription sign-in for an agent CLI ("claude", "codex", or "gemini").
+/// Progress arrives on `agent-login://status`.
 #[tauri::command]
 pub async fn agent_login_start(state: State<'_, AppState>, agent: String) -> Result<LoginStatus, String> {
     state.login.start(&agent).await.map_err(|e| format!("{e:#}"))
 }
 
-/// Paste the code from the browser when the automatic hand-off didn't complete (Claude).
+/// Paste the authorization code from the browser (Claude's manual fallback or Gemini's OAuth code).
 #[tauri::command]
 pub async fn agent_login_code(state: State<'_, AppState>, agent: String, code: String) -> Result<(), String> {
     if code.trim().is_empty() {
@@ -594,6 +594,7 @@ pub struct DesktopInfo {
     pub updates: Option<crate::updates::Source>,
     pub custom_openai_models: Vec<String>,
     pub custom_claude_models: Vec<String>,
+    pub custom_gemini_models: Vec<String>,
     pub editor_model: Option<EditorModelSelection>,
     pub version: String,
     pub platform: String,
@@ -610,6 +611,7 @@ pub fn desktop_info(app: AppHandle, state: State<'_, AppState>) -> DesktopInfo {
         updates: tauri::Manager::try_state::<crate::updates::Source>(&app).map(|source| *source),
         custom_openai_models: state.paths.custom_openai_models(),
         custom_claude_models: state.paths.custom_claude_models(),
+        custom_gemini_models: state.paths.custom_gemini_models(),
         editor_model: state.paths.editor_model(),
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),

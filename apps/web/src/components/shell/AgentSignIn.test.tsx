@@ -48,7 +48,18 @@ it("says what an agent is signed in with", () => {
   expect(authLabel({ id: "codex", installed: true, auth: "subscription" })).toBe("Subscription");
   expect(authLabel({ id: "claude", installed: true, auth: "api_key" })).toBe("API key (pay per use)");
   expect(authLabel({ id: "gemini", installed: true })).toBe("Signed in");
-  expect([canSignIn("claude"), canSignIn("codex"), canSignIn("gemini")]).toEqual([true, true, false]);
+  expect([canSignIn("claude"), canSignIn("codex"), canSignIn("gemini")]).toEqual([true, true, true]);
+});
+
+it("offers Install Gemini and Sign in with Google for Gemini", async () => {
+  await show({ id: "gemini", installed: false });
+  expect(button("Install Gemini")).toBeDefined();
+  const start = vi.spyOn(desktop, "agentLoginStart").mockResolvedValue({ agent: "gemini", state: "waiting", acceptsCode: true });
+  await show({ id: "gemini", installed: true, loggedIn: false });
+  expect(button("Sign in with Google")?.title).toBe("Uses your Google AI subscription; opens your browser");
+  await click("Sign in with Google");
+  expect(start).toHaveBeenCalledWith("gemini");
+  expect(waiting()).toBe(true);
 });
 
 it("starts the sign-in, waits on the browser, and goes back to the button when the app says it failed", async () => {

@@ -650,7 +650,7 @@ export type AgentId = z.infer<typeof AgentId>;
 export const AGENT_LABEL: Record<AgentId, string> = {
   claude: "Claude Code",
   codex: "Codex",
-  gemini: "Gemini CLI",
+  gemini: "Gemini",
   api: "API",
 };
 
@@ -1433,7 +1433,7 @@ export const ServerSettings = z.object({
   /** Small-model "note cleanup" (voice transcript → precise instruction). */
   noteCleanup: z.object({
     enabled: z.boolean().default(false),
-    provider: z.enum(["anthropic", "openai", "none"]).default("none"),
+    provider: z.enum(["anthropic", "openai", "gemini", "none"]).default("none"),
     model: z.string().optional(),
   }),
   render: z.object({

@@ -162,7 +162,7 @@ export interface Ctx {
   render: RenderAdapter;
   renders: RenderQueue;
   settings(): ServerSettings;
-  env: { openaiKey?: string; anthropicKey?: string };
+  env: { openaiKey?: string; anthropicKey?: string; geminiKey?: string };
   options: ServerOptions;
   log(message: string): void;
   /** Anonymous usage reports. See docs/telemetry.md. */
@@ -237,7 +237,7 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
     bus: new Bus(db),
     render: options.render ?? defaultAdapter,
     settings: () => repos.settings.get(),
-    env: { openaiKey: env.OPENAI_API_KEY || undefined, anthropicKey: env.ANTHROPIC_API_KEY || undefined },
+    env: { openaiKey: env.OPENAI_API_KEY || undefined, anthropicKey: env.ANTHROPIC_API_KEY || undefined, geminiKey: env.GEMINI_API_KEY || undefined },
     options,
     log,
     telemetry: createTelemetry({

@@ -40,7 +40,7 @@ function useDesktopStatus() {
   return { engine, host };
 }
 
-/** General → Sign in: Claude Code and Codex, nothing else. */
+/** General → Sign in: Claude Code, Codex and Gemini. */
 export function DesktopAgents({ onConnected }: { onConnected?: () => void }) {
   const { engine, host } = useDesktopStatus();
   const agents = host?.agents.filter((a) => canSignIn(a.id)) ?? [];
@@ -57,13 +57,13 @@ export function DesktopAgents({ onConnected }: { onConnected?: () => void }) {
   return (
     <div className={onConnected ? "" : "card p-5"} id="hosts">
       {!onConnected && <SectionTitle>Sign in</SectionTitle>}
-      <p className="text-[13px] text-muted mb-4">Choose Claude Code or Codex. Install it if needed, then sign in with your subscription.</p>
+      <p className="text-[13px] text-muted mb-4">Choose Claude Code, Codex or Gemini. Install it if needed, then sign in with your subscription.</p>
       {engine?.state === "error" && <InlineError>Scarlet hit a problem starting up. Try quitting and reopening the app.</InlineError>}
       {host?.error && <InlineError>{host.error}</InlineError>}
       {!host ? (
         <Loading />
       ) : agents.length === 0 ? (
-        <div className="text-muted text-[12.5px]">Looking for Claude Code and Codex on this computer…</div>
+        <div className="text-muted text-[12.5px]">Looking for Claude Code, Codex and Gemini on this computer…</div>
       ) : (
         <ul className="divide-y divide-line/60">
           {agents.map((a) => (

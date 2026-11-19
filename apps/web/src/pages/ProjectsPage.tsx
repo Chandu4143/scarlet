@@ -388,7 +388,7 @@ function FirstEditGuide() {
         <li>
           <h3>Ask for an edit</h3>
           <p>Close Media, then type or say “Trim the silence before my first word.”</p>
-          <p>If prompted, connect Claude or ChatGPT under <strong>More → Set up a model</strong>.</p>
+          <p>If prompted, connect Claude, ChatGPT or Google under <strong>More → Set up a model</strong>.</p>
         </li>
         <li>
           <h3>Play it back</h3>

@@ -215,11 +215,11 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
             <div className="grid grid-cols-2 gap-3 mb-2">
               <Field label="Provider" htmlFor="nc-provider">
                 <PreferenceSelect id="nc-provider" value={nc.provider}
-                  options={[{ value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" }, { value: "none", label: "None" }] as const}
+                  options={[{ value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" }, { value: "gemini", label: "Gemini" }, { value: "none", label: "None" }] as const}
                   onChange={value => set("noteCleanup", { ...nc, provider: value })} />
               </Field>
               <Field label="Model" htmlFor="nc-model">
-                <input id="nc-model" className="field font-mono" value={nc.model ?? ""} onChange={(e) => set("noteCleanup", { ...nc, model: e.target.value || undefined })} placeholder="claude-haiku-4-5" />
+                <input id="nc-model" className="field font-mono" value={nc.model ?? ""} onChange={(e) => set("noteCleanup", { ...nc, model: e.target.value || undefined })} placeholder={nc.provider === "gemini" ? "gemini-2.5-flash" : nc.provider === "openai" ? "gpt-4o-mini" : "claude-haiku-4-5"} />
               </Field>
             </div>
           )}

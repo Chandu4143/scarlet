@@ -183,17 +183,19 @@ describe("sign-in detection without a status command to trust", () => {
     expect(await detectCodex({ ...tokens, exec: cli({ code: 1, stdout: "Not logged in" }) })).toMatchObject({ loggedIn: false });
   });
 
-  it("gemini: signed in with its OAuth file or either API key", async () => {
-    const none = await base(cli());
-    expect(await detectGemini(none)).toEqual({ id: "gemini", installed: true, version: "3.4.5-beta.1", loggedIn: false });
-    expect(await detectGemini({ ...none, env: { GEMINI_API_KEY: "k" } })).toMatchObject({ loggedIn: true });
-    expect(await detectGemini({ ...none, env: { GOOGLE_API_KEY: "k" } })).toMatchObject({ loggedIn: true });
-    await mkdir(join(none.home, ".gemini"));
-    await writeFile(join(none.home, ".gemini", "oauth_creds.json"), "{}");
-    expect(await detectGemini(none)).toMatchObject({ loggedIn: true });
-    expect(await detectGemini({ ...none, find: async () => null })).toEqual({ id: "gemini", installed: false });
+  it("gemini: signed in via agy models subscription or either API key", async () => {
+    const signedOut = await base(cli({ code: 1, stderr: "Authentication required. Run agy login." }));
+    expect(await detectGemini(signedOut)).toEqual({ id: "gemini", installed: true, version: "3.4.5-beta.1", loggedIn: false });
+    expect(await detectGemini({ ...signedOut, env: { GEMINI_API_KEY: "k" } })).toMatchObject({ loggedIn: true, auth: "api_key" });
+    expect(await detectGemini({ ...signedOut, env: { GOOGLE_API_KEY: "k" } })).toMatchObject({ loggedIn: true, auth: "api_key" });
+    const signedIn = await base(cli({ code: 0, stdout: "gemini-2.5-pro\ngemini-2.5-flash\n" }));
+    expect(await detectGemini(signedIn)).toMatchObject({ loggedIn: true, auth: "subscription" });
+    expect(await detectGemini({ ...signedOut, find: async () => null })).toEqual({ id: "gemini", installed: false });
     // A CLI that prints no version is still installed.
-    expect(await detectGemini({ ...none, exec: async () => ({ code: 1, stdout: "", stderr: "" }) })).toEqual({ id: "gemini", installed: true, version: undefined, loggedIn: true });
+    expect(await detectGemini({
+      ...signedOut,
+      exec: async (_f, args) => args[0] === "--version" ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: "gemini-2.5-pro\n", stderr: "" },
+    })).toEqual({ id: "gemini", installed: true, version: undefined, loggedIn: true, auth: "subscription" });
   });
 });
 
@@ -203,6 +205,7 @@ describe("detect: model lists", () => {
     if (args[0] === "--version") return { code: 0, stdout: "1.0.0", stderr: "" };
     if (file === "claude") return { code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), stderr: "" };
     if (file === "codex") return { code: 1, stdout: "Not logged in", stderr: "" };
+    if (file === "agy") return { code: 1, stderr: "Not logged in", stdout: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
 
@@ -216,8 +219,28 @@ describe("detect: model lists", () => {
       },
       models: { gemini: "gemini-flash" },
     });
-    expect(asked).toEqual([["claude", "claude", ["GEMINI_API_KEY", "PATH"]], ["gemini", "gemini", ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "PATH"]]]);
+    expect(asked).toEqual([["claude", "claude", ["GEMINI_API_KEY", "PATH"]], ["gemini", "agy", ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "PATH"]]]);
     expect(agents.map((a) => [a.id, a.models, a.model])).toEqual([["claude", ["claude-1"], "claude-1"], ["codex", undefined, undefined], ["gemini", ["gemini-1"], "gemini-flash"]]);
+  });
+
+  it("drops Gemini API keys when Gemini is signed in via Google subscription", async () => {
+    const asked: Array<[string, string, string[]]> = [];
+    await detect({
+      find,
+      exec: async (file, args) => {
+        if (args[0] === "--version") return { code: 0, stdout: "1.0.0", stderr: "" };
+        if (file === "claude") return { code: 1, stdout: JSON.stringify({ loggedIn: false }), stderr: "" };
+        if (file === "agy") return { code: 0, stdout: "gemini-2.5-pro\n", stderr: "" };
+        return { code: 1, stdout: "Not logged in", stderr: "" };
+      },
+      home: await tempDir(),
+      env: { GEMINI_API_KEY: "g", GOOGLE_API_KEY: "g2", PATH: "/bin" },
+      catalog: async (agent, path, env) => {
+        asked.push([agent, path, Object.keys(env).sort()]);
+        return { models: ["gemini-2.5-pro"], model: "gemini-2.5-pro" };
+      },
+    });
+    expect(asked).toEqual([["gemini", "agy", ["PATH"]]]);
   });
 
   it("still lists an agent whose model list could not be read, and reports why", async () => {
@@ -255,7 +278,7 @@ describe("detect helpers", () => {
   it("names the key variables per agent and drops them whatever their case", () => {
     expect(apiKeyVars("claude")).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
     expect(apiKeyVars("codex")).toEqual(["OPENAI_API_KEY", "CODEX_API_KEY"]);
-    expect(apiKeyVars("gemini")).toEqual([]);
+    expect(apiKeyVars("gemini")).toEqual(["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
     // Windows environment names are case-insensitive.
     expect(stripVars({ Openai_Api_Key: "sk", Path: "C:\\bin", HOME: "/h" }, ["OPENAI_API_KEY"])).toEqual({ Path: "C:\\bin", HOME: "/h" });
   });

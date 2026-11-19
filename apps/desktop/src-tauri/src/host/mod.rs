@@ -73,8 +73,8 @@ impl McpLauncher {
     }
 
     /// Use the same provider catalog protocol as a standalone Scarlet agent host.
-    /// `extra_claude` adds Claude IDs the CLI accepts but does not list, with the default entry's options.
-    async fn load_catalogs(&self, agents: &mut [AgentAvailability], env: &HashMap<String, String>, extra_claude: &[String]) {
+    /// `extra_claude` and `extra_gemini` add model IDs the CLI accepts but does not list, with the default entry's options.
+    async fn load_catalogs(&self, agents: &mut [AgentAvailability], env: &HashMap<String, String>, extra_claude: &[String], extra_gemini: &[String]) {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Catalog {
@@ -85,7 +85,7 @@ impl McpLauncher {
         }
 
         let probes = agents.iter().filter(|a| a.installed && a.logged_in != Some(false)).map(|a| async move {
-            let Some(file) = spawn::find_on_path(&a.id, env) else {
+            let Some(file) = spawn::find_on_path(detect::cli_binary(&a.id), env) else {
                 log::warn!("[host] model-catalog provider={} reason=cli_unavailable", a.id);
                 return None;
             };
@@ -107,13 +107,21 @@ impl McpLauncher {
             Some((a.id.clone(), catalog))
         });
         for (id, mut catalog) in futures_util::future::join_all(probes).await.into_iter().flatten() {
-            if id == "claude" {
-                for m in extra_claude.iter().filter(|m| !m.is_empty()) {
-                    if catalog.models.contains(m) { continue; }
-                    catalog.models.push(m.clone());
-                    catalog.model_labels.entry(m.clone()).or_insert_with(|| m.clone());
-                    if let Some(o) = catalog.model_options.get("").cloned() { catalog.model_options.entry(m.clone()).or_insert(o); }
-                }
+            let extras = match id.as_str() {
+                "claude" => extra_claude,
+                "gemini" => extra_gemini,
+                _ => &[],
+            };
+            let default_opts = catalog
+                .model_options
+                .get("")
+                .or_else(|| catalog.model.as_ref().and_then(|m| catalog.model_options.get(m)))
+                .cloned();
+            for m in extras.iter().filter(|m| !m.is_empty()) {
+                if catalog.models.contains(m) { continue; }
+                catalog.models.push(m.clone());
+                catalog.model_labels.entry(m.clone()).or_insert_with(|| m.clone());
+                if let Some(ref o) = default_opts { catalog.model_options.entry(m.clone()).or_insert_with(|| o.clone()); }
             }
             if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
                 take_catalog(a, catalog.model, catalog.model_options, Some(catalog.models), catalog.model_labels);
@@ -390,7 +398,7 @@ impl HostRuntime {
     async fn detect_agents(&self, env: &HashMap<String, String>) -> Option<String> {
         let _detecting = self.detecting.lock().await;
         let mut found = detect::detect(env, &self.paths.home, &self.models).await;
-        self.mcp.load_catalogs(&mut found, env, &self.paths.custom_claude_models()).await;
+        self.mcp.load_catalogs(&mut found, env, &self.paths.custom_claude_models(), &self.paths.custom_gemini_models()).await;
         log::info!("assistants: {}", describe_agents(&found));
         let mut agents = self.agents.write().await;
         let mut failed = Vec::new();
@@ -400,7 +408,7 @@ impl HostRuntime {
                 take_catalog(agent, old.model.clone(), old.model_options.clone(), old.models.clone(), old.model_labels.clone());
             }
             failed.push(match agent.id.as_str() {
-                "claude" => "Claude Code", "codex" => "Codex", "gemini" => "Gemini CLI", id => id,
+                "claude" => "Claude Code", "codex" => "Codex", "gemini" => "Gemini", id => id,
             });
         }
         let error = (!failed.is_empty()).then(|| format!("Couldn't refresh models for {}. Try again.", failed.join(", ")));
@@ -491,7 +499,7 @@ impl HostRuntime {
         if asked.is_empty() {
             return false;
         }
-        self.mcp.load_catalogs(&mut asked, &child_env(&self.paths.home), &self.paths.custom_claude_models()).await;
+        self.mcp.load_catalogs(&mut asked, &child_env(&self.paths.home), &self.paths.custom_claude_models(), &self.paths.custom_gemini_models()).await;
         let (read, left, assistants) = {
             let mut agents = self.agents.write().await;
             let mut read = false;
@@ -1259,7 +1267,7 @@ impl HostManager {
                 let models = self.config.lock().unwrap().models.clone();
                 let mut agents = detect::detect(&env, &self.paths.home, &models).await;
                 let mcp = self.mcp.lock().unwrap().clone();
-                if let Some(launcher) = &mcp { launcher.load_catalogs(&mut agents, &env, &self.paths.custom_claude_models()).await; }
+                if let Some(launcher) = &mcp { launcher.load_catalogs(&mut agents, &env, &self.paths.custom_claude_models(), &self.paths.custom_gemini_models()).await; }
                 HostStatus { agents, mcp_command: mcp.as_ref().map(|m| m.describe()), ..Default::default() }
             }
         };
@@ -2177,8 +2185,8 @@ mod tests {
         assert_eq!(cfg["mcpServers"]["scarlet"]["command"], json!("node"));
         assert_eq!(cfg["mcpServers"]["scarlet"]["args"][1], json!("mcp"));
         assert_eq!(cfg["mcpServers"]["scarlet"]["env"]["SCARLET_PROJECT"], json!("p"));
-        let gem: Value = serde_json::from_str(&runner_gemini::gemini_settings_json(&spec)).unwrap();
-        assert_eq!(gem["mcpServers"]["scarlet"]["args"], json!(spec.args));
+        let gem = runner_gemini::acp_mcp_server(&spec);
+        assert_eq!(gem["args"], json!(spec.args));
     }
 }
 

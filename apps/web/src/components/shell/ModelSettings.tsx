@@ -9,12 +9,12 @@ import { FavoriteButton } from "../agent/FavoriteButton";
 import { Icon, Loading, SectionTitle, Toggle } from "../ui/primitives";
 
 export function ModelSettings({ onSignIn }: { onSignIn?: () => void } = {}) {
-  const { hosts, customOpenaiModels, customClaudeModels, status, error } = useHostsStore();
+  const { hosts, customOpenaiModels, customClaudeModels, customGeminiModels, status, error } = useHostsStore();
   const { hidden, favorites, setVisible } = useModelPreferences();
   const [provider, setProvider] = useState<AgentId>();
   const [search, setSearch] = useState("");
   const refresh = useModelRefresh();
-  const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels);
+  const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels, customGeminiModels);
   const choices = modelChoices(agents);
   const query = search.trim().toLowerCase();
   const providers = agents.filter(a => choices.some(m => m.agent === a.id)).map(a => a.id);
@@ -29,8 +29,8 @@ export function ModelSettings({ onSignIn }: { onSignIn?: () => void } = {}) {
       <ModelRefreshFeedback action={refresh} loadError={error} />
       {!choices.length && (status === "loading" ? <Loading label="Reading models…" /> :
         // Every model a signed-in agent offers is listed, so none at all means its list couldn't be read.
-        agents.length ? <p className="mt-4 text-[13px] text-muted">Couldn’t read the model list. Refresh models to try again, and update Claude Code or Codex if it still fails.</p> :
-        <p className="mt-4 text-[13px] text-muted">Models appear when Claude Code or Codex is online. {onSignIn
+        agents.length ? <p className="mt-4 text-[13px] text-muted">Couldn’t read the model list. Refresh models to try again, and update Claude Code, Codex or Gemini if it still fails.</p> :
+        <p className="mt-4 text-[13px] text-muted">Models appear when Claude Code, Codex or Gemini is online. {onSignIn
           ? <button className="underline" onClick={onSignIn}>Manage sign-in</button>
           : <Link to="/settings#hosts" className="underline">Manage sign-in</Link>}</p>)}
       {active && <div className="mt-4">

@@ -219,7 +219,7 @@ impl RunResult {
 }
 
 /// Matches the Scarlet question tool however the CLI namespaces it
-/// (mcp__scarlet__task_question, scarlet__task_question, task_question).
+/// (mcp__scarlet__task_question, scarlet__task_question, scarlet:task_question, task_question).
 pub fn is_question_tool(name: Option<&str>) -> bool {
     let Some(n) = name else { return false };
     if n.is_empty() {
@@ -229,7 +229,7 @@ pub fn is_question_tool(name: Option<&str>) -> bool {
         return true;
     }
     if let Some(prefix) = n.strip_suffix("task_question") {
-        return prefix.ends_with("__") || prefix.ends_with('.') || prefix.ends_with('/');
+        return prefix.ends_with("__") || prefix.ends_with('.') || prefix.ends_with('/') || prefix.ends_with(':');
     }
     false
 }
@@ -241,10 +241,15 @@ pub fn pretty_tool_name(name: &str) -> String {
     if let Some(m) = re.captures(name) {
         return format!("{}.{}", &m[1], &m[2]);
     }
-    match name.strip_prefix("scarlet__") {
-        Some(rest) => format!("scarlet.{rest}"),
-        None => name.to_string(),
+    if let Some(rest) = name.strip_prefix("mcp_scarlet_") {
+        return format!("scarlet.{rest}");
     }
+    for prefix in ["scarlet__", "scarlet/", "scarlet:"] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return format!("scarlet.{rest}");
+        }
+    }
+    name.to_string()
 }
 
 /// `briefInput(input, max)`: compact JSON (or the string itself), truncated in UTF-16 units.

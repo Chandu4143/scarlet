@@ -33,10 +33,42 @@ const codexPage = z.object({
   })),
   nextCursor: z.string().nullish(),
 });
-const geminiSession = z.object({
-  models: z.object({ currentModelId: z.string().optional(), availableModels: z.array(z.object({ modelId: z.string(), name: z.string() })) }),
+const acpOptionValue = z.object({
+  value: z.string(),
+  name: z.string().optional(),
+  description: z.string().optional(),
 });
-const rpcResponse = z.object({ id: z.number(), result: z.unknown().optional(), error: z.unknown().optional() });
+const acpOptionGroup = z.object({
+  options: z.array(acpOptionValue),
+});
+const acpConfigOption = z.object({
+  id: z.string().optional(),
+  configId: z.string().optional(),
+  category: z.string().optional(),
+  currentValue: z.string().optional(),
+  options: z.array(z.union([acpOptionValue, acpOptionGroup])).optional(),
+});
+const geminiSession = z.object({
+  configOptions: z.array(acpConfigOption).optional(),
+  models: z.object({
+    currentModelId: z.string().optional(),
+    availableModels: z.array(z.object({ modelId: z.string(), name: z.string() })),
+  }).optional(),
+});
+const rpcResponse = z.object({
+  id: z.number(),
+  result: z.unknown().optional(),
+  error: z.object({ code: z.number().optional(), message: z.string().optional() }).or(z.unknown()).optional(),
+});
+
+function flattenAcpOptions(options: Array<z.infer<typeof acpOptionValue> | z.infer<typeof acpOptionGroup>> | undefined) {
+  const flat: Array<z.infer<typeof acpOptionValue>> = [];
+  for (const entry of options ?? []) {
+    if ("options" in entry) flat.push(...entry.options);
+    else flat.push(entry);
+  }
+  return flat;
+}
 
 type ProbeFailure = "initialize_failed" | "request_failed" | "invalid_response" | "repeated_cursor" | "timed_out" | "process_failed" | "incomplete_response";
 
@@ -66,12 +98,15 @@ export async function discoverModels(agent: CliAgent, file: string, env: NodeJS.
   const args = {
     claude: ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--safe-mode", "--strict-mcp-config", "--no-session-persistence"],
     codex: ["app-server"],
-    gemini: ["--acp", "--extensions", "none", "--allowed-mcp-server-names", "scarlet-catalog"],
+    gemini: ["acp", "--disable-telemetry"],
   };
   let requestId = 1;
+  let pendingStep: "initialize" | "authenticate" | "session_new" | "model_list" = "initialize";
+  let triedApiKeyAuth = false;
   let complete = false;
   let failure: ProbeFailure | undefined;
   const cursors = new Set<string>();
+  const hasGeminiApiKey = Boolean(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
   try {
     const fail = (reason: ProbeFailure) => {
       failure = reason;
@@ -98,18 +133,62 @@ export async function discoverModels(agent: CliAgent, file: string, env: NodeJS.
       } else {
         const rpc = rpcResponse.safeParse(msg);
         if (!rpc.success || rpc.data.id !== requestId) return;
-        if (rpc.data.error || !rpc.data.result) return fail(requestId === 1 ? "initialize_failed" : "request_failed");
-        if (requestId === 1) {
-          if (agent === "codex") send({ method: "initialized" });
-          // Codex leaves some models out of its own picker. Scarlet lists every model the CLI offers.
-          request(agent === "codex" ? "model/list" : "session/new", agent === "codex" ? { includeHidden: true } : { cwd, mcpServers: [] });
+        if (rpc.data.error || !rpc.data.result) {
+          if (agent === "gemini" && pendingStep === "session_new" && !triedApiKeyAuth && hasGeminiApiKey) {
+            const errObj = rpc.data.error && typeof rpc.data.error === "object" ? rpc.data.error as { code?: number; message?: string } : undefined;
+            if (errObj?.code === -32000 || /auth/i.test(String(errObj?.message ?? ""))) {
+              triedApiKeyAuth = true;
+              pendingStep = "authenticate";
+              request("authenticate", { methodId: "gemini-api-key" });
+              return;
+            }
+          }
+          return fail(pendingStep === "initialize" ? "initialize_failed" : "request_failed");
+        }
+        if (pendingStep === "initialize") {
+          if (agent === "codex") {
+            send({ method: "initialized" });
+            pendingStep = "model_list";
+            // Codex leaves some models out of its own picker. Scarlet lists every model the CLI offers.
+            request("model/list", { includeHidden: true });
+          } else {
+            pendingStep = "session_new";
+            request("session/new", { cwd, mcpServers: [] });
+          }
+          return;
+        }
+        if (agent === "gemini" && pendingStep === "authenticate") {
+          pendingStep = "session_new";
+          request("session/new", { cwd, mcpServers: [] });
           return;
         }
         if (agent === "gemini") {
           const session = geminiSession.safeParse(rpc.data.result);
           if (!session.success) return fail("invalid_response");
-          for (const m of session.data.models.availableModels) if (m.modelId) add(m.modelId, m.name);
-          defaultModel = session.data.models.currentModelId;
+          const configs = session.data.configOptions ?? [];
+          const modelConfig = configs.find(c => c.category === "model" || c.id === "model" || c.configId === "model");
+          const thoughtConfig = configs.find(c =>
+            c.category === "thought_level" || ["thought_level", "reasoning_effort", "thinking_level"].includes(c.id ?? c.configId ?? ""),
+          );
+          const sharedOptions: ModelOptions = {
+            efforts: flattenAcpOptions(thoughtConfig?.options).map(o => ({
+              id: o.value,
+              ...(o.name ? { label: o.name } : {}),
+              ...(o.description ? { description: o.description } : {}),
+            })),
+            speeds: [],
+            defaultEffort: thoughtConfig?.currentValue,
+          };
+          const configModels = flattenAcpOptions(modelConfig?.options);
+          if (configModels.length > 0) {
+            for (const m of configModels) if (m.value) add(m.value, m.name ?? m.value, sharedOptions);
+            defaultModel = modelConfig?.currentValue;
+          } else if (session.data.models) {
+            for (const m of session.data.models.availableModels) if (m.modelId) add(m.modelId, m.name, sharedOptions);
+            defaultModel = session.data.models.currentModelId;
+          } else {
+            return fail("invalid_response");
+          }
         } else {
           const page = codexPage.safeParse(rpc.data.result);
           if (!page.success) return fail("invalid_response");
@@ -145,7 +224,7 @@ export async function discoverModels(agent: CliAgent, file: string, env: NodeJS.
     } else {
       const params = agent === "codex"
         ? { clientInfo: { name: "scarlet", version: "0.1.4" }, capabilities: { experimentalApi: true } }
-        : { protocolVersion: 1, clientCapabilities: {} };
+        : { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "scarlet", version: "0.1.4" } };
       send({ id: requestId, method: "initialize", params });
     }
     const outcome = await proc.done;
