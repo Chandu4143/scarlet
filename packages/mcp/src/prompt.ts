@@ -4,7 +4,7 @@
  * provides context (timestamps, clip ids, notes, the change being revised)
  * and includes the applicable skills verbatim.
  */
-import { taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type Skill, type Task } from "@scarlet/shared";
+import { taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type PictureMark, type Skill, type Task } from "@scarlet/shared";
 import type { Change, Note, Project, Timeline, TimelineDiff } from "@scarlet/timeline";
 import { clipById, describeDiff, formatTimecode } from "@scarlet/timeline";
 import { summarizeProject } from "./analysis.js";
@@ -326,6 +326,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     for (const file of ctx.attachments ?? []) {
       ctxLines.push(`- File the editor attached: "${file.name}" (${fileKind(file.mime, file.name)}, ${fileSize(file.size)}), attachment ${file.id}, at ${file.path}`);
     }
+    // What the editor drew on the picture. What the marks are for is in their words, for the model to read.
+    const drawn = c.pictureMarks;
+    if (drawn) {
+      const picture = ctx.attachments?.find(a => a.id === drawn.attachmentId);
+      const where = `${drawn.mediaId ? "source" : "timeline"} ${drawn.time.toFixed(2)} s (${formatTimecode(drawn.time, fps)})${drawn.version ? ` on version ${drawn.version}` : ""}`;
+      ctxLines.push(`- The editor drew ${drawn.marks.length === 1 ? "a mark" : `${drawn.marks.length} numbered marks`} on the picture at ${where}, in fractions of the frame from its top left: ${drawn.marks.map((m, i) => pictureMarkLine(m, i + 1, drawn.marks.length > 1)).join("; ")}.` +
+        (picture ? ` The frame with the marks drawn on it is attachment ${picture.id} ("${picture.name}").` : ""));
+    }
     for (const t of ctx.pickedTemplates ?? []) {
       const who = t.skill ? `The skill ${t.skill} names` : "The editor picked";
       ctxLines.push(t.kind === "transition"
@@ -398,4 +406,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 export function stripFrontmatter(md: string): string {
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(md);
   return m ? md.slice(m[0].length) : md;
+}
+
+const fraction = (n: number) => n.toFixed(2);
+/** One mark the editor drew, as the prompt says it: what it is and the stretch of the frame it covers. */
+function pictureMarkLine(mark: PictureMark, n: number, numbered: boolean): string {
+  const { x, y, w, h } = mark.box;
+  const name = numbered ? `mark ${n}, ` : "";
+  if (mark.kind === "point") return `${name}a point at ${fraction(x)} across, ${fraction(y)} down`;
+  const span = `${fraction(x)}–${fraction(x + w)} across and ${fraction(y)}–${fraction(y + h)} down`;
+  return mark.kind === "box" ? `${name}a box over ${span}` : `${name}a line drawn by hand over ${span}`;
 }

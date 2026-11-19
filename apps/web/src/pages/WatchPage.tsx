@@ -17,6 +17,8 @@ import { usePlayerStore } from "../stores/player";
 import { selectRender, useProjectStore } from "../stores/project";
 import { useShownCut } from "../stores/shownCut";
 import { CaughtUpOnMonitor } from "../components/player/CaughtUp";
+import { PictureMarks, toggleMarking } from "../components/player/PictureMarks";
+import { usePictureMarksStore } from "../stores/pictureMarks";
 import { editTargetAt, markedRangeOf, useUiStore, type AgentContext, type MarkedRange } from "../stores/ui";
 import { Icon } from "../components/ui/primitives";
 import { CachedVideo } from "../components/player/CachedVideo";
@@ -531,6 +533,17 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
 
   useEffect(() => { if (!active) player.pause(); }, [active]);
 
+  // Marks drawn on the picture for the message in the box. M, or the pen in the player's controls, marks the frame
+  // under the playhead.
+  const marking = usePictureMarksStore(s => s.marking === current.id);
+  const canMark = !!simple.onPick && playable && !beforeShown.current;
+  const markFrame = () => {
+    if (!canMark) return;
+    const time = Math.min(usePlayerStore.getState().time, lastFrame);
+    const picture = source ? api.frameUrl(source.id, time, 1280) : cutFrameUrl(current.project, displayedTimeline, time, true, true);
+    toggleMarking(current.id, { time, version: source ? undefined : rangeVersion, mediaId: source?.id, picture });
+  };
+
   // The press that last played the change.
   const playedChange = useRef(playChange);
   useLayoutEffect(() => {
@@ -666,6 +679,9 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       const target = Math.max(0, Math.min(lastFrame, arrowSeekTime(usePlayerStore.getState().time, e.key, e.shiftKey)));
       seekFull(target);
       selectTime(target);
+    } else if (e.key.toLowerCase() === "m" && simple.onPick && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (!e.repeat) markFrame();
     } else if (e.key.toLowerCase() === "n" && simple) {
       e.preventDefault();
       // Held down, N is one press too: it has already picked the moment and asked for the cursor.
@@ -761,6 +777,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
           <TemplateOnPicture />
+          {!playingBefore && !framing && <PictureMarks projectId={current.id} version={source ? undefined : rangeVersion} mediaId={source?.id} fps={fps} />}
           {/* The edits saved while the video played come in as it stops, with a word that they did. */}
           {!source && <CaughtUpOnMonitor />}
           {cutLoadError && <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-black/75 p-2 text-sm">
@@ -779,6 +796,11 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
           </MonitorPlayback>}
           {(source || cut || change || draftVersion) && <div className="monitor-controls">
             <PlaybackSpeed playable={playable} />
+            {simple.onPick && <button type="button" className="btn-icon" aria-pressed={marking} disabled={!canMark}
+              onClick={e => { if (e.detail) e.currentTarget.blur(); markFrame(); }}
+              aria-label={marking ? "Stop marking the picture" : "Mark the picture"} title={marking ? "Stop marking (M)" : "Mark the picture (M)"}>
+              <Icon name="pencil" size={15} />
+            </button>}
             <button className="btn-icon" onClick={e => { if (e.detail) e.currentTarget.blur(); void toggleFullscreen(); }} aria-label={expanded ? "Exit full screen" : "Full screen"} title={expanded ? "Exit full screen" : "Full screen"}>
               <Icon name="fullscreen" size={15} />
             </button>

@@ -284,7 +284,7 @@ function CloseIcon() {
   );
 }
 
-export type IconName = "fullscreen" | "portrait" | "more" | "undo" | "refresh" | "play" | "pause" | "mic" | "stop" | "plus" | "chevron" | "check" | "x" | "note" | "diff" | "down" | "upload" | "export" | "link" | "trash" | "search" | "zoom" | "settings" | "help" | "compare" | "film" | "library" | "history" | "clock" | "stack" | "audio" | "image" | "arrow" | "monitor" | "review" | "star" | "trim" | "captions" | "scissors" | "bulb" | "pencil" | "bookmark" | "file";
+export type IconName = "fullscreen" | "portrait" | "more" | "undo" | "refresh" | "play" | "pause" | "mic" | "stop" | "plus" | "chevron" | "check" | "x" | "note" | "diff" | "down" | "upload" | "export" | "link" | "trash" | "search" | "zoom" | "settings" | "help" | "compare" | "film" | "library" | "history" | "clock" | "stack" | "audio" | "image" | "arrow" | "monitor" | "review" | "star" | "trim" | "captions" | "scissors" | "bulb" | "pencil" | "box" | "point" | "bookmark" | "file";
 
 const iconPaths: Record<IconName, ReactNode> = {
   scissors: <><circle cx="4" cy="4" r="2" /><circle cx="4" cy="12" r="2" /><path d="M5.4 5.4 8 8m5.3-5.3-7.9 7.9m4.4-.7 3.5 3.5" /></>,
@@ -302,6 +302,8 @@ const iconPaths: Record<IconName, ReactNode> = {
   check: <path d="M3 8.5l3 3 7-7" />,
   x: <path d="M3 3l10 10M13 3L3 13" />,
   pencil: <path d="M10.5 2.5l3 3L6 13H3v-3zM9 4l3 3" />,
+  box: <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" />,
+  point: <><circle cx="8" cy="7" r="4.5" /><path d="M8 11.5V14" /></>,
   refresh: <path d="M13.5 6a5.8 5.8 0 1 0 .2 3.5M13.5 2.5V6H10" />,
   undo: <path d="M4 6.5h5.5a3.25 3.25 0 0 1 0 6.5H6.5M6.5 4 4 6.5 6.5 9" />,
   note: <path d="M12.8 8v4.5H7L3.5 15v-2.5H2V3h6m4-2v6m-3-3h6" />,

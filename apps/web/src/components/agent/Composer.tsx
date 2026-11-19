@@ -1,11 +1,16 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { agentTarget, type Task, type TaskAttachment } from "@scarlet/shared";
+import { agentTarget, type PictureMarks, type Task, type TaskAttachment } from "@scarlet/shared";
 import { canStartCutReview, cutSummary, type Project } from "@scarlet/timeline";
 import { recordEditReview, requestPosition } from "../../lib/editReviews";
-import { errorMessage, IS_DESKTOP } from "../../lib/client";
+import { api, errorMessage, IS_DESKTOP } from "../../lib/client";
 import { messageTimestamps, type MessageClock } from "../../lib/messageTimestamps";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachments";
+import { usePictureMarksStore, type MarkedFrame } from "../../stores/pictureMarks";
+import { markedFramePicture } from "../../lib/markedFrame";
+import { rememberMarkedFrame } from "../../lib/markedFramePictures";
+import { player } from "../../lib/player";
+import { MarksDrawing, toggleMarking } from "../player/PictureMarks";
 import { isComposing } from "../../lib/hotkeys";
 import { clock, clockRange, playbackClock } from "../../lib/format";
 import type { RecorderResult } from "../../lib/recorder";
@@ -86,6 +91,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const attached = useAttachmentsStore(s => s.byProject[project.id]) ?? NO_FILES;
   const attach = useAttachmentsStore(s => s.add);
   const detach = useAttachmentsStore(s => s.remove);
+  // Marks drawn on the picture ride on the next message too, as their frame on a row of that line.
+  const markedFrame = usePictureMarksStore(s => s.byProject[project.id]?.marks.length ? s.byProject[project.id] : undefined);
   const dock = useRef<HTMLDivElement>(null);
   const [dropping, setDropping] = useState(false);
   // The desktop app's drops arrive as paths, routed by where the pointer is: the box takes them over the workspace,
@@ -173,9 +180,9 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
 
   /** Continue the focused thread, start a note at a moment, or start a new request. */
   /** Sends the message, and says whether the files attached to it went with it. An answer to Scarlet's question can't carry any: they wait for the next message. */
-  const send = async (text: string, voiceTranscript?: string, anchor = displayAnchor, skillIds?: string[], files?: TaskAttachment[]): Promise<boolean> => {
+  const send = async (text: string, voiceTranscript?: string, anchor = displayAnchor, skillIds?: string[], files?: TaskAttachment[], drawn?: PictureMarks): Promise<boolean> => {
     const attachments = files?.length ? files : undefined;
-    const carried = attachments && { attachments };
+    const carried = attachments && { attachments, ...(drawn && { pictureMarks: drawn }) };
     if (question) {
       const answer = anchor?.editNumber ? `${[`Edit ${anchor.editNumber}`, anchor.label].filter(Boolean).join(" · ")} — ${text}`
         : anchor ? `At ${anchor.markedRange ? clockRange(anchor.time, anchor.end ?? anchor.time) : clock(anchor.time)}${sourceName ? ` in ${sourceName}` : ""} — ${text}` : text;
@@ -215,10 +222,18 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   };
   /** The files ready to go with a message, once any still being added have landed, and taking them off the line once it's out. */
   const filesFor = async () => {
-    if (!useAttachmentsStore.getState().byProject[project.id]?.length) return { files: undefined, done: () => {} };
+    const frame = usePictureMarksStore.getState().byProject[project.id];
+    const drawing = frame?.marks.length ? frame : undefined;
+    if (!useAttachmentsStore.getState().byProject[project.id]?.length && !drawing) return { files: undefined, drawn: undefined, done: () => {} };
     const ready = await useAttachmentsStore.getState().settled(project.id);
-    return { files: ready.flatMap(a => a.attachment ?? []), done: (carried: boolean) => {
-      if (carried) useAttachmentsStore.getState().sent(project.id, ready.map(a => a.key));
+    const files = ready.flatMap(a => a.attachment ?? []);
+    const drawn = drawing && await sendMarks(project.id, drawing);
+    if (drawn) files.push(drawn.attachment);
+    return { files, drawn: drawn?.marks, done: (carried: boolean) => {
+      if (!carried) return;
+      useAttachmentsStore.getState().sent(project.id, ready.map(a => a.key));
+      // Marks changed while the message went out stay for the next one.
+      if (drawing && usePictureMarksStore.getState().byProject[project.id] === drawing) usePictureMarksStore.getState().clear(project.id);
     } };
   };
 
@@ -243,8 +258,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     setBusy(true);
     try {
       const skillIds = await commandSkillIds(draft);
-      const { files, done } = await filesFor();
-      done(await send(text, undefined, displayAnchor, skillIds, files));
+      const { files, drawn, done } = await filesFor();
+      done(await send(text, undefined, displayAnchor, skillIds, files, drawn));
       clearSentDraft(owner, { agentDraft: draft, agentContext: context });
       if (boxIsFree()) onSent?.();
     } catch (e) {
@@ -385,7 +400,12 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
         {modelPicker && <div className="composer-model"><AgentChip threadInput={thread ? question ? "answer" : "reply" : undefined} /></div>}
       </div>
       {tray}
-      {attached.length > 0 && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }} />}
+      {(attached.length > 0 || markedFrame) && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }}
+        marked={markedFrame} onOpenMarked={frame => {
+          player.pause();
+          player.seek(frame.time, true);
+          if (usePictureMarksStore.getState().marking !== project.id) toggleMarking(project.id, frame);
+        }} onRemoveMarked={() => { usePictureMarksStore.getState().clear(project.id); inputRef.current?.focus(); }} />}
       {/* Esc leaves a queued request's words as they were, unless the skill list took it first. */}
       {/* While an input method composes, Esc is its own: it puts away its candidates, and the words stay in the box. */}
       {/* Backspace in an empty box takes the tag off, as its × does, and ⌘Z puts it back. A held Backspace that just emptied the box doesn't. */}
@@ -477,8 +497,22 @@ const NO_FILES: PendingAttachment[] = [];
  * read: a file mark, the name, and × to take it off. A file still on its way into the project is dim and says so; one
  * that couldn't be added says why.
  */
-function AttachedFiles({ files, onRemove }: { files: readonly PendingAttachment[]; onRemove(key: string): void }) {
+function AttachedFiles({ files, onRemove, marked, onOpenMarked, onRemoveMarked }: { files: readonly PendingAttachment[]; onRemove(key: string): void;
+  marked?: MarkedFrame; onOpenMarked(frame: MarkedFrame): void; onRemoveMarked(): void }) {
+  const markedName = marked && `Marked frame ${clock(marked.time)}`;
   return <div className="composer-files" role="group" aria-label="Files attached to your message">
+    {/* The frame the editor drew on: its picture with the marks, a press on it goes back there to mark more. */}
+    {marked && <div className="composer-file is-marked-frame" title={`${markedName} · ${marked.marks.length === 1 ? "1 mark" : `${marked.marks.length} marks`}`}>
+      <button type="button" className="composer-marked-frame" onClick={() => onOpenMarked(marked)} aria-label={`${markedName}, mark it again`}>
+        <span className="composer-marked-picture" aria-hidden="true">
+          {marked.picture && <img src={marked.picture} alt="" />}
+          <MarksDrawing marks={marked.marks} />
+        </span>
+        <span className="composer-file-name">{markedName}</span>
+        {marked.marks.length > 1 && <span className="composer-file-state">{marked.marks.length} marks</span>}
+      </button>
+      <button type="button" className="composer-file-remove" aria-label={`Remove ${markedName}`} title="Remove" onClick={onRemoveMarked}><Icon name="x" size={11} /></button>
+    </div>}
     {files.map(file => <div key={file.key} className={`composer-file is-${file.state}`} title={file.error ? `${file.name}: ${file.error}` : file.name}>
       <span className="composer-file-icon"><Icon name="file" size={12} /></span>
       <span className="composer-file-name">{file.name}</span>
@@ -487,4 +521,18 @@ function AttachedFiles({ files, onRemove }: { files: readonly PendingAttachment[
       <button type="button" className="composer-file-remove" aria-label={`Remove ${file.name}`} title="Remove" onClick={() => onRemove(file.key)}><Icon name="x" size={11} /></button>
     </div>)}
   </div>;
+}
+
+/**
+ * The marked frame on its way out with a message: its picture with the marks on it saved as one of the message's files,
+ * and the marks themselves, so the model has both what the editor drew and where. A frame the engine can't give
+ * stops the message, which says why and stays in the box.
+ */
+async function sendMarks(projectId: string, frame: MarkedFrame): Promise<{ attachment: TaskAttachment; marks: PictureMarks }> {
+  const where = { time: frame.time, ...(frame.version && { version: frame.version }), ...(frame.mediaId && { mediaId: frame.mediaId }), marks: frame.marks };
+  if (!frame.picture) throw new Error("The marked frame has no picture to send. Mark it again.");
+  const picture = await markedFramePicture(frame.picture, frame.marks);
+  const { attachment } = await api.uploadAttachment(projectId, new File([picture], `Marked frame ${clock(frame.time).replace(/:/g, ".")}.png`, { type: "image/png" }));
+  rememberMarkedFrame(attachment.id, picture);
+  return { attachment, marks: { attachmentId: attachment.id, ...where } };
 }

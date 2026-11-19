@@ -398,6 +398,30 @@ export const AgentEffort = AgentOptionId;
 export const MarkedRange = z.object({ version: Id.optional(), mediaId: Id.optional(), start: Seconds, end: Seconds });
 export type MarkedRange = z.infer<typeof MarkedRange>;
 
+/** A point on the picture, as fractions of the frame's width and height from its top left. */
+const FramePoint = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);
+export const PictureMarkKind = z.enum(["draw", "box", "point"]);
+export type PictureMarkKind = z.infer<typeof PictureMarkKind>;
+/** A mark the editor drew on the picture: a freehand line, a box or a point, in fractions of the frame. */
+export const PictureMark = z.object({
+  kind: PictureMarkKind,
+  /** The stretch of the frame it covers. A point's is its spot. */
+  box: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), w: z.number().min(0).max(1), h: z.number().min(0).max(1) }),
+  /** A freehand line's path, thinned. */
+  points: z.array(FramePoint).max(200).optional(),
+});
+export type PictureMark = z.infer<typeof PictureMark>;
+/** Marks the editor drew on one frame for a request, and the picture of that frame with them drawn on it. */
+export const PictureMarks = z.object({
+  /** The picture of the frame with the marks on it, an attachment of the same request. */
+  attachmentId: Id,
+  time: Seconds,
+  version: Id.optional(),
+  mediaId: Id.optional(),
+  marks: z.array(PictureMark).min(1).max(20),
+});
+export type PictureMarks = z.infer<typeof PictureMarks>;
+
 export const ModelTuning = z.object({
   effort: AgentEffort.optional(),
   serviceTier: AgentOptionId.optional(),
@@ -784,6 +808,8 @@ export const Task = z.object({
       message: z.string().optional(),
       /** Files the editor attached to this message. The engine gives the agent their paths. */
       attachments: z.array(TaskAttachment).max(20).optional(),
+      /** Marks the editor drew on the picture for this message. Their picture is one of its attachments. */
+      pictureMarks: PictureMarks.optional(),
       /** What such a request asked of the agent, without the thread's history. Its name alone doesn't say which edit, so the thread's later requests are told this. */
       asked: z.string().optional(),
       /**
