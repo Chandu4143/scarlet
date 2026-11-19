@@ -214,16 +214,16 @@ it("says on hover that editing can go on while videos cache, and only then", asy
   const card = () => container.querySelector(".media-hover-card")!.textContent;
   vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "caching", progress: 0.4 }] });
   await show([video("cam")]);
-  expect(card()).toContain("You can keep editing meanwhile.");
+  expect(card()).toContain("You can edit during caching.");
   // A pause holds the cache: the hover says so, and nothing is under way to edit beside.
   await show([video("cam")], [], vi.fn(), true);
-  expect(card()).not.toContain("editing");
+  expect(card()).not.toContain("You can edit");
   // Once the video is cached there is nothing to wait for.
   vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "ready" }] });
   await show([video("cam")]);
   await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { cam: 1 } } })));
   await act(async () => {});
-  expect(card()).not.toContain("editing");
+  expect(card()).not.toContain("You can edit");
 });
 
 it("counts a single video as one video, and says how many files are being added", async () => {
