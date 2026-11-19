@@ -108,7 +108,7 @@ export const MediaAsset = z.object({
   graphic: z.object({
     /** The page, relative to the project's folder. Files it links to sit beside it. */
     source: z.string(),
-    /** The saved template it was filled from, and with what. */
+    /** Earlier builds filled graphics from saved templates. Kept so those projects still open. */
     templateId: Id.optional(),
     fields: z.record(z.string()).optional(),
   }).optional(),
@@ -189,7 +189,7 @@ export const Transition = z.object({
   direction: TransitionDirection.default("left"),
   /** dip: the colour it passes through (default black). */
   color: RenderColor.optional(),
-  /** The saved template it came from, by the name the editor types after $ ("swipe"). */
+  /** Earlier builds named the saved template a transition came from. Kept so those timelines still open. */
   template: z.string().max(64).optional(),
 });
 export type Transition = z.infer<typeof Transition>;

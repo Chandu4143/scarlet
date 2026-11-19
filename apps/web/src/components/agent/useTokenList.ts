@@ -1,11 +1,11 @@
 import { useState, type KeyboardEvent, type RefObject } from "react";
 import { flushSync } from "react-dom";
 
-/** Where a `$template` or `/skill` being typed sits in the text. */
+/** Where a `/skill` being typed sits in the text. */
 export type TypedToken = { start: number; end: number };
 
 /**
- * The list that opens at a `$` (or `/`) as the editor types, shared by the message box and a skill's instructions:
+ * The list that opens at a `/` as the editor types in the message box:
  * where the caret is, whether the list was put away, which row is lit ("create" for the action after the rows), and
  * putting a row's name in place of what was typed.
  */
