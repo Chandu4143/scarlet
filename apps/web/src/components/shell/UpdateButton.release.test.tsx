@@ -37,7 +37,7 @@ it("shows a release downloading by how much of it is here, then restarts into it
     await poll();
     const button = container.querySelector("button")!;
     expect(button.textContent).toBe("Restart to update");
-    expect(hint()).toEqual(["Version 0.2.0 is ready", on, "Restarting installs it and brings you back here."]);
+    expect(hint()).toEqual(["Version 0.2.0 is ready", on, "Restarting installs it and brings you back here. An edit Scarlet is working on picks up where it left off."]);
     await act(async () => button.click());
     expect(restart).toHaveBeenCalledWith("0.2.0");
   } finally {

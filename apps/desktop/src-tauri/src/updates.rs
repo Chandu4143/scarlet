@@ -259,7 +259,7 @@ pub async fn update_changelog(app: AppHandle, revision: String) -> Result<String
 #[tauri::command]
 pub async fn restart_for_update(app: AppHandle, revision: String) -> Result<(), String> {
     if app.try_state::<Source>().is_some_and(|source| *source == Source::Release) {
-        if !crate::quit::confirm_if_busy(&app).await {
+        if !crate::quit::confirm_if_busy(&app, crate::quit::Leaving::Restart).await {
             return Err("Update postponed.".into());
         }
         return tauri::async_runtime::spawn_blocking(move || crate::release_updates::restart(&app, &revision)).await

@@ -115,7 +115,7 @@ export function UpdateButton() {
     </button>
     {error ? <span role="alert" className="update-button-error">{error}</span>
       : ready && <UpdateHint id={hint} revision={ready} title={release ? <>Version {ready} is ready</> : <>Build {build(ready)} is ready</>}>
-        <span>Restarting installs it and brings you back here.</span>
+        <span>Restarting installs it and brings you back here. An edit Scarlet is working on picks up where it left off.</span>
       </UpdateHint>}
   </aside>;
   if (!building) return null;
