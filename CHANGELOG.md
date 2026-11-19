@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 19, 2026
+
+- The talking-head skill trims pauses the way a published cut does: a pause of about six tenths of a second or more comes out, shorter ones and beats held on purpose stay.
+
 ## November 18, 2026
 
 - Pause, Resume and Stop are small icons together at the right of the request Scarlet is working on, named as soon as you hover them, and the time or cut your message is about shows on the line just above the message box.
