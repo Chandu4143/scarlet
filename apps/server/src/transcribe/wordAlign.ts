@@ -256,6 +256,12 @@ export function measureRecordingWords(ctx: { paths: { root: string } }, mediaId:
   return audioLane(ctx).run({ mediaId, kind: "page", asked: true }, signal, () => recordingAligner(ctx).measure(source, ranges, signal));
 }
 
+/** Fill missing windows of a recording's emissions, in the turn of the audio lane `work` holds, or at once without one. */
+export function measureInTurn(ctx: { paths: { root: string } }, source: EmissionSource, ranges: TimeRange[], signal: AbortSignal, work?: AudioWork) {
+  const measure = () => recordingAligner(ctx).measure(source, ranges, signal);
+  return work ? audioLane(ctx).run(work, signal, measure) : measure();
+}
+
 /**
  * Align `segments` (Whisper or cloud ASR output, times relative to `wav`) to the audio in `wav`.
  * Returns new segments with the same text. Unsupported languages keep their original times. Throws when the

@@ -22,8 +22,8 @@ import { appendTaskEvent, editsDialogue } from "./tasks.js";
 import { AnalysisCache } from "./analysisCache.js";
 import { askFor, audioLane, whisperLane, type AudioWork } from "./audioWork.js";
 import { emissionStore, emissionStorePaths, recordingWav } from "./recordingAudio.js";
+import { VERBATIM_PROMPT as verbatim } from "../transcribe/saidWords.js";
 
-const verbatim = "Um, well, uh, I think, I think we should go ahead. Hmm. Yeah.";
 
 function onSourceClock(segments: DialogueDetections["segments"], from: number, to: number) {
   const at = (s: number) => Math.min(to, from + Math.max(0, s));
