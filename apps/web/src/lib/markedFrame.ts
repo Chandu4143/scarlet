@@ -19,7 +19,7 @@ export async function markedFramePicture(url: string, marks: readonly PictureMar
   g.drawImage(picture, 0, 0);
   picture.close();
   const { width: w, height: h } = canvas;
-  const line = Math.max(3, Math.round(Math.max(w, h) / 320));
+  const line = Math.max(1.5, Math.max(w, h) / 320);
   g.lineCap = "round";
   g.lineJoin = "round";
   g.shadowColor = "rgb(0 0 0 / 70%)";

@@ -106,7 +106,8 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
       onPointerDown={marking ? e => {
         if (e.button !== 0) return;
         e.preventDefault();
-        e.currentTarget.setPointerCapture(e.pointerId);
+        // The line follows the pointer off the picture, and ends where it is let go.
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* a pointer already gone */ }
         const start = at(e);
         drawing.current = { start, points: [start], id: e.pointerId };
         setLive(shape(start, [start]));
