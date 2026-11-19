@@ -235,7 +235,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       return;
     }
     const text = draft.trim();
-    if (!text || text === "/" || busy || speech.busy) return;
+    if (!text || text === "/" || onlyTime || busy || speech.busy) return;
     // Nothing can take the message. Enter says why under the box, where it used to do nothing.
     if (unavailable) return setRefused(true);
     setError("");
@@ -318,11 +318,14 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const duration = inputClock?.duration ?? 0;
   const times = useMemo(() => messageTimestamps(value, duration), [value, duration]);
   const firstTime = times[0]?.time;
+  // A time alone, as a pause writes it, says where but not what: there is nothing to send until words follow it.
+  const onlyTime = !rewording && times.length === 1 && value.trim() === times[0]!.text;
   useLayoutEffect(() => {
     if (rewording || replying || !aimsByText) return;
     if (typedPoint && !sameClock && messageTimestamps(value, Infinity).some(t => t.time === typedPoint.time)) return;
     if (inputClock && firstTime !== undefined) {
-      if (sameClock && firstTime === typedPoint?.time) return;
+      // A clock in whole seconds covers the moment it names to the frame, such as the one a pause wrote in.
+      if (sameClock && typedPoint && (firstTime === typedPoint.time || (!times[0]!.text.includes(".") && Math.floor(typedPoint.time) === firstTime))) return;
       setContext({ ...editTargetAt(firstTime, inputClock.version, inputClock.timeline, inputClock.mediaId), fromMessage: true });
     } else if (typedPoint) setContext(null);
   }, [value, firstTime, inputClock, typedPoint, sameClock, rewording, replying, aimsByText, setContext]);
@@ -342,8 +345,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     inputRef.current?.focus();
   };
   const aimItems: AimItem[] = [
-    ...placeTag ? [{ key: `target:${placeTag}`, name: placeTag,
-      displayName: placeTag.replace(/^(?:Cut|Edit) at /, ""),
+    ...placeTag ? [{ key: `target:${placeTag}`, name: targetIsPoint ? placeTag.replace(/^At /, "") : placeTag,
+      displayName: placeTag.replace(/^(?:(?:Cut|Edit) at|At) /, ""),
       clearLabel: targetIsPoint ? `Take “${placeTag}” off: the message is about the whole video` : `Start a new edit instead of ${tagAct!.charAt(0).toLowerCase()}${tagAct!.slice(1)}`,
       onClear: takeOffTarget }] : [],
     ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: `Range ${markedWords}`,
@@ -431,7 +434,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           }} onRecording={setRecording} onError={setError} followHold disabled={unavailable || busy || speech.busy} disabledReason={unavailable ? unavailableReason : undefined} label="Talk to Scarlet" />
           {(busy || speech.busy) && <Spinner className="size-3.5 shrink-0" />}
           {/* Shown once there's something to send (Enter sends too). Stopping an edit is on its card, where its progress is. */}
-          {value.trim() && <button type="button" className={rewording ? "btn-primary composer-send is-save shrink-0" : "btn-primary composer-send shrink-0"} data-log-control={rewording ? "save-queued-request" : "send-request"} aria-label={saveLabel} title={saveLabel}
+          {value.trim() && !onlyTime && <button type="button" className={rewording ? "btn-primary composer-send is-save shrink-0" : "btn-primary composer-send shrink-0"} data-log-control={rewording ? "save-queued-request" : "send-request"} aria-label={saveLabel} title={saveLabel}
             disabled={busy || speech.busy || (!rewording && (draft.trim() === "/" || unavailable))} onClick={() => void submitText()}>
             <Icon name={rewording ? "check" : "arrow"} size={15} />
           </button>}

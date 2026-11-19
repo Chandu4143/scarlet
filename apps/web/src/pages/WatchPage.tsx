@@ -238,7 +238,7 @@ interface PreviewProps {
     /** A click inside the shaded passage, when the playing side steps over it. */
     onBand?(time: number): void;
     /** Timeline navigation offers the point to the composer. N attaches it explicitly. */
-    onPick?(point: AgentContext, how: "seek" | "n"): void;
+    onPick?(point: AgentContext, how: "seek" | "n" | "pause"): void;
     /** A stretch marked on the timeline's ruler for the message being written, or none once it is taken off there. */
     onRange?(range: MarkedRange | undefined, byKey?: boolean): void;
     /** The chosen edit is about to play on another version: don't start its passage on this one meanwhile. */
@@ -510,7 +510,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   useLayoutEffect(() => { setSelectedTime(undefined); }, [cacheVersion, source?.id]);
   const selectedFrameUrl = useMemo(() => selectedTime === undefined ? undefined
     : cutFrameUrl(current.project, displayedTimeline, selectedTime, true, true), [current.project, displayedTimeline, selectedTime]);
-  const selectTime = (time: number, how: "seek" | "n" = "seek") => {
+  const selectTime = (time: number, how: "seek" | "n" | "pause" = "seek") => {
     const at = Math.min(time, lastFrame);
     if (!source) setSelectedTime(at);
     // The point is on the timeline the player is on, which is the one before while the edit's new timeline is read.
@@ -675,6 +675,12 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       useUiStore.getState().focusComposer();
     }
   });
+  // A pause the editor makes writes its time into an empty message box, as if they had typed it.
+  const pickOnPause = useRef(() => {});
+  pickOnPause.current = () => {
+    if (simple.onPick && active && playable && duration > 0) selectTime(usePlayerStore.getState().time, "pause");
+  };
+  useEffect(() => player.onEditorPause(() => pickOnPause.current()), []);
   const preparing = current.media.find(isPreparingMedia);
 
   const stage = useRef<HTMLElement>(null);

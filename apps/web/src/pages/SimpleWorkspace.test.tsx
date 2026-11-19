@@ -839,9 +839,10 @@ it("aims a new edit at a pick on Before and After once the editor has taken the 
   expect([sideShown(), playhead(), pointTag()]).toEqual(["Before", 7.5, ["At 0:07", true]]);
   await click(compareButton(editPanel()!));
   await act(async () => {});
+  // Space pauses After there, which writes the time into the box; the skip then moves the time written in.
   await press(" ");
   await skipKey("ArrowRight", true);
-  expect([sideShown(), playhead(), pointTag()]).toEqual(["After", 3, ["At 0:03", true]]);
+  expect([sideShown(), playhead(), pointTag(), useUiStore.getState().agentDraft]).toEqual(["After", 3, [undefined, false], "0:03 "]);
 });
 
 it("goes to After at the point picked while Before is still opening, since there is no clip to move", async () => {
@@ -8723,7 +8724,7 @@ it("aims a new edit at the latest manual seek at once, with no second press", as
   const slider = container.querySelector<HTMLElement>(".timeline-slider")!;
   await act(async () => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
   expect(pointTag()).toEqual(["At 0:10", true]);
-  // Playback lets go of an empty box's moment, and a pause picks none of its own.
+  // Playback lets go of an empty box's moment, and a pause the app makes picks none of its own.
   await act(async () => usePlayerStore.setState({ playing: true }));
   expect([boxTag(), useUiStore.getState().agentContext]).toEqual([undefined, null]);
   await act(async () => usePlayerStore.setState({ playing: false, time: 14 }));
@@ -8751,6 +8752,42 @@ it("aims a new edit at the latest manual seek at once, with no second press", as
   await press("ArrowLeft");
   expect(boxTag()).toBeUndefined();
   expect(useUiStore.getState().agentContext).toBe("whole");
+});
+
+it("writes the time the editor pauses on into an empty box, as if they had typed it", async () => {
+  idle();
+  await show();
+  // The picture is playing at 0:07.
+  let playing = true;
+  vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockImplementation(() => !playing);
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => { playing = false; });
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => { playing = true; });
+  const box = () => [useUiStore.getState().agentDraft, boxTag()];
+  await act(async () => usePlayerStore.setState({ playing: true, time: 7 }));
+  expect([...box(), useUiStore.getState().agentContext]).toEqual(["", undefined, null]);
+  // Space pauses it, and the box starts with the time, with no tag.
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: false }));
+  expect(box()).toEqual(["0:07 ", undefined]);
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 7, fromMessage: true });
+  // Playing on takes it out while it's all the box holds, and the next pause writes the new time.
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: true, time: 11 }));
+  expect([...box(), useUiStore.getState().agentContext]).toEqual(["", undefined, null]);
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: false }));
+  expect(box()).toEqual(["0:11 ", undefined]);
+  // A seek moves it while the box holds only the time.
+  await press("ArrowLeft");
+  expect(box()).toEqual(["0:06 ", undefined]);
+  // Words written after it are the editor's: playing on and pausing again leave the message as it is.
+  await act(async () => useUiStore.getState().setAgentDraft("0:06 zoom in here"));
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: true, time: 18 }));
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: false }));
+  expect(box()).toEqual(["0:06 zoom in here", undefined]);
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 6, fromMessage: true });
 });
 
 it("moves an empty box's point to the next manual seek, and releases it on playback", async () => {

@@ -1207,8 +1207,8 @@ it("saves a queued request's new words with the skills their /commands name, as 
 it("names the moment beside the draft and clears it for a whole-video request", async () => {
   const onClearTarget = vi.fn();
   await show({ targetTag: "At 18:28", targetIsPoint: true, onClearTarget });
-  expect(aimName()?.textContent).toBe("At 18:28");
-  expect(aimName()?.title).toBe("About At 18:28");
+  expect(aimName()?.textContent).toBe("18:28");
+  expect(aimName()?.title).toBe("About 18:28");
   expect(aimButton()).toBeNull();
   await act(async () => aimClear("Take “At 18:28” off: the message is about the whole video")!.click());
   expect(onClearTarget).toHaveBeenCalledTimes(1);
@@ -1701,4 +1701,31 @@ it("updates the note target when a timestamp is edited and recognizes an hour cl
   await type("Look here a little later");
   expect(useUiStore.getState().agentContext).toBeNull();
   expect(container.querySelector(".composer-timestamp")).toBeNull();
+});
+
+it("keeps the frame a pause picked when the box starts with its time in whole seconds", async () => {
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek: vi.fn() };
+  await act(async () => {
+    useUiStore.getState().setAgentDraft("0:04 ");
+    useUiStore.getState().setAgentContext({ time: 4.162, version: project.head!, clipIds: [], fromMessage: true });
+  });
+  await show({ messageClock });
+  expect(container.querySelector("textarea")!.value).toBe("0:04 ");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 4.162, fromMessage: true });
+  // A different time typed in its place aims the message there, as any typed time does.
+  await type("0:09 zoom in");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 9, fromMessage: true });
+});
+
+it("has nothing to send while the box holds only a time", async () => {
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek: vi.fn() };
+  await show({ messageClock });
+  await type("0:04 ");
+  expect(container.querySelector(".composer-send")).toBeNull();
+  // Enter sends nothing either.
+  await act(async () => { container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  expect(useProjectStore.getState().createNote).not.toHaveBeenCalled();
+  expect(container.querySelector("textarea")!.value).toBe("0:04 ");
+  await type("0:04 zoom in");
+  expect(container.querySelector(".composer-send")).not.toBeNull();
 });

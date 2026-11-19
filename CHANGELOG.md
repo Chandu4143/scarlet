@@ -6,6 +6,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- Pausing the video now writes its time at the start of the message box, so your next request is about the moment you stopped on.
+- The time a request is about shows alone in the message box, without "At".
+- Times in the message box are a little greyer instead of underlined.
 - The New project window is shorter: just the name and the files, with a note only when audio would leave your computer.
 - A new B-roll skill writes down what should be on screen at each spot first, so you choose what gets found or made before Scarlet spends time on it.
 - Transcripts now keep the words you stumbled over and said again, like "the Coco, the Coca-Cola logo", so Scarlet can cut the false start instead of mistaking it for a pause.

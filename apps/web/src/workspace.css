@@ -154,13 +154,14 @@
 .composer-message > * { display: block; padding: 6px 0; font: 14px/20px var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer-message > span { visibility: hidden; }
 .composer-message > textarea { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: 0; outline: none; background: transparent; overflow-y: auto; }
-/* The textarea owns editing and selection. Only the underlined timestamps in its mirror take clicks. */
+/* The textarea owns editing and selection. Only the timestamps in its mirror take clicks. Each is drawn a little greyer
+   over the textarea's own letters, on the box's colour so those don't show through. */
 .composer-timestamp-overlay { position: absolute; inset: 0; overflow: hidden; color: transparent; pointer-events: none; }
 .composer-message:has(.composer-timestamp-overlay) > * { scrollbar-gutter: stable; }
 .composer-message:has(.composer-timestamp-overlay) > span { overflow: hidden; }
-.composer-timestamp { display: inline; padding: 0; border: 0; background: transparent; font: inherit; color: transparent;
-  text-decoration: underline; text-decoration-color: var(--color-muted); text-underline-offset: 2px; pointer-events: auto; cursor: pointer; }
-.composer-timestamp:hover, .composer-timestamp:focus-visible { text-decoration-color: var(--color-fg); }
+.composer-timestamp { display: inline; padding: 0; border: 0; border-radius: 0; background: var(--color-bg); font: inherit; color: var(--color-muted);
+  pointer-events: auto; cursor: pointer; }
+.composer-timestamp:hover, .composer-timestamp:focus-visible { color: var(--color-fg); }
 .composer-send { width: 30px; padding: 0; border-radius: 50%; }
 .composer-send svg { transform: rotate(-90deg); }
 @media (max-width: 767px) {

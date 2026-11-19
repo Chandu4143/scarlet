@@ -3563,17 +3563,39 @@ export function SimpleWorkspace() {
       document.removeEventListener("pointerup", release, true);
     };
   }, [hasMarkedRange]);
+  // The time a pause wrote into the box, while it is all the box holds.
+  const pausedTime = useRef<string | undefined>(undefined);
+  useEffect(() => usePlayerStore.subscribe((now, was) => {
+    if (!now.playing || was.playing || !pausedTime.current) return;
+    const box = useUiStore.getState();
+    if (box.agentDraft === pausedTime.current) {
+      box.setAgentDraft("");
+      box.setAgentContext(null);
+    }
+    pausedTime.current = undefined;
+  }), []);
   // A press, a scrub or a skip on the timeline, or N, aims a new edit at that moment at once: the box shows it as its
   // edit-point icon. A message aimed at a cut or an edit, or one being written, stays where it was. Words chosen in the
   // transcript or a stretch marked on the ruler stay through a seek; only N takes their place.
-  const pickPoint = (picked: AgentContext, how: "seek" | "n") => {
+  // A pause writes its time into an empty box as the start of the message ("0:04 "), as if the editor had typed it.
+  // While the box holds only that, the next pause or seek moves it, and playing on takes it out again.
+  const pickPoint = (picked: AgentContext, how: "seek" | "n" | "pause") => {
     const box = useUiStore.getState();
     if (replyTo || rewordingItem || box.speaking) return;
+    const onlyPaused = !!pausedTime.current && box.agentDraft === pausedTime.current;
+    const written = onlyPaused ? "" : box.agentDraft.trim();
     const target = box.agentContext;
-    if (target && target !== "whole" && (target.changeId || box.agentDraft.trim())) return;
+    if (target && target !== "whole" && (target.changeId || written)) return;
     // A message being written about the whole video, aimed or not yet, stays so through a seek: the line above the
     // box offers to bring it along.
-    if (how === "seek" && (!target || target === "whole" ? box.agentDraft.trim() : !pointOf(target))) return;
+    if (how !== "n" && (!target || target === "whole" ? written : !pointOf(target))) return;
+    if (how === "pause" || onlyPaused) {
+      const text = `${clockLabel(picked.time)} `;
+      pausedTime.current = text;
+      box.setAgentDraft(text);
+      box.setAgentContext({ ...picked, fromMessage: true });
+      return;
+    }
     playheadPoints.add(picked);
     box.setAgentContext(picked);
   };
