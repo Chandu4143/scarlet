@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- An edit's card has a small × after Keep again: Reject edit has Scarlet put that edit back and moves on to the next one.
 - Pausing with a cut or an edit open shows the time you stopped on in the message box. The message is still about that cut or edit, and Scarlet knows which moment you mean.
 - A click on the edge of the chat that doesn't drag it no longer fixes the chat's width, so it keeps following the window.
 - Two-finger scroll and zoom on the timeline keep working after a pinch that ended while you were dragging.

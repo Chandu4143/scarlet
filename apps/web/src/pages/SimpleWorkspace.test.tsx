@@ -450,13 +450,13 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   expect(compareButton(panel).querySelector("svg")).not.toBeNull();
   expect(panel.querySelector(".edit-card-count")).toBeNull();
   // The conversation stays as it was: every request is still there, and nothing sits over the message box, which is
-  // tagged with the edit it now revises. Its decisions are Revise and Keep, with no Undo edit: "undo this" in the box
-  // asks for that. This edit isn't a cut, so it has no transcript link.
+  // tagged with the edit it now revises. Its decisions are Revise and Keep, then a small × that rejects it, named on
+  // hover. This edit isn't a cut, so it has no transcript link.
   expect(turns().some(t => t.hidden)).toBe(false);
   expect(container.querySelector(".simple-open")).toBeNull();
   expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
-    .toEqual([["Revise", "R", "Revise (R)"], ["Keep", "K", "Keep (K)"]]);
-  expect(panel.querySelector(".edit-card-undo")).toBeNull();
+    .toEqual([["Revise", "R", "Revise (R)"], ["Keep", "K", "Keep (K)"], ["", null, "Reject edit"]]);
+  expect(panel.querySelector(".edit-card-acts > .review-actions + .edit-card-reject")?.getAttribute("aria-label")).toBe("Reject edit");
   expect(panel.querySelector(".thread-transcript")).toBeNull();
   expect(boxTag()).toBe("Edit at 0:00");
   // No Close button: Esc and the open row close it.
@@ -1971,6 +1971,71 @@ it("leaves the message box where it is now aimed when an earlier message lands",
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_ready", cutIndex: 1 });
 });
 
+/** Reject edit on an applied edit's card: a small × after Keep, named on hover. */
+const rejectIcon = () => openHead()!.querySelector<HTMLButtonElement>('.edit-card-acts > .edit-card-reject[aria-label="Reject edit"]')!;
+
+it("rejects one applied edit with the × after Keep, asking Scarlet to put back just that edit, and goes on as Keep does", async () => {
+  appliedEdits();
+  let sent!: () => void;
+  const createTask = vi.fn(() => new Promise(resolve => { sent = () => resolve({ id: "task_reject" }); }));
+  useProjectStore.setState({ createTask: createTask as never });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  expect(openTitle()).toBe("captions");
+  expect([rejectIcon().textContent, rejectIcon().title]).toEqual(["", "Reject edit"]);
+  await click(rejectIcon());
+  // On its way: the × says so, and another press sends nothing more.
+  expect([rejectIcon().disabled, rejectIcon().title]).toEqual([true, "Rejecting…"]);
+  await click(rejectIcon());
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    kind: "edit", agent: "claude", model: "opus",
+    instruction: "The editor rejected edit 2, “captions”. Put back exactly what it changed and leave every other edit as it is.",
+    // The editor's own words for it are "Reject edit": the instruction is what Scarlet is told.
+    context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, editNumber: 2, threadId: threadWith("chg_approved_2").id, message: "Reject edit" }),
+  }));
+  await act(async () => { sent(); });
+  expect(vi.mocked(api.recordEditReview).mock.calls).toEqual([[PRJ, { changeId: "chg_approved_2", spot: 1, decision: "undo" }]]);
+  // It goes on as Keep would: to the next edit that still waits on the editor.
+  expect(openTitle()).toBe("wrap");
+  expect(localStorage.getItem(`scarlet.kept-edits.v1/${PRJ}/${threadWith("chg_approved_2").id}`) ?? "").not.toContain("chg_approved_2/1");
+});
+
+it("leaves the edit the editor stepped to open when a rejection sent from the edit before lands", async () => {
+  appliedEdits();
+  const landing: (() => void)[] = [];
+  const createTask = vi.fn(() => new Promise(resolve => { landing.push(() => resolve({ id: "task_reject" })); }));
+  useProjectStore.setState({ createTask: createTask as never });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[0]!);
+  await act(async () => {});
+  expect(openTitle()).toBe("music bed");
+  await click(rejectIcon());
+  // ↓ goes on to the next edit while the request is on its way. That edit's × is its own: ready, not "Rejecting…".
+  await press("ArrowDown");
+  expect(openTitle()).toBe("captions");
+  expect([rejectIcon().disabled, rejectIcon().title]).toEqual([false, "Reject edit"]);
+  await act(async () => { landing[0]!(); });
+  expect(openTitle()).toBe("captions");
+});
+
+it("says on the edit's card why Reject edit couldn't be sent, and leaves the edit open", async () => {
+  appliedEdits();
+  const createTask = vi.fn().mockRejectedValueOnce(new Error("Scarlet can’t take requests right now.")).mockResolvedValue({ id: "task_reject" });
+  useProjectStore.setState({ createTask });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  await click(rejectIcon());
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(openTitle()).toBe("captions");
+  expect(buttonIn(editPanel()!, "Keep")).not.toBeUndefined();
+  expect(openHead()!.querySelector('.edit-card-acts .simple-error[role="alert"]')?.textContent).toBe("Scarlet can’t take requests right now.");
+  expect([rejectIcon().disabled, rejectIcon().title]).toEqual([false, "Reject edit"]);
+  expect(api.recordEditReview).not.toHaveBeenCalled();
+});
+
 it("saves a graphic from its card as a template, with an icon before Revise and T as its key", async () => {
   appliedEdits();
   // The engine says the second edit laid a graphic over the picture.
@@ -1990,7 +2055,7 @@ it("saves a graphic from its card as a template, with an icon before Revise and 
   // The card names what the edit is, and its small icon, Save as template, comes before Revise and Keep.
   expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("Graphic");
   expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-label"), b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
-    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"]]);
+    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"], ["", "Reject edit", null, "Reject edit"]]);
   // T sends one request however long it is held: about this edit, named "Save as template".
   await press("t");
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", repeat: true, bubbles: true })); });
@@ -2040,8 +2105,8 @@ it("opens a marker Scarlet left for the editor as a to-do: what to add first, no
   const earlier = data.changes.find(c => c.id === "chg_approved_2")!.fromVersion;
   expect(timeline.mock.calls.filter(([, version]) => version === earlier)).toEqual([]);
   expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("To do");
-  // Nothing in the video changed there, so there's no Before to play and no Undo edit.
-  expect(panel.querySelector(".review-compare, .edit-card-before, .edit-card-undo")).toBeNull();
+  // Nothing in the video changed there, so there's no Before to play and nothing to reject.
+  expect(panel.querySelector(".review-compare, .edit-card-before, .edit-card-reject")).toBeNull();
   expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("title")]))
     .toEqual([["Revise", "Revise (R)"], ["Done", "Done (D)"]]);
   await press("u");

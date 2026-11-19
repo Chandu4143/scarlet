@@ -392,6 +392,8 @@
 /* An applied edit's decisions are at the row's end, after any small icon such as Save as template. */
 .edit-card-acts { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
 .edit-card-acts .review-actions { margin-left: 0; }
+/* Reject edit sits after Keep as Skip sits after a call's Approve, the same 6px apart. */
+.edit-card-acts > .edit-card-reject { margin-left: 2px; }
 /* The cut's words open under the card's row and scroll inside it, so a long passage never pushes the timeline away. */
 .edit-card > .thread-passage { max-height: 30vh; overflow-y: auto; }
 /* What an edit that removed nothing did: "Audio", "Zoom". Neutral, since its footage stays; green for footage put back. */
