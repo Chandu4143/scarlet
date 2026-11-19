@@ -545,7 +545,8 @@
 .picture-mark-point { width: 12px; height: 12px; margin: -6px 0 0 -6px; }
 .picture-mark-point:not(:empty) { width: 20px; height: 20px; margin: -10px 0 0 -10px; }
 .picture-mark-number { width: 20px; height: 20px; margin: -10px 0 0 -10px; }
-.picture-mark-tools { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
+.picture-mark-bar { z-index: 4; pointer-events: none; }
+.picture-mark-tools { pointer-events: auto; position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
   background: rgb(11 11 11 / 80%); border: 1px solid rgb(255 255 255 / 12%); color: #bdbab2; backdrop-filter: blur(8px); cursor: default; }
 .picture-mark-tool { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px; background: none; color: inherit; }
 .picture-mark-tool:hover:enabled { color: #f4f1e9; }
@@ -553,8 +554,6 @@
 .picture-mark-tool:disabled { opacity: .35; }
 .picture-mark-tool:focus-visible { outline: 2px solid #f4f1e9; outline-offset: 1px; }
 .picture-mark-sep { width: 1px; height: 16px; margin: 0 3px; background: rgb(255 255 255 / 15%); }
-.picture-mark-note { margin: 0 9px 0 5px; font-size: 12px; color: #9a978f; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.watch-monitor .monitor-controls .btn-icon[aria-pressed="true"] { background: #f4f1e9; color: #141312; }
 
 /* The marked frame on the line of files over the message box: its picture with the marks, then its name. */
 .composer-marked-frame { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }

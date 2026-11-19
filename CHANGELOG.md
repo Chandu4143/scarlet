@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- The drawing tools now stay over the top left of the picture, so a press on one pauses the video and starts marking; the pen beside full screen is gone.
+
 - A dialogue pass leaves your own short pauses in and cuts only the ones that play as dead air, about a second or more, so cuts no longer land one after another.
 - ⌘Z takes back your last Keep, Reject or revision, and pressing it again goes on to the one before. "Undo Keep", "Undo Reject" or "Undo revision" under the timeline says what it will take back.
 - Scarlet now makes a cut between two words you say without a pause, where you'd cut it, instead of setting it aside.
