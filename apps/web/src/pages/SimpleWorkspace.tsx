@@ -41,7 +41,7 @@ import { ExportButton, ExportMenuItem, useExportWarning } from "../components/re
 import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Drawer, Icon, Loading } from "../components/ui/primitives";
 import { api, errorMessage } from "../lib/client";
-import { readTimeline } from "../lib/timelineCache";
+import { readTimeline, readyTimeline } from "../lib/timelineCache";
 import { appLog } from "../lib/appLog";
 import { markedFrameUrl } from "../lib/markedFramePictures";
 import { clock as clockLabel, clockRange, lengthLabel, plural, removedSeconds } from "../lib/format";
@@ -92,6 +92,11 @@ const ts = (x?: string) => Date.parse(x ?? "") || 0;
 const LANDING_SETTLES = 3000;
 /** How long an edit counts as just applied, in ms: its marker can take a moment to load after the change lands. */
 const LANDING_SHOWS = 4000;
+/** How long a rejected edit takes to leave the timeline, in ms: its band fades where it is before the card goes on. */
+const EDIT_LEAVES = 420;
+/** How long the card waits for the video without a rejected edit to list its edits, in ms, before it goes on anyway. */
+const EDIT_LEAVE_WAITS = 2500;
+const prefersReducedMotion = () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 /** ↑ ↓ step between the cuts or edits that are open one at a time. ← → are always the player's: they skip. */
 const stepOf = (key: string): 1 | -1 | undefined => key === "ArrowUp" ? -1 : key === "ArrowDown" ? 1 : undefined;
 
@@ -648,11 +653,12 @@ function PassSummary({ projectId, thread, edits, rejected = noRejected, actions,
       on: listening?.changeId === pass!.change.id && listening.index === c.index, word: undefined, revised: false, rejected: false, fresh: false,
       open: c.state === "revising" ? undefined : () => pass!.openCall(c.index) })),
     // An edit the editor rejected is out of the video. Its row stays where it was in the list of every edit, with a ×
-    // where a kept one has its tick and "Rejected" where it said how much it took: there is nothing left of it to open.
+    // where a kept one has its tick and "Rejected" where it said how much it took. A press shows it again: where it was
+    // on the timeline, with its note, over the video as it plays without it (2026-11-19).
     ...(listed ? rejected : []).map(e => ({ key: editKey(e), at: e.range.start, displayAt: e.range.start, mark: undefined as number | undefined,
       hover: { threadId: thread.id, editKey: editKey(e) }, label: e.label, n: 0, num: undefined as number | undefined, state: "Rejected" as string | undefined,
       value: "Rejected" as string | undefined, word: undefined as string | undefined, revised: false, rejected: true, busy: false, needs: false, sentBack: false, decided: false, version: 0,
-      title: undefined as string | undefined, on: false, open: undefined as (() => void) | undefined, fresh: false })),
+      title: undefined as string | undefined, on: !!showing && (matchesEdit(showing, e) || matchesEdit(e as ThreadEdit, showing)), open: (() => actions.openEdit(thread, e)) as (() => void) | undefined, fresh: false })),
   ].sort((a, b) => a.at - b.at);
   // While the pass waits on the editor, its calls are listed: every one of them, so a call keeps its place once it is
   // decided or sent back, with any edit that asks for a look. N counts only what still waits on the editor.
@@ -710,7 +716,7 @@ function PassSummary({ projectId, thread, edits, rejected = noRejected, actions,
   const hours = filter !== "calls" && shown.some(row => clockLabel(row.displayAt).length > 5);
   const rowList = filter && <ol ref={list} className={filter === "calls" ? "simple-pass-list is-short" : hours ? "simple-pass-list has-hours" : "simple-pass-list"}
     aria-label={filter === "calls" ? "Calls that need you" : filter === "need" ? "Edits that need you" : "Every edit"}>
-    {drawn.map(({ row, members, more, moment, unfolded: open }) => <li key={row.key}><button type="button" className={row.on ? "is-on" : row.rejected ? "is-rejected" : row.decided ? "is-decided" : undefined} aria-current={row.on || undefined}
+    {drawn.map(({ row, members, more, moment, unfolded: open }) => <li key={row.key}><button type="button" className={[row.on && "is-on", row.rejected && "is-rejected", !row.on && !row.rejected && row.decided && "is-decided"].filter(Boolean).join(" ") || undefined} aria-current={row.on || undefined}
       data-log-control="open-pass-item" data-log-label={moment ? "Moment" : "Pass item"} disabled={!row.open} title={row.title || row.label} onClick={letGo(() => row.open?.())}
       aria-label={more ? `${clockLabel(row.displayAt)} ${row.label}, ${more.replace("+ ", "and ")}` : row.rejected ? `${clockLabel(row.displayAt)} ${row.label}, rejected` : undefined}
       onPointerEnter={() => actions.lightMark(row.mark, row.hover)} onPointerLeave={() => actions.lightMark()}>
@@ -1460,12 +1466,13 @@ export function SimpleWorkspace() {
   chooseEdit.current = threadTimeline.choose;
   useEffect(() => {
     if (!focus?.changeId || threadTimeline.threadId !== focus.threadId || threadTimeline.loading) return;
+    // A rejected edit's row opens it too: it is looked for after the edits that are in the video.
     const edit = focus.spot !== undefined
-      ? threadTimeline.edits.find(e => matchesEdit(e, { changeId: focus.changeId!, spot: focus.spot! }))
+      ? [...threadTimeline.edits, ...threadTimeline.rejected].find(e => matchesEdit(e, { changeId: focus.changeId!, spot: focus.spot! }))
       : threadTimeline.edits.find(e => belongsTo(e, { id: focus.changeId } as Change));
     if (edit) { chooseEdit.current(edit, "chat", focus.single); setAimAgain(n => n + 1); }
     setFocus({ threadId: focus.threadId });
-  }, [focus, threadTimeline.edits, threadTimeline.loading, threadTimeline.threadId]);
+  }, [focus, threadTimeline.edits, threadTimeline.rejected, threadTimeline.loading, threadTimeline.threadId]);
 
   // One cut of the pass is being revised. Its other calls stay open; the revision carries them.
   const revision = pass && passRevision(pass, tasks);
@@ -2286,7 +2293,7 @@ export function SimpleWorkspace() {
       setReviewId(undefined);
       setListening(undefined);
       if (thread.id === focus?.threadId && !threadTimeline.loading) {
-        const edit = threadTimeline.edits.find(e => matchesEdit(e, ref));
+        const edit = threadTimeline.edits.find(e => matchesEdit(e, ref)) ?? threadTimeline.rejected.find(e => matchesEdit(e, ref));
         if (edit) { threadTimeline.choose(edit, "chat", single); setAimAgain(n => n + 1); return; }
       }
       reloadFailedMarkers(thread);
@@ -2515,7 +2522,9 @@ export function SimpleWorkspace() {
   const playingNow = usePlayerStore(s => s.playing);
   const heldAfter = useRef<{ key?: string; source?: typeof latestAfter }>(undefined);
   const afterKey = reviewingEdit && editPlaybackKey(reviewingEdit);
-  const afterSource = playingNow && latestAfter && heldAfter.current?.source && heldAfter.current.key === afterKey
+  // A cut the editor just rejected holds it too, for the moment it takes to leave the timeline: the video without it
+  // lands meanwhile, and its card would start on a version it isn't in.
+  const afterSource = (playingNow || threadTimeline.leaving) && latestAfter && heldAfter.current?.source && heldAfter.current.key === afterKey
     ? heldAfter.current.source : latestAfter;
   heldAfter.current = { key: afterKey, source: afterSource };
   const holdingAfter = afterSource !== latestAfter;
@@ -2739,6 +2748,8 @@ export function SimpleWorkspace() {
     // Until the earlier version arrives, a line marks the join in the working cut and says how much came out there.
     : shownEdit?.beforeCut ? focusAround({ start: shownAt!, end: shownAt! }, cutDuration ?? 0,
       `Removed · ${lengthLabel(shownEdit.beforeCut.removed.end - shownEdit.beforeCut.removed.start)}`)
+    // A rejected edit is out of the video: its band is where it was, outlined, over the video as it runs without it.
+    : shownEdit?.rejected ? focusAround(shownEdit.at !== undefined ? { start: shownEdit.at, end: shownEdit.at } : shownEdit.range, cutDuration ?? 0, "Rejected", { tone: "kept" })
     // Any other edit is drawn for what it did: a sound fix or a zoom keeps its footage, so After plays it.
     // A doubt Scarlet left is the passage it asks the editor to look at or hear: amber, as what waits on them is.
     : reviewRange ? focusAround(reviewRange, cutDuration ?? 0, "Check", { tone: "check" })
@@ -2899,6 +2910,12 @@ export function SimpleWorkspace() {
     const among = !!reviewingEdit?.check && !reviewed(reviewingEdit) && !every;
     // A row stands for its first place that waits, else its first, as in the list.
     const beside = delta > 0 ? editsByRow.slice(shownRow + 1) : editsByRow.slice(0, Math.max(0, shownRow)).reverse();
+    // A rejected edit is no row of the list, open again from its row or still leaving the timeline: from it they step
+    // to the edit after or before where it was.
+    if (reviewingEdit && shownRow < 0) {
+      const was = reviewingEdit.at ?? reviewingEdit.range.start, timeOf = (other: ThreadEdit[]) => other[0]!.at ?? other[0]!.range.start;
+      return (delta > 0 ? editsByRow.find(other => timeOf(other) > was) : editsByRow.findLast(other => timeOf(other) < was))?.[0];
+    }
     const row = among ? beside.find(other => other.some(waitingEdit)) : editsByRow[shownRow + delta];
     return row && (row.find(waitingEdit) ?? row[0]);
   }
@@ -3234,25 +3251,90 @@ export function SimpleWorkspace() {
   // An edit sent back for revision has no card until its new version lands: its note and its decisions are about the
   // version on its way out, and its row in the chat says Scarlet is on it. It stays open meanwhile: the message box is
   // still aimed at it, ↑ ↓ step on and Esc closes it.
-  // The engine puts back what it can with no request to Scarlet: the open edit, or every edit of the open moment,
-  // placed on the video as it runs now. A cut says where its join is and what it took out.
+  // One × rejects one edit (2026-11-19: the editor rejected a moment of two pause cuts, meaning one). On a moment's
+  // card that is the edit the card is named for, and the card then stays on what is left of the moment.
+  const rejectTarget = appliedTarget && threadTimeline.selectedAlone;
+  // The engine puts back what it can with no request to Scarlet: the open edit, placed on the video as it runs now. A
+  // cut says where its join is and what it took out.
   const rejectedEdits = useMemo(() => {
     if (!appliedTarget?.version || !threadTimeline.located || !reviewingEdit) return;
-    return (threadTimeline.selectedMoment?.edits ?? [reviewingEdit]).map(e => ({ changeId: e.changeId, spot: e.spot, label: e.label, range: e.range,
+    return [reviewingEdit].map(e => ({ changeId: e.changeId, spot: e.spot, label: e.label, range: e.range,
       ...(e.previous.length > 0 && { revised: true }),
       ...(e.beforeCut && e.at !== undefined && { at: e.at, before: { version: e.beforeCut.version, removed: e.beforeCut.removed } }) }));
-  }, [appliedTarget?.version, threadTimeline.located, threadTimeline.selectedMoment, reviewingEdit]);
+  }, [appliedTarget?.version, threadTimeline.located, reviewingEdit]);
   const editOpen = !!reviewingEdit;
   const openEditKey = reviewingEdit && editKey(reviewingEdit);
   // The edit that's open, for a rejection that lands after the editor stepped on: only the edit it was sent from moves on.
   const openEditNow = useRef(openEditKey);
   openEditNow.current = openEditKey;
+  // An edit the engine put back leaves the timeline before the card goes on (2026-11-19): its band fades where it is,
+  // on the timeline as it was, and only then does the card move to the next edit, in one glide. Going on at once put the
+  // next edit up on the video as it was, then again on the video without the rejected one, and the timeline changed
+  // scale under the editor each time. `then` is where the card goes, decided when the × was pressed: the first of
+  // these edits that is still in the video once the rejected one is out, else the call, else it closes.
+  const [leavingEdit, setLeavingEdit] = useState<{ key: string; version: string; at: number; dot?: TimelineDot;
+    then: { edits: { edit: EditRef; single?: boolean }[]; call?: number } }>();
+  const leavingNow = !!leavingEdit && leavingEdit.key === openEditKey && threadTimeline.leaving;
+  // It goes on once the fade is over and the video without the edit has its list of edits, so the next one opens once.
+  const leftAt = leavingEdit ? leavingEdit.at + (prefersReducedMotion() ? 0 : EDIT_LEAVES) : 0;
+  const [leaveTick, setLeaveTick] = useState(0);
+  const landedAfterLeave = !!leavingEdit && head === leavingEdit.version && threadTimeline.located && !threadTimeline.loading;
+  // A cut plays on the version before it. The next one's is read before the card goes there, so the timeline goes from
+  // this cut to that one in one move, with no moment on the video in between.
+  const thenEdit = useMemo(() => {
+    if (!landedAfterLeave || !leavingEdit) return;
+    for (const { edit: ref, single } of leavingEdit.then.edits) {
+      const edit = threadEdits.find(e => matchesEdit(e, ref));
+      // What is left of a moment opens whole, at the edit it is named for now.
+      if (edit) return { edit: single ? edit : momentLead(edit), single };
+    }
+  }, [landedAfterLeave, leavingEdit, threadEdits, editsByRow]); // eslint-disable-line react-hooks/exhaustive-deps
+  const thenVersion = thenEdit?.edit.beforeCut?.version;
+  const thenRead = !thenVersion || !!readyTimeline(current.id, thenVersion);
+  useEffect(() => {
+    if (!thenVersion || thenRead) return;
+    let live = true;
+    const read = () => { if (live) setLeaveTick(n => n + 1); };
+    readTimeline(current.id, thenVersion).then(read, read);
+    return () => { live = false; };
+  }, [current.id, thenVersion, thenRead]);
+  const goOnAfterLeave = useRef<() => void>(noop);
+  goOnAfterLeave.current = () => {
+    const left = leavingEdit;
+    if (!left) return;
+    setLeavingEdit(undefined);
+    // The editor closed it or went to another edit meanwhile: the rejection wasn't about where they are now.
+    if (!leavingNow) return;
+    const call = left.then.call === undefined ? undefined : allCalls.find(a => a.index === left.then.call);
+    if (thenEdit) actions.playEdit(thenEdit.edit, thenEdit.single);
+    else if (call && pass) actions.listen(pass, call);
+    else closeEdit();
+  };
+  useEffect(() => {
+    if (!leavingEdit) return;
+    const now = Date.now();
+    // The list for the video without it is given a while to arrive, and then the card goes on all the same.
+    const due = landedAfterLeave && thenRead ? leftAt : leavingEdit.at + EDIT_LEAVE_WAITS;
+    if (!leavingNow || now >= due) return goOnAfterLeave.current();
+    const timer = setTimeout(() => setLeaveTick(n => n + 1), due - now + 5);
+    return () => clearTimeout(timer);
+  }, [leavingEdit, leavingNow, landedAfterLeave, thenRead, leftAt, leaveTick]);
+  // Its dot goes with its band: the one it had, where it was, also once the list without it is in.
+  const leavingMarks = leavingNow && leavingEdit?.dot
+    ? [...shownMarks.filter(dot => dot.edit !== leavingEdit.key), { ...leavingEdit.dot, current: true, leaving: true, open: undefined }] : shownMarks;
   const playCheck = () => {
     if (!reviewRange) return;
     player.seek(editPlaybackRange(reviewRange, cutDuration ?? 0).start, true);
     player.play();
   };
-  const editCard = reviewingEdit && shownChange && focusThread && !editSentBack ? <section className="edit-card" role="region" aria-label="Applied edit">
+  // A rejected edit opened from its row shows where it was and says so: nothing of it is left to keep, revise or reject.
+  const rejectedCard = reviewingEdit?.rejected && focusThread ? <section className="edit-card is-rejected" role="region" aria-label="Rejected edit">
+    <div className="edit-card-bar">
+      <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit)} />
+      <span className="edit-card-length is-kind">Rejected</span>
+    </div>
+  </section> : undefined;
+  const editCard = reviewingEdit && !reviewingEdit.rejected && shownChange && focusThread && !editSentBack ? <section className="edit-card" role="region" aria-label="Applied edit">
     {/* Whose footage is playing, and nothing else: the lit icon in the row under it is the way back, and names its key. */}
     {visiting && <div className="edit-card-switched" role="status">
       <span className="edit-card-switched-side">Before</span>
@@ -3267,7 +3349,8 @@ export function SimpleWorkspace() {
       {/* It's on up to two lines, so an edit with a short note is a single line. A clipped note opens on a click. */}
       <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} />
       {/* A moment of a pass's list is its edits together: the pill says how many, and names them on hover. */}
-      {threadTimeline.selectedMoment ? <span className="edit-card-length is-kind" title={threadTimeline.selectedMoment.members.map(e => e.label).join("\n")}>
+      {/* One of them rejected a moment ago, the card is that edit's while it leaves: "2 edits" beside Rejected would say both went. */}
+      {threadTimeline.selectedMoment && !leavingNow ? <span className="edit-card-length is-kind" title={threadTimeline.selectedMoment.members.map(e => e.label).join("\n")}>
         {threadTimeline.selectedMoment.edits.length} edits</span>
         : !beforeCut && shownKind && <span className={reviewingEdit.kind === "restore" ? "edit-card-length is-added" : "edit-card-length is-kind"}>{shownKind}</span>}
       {/* Scarlet asks the editor to look or listen at a part of the video, which the timeline marks. It is a pill like the
@@ -3281,25 +3364,39 @@ export function SimpleWorkspace() {
           shortcutActive={workspaceActive} disabled={!cutKey} toggle={() => chooseCutSide(appliedSide === "after" ? "before" : "after")} />
           : !shownMarker && <span ref={setCompareHost} className="review-compare" />}
       </span>
-      <span className="edit-card-acts">
+      {/* Rejected a moment ago, it has no decisions left: the card says so while the edit leaves the timeline. */}
+      {leavingNow ? <span className="edit-card-acts"><span className="edit-card-length is-kind" role="status">Rejected</span></span>
+      : <span className="edit-card-acts">
         <ReviewActions revise={() => actions.revise(focusThread, shownChange)} approve={keepShown}
           approveLabel={shownMarker ? "Done" : "Keep"} approveKey={shownMarker ? "D" : "K"} />
-        {/* Reject edit is a small × after Keep, as Skip is after a call's Approve: it asks Scarlet to put back just this
-            edit, or the moment that's open, and goes on as Keep does. A spot marked for the editor changed nothing, so
+        {/* Reject edit is a small × after Keep, as Skip is after a call's Approve: it puts back just this edit, also on
+            a moment's card, and goes on as Keep does once the edit has left the timeline. A spot marked for the editor changed nothing, so
             it has none. Each edit has its own: one on its way for the edit before doesn't hold this one's back. */}
-        {appliedTarget && !shownMarker && <RejectEdit key={`reject ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget}
-          edits={rejectedEdits} editsOn={appliedTarget.version} onSent={sent => {
+        {appliedTarget && rejectTarget && !shownMarker && <RejectEdit key={`reject ${openEditKey}`} projectId={current.id} thread={focusThread} target={rejectTarget}
+          edits={rejectedEdits} editsOn={appliedTarget.version}
+          // From the press, the card holds on the edit as it is: the video without it can land before the engine answers.
+          onEngine={asked => asked ? threadTimeline.leave() : threadTimeline.stay()} onSent={sent => {
           follow.current = true;
           appLog("action", "reject-edit", { edit: shownIndex + 1, of: threadEdits.length, change: reviewingEdit.changeId });
           // ⌘Z takes the rejection back as it does a revision, and the card goes back to this edit.
-          const named = cutName(appliedTarget) ?? targetName(appliedTarget);
+          const named = cutName(rejectTarget) ?? targetName(rejectTarget);
           recordUndo({ kind: "revision", word: "Reject", projectId: current.id, taskId: sent.task?.id, version: sent.version, threadId: focusThread.id,
             edit: { changeId: reviewingEdit.changeId, spot: reviewingEdit.spot, ...(threadTimeline.single && { single: true }) },
-            ...(named && { name: threadTimeline.selectedMoment ? `${threadTimeline.selectedMoment.edits.length} edits` : tagOf(named) }) });
+            ...(named && { name: tagOf(named) }) });
           // An edit the editor stepped to meanwhile stays open: the rejection wasn't about it.
-          if (openEditNow.current === openEditKey) moveOnFromShown();
+          if (openEditNow.current !== openEditKey) return;
+          // The rest of a moment is next: its other edits are still in the video, and still the editor's to look at.
+          const rest = threadTimeline.selectedMoment?.edits.find(e => e !== reviewingEdit);
+          // One Scarlet was asked to put back stays where it is meanwhile, its row saying Rejecting…: the card goes on.
+          if (!sent.version) return rest ? actions.playEdit(rest, true) : moveOnFromShown();
+          player.pause();
+          setLeavingEdit({ key: openEditKey!, version: sent.version, at: Date.now(), dot: shownMarks.find(dot => dot.edit === openEditKey),
+            // The rest of the moment can be gone with it, as when it was the same join listed twice: then on as Keep goes.
+            then: { edits: [...(rest ? [{ edit: { changeId: rest.changeId, spot: rest.spot } }] : []),
+              ...(nextEditAfterKeep ? [{ edit: { changeId: nextEditAfterKeep.changeId, spot: nextEditAfterKeep.spot }, ...(openOnItsOwn(nextEditAfterKeep) && { single: true }) }] : [])],
+              call: nextCallAfterKeep?.index } });
         }} />}
-      </span>
+      </span>}
     </div>
     {/* A cut reads from the version before it. Until that arrives the mark stands alone and says the words are on their
         way, as a call's does. When it couldn't be read the passage offers to ask again, with why on hover. */}
@@ -3503,14 +3600,16 @@ export function SimpleWorkspace() {
   const targetName = (about: AgentContext & object | Task["context"]) => {
     const { changeId, editIndex } = about;
     const key = changeId !== undefined && editIndex !== undefined ? `${changeId}/${editIndex}` : undefined;
-    if (key && !threadEdits.some(e => matchesEdit(e, { changeId: changeId!, spot: editIndex! }))) {
+    // A rejected edit open from its row is placed on the video as it runs now too: its tag has its row's time.
+    const placedEdits = threadTimeline.rejected.length ? [...threadEdits, ...threadTimeline.rejected] : threadEdits;
+    if (key && !placedEdits.some(e => matchesEdit(e, { changeId: changeId!, spot: editIndex! }))) {
       const kept = targetNames.current.get(key);
       if (kept) return kept;
       // Not listed since Scarlet opened: the request's own saved list still says whether it took footage out.
       const own = threads.find(t => t.changes.some(c => c.id === changeId));
       return revisionTarget({ context: about } as Task, changes, own && threadEditList(own));
     }
-    const name = revisionTarget({ context: about } as Task, changes, threadEdits);
+    const name = revisionTarget({ context: about } as Task, changes, placedEdits);
     if (key && name) targetNames.current.set(key, name);
     return name;
   };
@@ -3881,7 +3980,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : shownMarks, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard, foot: undoFoot,
+          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : leavingMarks, fit: fitTimeline, focus: leavingNow && lineFocus ? { ...lineFocus, leaving: true } : lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: rejectedCard ?? editCard ?? callCard ?? suggestCard, foot: undoFoot,
             gaps: cutKey ? gaps : callGaps, skippedRanges: joinedPlayer?.clock.removed ?? stepsOver(appliedListen ?? playedAudition),
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,

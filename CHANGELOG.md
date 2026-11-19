@@ -6,6 +6,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- Rejecting an edit no longer makes the timeline jump: its band fades where it is, then the card moves on to the next edit once.
+- The × on a moment's card rejects only the edit the card is named for, not every edit of the moment, and the card stays on what's left of it.
+- A rejected edit's row can be pressed to see it again: the timeline goes to where it was and its card shows its note.
 - A false start the transcript missed is no longer left in: Scarlet won’t shorten a “pause” it heard words in, and after each part of a pass it checks for words still playing that the transcript doesn’t have.
 - Approving a call or keeping a flagged edit while on the See all list now moves to the next item in that list instead of skipping ahead to the next For you item.
 - The Approve and Apply buttons now show their A shortcut inside the button, matching Keep and Revise.

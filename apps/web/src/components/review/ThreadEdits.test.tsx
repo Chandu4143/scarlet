@@ -134,10 +134,8 @@ it("reads a request's edits again for a new working cut only while they are need
   expect(read).toHaveBeenCalledTimes(4);
 });
 
-it("words the request to reject one edit by its number and name, and a moment as all of its edits", () => {
+it("words the request to reject one edit by its number and name", () => {
   expect(rejectInstruction({ editNumber: 2, label: "captions" })).toBe("The editor rejected edit 2, “captions”. Put back exactly what it changed and leave every other edit as it is.");
   expect(rejectInstruction({ label: "captions" })).toMatch(/^The editor rejected “captions”\. /);
   expect(rejectInstruction({})).toMatch(/^The editor rejected this edit\. /);
-  expect(rejectInstruction({ editNumber: 4, label: "pause", momentEdits: [{ changeId: "chg_1", spot: 5 }] }))
-    .toBe("The editor rejected edit 4, “pause” and every other edit of its moment. Put back exactly what they changed and leave every other edit as it is.");
 });

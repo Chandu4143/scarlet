@@ -368,7 +368,9 @@ describe("listing a thread's edits in the chat", () => {
     const rows = (changes: Change[], tasks: Thread["tasks"] = []) => threadTimeline({ ...thread(changes), tasks }, head, links, () => earlier, 30)
       .map(edit => [edit.label, edit.summary, edit.check, edit.rejected]);
     const rejected = [["Hold the scorecard", "Held the scorecard.", undefined, undefined], ["Mute the false start", "Muted the false start.", undefined, true]];
-    expect(rows([batch, Change.parse({ ...back, rejects: true })])).toEqual(rejected);
+    // The engine names its put-back as the row read when the editor rejected it, and the row keeps those words.
+    const engine = { ...back, rejects: true, timelineEdits: [{ ...back.timelineEdits[0]!, label: "Mute the false start after “score”" }] };
+    expect(rows([batch, Change.parse(engine)])).toEqual([rejected[0], ["Mute the false start after “score”", "Muted the false start.", undefined, true]]);
     const asked = { id: "task_reject", instruction: "The editor rejected edit 2.", context: { message: "Reject edit" } } as Thread["tasks"][number];
     expect(rows([batch, Change.parse({ ...back, taskId: asked.id })], [asked])).toEqual(rejected);
     // The same change from a revision the editor typed is a revision: theirs to check again.

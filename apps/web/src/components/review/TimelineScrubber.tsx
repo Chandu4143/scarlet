@@ -304,6 +304,8 @@ export interface TimelineDot {
   landed?: "cut" | "edit";
   /** When it was applied (ms, as Date.now()). A marker drawn again mid-moment picks the moment up where it is. */
   landedAt?: number;
+  /** The editor rejected the edit a moment ago: its marker shrinks away where it is. */
+  leaving?: boolean;
 }
 
 /** A marker shows its edit's number. Edits that share a marker show their run of numbers ("12–13"), or the lowest and a plus when they skip. */
@@ -659,7 +661,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       const landed = !isNew ? undefined : arrived.some(dot => dot.landed === "cut") ? "cut" : "edit";
       const landedAt = Math.max(...arrived.map(dot => dot.landedAt ?? now));
       const delay = isNew ? elapsed(`${key}|${landedAt}`, landedAt) : 0;
-      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
+      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed} data-leaving={dots.length === 1 && dots[0]!.leaving ? "" : undefined}
         className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
         style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 },
           ...landed && delay > 0 && { animationDelay: `${(landed === "cut" ? 260 : 0) - delay}ms` } }}>
@@ -862,7 +864,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         // Panned or zoomed out of view, the band draws nothing: clamped to the edge it would leave a sliver that reads as a mark there.
         ? highlight.band.end > from && highlight.band.start < to &&
           // Pointer only: the keyboard reaches Before with \.
-          <span aria-hidden="true" className={`simple-timeline-band${highlight.tone ? ` is-${highlight.tone}` : ""}${onBand ? " is-live" : ""}${aimLit ? " is-lit" : ""}`} style={{ left: `${Math.min(100, Math.max(0, percent(highlight.band.start)))}%`,
+          <span aria-hidden="true" className={`simple-timeline-band${highlight.tone ? ` is-${highlight.tone}` : ""}${onBand && !highlight.leaving ? " is-live" : ""}${aimLit ? " is-lit" : ""}${highlight.leaving ? " is-leaving" : ""}`} style={{ left: `${Math.min(100, Math.max(0, percent(highlight.band.start)))}%`,
             width: `${Math.max(0, Math.min(100, percent(highlight.band.end)) - Math.max(0, percent(highlight.band.start)))}%` }}
             onPointerDown={onBand ? e => {
               if (e.button !== 0 || !e.isPrimary || drag.current) return;
@@ -874,7 +876,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
             } : undefined}>
             {bandText && <span>{bandText}</span>}</span>
         : highlight.band.start >= from && highlight.band.start <= to &&
-          <span aria-hidden="true" className={`simple-timeline-cut${highlight.tone ? ` is-${highlight.tone}` : ""}`} style={{ left: `${percent(highlight.band.start)}%` }}>
+          <span aria-hidden="true" className={`simple-timeline-cut${highlight.tone ? ` is-${highlight.tone}` : ""}${highlight.leaving ? " is-leaving" : ""}`} style={{ left: `${percent(highlight.band.start)}%` }}>
             {highlight.bandLabel && <span>{highlight.bandLabel}</span>}</span>)}
       {gapNodes}
       {markLayout.length > 0 && <div aria-hidden="true" className={aimed ? "simple-timeline-hover is-aimed" : "simple-timeline-hover"}
