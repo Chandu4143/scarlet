@@ -23,7 +23,8 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
     if (!head || !thread) return;
     let live = true;
     requestThreadEdits(key, projectId, thread.id).then(({ edits, version }) => {
-      if (live) setResult(version === head ? { key, edits } : { key, error: "The project timeline has changed. Refresh the edit markers." });
+      // An edit the editor rejected is no longer in the video: its row stays in the chat's list, and nothing here opens it.
+      if (live) setResult(version === head ? { key, edits: edits.filter(e => !e.rejected) } : { key, error: "The project timeline has changed. Refresh the edit markers." });
     }, error => { if (live) setResult({ key, error: errorMessage(error) }); });
     return () => { live = false; };
   }, [key, attempt]);
@@ -79,6 +80,8 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
   });
   return { edits, rows, selected, chosen, originalChange: cutChange || (selected && originalChangeFor(selected)), cutReview, framingFor, framing: selected && framingFor(selected), selectedTarget: selected && replyTarget(selected, selectedMoment),
     moments, selectedMoment, single, threadId: thread?.id, request: picked?.request ?? 0,
+    /** The edits are placed on the working cut that's showing, not the list of the one before it. */
+    located: !!current?.edits,
     error: current?.error, loading: !!head && !!thread && !current,
     retry: () => { setResult(undefined); setAttempt(n => n + 1); },
     /**

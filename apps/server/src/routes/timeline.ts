@@ -1,5 +1,5 @@
 import { z } from "zod/v3";
-import { recordHistoryEdit } from "../services/cutHistory.js";
+import { recordHistoryEdit, rejectCuts } from "../services/cutHistory.js";
 import { Hono } from "hono";
 import { clipById, describeDiff, diffTimelines, newId, toOtio, type Change } from "@scarlet/timeline";
 import type { AppEnv } from "../auth.js";
@@ -70,6 +70,14 @@ export function timelineRoutes(ctx: Ctx) {
       return c.json(recordHistoryEdit(ctx, c.var.user, c.req.param("id"), c.req.param("v"), action, body.expectedHead, body.branch));
     });
   }
+
+  r.post("/projects/:id/rejected-cuts", async c => {
+    const range = z.object({ start: z.number().nonnegative(), end: z.number().nonnegative() }).refine(r => r.end > r.start);
+    const body = await jsonBody(c, z.object({ expectedHead: z.string(), branch: z.string(), threadId: z.string(),
+      cuts: z.array(z.object({ changeId: z.string(), spot: z.number().int().nonnegative(), label: z.string().trim().min(1), at: z.number().nonnegative(),
+        before: z.object({ version: z.string(), removed: range }) })).min(1).max(32) }));
+    return c.json(rejectCuts(ctx, c.var.user, c.req.param("id"), body.threadId, body.cuts, body.expectedHead, body.branch));
+  });
 
   r.get("/projects/:id/versions/:a/diff/:b", (c) => {
     const project = requireProjectHeader(ctx, c.req.param("id"));

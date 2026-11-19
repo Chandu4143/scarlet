@@ -87,6 +87,8 @@ interface ProjectState {
 
   approve(changeId: string, spots?: number[], restoredCuts?: number[]): Promise<ApproveResponse | undefined>;
   historyEdit(version: string, action: "revert" | "restore"): Promise<void>;
+  /** Put back applied cuts the editor rejected, on the engine. Answers with the version it made. */
+  rejectCuts(threadId: string, head: string, cuts: Parameters<typeof api.rejectCuts>[1]["cuts"]): Promise<string>;
   revise(changeId: string, body: Parameters<typeof api.reviseChange>[1]): Promise<Task | undefined>;
 
   requestRender(body: Partial<RenderRequest>): Promise<Render>;
@@ -738,6 +740,18 @@ export const useProjectStore = create<ProjectState>((set, get, store) => {
         return shown ? { project: shown, versions: undefined } : {};
       });
       await get().refreshHead(cur.id);
+    },
+    async rejectCuts(threadId, head, cuts) {
+      const cur = get().current;
+      if (!cur) throw new Error("No project is open.");
+      const { project, change } = await api.rejectCuts(cur.id, { expectedHead: head, branch: cur.project.branch ?? "main", threadId, cuts });
+      replaceChange(change);
+      patch(cur.id, d => {
+        const shown = takeProject(d, project);
+        return shown ? { project: shown, versions: undefined } : {};
+      });
+      void get().refreshHead(cur.id).catch(() => {});
+      return change.appliedVersion ?? change.toVersion;
     },
     async revise(changeId, body) {
       const res = await api.reviseChange(changeId, body);

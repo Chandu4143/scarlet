@@ -486,6 +486,11 @@ export class ScarletClient {
   historyEdit(projectId: string, version: string, action: "revert" | "restore", expectedHead: string, branch: string) {
     return this.post<{ project: Project; change: Change }>(`/projects/${projectId}/versions/${version}/${action}`, { expectedHead, branch });
   }
+  /** Put back the footage of applied cuts the editor rejected, with no model. Refused (409) where the engine can't. */
+  rejectCuts(projectId: string, body: { expectedHead: string; branch: string; threadId: string;
+    cuts: { changeId: string; spot: number; label: string; at: number; before: { version: string; removed: TimeRange } }[] }) {
+    return this.post<{ project: Project; change: Change }>(`/projects/${projectId}/rejected-cuts`, body);
+  }
   checkout(projectId: string, version: string) {
     return this.post<{ project: Project }>(`/projects/${projectId}/versions/${version}/checkout`);
   }
