@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Change, emptyTimeline, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
 import { buildThreads } from "./threads.js";
 import { Task } from "./api.js";
-import { changeRemovals, matchesEdit, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
+import { changeRemovals, matchesEdit, namedTimelineEdits, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
 
 const head = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 3468 }]), version: "v2" };
 const earlier = { ...head, version: "v1" };
@@ -560,4 +560,14 @@ describe("a doubt a later request raises about an edit already in the video", ()
     const note = { ...marks, ops: [{ op: "addMarker", marker: { id: "n", time: 144.21, kind: "chapter", text: "Boats", resolved: false } }] };
     expect(threadTimeline(thread([note]), head, links, () => earlier, 30)[0]?.check).toBeUndefined();
   });
+});
+
+it("names a cut saved without a summary by what came out, not by why it was made", () => {
+  const pass = Change.parse({ ...change, ops: [{ op: "rippleDelete", start: 30, end: 31 }, { op: "rippleDelete", start: 10, end: 10.6 }],
+    ranges: [{ start: 10, end: 10 }, { start: 29.4, end: 29.4 }], cutReasons: [
+      { start: 10, end: 10.6, reason: "Kept a short beat between parts of the same thought.", kind: "pause" },
+      { start: 30, end: 31, reason: "Kept the completed line.", summary: "Cut the false start ‘so the’", kind: "retake" }] });
+  expect(namedTimelineEdits(pass)?.map(e => [e.label, e.reason])).toEqual([
+    ["Shortened a pause", "Kept a short beat between parts of the same thought."],
+    ["Cut the false start ‘so the’", "Kept the completed line."]]);
 });
