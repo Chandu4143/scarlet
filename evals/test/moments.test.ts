@@ -39,6 +39,12 @@ describe("known moments", () => {
     expect(scoreMoments([moment], evidence, left([], [[0.8, 2.2]]))[0]!.approved!.right).toBe(false);
   });
 
+  it("reports a wrong cut the pass flagged for the editor as asked, and a right one as right", () => {
+    const flagged = (removed: Array<[number, number]>) => ({ ...left(removed), flagged: [{ mediaId: MIC, start: 0.4, end: 2.2 }] });
+    expect(scoreMoments([moment], evidence, flagged([[0.8, 2.2]]))[0]).toEqual({ id: "where-would", outcome: "asked", played: "a time where would occasionally" });
+    expect(scoreMoments([moment], evidence, flagged([[0.4, 1.5]]))[0]!.outcome).toBe("right");
+  });
+
   it("leaves a staged cut elsewhere out of the moment", () => {
     const elsewhere: Moment = { ...moment, id: "start", end: 0.39, plays: "a time" };
     expect(scoreMoments([elsewhere], evidence, left([], [[0.4, 1.5]]))[0]!.outcome).toBe("right");

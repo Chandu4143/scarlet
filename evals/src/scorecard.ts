@@ -212,11 +212,16 @@ export function card(label: string, trials: readonly Trial[]): Card {
   }
   const all = Object.fromEntries(FACTORS.map(f => [f.id, acrossCases(Object.values(byCase).map(c => c[f.id]))])) as Record<FactorId, Stat | null>;
   const headline = (k: string) => stat(numbers(trials.map(t => t.score.headline[k])));
+  // What reached the editor to decide or check: calls, and applied edits the pass flagged.
+  const asks = () => stat(numbers(trials.map(t => {
+    const calls = t.score.headline.needsYourCall, flags = t.score.headline.flaggedForYou;
+    return calls == null && flags == null ? null : (calls ?? 0) + (flags ?? 0);
+  })));
   const count = (k: keyof Mistakes) => acrossCases(mistakesByCase.map(m => m[k]));
   return { label, trials: trials.length, cases: [...groups.keys()], factors: all, overall: overallOf(all, FACTORS.map(f => f.id)), byCase,
     mistakesPer10Min: count("per10Min"),
     mistakeCounts: { wronglyCut: count("wronglyCut"), leftIn: count("leftIn"), clippedWords: count("clippedWords"), stutters: count("stutters") },
-    facts: { asks: headline("needsYourCall"), tokens: headline("tokens"), minutes: headline("activeMinutes") } };
+    facts: { asks: asks(), tokens: headline("tokens"), minutes: headline("activeMinutes") } };
 }
 
 /** The mean of the named factors, or null when one of them has no figure: an overall over different factors can't be compared. */
@@ -275,7 +280,7 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
   }
   if (ledger) lines.push(`| Past mistakes | ${cards.map((_, i) => i === cards.length - 1 ? (ledger.pct === null ? "–" : `${ledger.pct}%`) : "").join(" | ")} |${two ? " |" : ""} every reported mistake with a free check still passes (${ledger.pass} of ${ledger.checked}, ${ledger.label}) |`);
   const fact = (s: Stat | null, digits = 1, scale = 1) => s ? (s.mean / scale).toFixed(digits) : "–";
-  lines.push("", "Not scored: " + cards.map(c => `${c.label}: ${fact(c.facts.asks)} calls for the editor, ${fact(c.facts.minutes)} min, ${fact(c.facts.tokens, 2, 1e6)}M tokens a pass`).join(" · ") + ".");
+  lines.push("", "Not scored: " + cards.map(c => `${c.label}: ${fact(c.facts.asks)} calls and flags for the editor, ${fact(c.facts.minutes)} min, ${fact(c.facts.tokens, 2, 1e6)}M tokens a pass`).join(" · ") + ".");
   if (cards.some(c => c.trials < 4)) lines.push("", "Fewer than 4 passes a side: two passes of the same code differ by a few points, so read small differences as noise.");
   if (cards.some(c => c.cases.length < 3)) lines.push("", `Recordings: ${[...new Set(cards.flatMap(c => c.cases))].join(", ")}. With fewer than three, the figures describe these videos more than the cutting.`);
   if (cards.some(c => c.cases.length > 1)) {
