@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- Approving a call or keeping a flagged edit while on the See all list now moves to the next item in that list instead of skipping ahead to the next For you item.
 - The Approve and Apply buttons now show their A shortcut inside the button, matching Keep and Revise.
 - The Transcript column keeps its words up when an edit lands or a cut opens, instead of emptying to “Loading transcript…” and reading the whole transcript again.
 - The talking-head skill leaves natural pauses alone again: a pause under about a second stays as said, and only longer dead air comes out.
