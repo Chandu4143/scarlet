@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- A call you play while Scarlet is still editing plays straight through: the edits Scarlet saves meanwhile come in when you pause, as they do with nothing open.
 - A screen insert that would end or start a moment after your recording switches window or page now changes on the switch, so another window no longer flashes up for a split second.
 - A cut no longer starts a few frames late on a quiet word it means to keep, and the pass no longer stalls when a word is too quiet to find.
 - The talking-head skill trims pauses the way a published cut does: a pause of about six tenths of a second or more comes out, shorter ones and beats held on purpose stay.
