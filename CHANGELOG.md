@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A cut Scarlet couldn't place cleanly is no longer swapped for a cut of different words without asking you.
 - A click on the edge of the chat that doesn't drag it no longer fixes the chat's width, so it keeps following the window.
 - Two-finger scroll and zoom on the timeline keep working after a pinch that ended while you were dragging.
 - Space plays a Before again after its picture had to fall back to the saved clip.

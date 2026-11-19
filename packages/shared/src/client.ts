@@ -511,6 +511,8 @@ export class ScarletClient {
       onFrames?: { cuts: number; largestShift: number; why: string };
       /** Staged cuts of an earlier part that left the review because their footage changed. */
       droppedFromReview?: Array<{ changeId: string; version: string; start: number; end: number; why: string }>;
+      /** Cuts left out because they would have swapped a held staged cut for other edges Scarlet couldn't place either. */
+      heldCutsStay?: Array<{ asked: TimeRange; staged: TimeRange; why: string }>;
       /** The project head after this submission. Older engines omit it. */
       head?: string }>(
       `/projects/${encodeURIComponent(projectId)}/dialogue-cuts`, body);

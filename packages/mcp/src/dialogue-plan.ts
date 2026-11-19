@@ -430,6 +430,8 @@ interface PlannedDecision extends TimeRange {
   held?: string;
   /** Nothing Scarlet measures can settle this join (a same-word join): the cut waits for the editor, and the engine lets no later cut replace it. */
   unheard?: true;
+  /** Held for how its join measured, applied as placed only because the agent sent unsureJoins cut. */
+  appliedAsPlaced?: true;
 }
 export type GateLine = Record<string, unknown> & { cut: number };
 
@@ -703,7 +705,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   if (req.unsureJoins === "cut") decisions.forEach((d, i) => {
     const c = removals[i]!;
     if (c.decision !== "cut" || !d.review || !d.held || d.held === CROSSES_SCOPE || inSound.get(c.input)?.inWord || unheard.has(c.input)) return;
-    decisions[i] = { ...d, review: false, held: undefined, originalRange: undefined };
+    decisions[i] = { ...d, review: false, held: undefined, originalRange: undefined, appliedAsPlaced: true };
     const line = report.findLast(l => l.cut === c.input);
     if (line) Object.assign(line, { outcome: "cut", evidence: `Applied as placed, as unsureJoins asked: ${line.evidence}` });
   });
