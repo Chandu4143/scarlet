@@ -7,6 +7,7 @@ import { newId, type TranscriptSegment, type TranscriptWord } from "@scarlet/tim
 import { extractWav, run } from "../render/ffmpeg.js";
 import { decodedRecording } from "../services/recordingAudio.js";
 import { SAMPLE_RATE } from "./ctcAlign.js";
+import { SEAM_CONTEXT, savedWindows } from "./seams.js";
 import type { TranscribeInput, TranscribeResult, TranscriptionProvider } from "./index.js";
 
 const offsets = z.object({ from: z.number().finite(), to: z.number().finite() });
@@ -130,28 +131,34 @@ export class WhisperCppProvider implements TranscriptionProvider {
     const { onProgress } = input;
     const result = { ...checkpoint.result, segments: [...checkpoint.result.segments] };
     const part = join(input.tmpDir, newId("wcpp") + ".wav");
+    const windows = savedWindows(checkpoint.through, (through, segments) => {
+      checkpoint.save(through, { language: result.language, modelLabel: result.modelLabel, segments }, through / duration);
+      result.segments.push(...segments);
+    });
     try {
       for (let from = checkpoint.through; from < duration;) {
         input.signal?.throwIfAborted();
-        const end = await chunkEnd(audio, from, duration, this.opts.crisperScript ? CRISPER_CHUNK_SECONDS : CHUNK_SECONDS);
-        const whole = from === 0 && end === duration;
-        if (!whole) await audio.writeWindow(part, from, end);
+        const seam = await chunkEnd(audio, from, duration, this.opts.crisperScript ? CRISPER_CHUNK_SECONDS : CHUNK_SECONDS);
+        const readFrom = Math.max(0, from - SEAM_CONTEXT), readTo = Math.min(duration, seam + SEAM_CONTEXT);
+        const whole = readFrom === 0 && readTo === duration;
+        // How far this window's words are saved once it is read: the last SEAM_CONTEXT waits for the next window.
+        const reach = seam >= duration ? seam : Math.max(from, seam - SEAM_CONTEXT);
+        if (!whole) await audio.writeWindow(part, readFrom, readTo);
         const selectedLanguage = input.language || this.opts.language;
         const language = selectedLanguage && selectedLanguage !== "auto" ? selectedLanguage : result.language;
         const chunk = await this.transcribeWav(whole ? wav : part, input.tmpDir, input.signal, language, undefined,
-          onProgress && (fraction => onProgress((from + (end - from) * fraction) / duration)));
+          onProgress && (fraction => onProgress((from + (reach - from) * fraction) / duration)));
         input.signal?.throwIfAborted();
         // Whisper's 10 ms times can round past the last sample of a window. Keep its words inside the
         // audio it heard and place them on the original recording's clock.
-        const at = (seconds: number) => Math.min(end, Math.max(from, from + seconds));
-        const absolute = whole ? chunk.segments : chunk.segments.map(s => ({ ...s, start: at(s.start), end: at(s.end),
+        const at = (seconds: number) => Math.min(readTo, Math.max(readFrom, readFrom + seconds));
+        const segments = whole ? chunk.segments : chunk.segments.map(s => ({ ...s, start: at(s.start), end: at(s.end),
           words: s.words.map(w => ({ ...w, start: at(w.start), end: at(w.end) })) }));
         result.language ??= chunk.language;
         result.modelLabel ??= chunk.modelLabel;
-        checkpoint.save(end, { language: result.language, modelLabel: result.modelLabel, segments: absolute }, end / duration);
-        result.segments.push(...absolute);
-        onProgress?.(end / duration);
-        from = end;
+        const saved = windows.add(segments, from, seam, seam >= duration);
+        onProgress?.(saved / duration);
+        from = seam;
       }
       return result;
     } finally { await rm(part, { force: true }); }
@@ -250,3 +257,4 @@ function repeatsTail(before: TranscriptSegment | undefined, segment: TranscriptS
   const copy = said(segment.words), last = said(before.words).slice(-copy.length);
   return copy.length > 0 && last.length === copy.length && copy.every((w, i) => w === last[i]);
 }
+
