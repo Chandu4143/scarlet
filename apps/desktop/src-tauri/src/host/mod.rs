@@ -307,9 +307,8 @@ async fn heartbeat_workers(api: &Api, host_id: &str, agents: &[AgentAvailability
     Ok(())
 }
 
-/// Show one event of a run in the window and save it with the engine.
-async fn send_event(api: &Api, emit: &Emit, task_id: &str, started_at: Option<&str>, ev: &TaskEvent) {
-    emit("host://task-event", json!({ "taskId": task_id, "event": ev }));
+/// Save one event of a run with the engine, which shows it in the window.
+async fn send_event(api: &Api, task_id: &str, started_at: Option<&str>, ev: &TaskEvent) {
     if let Err(e) = api.post_task_event(task_id, started_at, ev).await {
         log::warn!("task {task_id}: post event failed: {e}");
     }
@@ -695,11 +694,11 @@ impl HostRuntime {
     async fn post_event(&self, task: &Task, kind: &str, text: String, data: Option<Value>) {
         let task_id = &task.id;
         let ev = TaskEvent { task_id: Some(task_id.to_string()), at: Some(now_iso()), kind: kind.to_string(), text, data };
-        send_event(&self.api, &self.emit, task_id, task.started_at.as_deref(), &ev).await;
+        send_event(&self.api, task_id, task.started_at.as_deref(), &ev).await;
     }
 
-    /// Where a run's events go: the sink its runner writes to, the task that sends them on in order to the window
-    /// and the engine, and a question the CLI's output carried.
+    /// Where a run's events go: the sink its runner writes to, the task that sends them on in order to the
+    /// engine, and a question the CLI's output carried.
     /// An event's time is taken as the CLI writes it, not when its turn to be sent comes. Behind a slow engine a
     /// backlog would otherwise carry the one instant it was sent at, later than events the engine saved meanwhile.
     fn forward_events(&self, task_id: &str, started_at: Option<String>) -> (runner::EventSink, tokio::task::JoinHandle<()>, Arc<StdMutex<Option<String>>>) {
@@ -707,7 +706,6 @@ impl HostRuntime {
         let question_seen: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
         let consumer = {
             let api = self.api.clone();
-            let emit = self.emit.clone();
             let task_id = task_id.to_string();
             let qs = question_seen.clone();
             tokio::spawn(async move {
@@ -720,7 +718,7 @@ impl HostRuntime {
                         continue; // summary goes in complete()
                     }
                     let tev = TaskEvent { task_id: Some(task_id.clone()), at: Some(at), kind: ev.kind.clone(), text: ev.text.clone(), data: ev.data.clone() };
-                    send_event(&api, &emit, &task_id, started_at.as_deref(), &tev).await;
+                    send_event(&api, &task_id, started_at.as_deref(), &tev).await;
                 }
             })
         };
@@ -1230,7 +1228,10 @@ impl HostManager {
         if let Some(rt) = rt {
             rt.engine_lost.store(engine_lost, Ordering::SeqCst);
             rt.stop().await;
-            let _ = self.app.emit("host://status", &HostStatus { mcp_command: Some(rt.mcp.describe()), ..Default::default() });
+            // A host started for the next engine while this one wound down has already said how it stands.
+            if self.runtime.lock().await.is_none() {
+                let _ = self.app.emit("host://status", &HostStatus { mcp_command: Some(rt.mcp.describe()), ..Default::default() });
+            }
         }
     }
 
@@ -1677,7 +1678,7 @@ mod tests {
             _ => (200, "{}".into()),
         }).await;
         let dir = tempfile::tempdir().unwrap();
-        let (rt, sent) = runtime(&engine.url, dir.path());
+        let (rt, _sent) = runtime(&engine.url, dir.path());
         let task = unrunnable("tsk_noprompt");
         rt.run_task(task.clone(), CancellationToken::new()).await;
         // The prompt was asked for with the run's own artifacts folder.
@@ -1688,10 +1689,6 @@ mod tests {
         assert_eq!((&event["type"], &event["text"]), (&json!("error"), &json!("Could not prepare task: The project is closed (conflict 409)")));
         let done = &engine.bodies("POST /api/tasks/tsk_noprompt/complete")[0];
         assert_eq!((&done["state"], &done["error"]), (&json!("failed"), &json!("The project is closed (conflict 409)")));
-        // The window got the same event.
-        let sent = sent.lock().unwrap();
-        let (_, payload) = sent.iter().find(|(event, _)| event == "host://task-event").unwrap();
-        assert_eq!((&payload["taskId"], &payload["event"]["type"]), (&json!("tsk_noprompt"), &json!("error")));
         // None of the CLI's control files is left in the folder made for it.
         let left = std::fs::read_dir(rt.run_dir(&task)).map(|dir| dir.flatten().filter(|e| e.file_name() != "artifacts").count()).unwrap_or(0);
         assert_eq!(left, 0);
@@ -1706,7 +1703,7 @@ mod tests {
             _ => (200, "{}".into()),
         }).await;
         let dir = tempfile::tempdir().unwrap();
-        let (rt, sent) = runtime(&engine.url, dir.path());
+        let (rt, _sent) = runtime(&engine.url, dir.path());
         rt.run_task(unrunnable("tsk_flow"), CancellationToken::new()).await;
         let routes: Vec<String> = engine.seen.lock().unwrap().iter().map(|(route, _)| route.split('?').next().unwrap().to_string()).collect();
         assert_eq!(routes, [
@@ -1721,8 +1718,6 @@ mod tests {
         assert_eq!((&events[1]["type"], &events[1]["text"]), (&json!("error"), &json!("no runner for agent \"storyboard\"")));
         let done = &engine.bodies("POST /api/tasks/tsk_flow/complete")[0];
         assert_eq!((&done["state"], &done["error"], &done["interrupted"]), (&json!("failed"), &json!("no runner for agent \"storyboard\""), &json!(false)));
-        // The window hears of the failure as it happens, not only through the engine.
-        assert!(sent.lock().unwrap().iter().any(|(event, payload)| event == "host://task-event" && payload["event"]["type"] == json!("error")));
         // Both ends of the run are in the log under the task's id.
         assert!(crate::util::test_log::find(&["task tsk_flow: storyboard ended (exit code None)"]).is_some());
         let (level, _) = crate::util::test_log::find(&["[host] completion task=tsk_flow", "requested=failed state=failed outcome=accepted"]).expect("no failure line");
@@ -1757,7 +1752,7 @@ mod tests {
             (200, "{}".into())
         }).await;
         let dir = tempfile::tempdir().unwrap();
-        let (rt, sent) = runtime(&engine.url, dir.path());
+        let (rt, _sent) = runtime(&engine.url, dir.path());
         let (sink, consumer, question) = rt.forward_events("tsk_late", Some("2026-11-08T10:00:00.000Z".into()));
         // The CLI writes two lines back to back, then asks its question and ends.
         let before = now_iso();
@@ -1777,9 +1772,6 @@ mod tests {
         // then, a backlog would bunch at one instant, later than events the engine saved meanwhile.
         let stamped: Vec<&str> = posted.iter().map(|event| event["at"].as_str().unwrap()).collect();
         assert!(stamped.iter().all(|at| before.as_str() <= *at && *at <= after.as_str()), "written between {before} and {after}, stamped {stamped:?}");
-        // The window is told the same times.
-        let shown: Vec<Value> = sent.lock().unwrap().iter().filter(|(event, _)| event == "host://task-event").map(|(_, payload)| payload["event"]["at"].clone()).collect();
-        assert_eq!(shown, posted.iter().map(|event| event["at"].clone()).collect::<Vec<_>>());
     }
 
     #[tokio::test]

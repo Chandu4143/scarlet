@@ -280,7 +280,7 @@ export function formatAvailability(agents: AgentAvailability[]): string {
     .map((a) => {
       if (!a.installed) return `${a.id.padEnd(7)} not installed`;
       const login = loginLabel(a);
-      return `${a.id.padEnd(7)} ${a.version ?? "?"}  ${login}${a.model ? `  model ${a.model}` : ""}  (models: ${a.models?.join(", ")})`;
+      return `${a.id.padEnd(7)} ${a.version ?? "?"}  ${login}${a.model ? `  model ${a.model}` : ""}${a.models?.length ? `  (models: ${a.models.join(", ")})` : ""}`;
     })
     .join("\n");
 }

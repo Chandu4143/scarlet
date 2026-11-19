@@ -677,10 +677,9 @@ export class ScarletClient {
     return this.post<{ task: Task }>(`/projects/${projectId}/tasks`, body);
   }
   tasks(projectId: string, state?: string, events?: "conversation") {
-    const query = new URLSearchParams();
-    if (state) query.set("state", state);
-    if (events) query.set("events", events);
-    return this.get<{ tasks: Task[]; conversation?: Record<string, TaskEvent[]> }>(`/projects/${projectId}/tasks${query.size ? "?" + query : ""}`);
+    // Not URLSearchParams.size: a WebView older than Safari 17 has none, and the whole query was dropped there.
+    const qs = query({ state: state || undefined, events });
+    return this.get<{ tasks: Task[]; conversation?: Record<string, TaskEvent[]> }>(`/projects/${projectId}/tasks${qs ? "?" + qs : ""}`);
   }
   task(taskId: string, events: "all" | "conversation" | "none" = "all") {
     return this.withResource("tasks", taskId, path => this.get<{ task: Task; events: TaskEvent[]; checksTaskAttempts?: true }>(path + (events === "all" ? "" : "?events=" + events)));

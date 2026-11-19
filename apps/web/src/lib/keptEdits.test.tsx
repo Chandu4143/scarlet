@@ -43,6 +43,12 @@ it("tells the engine what the editor kept, under the identity the Keep is record
   expect(send).not.toHaveBeenCalled();
 });
 
+it("sends a Keep once: the list that shows it doesn't send it again without what the editor read", () => {
+  keepEdits("prj", "once", [{ changeId: "chg", spot: 4, label: "Tightened the pause" }]);
+  readKept("prj", "once");
+  expect(api.keepEdits).toHaveBeenCalledTimes(1);
+});
+
 it("counts a Keep the engine recorded, and sends on one this window made that the engine doesn't have", () => {
   localStorage.setItem("scarlet.kept-edits.v1/prj/older", JSON.stringify(["chg/1"]));
   const recorded = [{ id: "chg", kept: [{ spot: 0, threadId: "older", at: "2026-11-16T22:25:32Z" }, { spot: 3, threadId: "elsewhere", at: "2026-11-16T22:25:32Z" }] }];

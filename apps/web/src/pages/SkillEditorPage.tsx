@@ -5,7 +5,6 @@ import { useBlocker, useNavigate, useParams } from "react-router-dom";
 import type { Skill, SkillVersion, Task } from "@scarlet/shared";
 import { AgentChip, useAgentAvailability } from "../components/agent/AgentChip";
 import { api, errorMessage } from "../lib/client";
-import { isComposing } from "../lib/hotkeys";
 import { clockTime, dayName } from "../lib/format";
 import { diffLines, type DiffLine } from "../lib/textDiff";
 import { useAuthStore } from "../stores/auth";

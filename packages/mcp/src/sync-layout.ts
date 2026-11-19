@@ -1,4 +1,4 @@
-import { clipEnd, makeTrack, newId, Transform, type MediaAsset, type MediaClip, type Project, type Timeline, type TimelineOp } from "@scarlet/timeline";
+import { clipEnd, makeTrack, newId, Transform, type MediaAsset, type Project, type Timeline, type TimelineOp } from "@scarlet/timeline";
 import { z } from "zod/v3";
 
 export const InsetFraming = z.object({

@@ -9,7 +9,6 @@ import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
   SUMMARY_MAX,
-  clipEnd,
   crossfadeJoins,
   type JoinFades,
   applyOps,
@@ -2206,7 +2205,6 @@ export function reopenChange(ctx: Ctx, user: User, change: Change): Change {
 
 type ReviseRequest = z.output<typeof ReviseRequestSchema>;
 
-/** Name the one staged cut a revision is about, with why it was proposed and how it was assessed. */
 /**
  * Where the stretch the editor marked sits in the cut their words are about, when it is only part of it: "leave this
  * part in" with the cut's first 0.3 s marked means that part, not the whole cut (2026-11-14).
@@ -2226,6 +2224,7 @@ function onPositionClock(position: ReviseRequest["position"]) {
   return marked && !marked.mediaId && !position.mediaId && (marked.version ?? position.version) === position.version ? marked : undefined;
 }
 
+/** Name the one staged cut a revision is about, with why it was proposed and how it was assessed. */
 export function cutRevisionReference(change: Change, position: ReviseRequest["position"]): string {
   const index = position?.cutIndex;
   if (index === undefined) return "";

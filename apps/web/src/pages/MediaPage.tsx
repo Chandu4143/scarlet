@@ -1,5 +1,4 @@
 import { useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
 import type { SourceCacheStatus } from "@scarlet/shared";
 import type { MediaAsset } from "@scarlet/timeline";
 import { api, errorMessage, IS_DESKTOP } from "../lib/client";
@@ -68,7 +67,6 @@ export function MediaPage({ uploads, onPlay }: {
   const importTranscription = useImportTranscription();
   const { available: transcriptionAvailable, notice: importNotice, local } = importTranscription;
   const notice = local ? "" : importNotice;
-  const importErrors: string[] = useLocation().state?.importErrors ?? [];
   const [pickerError, setPickerError] = useState("");
   // The unreadable file the editor is asked about before it is taken out.
   const [removal, setRemoval] = useState<MediaAsset | null>(null);
@@ -129,7 +127,6 @@ export function MediaPage({ uploads, onPlay }: {
           <ImportProgress localImport={localImport} />
         </div>
       )}
-      {importErrors.length > 0 && <InlineError><ul>{importErrors.map((message, i) => <li key={i}>{message}</li>)}</ul></InlineError>}
       <InlineError>{processing.error || pickerError || cacheError}</InlineError>
       <UploadList items={items} onDismiss={dismiss} />
       {media.length === 0 ? (

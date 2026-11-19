@@ -341,8 +341,6 @@ pub fn mcp_config_json(mcp: &McpSpec) -> String {
     serde_json::to_string_pretty(&v).unwrap()
 }
 
-/// `--bare` keeps the user's hooks, plugins and CLAUDE.md out of Scarlet runs, but
-/// it reads only ANTHROPIC_API_KEY or a cloud provider, never a subscription login.
 /// Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured, past Claude Code's
 /// default MCP deadline. Respect a value the user set.
 fn with_tool_timeout(env: &std::collections::HashMap<String, String>) -> std::collections::HashMap<String, String> {
@@ -351,6 +349,8 @@ fn with_tool_timeout(env: &std::collections::HashMap<String, String>) -> std::co
     env
 }
 
+/// `--bare` keeps the user's hooks, plugins and CLAUDE.md out of Scarlet runs, but
+/// it reads only ANTHROPIC_API_KEY or a cloud provider, never a subscription login.
 pub fn can_run_bare(env: &std::collections::HashMap<String, String>) -> bool {
     ["ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].iter().any(|k| env.get(*k).is_some_and(|v| !v.is_empty()))
 }

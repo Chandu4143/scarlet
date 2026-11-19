@@ -5,9 +5,9 @@
  * Keep `exec --json` for CLI versions and authentication modes that cannot use
  * the isolated server. Answers reach a fresh run through the replayed Q&A.
  */
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm, stat, symlink } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { apiKeyVars, stripVars } from "../detect.js";
 import { privateDirectory, writePrivateFile } from "../private-files.js";

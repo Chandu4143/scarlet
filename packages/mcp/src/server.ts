@@ -33,7 +33,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
-  CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, RESTART_WITHIN_SECONDS, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
+  CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
 import {
@@ -1081,10 +1081,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         }
       }
     }
-    if (ctx.author.type === "agent") {
-      const laid = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
-      if (laid) await insideShowAreas(before, laid);
-    }
+    // The summary leaves the saved timeline out, so the edit is laid on its base here, once, for the checks before and after saving.
+    const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
+    if (ctx.author.type === "agent" && made) await insideShowAreas(before, made);
     const req: ProposeChangeRequest = {
       ...body,
       fromVersion: before && before.version !== "draft" ? before.version : undefined,
@@ -1097,8 +1096,6 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     if (change.state === "approved" || notApplied) lastTimeline = undefined;
     const action = change.state === "approved" ? "Applied" : "Proposed";
     const lines = diffDescription ?? (before && timeline ? describeDiff(diffTimelines(before, timeline), undefined, clipById) : []);
-    // The summary leaves the saved timeline out, so the edit is laid on its base here, as it was checked before saving.
-    const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
     const bare = made && !notApplied ? await getProject().then(({ project }) => backgroundShows(before, made, project.media, project.settings)).catch(() => []) : [];
     const briefNow = made && !notApplied ? await briefOn(before, made).catch(error => { noteUnmeasured("the pictures this edit shows briefly", error); return undefined; }) : undefined;
@@ -1467,14 +1464,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const shown = [...unset].sort((a, b) => b.onPicture - a.onPicture || (b.to - b.from) - (a.to - a.from)).slice(0, pictures);
       const images = await Promise.all(shown.map(async u => {
         try {
-          const res = await client.withResource("media", mediaId, async resource => {
-            const headers: Record<string, string> = {};
-            if (client.token) headers.Authorization = `Bearer ${client.token}`;
-            const response = await fetchImpl(client.url(`${resource}/frame?t=${u.look}&w=1280&grid=1`), { headers });
-            if (!response.ok) throw new Error(response.statusText);
-            return response;
-          });
-          return { look: u.look, data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: res.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
+          return { look: u.look, ...await sourceFrame(mediaId, u.look, 1280, undefined, true) };
         } catch { return undefined; }
       }));
       const seen = images.filter((i): i is NonNullable<typeof i> => !!i);
@@ -2446,7 +2436,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // A ripple affects every track. Check the whole batch, including any edge adjustment, against the sayings it must retain.
       const retainedRepeats = requested.flatMap(c => {
         if (!c.removeRepeat || c.decision === "keep" || c.picture === "protect") return [];
-        const pair = checkedRepeats.get(c.removeRepeat.id)!;
+        // A check of the repeats that ran meanwhile may have dropped the pair this cut named.
+        const pair = checkedRepeats.get(c.removeRepeat.id);
+        if (!pair) throw new Error("Read dialogue_check_repeats on this version and select a removable occurrence for a retake.");
         const kept = c.removeRepeat.occurrence === "first" ? pair.second : pair.first;
         return [{ start: kept.start, end: kept.end, reason: `The planned cuts also reach the delivery of “${pair.phrase}” you chose to keep.` }];
       });
@@ -3158,7 +3150,6 @@ ${OPS_DOC}`,
       const base = lastTimeline?.version;
       const { project } = await getProject();
       const before = await getTimeline(base);
-      if (!before) throw new Error("There is no timeline to put a transition on yet.");
       let style: Transition | null = null;
       if (!none) {
         const saved = template ? (await client.template(template)).template : undefined;
@@ -3207,7 +3198,7 @@ ${OPS_DOC}`,
       const picturesFrom = (rest as { picturesFrom?: number }).picturesFrom ?? 0;
       const { project } = await getProject();
       const before = await getTimeline(fromVersion ?? lastTimeline?.version);
-      if (!before || before.version === "draft") throw new Error("There is no saved timeline to frame yet.");
+      if (before.version === "draft") throw new Error("There is no saved timeline to frame yet.");
       const fraction = (box: readonly number[]) => box.map(n => n / 100) as Box;
       const percent = (box: readonly number[]) => box.map(n => Math.round(n * 1000) / 10);
       // Where each framing puts the inset: the corner it names, or for `clear` the one worked out below.

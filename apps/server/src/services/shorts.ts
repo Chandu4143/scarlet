@@ -249,6 +249,8 @@ function saveShortsPlan(ctx: Ctx, user: User, taskId: string, plan: ShortsPlanRe
   for (const projectId of short.projectIds.slice(plan.moments.length)) {
     if (!ctx.repos.projects.header(projectId)) continue;
     ctx.repos.projects.softDelete(projectId);
+    // As when the editor trashes a project: its caching and renders under way stop with it.
+    ctx.db.afterCommit(() => { ctx.stopMedia(projectId, true); ctx.renders.stopProject(projectId); });
     logActivity(ctx, { projectId, actor: actorFor(user), type: "project.deleted", summary: "Scarlet found fewer moments than the editor allowed, so this short wasn’t needed" });
   }
   return { shorts: started, removed: short.projectIds.slice(plan.moments.length) };

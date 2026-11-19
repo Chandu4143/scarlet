@@ -334,12 +334,6 @@ function CallStanding({ run, answer }: { run?: Task; answer?(): void }) {
 /** What Approve chooses on a call: the cut, or for a revision that left the footage in, keeping it. */
 const approves = (call: Pick<CutAssessment, "proposes"> | undefined): CutChoice => call?.proposes ?? "cut";
 
-/**
- * A call's decisions and their keys: Approve (A) makes the change Scarlet proposed, Skip (S) leaves it out, and the
- * chosen one stays pressed. A revision that left the cut's footage in proposes keeping it, so there Approve keeps it
- * and Skip cuts as first staged. Revise (R) aims the message box at this call, so feedback on it goes ahead of
- * requests waiting for the pass.
- */
 type ProjectSource = NonNullable<Project["source"]>;
 
 /** The video a short was made from, by name: a link to it, unless it is in the trash or gone. */
@@ -371,6 +365,12 @@ function SourceNote({ projectId, source }: { projectId: string; source: ProjectS
   </section>;
 }
 
+/**
+ * A call's decisions and their keys: Approve (A) makes the change Scarlet proposed, Skip (S) leaves it out, and the
+ * chosen one stays pressed. A revision that left the cut's footage in proposes keeping it, so there Approve keeps it
+ * and Skip cuts as first staged. Revise (R) aims the message box at this call, so feedback on it goes ahead of
+ * requests waiting for the pass.
+ */
 function CallActions({ choice, proposes = "cut", disabled, decide, revise }: { choice?: CutChoice; proposes?: CutChoice; disabled: boolean; decide(choice: CutChoice): void; revise(): void }) {
   const skips: CutChoice = proposes === "cut" ? "keep" : "cut";
   useHotkeys(event => {
@@ -855,13 +855,16 @@ function editRemoved(edit: Omit<ThreadEdit, "at">) {
 /** What a request revises, as the tag on its message and in the message box: "the cut at 2:05" reads "Cut at 2:05". */
 const tagOf = (label: string) => { const text = label.replace(/^the /, ""); return text.charAt(0).toUpperCase() + text.slice(1); };
 
-/** The player fills the screen, by the window's own full screen or the page's stand-in for it. Esc leaves that first. */
 /**
  * Every passage a listen steps over: its own skips, and the cuts beyond it it steps over once the editor plays on. The
  * playhead jumps across each of them, as the picture does, and never glides through one.
  */
 const stepsOver = (listen: Audition | undefined) => listen?.beyond?.length ? [...listen.skips, ...listen.beyond] : listen?.skips;
+/** The player fills the screen, by the window's own full screen or the page's stand-in for it. Esc leaves that first. */
 const inFullScreen = () => !!document.fullscreenElement || !!document.querySelector(".cut-preview[data-expanded]");
+
+/** What a request paused with the project's editing waits for. */
+const PAUSED_HINT = "Editing is paused. Continue, above the message box, picks this up where it left off.";
 
 /**
  * One thread's requests. Each is the editor's message, then what Scarlet is doing about it or what it made. The request
@@ -869,9 +872,6 @@ const inFullScreen = () => !!document.fullscreenElement || !!document.querySelec
  * `pinHost`, and takes its place in the chat when it's done. A request still waiting its turn isn't here at all; it's in
  * the tray on the message box.
  */
-/** What a request paused with the project's editing waits for. */
-const PAUSED_HINT = "Editing is paused. Continue, above the message box, picks this up where it left off.";
-
 function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, reportReviewMarkers }: { projectId: string; thread: Thread; actions: ChatActions; pinned?: string; pinHost: HTMLElement | null;
   reportReviewMarkers?: ReportReviewMarkers;
   /** Which of this request's lists is open. */

@@ -514,7 +514,8 @@ pub async fn finish_folder_export(app: AppHandle, state: State<'_, AppState>, de
         Ok(()) => log::info!("export folder saved"),
         Err(e) => log::warn!("export folder could not be saved: {e}"),
     }
-    destinations.change(|paths| { let kept = paths.remove(&ticket).is_some_and(|d| d.kept); ((), kept) })?;
+    // A ledger error is separate from the folder's outcome, as for a video: `change` logs it.
+    let _ = destinations.change(|paths| { let kept = paths.remove(&ticket).is_some_and(|d| d.kept); ((), kept) });
     saved.map(|()| path.to_string_lossy().into_owned())
 }
 

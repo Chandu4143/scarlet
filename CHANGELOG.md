@@ -6,6 +6,14 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- A click on the edge of the chat that doesn't drag it no longer fixes the chat's width, so it keeps following the window.
+- Two-finger scroll and zoom on the timeline keep working after a pinch that ended while you were dragging.
+- Space plays a Before again after its picture had to fall back to the saved clip.
+- A folder saved for another editing app is no longer reported as failed when only its bookkeeping couldn't be written.
+- The model list no longer goes blank after the engine restarts while a run is still stopping.
+- Shorts Scarlet turned out not to need stop caching their footage as they go to the trash.
+- A run that picks up where it stopped is told about a save that was refused, also when Scarlet had added a note to that answer.
+- The keyboard shortcuts list no longer shows U for Undo, which the edit card doesn't have.
 - You can draw on the picture for Scarlet: press M (or the pen by Full screen), circle, box or point at what you mean, and the marked frame goes with your next message.
 - The "Starting a new edit" and "Move here" line above the message box is gone. The box's tag already says where a message goes.
 - Stopping a request Scarlet is working on is one click again, on Stop at the right of the request, instead of inside a ⋯ menu.
