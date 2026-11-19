@@ -77,7 +77,8 @@ const CHUNK_SECONDS = 120;
 const CRISPER_CHUNK_SECONDS = 600;
 const SEARCH_SECONDS = 4;
 
-async function chunkEnd(audio: Awaited<ReturnType<typeof decodedRecording>>, start: number, duration: number, seconds: number) {
+/** Where a window that starts at `start` ends: the quietest 200 ms within a few seconds of `seconds` later. */
+export async function chunkEnd(audio: Awaited<ReturnType<typeof decodedRecording>>, start: number, duration: number, seconds: number) {
   const target = start + seconds;
   if (target + SEARCH_SECONDS >= duration) return duration;
   const from = target - SEARCH_SECONDS;

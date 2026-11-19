@@ -15,7 +15,10 @@ import { cancelTask, createTask, hasTranscript, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { availableTranscriptionProvider, getTranscriptionProvider, effectiveProviderName, type importTranscriptionPolicy, type TranscriptionProvider } from "../transcribe/index.js";
 import { claimTranscriptionWork, openTranscriptionWork, transcriptionIdentity, type TranscriptionResume } from "./transcriptionWork.js";
-import { alignmentVersion, alignsLanguage, alignTranscript, type AlignmentCheckpoint } from "../transcribe/wordAlign.js";
+import { alignmentVersion, alignsLanguage, alignTranscript, measureInTurn, readsEnglishSpeech, type AlignmentCheckpoint } from "../transcribe/wordAlign.js";
+import { EmissionFile } from "../transcribe/emissions.js";
+import { FRAME_SECONDS } from "../transcribe/ctcAlign.js";
+import { putBackTidiedWords } from "../transcribe/saidWords.js";
 import { fillTranscriptHoles } from "../transcribe/transcriptHoles.js";
 import { extractWav } from "../render/ffmpeg.js";
 import { audioLane, whisperLane, type AudioWork } from "./audioWork.js";
@@ -787,6 +790,41 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
         return segments;
       } finally { if (!wav) await rm(full, { force: true }); }
     };
+    // Whisper writes what was meant: "the logo, the Coco, the Coca-Cola logo" came out "the logo, the Coca-Cola logo",
+    // the second take's sound read as a pause, and a pass trimmed it and left both takes playing. Read again a minute
+    // at a time in hesitant speech, what the transcript tidied away goes back where the aligner hears it (saidWords.ts).
+    const withSaidWords = async (segments: TranscriptSegment[]) => {
+      if (!alignable || alignmentFailed || provider.name !== "whispercpp" || !readsEnglishSpeech(language)) return segments;
+      const full = wav ?? join(ctx.paths.tmp, newId("recording") + ".wav");
+      const file = await emissionStore(ctx, projectId, src);
+      let store: EmissionFile | null = null;
+      const opened = async () => store ??= await EmissionFile.open(file);
+      try {
+        if (!wav) await extractWav(src, full, { signal });
+        return await putBackTidiedWords({ wav: full, segments, tmpDir: ctx.paths.tmp, signal, log: message => ctx.log(`${message} (${asset.id})`),
+          read: async (page, prompt) => (await lane.run(work, signal, () => provider.transcribe({ path: page, dialogueWindow: { prompt }, tmpDir: ctx.paths.tmp, signal, language }))).segments,
+          frames: async (start, end) => {
+            let emissions = await opened();
+            if (!emissions) return undefined;
+            const [from, to] = emissions.frameRange(start, end);
+            if (emissions.missing(from, to).length) {
+              await measureInTurn(ctx, { file, wav: async () => full }, [{ start, end }], signal, alignment);
+              await emissions.close();
+              store = null;
+              emissions = await opened();
+              if (!emissions || emissions.missing(from, to).length) return undefined;
+            }
+            return { logProbs: await emissions.read(from, to), frames: to - from, origin: from * FRAME_SECONDS };
+          } });
+      } catch (error) {
+        signal.throwIfAborted();
+        ctx.log(`[transcribe] ${asset.id}: couldn’t read the recording again for the words its transcript tidied away: ${(error as Error).message}`);
+        return segments;
+      } finally {
+        await (store as EmissionFile | null)?.close();
+        if (!wav) await rm(full, { force: true });
+      }
+    };
     let publishedThrough = saved.alignment?.through ?? 0;
     const finishedAlignment = saved.alignment?.complete;
     const aligned = finishedAlignment ? result.segments : await alignTranscript(ctx, { source: src, wav, language, segments: result.segments, signal, resume: saved.alignment,
@@ -802,7 +840,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
     if (alignable && provider.name === "whispercpp" && !finishedAlignment && !alignmentFailed) {
       save(aligned, { through: publishedThrough, fraction: 1, complete: true });
     }
-    const stored = save(await withoutHoles(aligned));
+    const stored = save(await withSaidWords(await withoutHoles(aligned)));
     // The run was cancelled while it aligned, so nobody will finish: the saved transcript keeps the times it has.
     if (!stored && early) keepTimes(ctx, asset.id, task.id);
     if (stored?.speakerSource) {
