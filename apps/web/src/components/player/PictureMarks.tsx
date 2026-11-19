@@ -135,7 +135,7 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
 }
 
 /**
- * The marking tools, always over the top left of the picture. A tool pressed while the video plays pauses it and marks
+ * The marking tools, always in a row above the picture. A tool pressed while the video plays pauses it and marks
  * the frame under the playhead; the lit tool pressed again ends the marking.
  */
 export function PictureMarkTools({ projectId, enabled, onStart }: { projectId: string; enabled: boolean; onStart: () => void }) {
@@ -148,16 +148,12 @@ export function PictureMarkTools({ projectId, enabled, onStart }: { projectId: s
     store.setTool(next);
     if (!marking) onStart();
   };
-  return <div className="video-surface picture-mark-bar">
-    <div className="video-frame">
-      <div className="picture-mark-tools" role="toolbar" aria-label="Mark the picture" onPointerDown={e => e.stopPropagation()}>
-        {TOOLS.map(t => <button key={t.tool} type="button" className="picture-mark-tool" aria-pressed={marking && tool === t.tool} disabled={!enabled}
-          aria-label={t.label} title={`${t.label} (${t.key})`} onClick={e => { if (e.detail) e.currentTarget.blur(); pick(t.tool); }}><Icon name={t.icon} size={15} /></button>)}
-        <i className="picture-mark-sep" aria-hidden="true" />
-        <button type="button" className="picture-mark-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!count} onClick={() => store.undo(projectId)}><Icon name="undo" size={15} /></button>
-        <button type="button" className="picture-mark-tool" aria-label="Clear marks" title="Clear marks" disabled={!count} onClick={() => store.clear(projectId)}><Icon name="x" size={15} /></button>
-      </div>
-    </div>
+  return <div className="picture-mark-tools" role="toolbar" aria-label="Mark the picture">
+    {TOOLS.map(t => <button key={t.tool} type="button" className="picture-mark-tool" aria-pressed={marking && tool === t.tool} disabled={!enabled}
+      aria-label={t.label} title={`${t.label} (${t.key})`} onClick={e => { if (e.detail) e.currentTarget.blur(); pick(t.tool); }}><Icon name={t.icon} size={15} /></button>)}
+    <i className="picture-mark-sep" aria-hidden="true" />
+    <button type="button" className="picture-mark-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!count} onClick={() => store.undo(projectId)}><Icon name="undo" size={15} /></button>
+    <button type="button" className="picture-mark-tool" aria-label="Clear marks" title="Clear marks" disabled={!count} onClick={() => store.clear(projectId)}><Icon name="x" size={15} /></button>
   </div>;
 }
 

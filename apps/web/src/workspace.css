@@ -545,8 +545,8 @@
 .picture-mark-point { width: 12px; height: 12px; margin: -6px 0 0 -6px; }
 .picture-mark-point:not(:empty) { width: 20px; height: 20px; margin: -10px 0 0 -10px; }
 .picture-mark-number { width: 20px; height: 20px; margin: -10px 0 0 -10px; }
-.picture-mark-bar { z-index: 4; pointer-events: none; }
-.picture-mark-tools { pointer-events: auto; position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
+/* Above the picture, in a row of its own: nothing of it covers the video. */
+.picture-mark-tools { position: relative; z-index: 1; align-self: flex-start; flex: none; margin-bottom: 8px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
   background: rgb(11 11 11 / 80%); border: 1px solid rgb(255 255 255 / 12%); color: #bdbab2; backdrop-filter: blur(8px); cursor: default; }
 .picture-mark-tool { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px; background: none; color: inherit; }
 .picture-mark-tool:hover:enabled { color: #f4f1e9; }
