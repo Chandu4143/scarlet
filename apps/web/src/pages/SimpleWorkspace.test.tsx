@@ -6197,6 +6197,24 @@ it("shows cache progress on the Media button and offers Pause from More", async 
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 
+it("says in an empty chat that editing can start while the video caches, and stops once it's cached", async () => {
+  const [first, ...rest] = data.media.filter(m => m.kind === "video");
+  const caches = vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [
+    { mediaId: first!.id, state: "caching", progress: 0.3 }, ...rest.map(m => ({ mediaId: m.id, state: "ready" as const })),
+  ] });
+  data = { ...data, project: { ...data.project, head: null }, timeline: null, tasks: [], changes: [], notes: [] };
+  useProjectStore.setState({ current: data });
+  await show();
+  await act(async () => {});
+  const said = () => container.querySelector(".simple-chat .simple-empty")?.textContent;
+  expect(said()).toBe("You can start editing while the video caches.");
+  // Once every video is cached there is nothing to wait for, so nothing is said.
+  caches.mockResolvedValue({ caches: data.media.filter(m => m.kind === "video").map(m => ({ mediaId: m.id, state: "ready" as const })) });
+  await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { [first!.id]: 1 } } })));
+  await act(async () => {});
+  expect(said()).toBeUndefined();
+});
+
 it("draws a line under the Media button's word only while videos cache, and never on the menu's button", async () => {
   const [first, ...rest] = data.media.filter(m => m.kind === "video");
   const others = rest.map(m => ({ mediaId: m.id, state: "ready" as const }));

@@ -91,6 +91,7 @@ export function MediaButton({ importing, importFailed, onOpen }: { importing: nu
         {warning && <span className="text-warn">{warning}</span>}
         {adding && <span role="status">{adding}</span>}
         {headline && <strong role="status">{headline}</strong>}
+        {active && <span className="text-muted">You can edit during caching.</span>}
         {transcription && <span role="status">{transcription}</span>}
         {listed.slice(0, 5).map(({ media, cache }) => {
           const status = cacheLabel(cache, paused);

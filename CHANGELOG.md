@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- While a video is still caching, Scarlet now says you can start editing without waiting for it.
 - Zooming in on the timeline brings the playhead a little nearer the middle each time, so it no longer stays out at the edge.
 - Each cut in a pass's list of edits now says what came out and where, such as "Shortened the pause after ‘okay’", instead of the same reason on every row.
 - The drawing tools sit in a row above the video instead of over the picture.
