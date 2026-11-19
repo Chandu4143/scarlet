@@ -476,7 +476,7 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
   });
 }
 
-/** Draw one moment of the page as a transparent PNG, scaled to `outputWidth` (a template's preview). */
+/** Draw one moment of the page as a transparent PNG, scaled to `outputWidth`. */
 export async function renderGraphicStill(opts: GraphicPageOptions & { time: number; outputWidth?: number }): Promise<{ png: Buffer; missingFonts: MissingFont[]; installedFonts: string[]; problems: string[] }> {
   return withBrowser(opts, async (browser, url) => {
     const scale = opts.outputWidth ? opts.outputWidth / opts.width : 1;

@@ -1,4 +1,5 @@
 /** Tools and failure paths server.test.ts leaves alone: sync, crossfades, comparisons, auditions, notes, annotations and what goes to stderr. */
+import "./cutSummaries.testkit.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -438,25 +439,7 @@ describe("timeline_transition", () => {
     mock.state.timeline = tl;
   });
   const proposed = () => sent("/projects/prj_test/changes").map(r => r.body as { ops: Array<{ op: string; clipId: string; patch: Record<string, unknown> }>; description: string });
-  const swipe = { id: "tpl_swipe", kind: "transition", name: "swipe", title: "Swipe", description: "", fields: [], previewVersion: "1", createdAt: "2026-11-01T00:00:00.000Z",
-    updatedAt: "2026-11-01T00:00:00.000Z", html: "", sample: {}, width: 1920, height: 1080, duration: 0.4, previewAt: 0, transition: { type: "push", duration: 0.4, direction: "left" } };
-
-  it("puts a saved transition on the join it names by time, and says what the join got", async () => {
-    mock.state.extra = (req, res) => {
-      if (req.method === "GET" && req.path === "/templates/swipe") return reply(res, { template: swipe });
-      return false;
-    };
-    const c = await connect();
-    try {
-      await ok(c, "timeline_get");
-      const result = textOf(await ok(c, "timeline_transition", { joins: [{ at: 2 }], template: "$swipe",
-        reason: "The editor selected the swipe for this change of scene." }));
-      expect(proposed()[0]!.ops).toEqual([{ op: "updateClip", clipId: second.id, patch: { transitionIn: { type: "push", duration: 0.4, direction: "left", template: "swipe" } } }]);
-      expect(result).toContain("Joins:\n0:02.00: push over 0.40 s");
-    } finally { await c.close(); }
-  });
-
-  it("takes a type without a template, says where the nearest join is when none is at the time given, and takes a transition off", async () => {
+  it("takes a type and duration, says where the nearest join is when none is at the time given, and takes a transition off", async () => {
     const c = await connect();
     try {
       await ok(c, "timeline_get");
@@ -467,19 +450,6 @@ describe("timeline_transition", () => {
       await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], none: true,
         reason: "The two angles show continuous action." });
       expect(proposed()[1]!.ops[0]!.patch).toEqual({ transitionIn: null });
-    } finally { await c.close(); }
-  });
-
-  it("won't put a graphic template on a join", async () => {
-    mock.state.extra = (req, res) => {
-      if (req.method === "GET" && req.path === "/templates/lower-third") return reply(res, { template: { ...swipe, kind: "graphic", name: "lower-third", transition: undefined } });
-      return false;
-    };
-    const c = await connect();
-    try {
-      await ok(c, "timeline_get");
-      expect(textOf(await call(c, "timeline_transition", { joins: [{ at: 2 }], template: "lower-third" }))).toContain("$lower-third is a graphic template, not a transition.");
-      expect(proposed()).toEqual([]);
     } finally { await c.close(); }
   });
 });
@@ -734,7 +704,7 @@ describe("tool annotations", () => {
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
   const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "screen_area", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
-    "graphic_render", "template_save", "style_guide_save", "shorts_plan"];
+    "graphic_render", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
 
   it("gives every tool an input schema a harness can convert: no array that lists an item per position", async () => {

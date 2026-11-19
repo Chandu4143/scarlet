@@ -28,7 +28,9 @@ export type UndoStep = {
   /** "Reject" for a Reject edit, which asks Scarlet to put the edit back as a revision does. */
   word?: "Reject";
   /** The request the revision went out as. */
-  taskId: string;
+  taskId?: string;
+  /** The version a rejection made when the engine put the cut back itself, with no request: ⌘Z takes that version out. */
+  version?: string;
   /** The edit the card went on from (Reject edit moves on as Keep does), opened again once it is taken back. */
   threadId?: string;
   edit?: EditRef & { single?: boolean };
@@ -95,7 +97,8 @@ export async function undoLast(projectId: string, project: { changes: readonly C
   useUndoStore.setState({ undoing: step.id, error: undefined });
   try {
     if (step.kind === "keep") unkeepEdits(projectId, step.threadId, step.refs);
-    else await undoRevision(step.taskId, project, revert);
+    else if (step.version) await revert(step.version);
+    else if (step.taskId) await undoRevision(step.taskId, project, revert);
     appLog("action", "undo", { project: projectId, kind: step.kind, ...(step.kind === "keep" && { change: step.edit.changeId }) });
     useUndoStore.setState(s => ({ steps: s.steps.filter(other => other.id !== step.id) }));
     return step;

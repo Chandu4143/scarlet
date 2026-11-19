@@ -21,7 +21,6 @@ import { usePlayerStore } from "../stores/player";
 import { useShownCutStore } from "../stores/shownCut";
 import { useProjectStore, type ProjectData } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
-import { useTemplatesStore } from "../stores/templates";
 import { useUiStore, type AgentContext } from "../stores/ui";
 import { SimpleWorkspace } from "./SimpleWorkspace";
 import { cutOnWorkingCut, keepGoesTo } from "../lib/passCalls";
@@ -91,7 +90,9 @@ beforeEach(() => {
     tasks: db.tasks, taskEvents: db.taskEvents, versions: db.versions[PRJ]!,
     fullRenderKeys: { context: fullRenderContext(project), preview: db.renders.find(r => r.kind === "full")!.key, delivery: "current-delivery" },
   };
-  useProjectStore.setState({ current: data, status: "ready", load: vi.fn(), refreshHead: vi.fn(), loadTaskEvents: vi.fn().mockResolvedValue(undefined) });
+  useProjectStore.setState({ current: data, status: "ready", load: vi.fn(), refreshHead: vi.fn(), loadTaskEvents: vi.fn().mockResolvedValue(undefined),
+    // No engine here puts a rejected edit back itself, so the × asks Scarlet. Tests of the engine's own put-back answer it.
+    rejectEdits: vi.fn().mockRejectedValue(new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was.")) });
 });
 
 afterEach(async () => {
@@ -2084,6 +2085,72 @@ it("leaves the edit the editor stepped to open when a rejection sent from the ed
   expect(openTitle()).toBe("captions");
 });
 
+/** The request's edits as the engine lists them, with "captions" a cut that took 0.4 s out. */
+const withCut = (over: object = {}) => vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+  edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+    { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+    { changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.5, end: 3.5 }, at: 2, kind: "cut" as const, previous: [],
+      beforeCut: { version: data.project.head!, removed: { start: 2, end: 2.4 } }, ...over },
+    { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY },
+  ] }));
+
+it("puts a rejected cut back on the engine at once, with no request to Scarlet, and ⌘Z takes that version out", async () => {
+  appliedEdits();
+  withCut();
+  const createTask = vi.fn();
+  const rejectEdits = vi.fn().mockResolvedValue("ver_back");
+  const historyEdit = vi.fn().mockResolvedValue(undefined);
+  useProjectStore.setState({ createTask, rejectEdits, historyEdit });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  await click(rejectIcon());
+  await act(async () => {});
+  expect(rejectEdits.mock.calls).toEqual([[threadWith("chg_approved_2").id, data.project.head, [{ changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.5, end: 3.5 }, at: 2,
+    before: { version: data.project.head, removed: { start: 2, end: 2.4 } } }]]]);
+  expect(createTask).not.toHaveBeenCalled();
+  expect(vi.mocked(api.recordEditReview).mock.calls).toEqual([[PRJ, { changeId: "chg_approved_2", spot: 1, decision: "undo" }]]);
+  expect(openTitle()).toBe("wrap");
+  expect(container.querySelector(".timeline-foot .timeline-undo-button")!.textContent).toBe("Undo Reject");
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true })); });
+  await act(async () => {});
+  expect(historyEdit.mock.calls).toEqual([["ver_back", "revert"]]);
+});
+
+it("asks Scarlet to put a rejected cut back when the engine can't", async () => {
+  appliedEdits();
+  withCut();
+  const createTask = vi.fn().mockResolvedValue({ id: "task_reject" });
+  const rejectEdits = vi.fn().mockRejectedValue(new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was."));
+  useProjectStore.setState({ createTask, rejectEdits });
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  await click(rejectIcon());
+  await act(async () => {});
+  expect(rejectEdits).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({ context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, message: "Reject edit" }) }));
+});
+
+it("keeps a rejected edit's row in the list with a × and Rejected, and nothing else counts or opens it", async () => {
+  appliedEdits();
+  withCut({ rejected: true, beforeCut: undefined, at: undefined, kind: "restore" as const, range: { start: 2, end: 2.4 } });
+  await show();
+  const rows = [...turnFor("chg_approved_2").querySelectorAll<HTMLButtonElement>(".simple-edits .simple-edit")];
+  // In the video's order, between the edits either side: no number, a ×, its own words, and Rejected where its amount was.
+  expect(rows.map(row => [row.querySelector(".edit-badge")!.textContent, row.querySelector(".simple-edit-title")!.textContent,
+    row.querySelector(".simple-edit-value")?.textContent ?? "", row.disabled]))
+    .toEqual([["1", "music bed", expect.any(String), false], ["", "captions", "Rejected", true], ["2", "wrap", expect.any(String), false]]);
+  expect(rows[1]!.matches(".is-rejected")).toBe(true);
+  expect(rows[1]!.getAttribute("aria-label")).toBe("captions, rejected");
+  expect(rows[1]!.querySelector(".edit-badge.is-rejected svg")).not.toBeNull();
+  // ↓ from the first edit goes past it to the next edit.
+  await click(rows[0]!);
+  await act(async () => {});
+  await press("ArrowDown");
+  expect(openTitle()).toBe("wrap");
+});
+
 it("says on the edit's card why Reject edit couldn't be sent, and leaves the edit open", async () => {
   appliedEdits();
   const createTask = vi.fn().mockRejectedValueOnce(new Error("Scarlet can’t take requests right now.")).mockResolvedValue({ id: "task_reject" });
@@ -2100,7 +2167,7 @@ it("says on the edit's card why Reject edit couldn't be sent, and leaves the edi
   expect(api.recordEditReview).not.toHaveBeenCalled();
 });
 
-it("saves a graphic from its card as a template, with an icon before Revise and T as its key", async () => {
+it("names a graphic's card Graphic, with Revise, Keep and Reject edit and nothing to save it as", async () => {
   appliedEdits();
   // The engine says the second edit laid a graphic over the picture.
   vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
@@ -2109,43 +2176,18 @@ it("saves a graphic from its card as a template, with an icon before Revise and 
       { changeId: "chg_approved_2", spot: 1, label: "Lower third: Daniel", range: { start: 0.2, end: 2.4 }, previous: [], kind: "graphic" as const,
         summary: "Added a lower third naming Daniel as he first speaks." },
     ] }));
-  let sent!: () => void;
-  const createTask = vi.fn().mockImplementation(() => new Promise(resolve => { sent = () => resolve({ id: "task_template" }); }));
+  const createTask = vi.fn();
   useProjectStore.setState({ createTask });
   await show();
   await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
   const panel = editPanel()!;
-  // The card names what the edit is, and its small icon, Save as template, comes before Revise and Keep.
   expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("Graphic");
   expect([...panel.querySelectorAll(".edit-card-acts button")].map(b => [b.textContent, b.getAttribute("aria-label"), b.getAttribute("aria-keyshortcuts"), b.getAttribute("title")]))
-    .toEqual([["", "Save as template", "T", "Save as template (T)"], ["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"], ["", "Reject edit", null, "Reject edit"]]);
-  // T sends one request however long it is held: about this edit, named "Save as template".
+    .toEqual([["Revise", null, "R", "Revise (R)"], ["Keep", null, "K", "Keep (K)"], ["", "Reject edit", null, "Reject edit"]]);
+  // T is no key of the card's.
   await press("t");
-  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", repeat: true, bubbles: true })); });
-  await press("t");
-  expect(createTask).toHaveBeenCalledTimes(1);
-  expect(createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
-    kind: "edit", agent: "claude", model: "opus",
-    instruction: expect.stringMatching(/^Save the graphic of edit 2, “Lower third: Daniel” as a reusable template\. Work out which parts of it change/),
-    context: expect.objectContaining({ changeId: "chg_approved_2", editIndex: 1, editNumber: 2, threadId: threadWith("chg_approved_2").id, message: "Save as template" }),
-  }));
-  await act(async () => sent());
-  // An edit that isn't a graphic has no such icon.
-  await press("ArrowUp");
-  await act(async () => {});
-  expect(editPanel()?.querySelector(".edit-card-template")).toBeNull();
-});
-
-it("draws the template lit in the message box's $ list over the player's picture until the list closes", async () => {
-  await show();
-  const monitor = container.querySelector(".watch-monitor")!;
-  expect(monitor.querySelector(".template-on-picture")).toBeNull();
-  await act(async () => useTemplatesStore.getState().setLit({ id: "tpl_lower", url: "data:image/png;base64,AA==" }));
-  const over = monitor.querySelector<HTMLImageElement>(".template-on-picture")!;
-  expect([over.getAttribute("src"), over.dataset.template]).toEqual(["data:image/png;base64,AA==", "tpl_lower"]);
-  await act(async () => useTemplatesStore.getState().setLit(null));
-  expect(monitor.querySelector(".template-on-picture")).toBeNull();
+  expect(createTask).not.toHaveBeenCalled();
 });
 
 it("opens a marker Scarlet left for the editor as a to-do: what to add first, nothing to compare or undo, and Done", async () => {
@@ -6195,6 +6237,24 @@ it("shows cache progress on the Media button and offers Pause from More", async 
   await click(menuItem("Pause"));
   expect(updateProject).toHaveBeenCalledWith({ mediaPaused: true }, PRJ);
   expect(container.querySelector('[role="menu"]')).toBeNull();
+});
+
+it("says in an empty chat that editing can start while the video caches, and stops once it's cached", async () => {
+  const [first, ...rest] = data.media.filter(m => m.kind === "video");
+  const caches = vi.spyOn(api, "sourceCaches").mockResolvedValue({ caches: [
+    { mediaId: first!.id, state: "caching", progress: 0.3 }, ...rest.map(m => ({ mediaId: m.id, state: "ready" as const })),
+  ] });
+  data = { ...data, project: { ...data.project, head: null }, timeline: null, tasks: [], changes: [], notes: [] };
+  useProjectStore.setState({ current: data });
+  await show();
+  await act(async () => {});
+  const said = () => container.querySelector(".simple-chat .simple-empty")?.textContent;
+  expect(said()).toBe("You can start editing while the video caches.");
+  // Once every video is cached there is nothing to wait for, so nothing is said.
+  caches.mockResolvedValue({ caches: data.media.filter(m => m.kind === "video").map(m => ({ mediaId: m.id, state: "ready" as const })) });
+  await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { [first!.id]: 1 } } })));
+  await act(async () => {});
+  expect(said()).toBeUndefined();
 });
 
 it("draws a line under the Media button's word only while videos cache, and never on the menu's button", async () => {

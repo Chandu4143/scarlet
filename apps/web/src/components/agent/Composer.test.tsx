@@ -5,12 +5,11 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router-d
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { isDialogueGuide } from "@scarlet/shared";
 import { api } from "../../lib/client";
-import { buildDb, PRJ, sampleTemplates } from "../../lib/mock/fixtures";
+import { buildDb, PRJ } from "../../lib/mock/fixtures";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore } from "../../stores/attachments";
 import { usePictureMarksStore } from "../../stores/pictureMarks";
 import * as markedFrame from "../../lib/markedFrame";
-import { useTemplatesStore } from "../../stores/templates";
 import { buildThreads } from "../../lib/threads";
 import { useHostsStore } from "../../stores/hosts";
 import { usePlayerStore } from "../../stores/player";
@@ -24,7 +23,7 @@ import { NotePopover } from "./NotePopover";
 import { ProjectLayout } from "../shell/ProjectLayout";
 
 const stores = [useProjectStore.getState(), useUiStore.getState(), usePlayerStore.getState(), useHostsStore.getState(), useSkillsStore.getState(),
-  useTemplatesStore.getState(), useAttachmentsStore.getState()] as const;
+  useAttachmentsStore.getState()] as const;
 const db = buildDb();
 const project = db.projects.find(p => p.id === PRJ)!;
 const current: ProjectData = { id: PRJ, project, timeline: db.timelines[project.head!]!,
@@ -50,8 +49,7 @@ afterEach(async () => {
   usePlayerStore.setState(stores[2], true);
   useHostsStore.setState(stores[3], true);
   useSkillsStore.setState(stores[4], true);
-  useTemplatesStore.setState(stores[5], true);
-  useAttachmentsStore.setState(stores[6], true);
+  useAttachmentsStore.setState(stores[5], true);
   usePictureMarksStore.setState({ marking: null, byProject: {} });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -1542,79 +1540,21 @@ it("says what went wrong with the microphone on the line over the box, until the
   expect(line()).toBe(denied);
 });
 
-it("asks for a new edit, with the skills and templates it takes, in an empty box", async () => {
+it("asks for a new edit, with the skills it takes, in an empty box", async () => {
   await show();
-  expect(container.querySelector("textarea")!.placeholder).toBe("Describe an edit, / skills, $ templates");
-  expect(NEW_EDIT_HINT).toBe("Describe an edit, / skills, $ templates");
+  expect(container.querySelector("textarea")!.placeholder).toBe("Describe an edit, / skills");
+  expect(NEW_EDIT_HINT).toBe("Describe an edit, / skills");
 });
 
-it("lists the templates with $, graphics and then transitions, as / lists the skills, and puts the chosen one's name in the box", async () => {
-  const templates = sampleTemplates();
-  const list = vi.spyOn(api, "listTemplates").mockResolvedValue({ templates });
+it("opens no list for $: the words are sent as written", async () => {
   await show();
   const field = container.querySelector("textarea")!;
   await act(() => field.focus());
-  const key = (key: string) => act(() => { field.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
-  const rows = () => Array.from(container.querySelectorAll('.composer-templates [role="option"].composer-template'));
   await type("$");
-  expect(list).toHaveBeenCalledTimes(1);
-  const box = container.querySelector('[role="listbox"]')!;
-  expect(box.getAttribute("aria-label")).toBe("Templates");
-  expect(box.classList.contains("composer-skills")).toBe(true);
-  expect([...box.querySelectorAll(".eyebrow")].map(e => e.textContent)).toEqual(["Graphics", "Transitions"]);
-  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Lower third", "Title card", "Pull quote", "Swipe", "Dip to black"]);
-  // A transition's row moves between the pictures either side of a cut, and says how many frames it lasts.
-  const swipe = rows()[3]!;
-  expect(swipe.querySelector(".composer-template-thumb .transition-picture")?.className).toBe("transition-picture is-push to-left");
-  expect(swipe.querySelector(".composer-template-fields")?.textContent).toBe(`${Math.round(0.4 * project.settings.fps)} frames`);
-  // Each row: its picture over the frame under the playhead, its title, and its fields under it.
-  expect(rows()[0]!.querySelectorAll(".composer-template-thumb img")).toHaveLength(2);
-  expect(rows()[0]!.querySelector(".composer-template-fields")?.textContent).toBe("Name, Title");
-  // The project's style guide is the list's last line.
-  expect(box.lastElementChild?.textContent).toBe("Style guideBrand guide.pdf");
-  // The lit row's picture is over the player's.
-  expect(useTemplatesStore.getState().lit?.id).toBe("tpl_lower");
-  await key("ArrowDown");
-  expect(rows()[1]!.getAttribute("aria-selected")).toBe("true");
-  expect(useTemplatesStore.getState().lit?.id).toBe("tpl_title");
-  // A lit transition plays over the player's picture.
-  await key("ArrowDown");
-  await key("ArrowDown");
-  expect([useTemplatesStore.getState().lit?.id, useTemplatesStore.getState().lit?.transition?.type]).toEqual(["tpl_swipe", "push"]);
-  await key("Escape");
-  expect(container.querySelector('[role="listbox"]')).toBeNull();
-  expect(useTemplatesStore.getState().lit).toBeNull();
-  // What follows $ filters the list. Enter puts the name in the box in place of what was typed, with a space after it.
-  await type("Add a $quo");
-  expect(list).toHaveBeenCalledTimes(2);
-  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Pull quote"]);
-  await key("Enter");
-  expect(field.value).toBe("Add a $pull-quote ");
-  expect(container.querySelector('[role="listbox"]')).toBeNull();
-  // A $ that isn't a template is the editor's own words.
-  await type("Budget is $9");
-  expect(container.textContent).toContain("No matching templates.");
-  await type("$");
-  await key("ArrowUp");
-  expect(container.querySelector(".composer-skill-footer [role='option']")?.getAttribute("aria-selected")).toBe("true");
-  await key("Enter");
-  expect(field.value).toBe("Make a template ");
-  expect(field.selectionStart).toBe("Make a template ".length);
   expect(container.querySelector('[role="listbox"]')).toBeNull();
   await type("$lower-third for Daniel");
   await submit();
   expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({ instruction: "$lower-third for Daniel" }));
-});
-
-it("says the library has no templates yet, and how to make one", async () => {
-  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: [] });
-  await act(() => useProjectStore.setState({ current: { ...current, project: { ...project, styleGuide: undefined } } }));
-  await show();
-  const field = container.querySelector("textarea")!;
-  await act(() => field.focus());
-  await type("$");
-  expect(container.querySelector('[role="listbox"] [role="status"]')?.textContent).toBe("No templates yet. Ask Scarlet to make one, or save a graphic from its card.");
-  expect(container.querySelector(".composer-style-guide")).toBeNull();
 });
 
 it("attaches files dropped or pasted on the box to the next message, in a line on top of the box", async () => {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { player } from "../../lib/player";
 import { usePictureMarksStore } from "../../stores/pictureMarks";
 import { usePlayerStore } from "../../stores/player";
-import { PictureMarks, toggleMarking } from "./PictureMarks";
+import { PictureMarkTools, PictureMarks, toggleMarking } from "./PictureMarks";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -28,7 +28,11 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-const show = () => act(async () => root.render(<PictureMarks projectId="prj" version="v1" fps={25} />));
+const start = () => toggleMarking("prj", { time: usePlayerStore.getState().time, version: "v1" });
+const show = () => act(async () => root.render(<>
+  <PictureMarks projectId="prj" version="v1" fps={25} />
+  <PictureMarkTools projectId="prj" enabled onStart={start} />
+</>));
 const press = (type: string, x: number, y: number) => act(async () => {
   const frame = container.querySelector(".picture-marks-frame")!;
   frame.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 1, button: 0 }));
@@ -38,9 +42,12 @@ const marks = () => usePictureMarksStore.getState().byProject.prj?.marks ?? [];
 it("draws a line, a box and a point on the frame, in fractions of the picture, and numbers them once there are several", async () => {
   await show();
   expect(container.querySelector(".picture-marks")).toBeNull();
+  // The tools are always over the picture, with no time beside them.
+  expect(container.querySelector(".picture-mark-tools")?.textContent).toBe("");
+  expect(container.querySelector('[aria-label="Draw"]')?.getAttribute("aria-pressed")).toBe("false");
   await act(async () => toggleMarking("prj", { time: 7, version: "v1", picture: "frame://7" }));
   expect(player.pause).toHaveBeenCalled();
-  expect(container.querySelector(".picture-mark-tools .picture-mark-note")?.textContent).toBe("0:07");
+  expect(container.querySelector('[aria-label="Draw"]')?.getAttribute("aria-pressed")).toBe("true");
   await press("pointerdown", 200, 60);
   await press("pointermove", 240, 100);
   await press("pointermove", 200, 140);
@@ -61,7 +68,6 @@ it("draws a line, a box and a point on the frame, in fractions of the picture, a
   await press("pointerup", 361, 40);
   expect(marks()[2]).toEqual({ kind: "point", box: { x: 0.9, y: 0.2, w: 0, h: 0 } });
   expect(Array.from(container.querySelectorAll(".picture-mark-number, .picture-mark-point"), n => n.textContent)).toEqual(["1", "2", "3"]);
-  expect(container.querySelector(".picture-mark-note")?.textContent).toBe("0:07 · 3 marks");
 });
 
 it("leaves marking on Esc or when the video plays on, and keeps the marks for the message", async () => {
@@ -86,5 +92,23 @@ it("leaves marking on Esc or when the video plays on, and keeps the marks for th
   expect(player.seek).toHaveBeenCalledWith(7, true);
   await act(async () => usePlayerStore.setState({ time: 7 }));
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true })); });
+  expect(marks()).toHaveLength(0);
+});
+
+it("starts marking from a tool over the picture, and ends it when the lit tool is pressed again", async () => {
+  await show();
+  const tool = (name: string) => container.querySelector(`[aria-label="${name}"]`) as HTMLButtonElement;
+  expect(tool("Undo").disabled).toBe(true);
+  await act(async () => tool("Box").click());
+  expect(player.pause).toHaveBeenCalled();
+  expect(usePictureMarksStore.getState()).toMatchObject({ marking: "prj", tool: "box" });
+  await press("pointerdown", 20, 20);
+  await press("pointermove", 100, 80);
+  await press("pointerup", 100, 80);
+  expect(tool("Undo").disabled).toBe(false);
+  await act(async () => tool("Box").click());
+  expect(usePictureMarksStore.getState().marking).toBeNull();
+  expect(marks()).toHaveLength(1);
+  await act(async () => tool("Clear marks").click());
   expect(marks()).toHaveLength(0);
 });

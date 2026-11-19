@@ -92,16 +92,9 @@
  *  Skills
  *   GET    /skills?projectId=&taskId=&view=              → { skills: Skill[] }
  *
- *  Graphic templates (library-wide, like skills; the editor picks one with $name in the message box)
- *   GET    /templates                                    → { templates: GraphicTemplateSummary[] }
- *   GET    /templates/:templateId/preview                → image/png (the template drawn with its sample fields, transparent)
- *   DELETE /templates/:templateId                        → {}
- *   GET    /templates/:templateId                        → { template: GraphicTemplate }   (id or name; its page and sample values)
- *   POST   /templates               SaveTemplateRequest  → { template: GraphicTemplate }   (saving a name that exists replaces it)
- *
  *  Graphics and the style guide
  *   POST   /projects/:id/graphics   multipart (options: GraphicRenderRequest, html?, asset*) → GraphicRenderResponse
- *   GET    /projects/:id/graphics/:mediaId               → { html, source, width, height, fps, duration, template?, fields? }
+ *   GET    /projects/:id/graphics/:mediaId               → { html, source, width, height, fps, duration }
  *   PUT    /projects/:id/style-guide SaveStyleGuideRequest → { styleGuide: StyleGuide }   (replaces the project's guide)
  *   DELETE /projects/:id/style-guide                     → {}
  *   GET    /projects/:id/attachments/:attachmentId       → the file (for reading an attachment or the guide)
@@ -1260,88 +1253,12 @@ export type UsageResponse = z.infer<typeof UsageResponse>;
 // Skills
 // ---------------------------------------------------------------------------
 
-/** Template names are what the editor types after $, so they follow the same rule as skill names. */
-export const TemplateSlug = SkillSlug;
-
-/** What a template makes: a graphic over the picture, or a transition between two clips. */
-export const TemplateKind = z.enum(["graphic", "transition"]);
-export type TemplateKind = z.infer<typeof TemplateKind>;
-
-/** A transition template: how the picture moves at a join, without the name of the template it is. */
-export const TransitionStyle = Transition.omit({ template: true });
-export type TransitionStyle = z.infer<typeof TransitionStyle>;
-
 /**
- * Something the editor can reuse by typing its name after $. A graphic is an HTML/CSS page with named fields that
- * Scarlet fills in and renders over the picture; a transition is how the picture moves from one clip to the next.
- * Saved library-wide, like skills.
- */
-export const GraphicTemplateSummary = z.object({
-  id: Id,
-  kind: TemplateKind.default("graphic"),
-  /** A transition template's movement. */
-  transition: TransitionStyle.optional(),
-  /** What follows $ in a message, e.g. "lower-third". */
-  name: TemplateSlug,
-  /** How the list names it, e.g. "Lower third". */
-  title: z.string().min(1).max(120),
-  description: z.string().max(2000).default(""),
-  /** The fields that change from use to use, in order, as the editor reads them ("Name", "Title"). */
-  fields: z.array(z.string().min(1).max(60)).max(20),
-  /** Changes whenever the preview is drawn again, so the renderer can cache the image by it. */
-  previewVersion: z.string(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-});
-export type GraphicTemplateSummary = z.infer<typeof GraphicTemplateSummary>;
-
-/** Values for a template's fields, by field name. */
-export const TemplateFields = z.record(z.string().max(2000));
-
-/** A saved template as the agent reads it: its page with `{{Field}}` placeholders and what it was drawn with. */
-export const GraphicTemplate = GraphicTemplateSummary.extend({
-  /** The page, with a `{{Field}}` placeholder wherever a field's value goes. Empty for a transition. */
-  html: z.string().max(500_000),
-  /** The values its preview is drawn with. */
-  sample: TemplateFields,
-  /** The frame it was designed in. A use renders at the project's size. */
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  /** Seconds a use lasts unless the agent says otherwise. */
-  duration: z.number().positive(),
-  /** The moment of the graphic the preview shows, in seconds. */
-  previewAt: z.number().nonnegative(),
-});
-export type GraphicTemplate = z.infer<typeof GraphicTemplate>;
-
-/** POST /templates: save a template, or replace the one with the same name. A transition sends `transition` and no page. */
-export const SaveTemplateRequest = z.object({
-  name: TemplateSlug.max(64),
-  title: z.string().trim().min(1).max(120),
-  description: z.string().max(2000).default(""),
-  fields: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
-  html: z.string().min(1).max(500_000).optional(),
-  sample: TemplateFields.default({}),
-  transition: TransitionStyle.optional(),
-  /** A graphic of this project whose files (fonts, pictures) the page links to. */
-  projectId: Id.optional(),
-  basedOn: Id.optional(),
-  width: z.number().int().positive().max(8192).optional(),
-  height: z.number().int().positive().max(8192).optional(),
-  duration: z.number().positive().max(600).optional(),
-  previewAt: z.number().nonnegative().optional(),
-});
-export type SaveTemplateRequest = z.infer<typeof SaveTemplateRequest>;
-
-/**
- * POST /projects/:id/graphics, the `options` field of the multipart form; the page is the `html` file field, or the
- * template's, and any `asset` file fields are files it links to by relative path (the part's filename).
+ * POST /projects/:id/graphics, the `options` field of the multipart form; the page is the `html` file field,
+ * and any `asset` file fields are files it links to by relative path (the part's filename).
  */
 export const GraphicRenderRequest = z.object({
-  /** Fill this template instead of sending a page. Its id or name. */
-  template: z.string().min(1).optional(),
-  fields: TemplateFields.optional(),
-  /** The graphic this one revises: its files come along, and so does the template it was made from. */
+  /** The graphic this one revises: its files come along. */
   basedOn: Id.optional(),
   duration: z.number().positive().max(600).optional(),
   width: z.number().int().positive().max(8192).optional(),

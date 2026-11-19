@@ -389,7 +389,7 @@
 .edit-card .review-actions .btn-ghost[data-key="R"] { border-color: transparent; background: none; color: var(--color-muted); }
 .edit-card .review-actions .btn-ghost[data-key="R"]:enabled:hover { color: var(--color-fg); }
 .edit-card-bar .review-actions { margin-left: auto; }
-/* An applied edit's decisions are at the row's end, after any small icon such as Save as template. */
+/* An applied edit's decisions are at the row's end, after any small icon. */
 .edit-card-acts { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
 .edit-card-acts .review-actions { margin-left: 0; }
 /* Reject edit sits after Keep as Skip sits after a call's Approve, the same 6px apart. */
@@ -692,6 +692,13 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .simple-pass-list > li > button.is-decided .simple-pass-label, .simple-pass-list > li > button.is-decided .simple-pass-time { color: var(--color-dim); }
 .simple-pass-tick { display: inline-block; margin-right: 6px; vertical-align: -1px; color: var(--color-muted); }
 .simple-pass-tick svg { display: inline; }
+/* An edit the editor rejected: a × where a kept one has its tick, its words dim, and "Rejected" where it said how much
+   it took. Nothing is left of it to open, so its row doesn't light under the pointer. */
+.simple-pass-tick.is-rejected { color: var(--color-dim); }
+.simple-pass-list > li > button.is-rejected, .simple-edit.is-rejected { cursor: default; }
+.simple-pass-list > li > button.is-rejected :is(.simple-pass-label, .simple-pass-time, .simple-pass-value),
+.simple-edit.is-rejected :is(.simple-edit-title, .simple-edit-value) { color: var(--color-dim); }
+.edit-badge.is-rejected { border-color: var(--color-line); color: var(--color-dim); }
 /* "Need you" is the short list: a call's number, Scarlet's note, and a word once it's settled or sent back. */
 .simple-pass-list.is-short > li > button { grid-template-columns: minmax(18px, max-content) minmax(0, 1fr) auto; align-items: center; }
 .simple-pass-list > li > button:is(.is-decided, :disabled) .edit-badge { border-color: var(--color-line); color: var(--color-dim); }

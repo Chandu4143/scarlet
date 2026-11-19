@@ -17,8 +17,7 @@ import { usePlayerStore } from "../stores/player";
 import { selectRender, useProjectStore } from "../stores/project";
 import { useShownCut } from "../stores/shownCut";
 import { CaughtUpOnMonitor } from "../components/player/CaughtUp";
-import { PictureMarks, toggleMarking } from "../components/player/PictureMarks";
-import { usePictureMarksStore } from "../stores/pictureMarks";
+import { PictureMarks, PictureMarkTools, toggleMarking } from "../components/player/PictureMarks";
 import { editTargetAt, markedRangeOf, useUiStore, type AgentContext, type MarkedRange } from "../stores/ui";
 import { Icon } from "../components/ui/primitives";
 import { CachedVideo } from "../components/player/CachedVideo";
@@ -42,8 +41,6 @@ import { editFocus } from "../lib/editKind";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
 import { momentRange } from "../lib/editMoments";
 import { editKey } from "../lib/keptEdits";
-import { useTemplatesStore } from "../stores/templates";
-import { TransitionPicture } from "../components/agent/TemplateMenu";
 
 const noop = () => {};
 const documentVisible = () => !document.hidden;
@@ -534,9 +531,8 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
 
   useEffect(() => { if (!active) player.pause(); }, [active]);
 
-  // Marks drawn on the picture for the message in the box. M, or the pen in the player's controls, marks the frame
-  // under the playhead.
-  const marking = usePictureMarksStore(s => s.marking === current.id);
+  // Marks drawn on the picture for the message in the box. M, or a tool over the picture, marks the frame under the
+  // playhead.
   const canMark = !!simple.onPick && playable && !beforeShown.current;
   const markFrame = () => {
     if (!canMark) return;
@@ -742,6 +738,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   return (
     <section ref={stage} className="cut-preview" aria-label={view} data-expanded={expanded || undefined}>
       <AmbientLight stage={stage} monitor={monitor} />
+      {simple.onPick && (source || cut || change || draftVersion) && <PictureMarkTools projectId={current.id} enabled={canMark && !playingBefore && !framing} onStart={markFrame} />}
       <div className="watch-viewport">
         <div ref={monitor} className="watch-monitor" data-landscape={pictureAspect > 1 || undefined}
           style={{ "--picture-aspect": pictureAspect } as CSSProperties}
@@ -777,7 +774,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
           {atSelectedFrame && selectedTime !== undefined && selectedFrameUrl &&
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
-          <TemplateOnPicture />
           {!playingBefore && !framing && <PictureMarks projectId={current.id} version={source ? undefined : rangeVersion} mediaId={source?.id} fps={fps} />}
           {/* The edits saved while the video played come in as it stops, with a word that they did. */}
           {!source && <CaughtUpOnMonitor />}
@@ -797,11 +793,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
           </MonitorPlayback>}
           {(source || cut || change || draftVersion) && <div className="monitor-controls">
             <PlaybackSpeed playable={playable} />
-            {simple.onPick && <button type="button" className="btn-icon" aria-pressed={marking} disabled={!canMark}
-              onClick={e => { if (e.detail) e.currentTarget.blur(); markFrame(); }}
-              aria-label={marking ? "Stop marking the picture" : "Mark the picture"} title={marking ? "Stop marking (M)" : "Mark the picture (M)"}>
-              <Icon name="pencil" size={15} />
-            </button>}
             <button className="btn-icon" onClick={e => { if (e.detail) e.currentTarget.blur(); void toggleFullscreen(); }} aria-label={expanded ? "Exit full screen" : "Full screen"} title={expanded ? "Exit full screen" : "Full screen"}>
               <Icon name="fullscreen" size={15} />
             </button>
@@ -826,11 +817,4 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       </div>}
     </section>
   );
-}
-
-/** The template lit in the message box's $ list, drawn over the picture as it would sit there, until the list closes. */
-function TemplateOnPicture() {
-  const lit = useTemplatesStore(s => s.lit);
-  if (lit?.transition) return <span className="template-on-picture" data-template={lit.id}><TransitionPicture transition={lit.transition} from={lit.from} to={lit.to} playing /></span>;
-  return lit ? <img key={lit.id} className="template-on-picture" src={lit.url} alt="" data-template={lit.id} /> : null;
 }

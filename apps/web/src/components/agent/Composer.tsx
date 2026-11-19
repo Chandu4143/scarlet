@@ -513,7 +513,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
 }
 
 /** What the empty box says when the message would start a new edit. */
-export const NEW_EDIT_HINT = "Describe an edit, / skills, $ templates";
+export const NEW_EDIT_HINT = "Describe an edit, / skills";
 
 const NO_FILES: PendingAttachment[] = [];
 

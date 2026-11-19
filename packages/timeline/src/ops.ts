@@ -364,7 +364,7 @@ function withCaptionStyle<P extends { captionStyle?: Partial<CaptionStyle> }>(cu
  * that overlap by exactly the fades they carry there. Cut through as it is, the overlap would leave one side fading out
  * over nothing and a sliver of the other fading in after it. The removal's own join can take a crossfade again.
  */
-function straightenCrossfades(track: Track, start: number, end: number) {
+export function straightenCrossfades(track: Track, start: number, end: number) {
   const clips = track.clips;
   for (let i = 0; i < clips.length; i++) {
     const left = clips[i]!;

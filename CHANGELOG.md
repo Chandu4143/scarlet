@@ -6,6 +6,16 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- Templates are gone for now: the message box no longer lists them with $, and a graphic's card has no bookmark. Describe a look or a transition in a skill, or just ask for it.
+- Rejecting an edit undoes it at once, with no wait and no tokens, whenever Scarlet knows exactly what the edit changed: a cut, a change to how a shot looks or sounds, or a request's only edit. It is out of the video and off the timeline as soon as you press ×. Scarlet is only asked for the rest.
+- A rejected edit stays in its request's list with a × and "Rejected", and is no longer counted as a passage put back.
+- While a video is still caching, Scarlet now says you can start editing without waiting for it.
+- Zooming in on the timeline brings the playhead a little nearer the middle each time, so it no longer stays out at the edge.
+- Each cut in a pass's list of edits now says what came out and where, such as "Shortened the pause after ‘okay’", instead of the same reason on every row.
+- The drawing tools sit in a row above the video instead of over the picture.
+
+- The drawing tools now stay over the top left of the picture, so a press on one pauses the video and starts marking; the pen beside full screen is gone.
+
 - A dialogue pass leaves your own short pauses in and cuts only the ones that play as dead air, about a second or more, so cuts no longer land one after another.
 - ⌘Z takes back your last Keep, Reject or revision, and pressing it again goes on to the one before. "Undo Keep", "Undo Reject" or "Undo revision" under the timeline says what it will take back.
 - Scarlet now makes a cut between two words you say without a pause, where you'd cut it, instead of setting it aside.

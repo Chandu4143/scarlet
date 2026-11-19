@@ -1,3 +1,4 @@
+import "./cutSummaries.testkit.js";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3461,6 +3462,11 @@ it("counts a silence as decided when its keep names words or its range is protec
   const pause = { kind: "pause", reason: "He is typing the note." };
   const cut = { ...pause, start: 6.1, end: 6.8, decision: "cut", summary: "Shorten the pause before signatures." };
   try {
+    // A cut without a summary has no row to show in the list, so nothing of the part saves until each has one.
+    const unnamed = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tightened the tour",
+      range: { start: 0, end: 10 }, cuts: [{ ...cut, summary: undefined }] } }) as CallToolResult;
+    expect(unnamed.isError).toBe(true);
+    expect(textOf(unnamed)).toContain("Missing at cuts 0");
     // The tool reports the quiet gap and submits only the requested removal.
     const alone = await apply(cut);
     expect(alone.keptSilences).toContainEqual(expect.objectContaining({ after: "note.", before: "You" }));
