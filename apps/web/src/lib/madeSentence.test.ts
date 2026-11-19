@@ -76,3 +76,11 @@ it("counts a marker listed in several places as the one edit it is", () => {
   expect(say([boat, boat])).toBe("Boat comparison footage, in 2 places.");
   expect(say([boat, boat, spot("Fall Guys comparison footage")])).toBe("Marked 2 spots for you.");
 });
+
+it("says footage put back as what was done to it, never as something made", () => {
+  const back = { label: "Restored the first sound", kind: "restore" as const };
+  expect(say([cut(0, 60), cut(100, 171), back, { label: "Frame the chart", kind: "reframe" }, { label: "Frame the card", kind: "reframe" }]))
+    .toBe("Took out 2:11 in 2 cuts, put back 1 passage, and made 2 reframes.");
+  expect(say([cut(0, 60), cut(100, 171), back, { ...back, label: "Restored the pause" }])).toBe("Took out 2:11 in 2 cuts and put back 2 passages.");
+  expect(say([back, ...["A", "B", "C", "D"].map(label => ({ label, kind: "zoom" as const }))])).toBe("Put back 1 passage and made 4 zooms.");
+});
