@@ -29,6 +29,12 @@ Every mistake the editor reports in a dialogue cut is an entry with a check, and
 run against all of them: [DIALOGUE.md](DIALOGUE.md) says how. `ledger.ts check` runs the free checks (unit tests, and
 replays of the model's real requests through today's code) and compares with the last recorded run.
 
+## The dialogue scorecard
+
+`scorecard.ts` turns scored passes into a percentage for each factor of a dialogue cut (cut accuracy, lines kept, no
+mid-word cuts, dead air, cut count, space at a cut, no restarts left in, known mistakes) and one overall figure, read
+against the published video. Give it one run for its card or two to compare them. See [DIALOGUE.md](DIALOGUE.md).
+
 ## What it measures
 
 Times are seconds on the dialogue recording's source clock, so runs from different versions can be compared.

@@ -77,7 +77,49 @@ model reads (prompt, skills, tool descriptions or results) or the entry's cause 
 run that can answer: a clone of the reported project cut down to the minute around the spot, 4 passes an arm, against
 4 on main. Say the expected cost when you ask.
 
-## 5. Record
+## 5. Score it against the published video
+
+The ledger says whether old mistakes stay fixed. The scorecard says how good the cut is: each scored pass is read
+against the video the editor's own editor published from the same recording, and comes down to a percentage for each
+thing a dialogue cut has to get right, and one overall figure.
+
+| Factor | 100% means |
+|---|---|
+| Cut accuracy | Scarlet removed the words the editor removed, and no others |
+| Lines kept | every sentence the editor kept is still in |
+| No mid-word cuts | no join cuts into a word that is sounding |
+| Dead air | as much dead air left as the editor left, no more and no less |
+| Cut count | as many cuts as the editor made |
+| Space at a cut | at cuts both made, the pause is within 0.1 s of the editor's |
+| No restarts left in | no more restarts or doubled words play than in the editor's cut |
+| Known mistakes | every spot that went wrong before comes out right, or is asked about |
+
+```sh
+# One run, or one pass: its card, and for a single pass what each figure is made of.
+node_modules/.bin/tsx evals/src/scorecard.ts <run folder | evaluation.json>
+# Main against a change: each factor side by side, and which differences are inside the spread between passes.
+node_modules/.bin/tsx evals/src/scorecard.ts <main's run> <the change's run> --labels main,change --ledger
+```
+
+A scorecard costs nothing: it reads what `run.ts` already scored, and every run writes its own `scorecard.md`. Only the
+passes cost tokens, so the rule above holds: ask first, and run them when the change alters what the model reads.
+A change that alters only placement or the transcript is judged by the ledger and replays.
+
+Reading it:
+
+- **Passes disagree.** Two passes of the same code differ by a few points on most factors. Run 4 a side, and treat a
+  difference marked "within the spread" as no result. A change ships on the scorecard when the overall goes up and no
+  factor falls clear of the spread.
+- **Recordings count once each.** A side's figure is the mean over recordings of the mean over that recording's passes.
+  With fewer than three recordings the card describes those videos more than the cutting: add a case for every
+  recording the editor supplies with its published video (`dataset.ts build … --published-media`, see `README.md`).
+- **Too tight scores as low as too loose.** Dead air and cut count measure distance from the editor's cut on either
+  side, so a pass that trims every short pause loses what a pass that trims none loses.
+- **Past mistakes** is the ledger's pass rate on this checkout (`--ledger`), beside the card, not in the overall.
+- Calls for the editor, minutes and tokens are printed under the card and not scored: fewer calls is not better when
+  the call was the editor's to make.
+
+## 6. Record
 
 - After the change merges, run `ledger.ts check --record --label "<PR>"` on main, so the next thread compares against it.
 - Mark the entry `fixed` with the PR, and update `history.md`: the cause, what worked, what didn't and what's left open.

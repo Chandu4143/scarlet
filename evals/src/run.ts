@@ -21,10 +21,11 @@ import { Engine, type TaskRecord } from "./engine.ts";
 import { fetchWords } from "./evidence.ts";
 import { publishedGradingInputs } from "./gradingEvidence.ts";
 import type { EventLike } from "./metrics.ts";
-import { evaluateCaseOrigin, evaluateTask } from "./evaluate.ts";
+import { evaluateCaseOrigin, evaluateTask, type Evaluation } from "./evaluate.ts";
 import { DEFAULT_EDGE_OPTIONS, KEPT_SIDE_EDGE_OPTIONS } from "./metrics.ts";
 import { checkedPath, dataDir, fileComponent, readJson, REPO_ROOT, resultsDir, timestamp, writeJson, writeText } from "./paths.ts";
 import { evaluationMarkdown, runMarkdown, type TrialRow } from "./report.ts";
+import { card, findEvaluations, scorecardMarkdown } from "./scorecard.ts";
 
 const USAGE = `Usage:
   run.ts --evaluate-task <taskId> [--case <id>] [--reference-version <v>] [--kept-side] [--refresh] [--engine <url>]
@@ -238,6 +239,16 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
 function summarize(runDir: string, title: string): TrialRow[] {
   const rows = readJson<TrialRow[]>(checkedPath(runDir, join(runDir, "trials.json")));
   writeText(join(runDir, "summary.md"), runMarkdown(title, rows), runDir);
+  // The same trials as percentages, a card for each configuration. A run with nothing scored has none.
+  const configs = [...new Set(rows.filter(r => r.state === "done" && r.headline).map(r => r.config))];
+  const cards = configs.flatMap(config => {
+    const trials = findEvaluations(runDir).filter(f => f.split("/").at(-3) === slug(config)).map(f => readJson<Evaluation>(f));
+    return trials.length ? [card(config, trials)] : [];
+  });
+  if (cards.length) {
+    writeText(join(runDir, "scorecard.md"), scorecardMarkdown(cards), runDir);
+    console.log(scorecardMarkdown(cards));
+  }
   return rows;
 }
 
