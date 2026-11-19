@@ -7,6 +7,7 @@ import { newId, type TranscriptSegment, type TranscriptWord } from "@scarlet/tim
 import { extractWav, run } from "../render/ffmpeg.js";
 import { decodedRecording } from "../services/recordingAudio.js";
 import { SAMPLE_RATE } from "./ctcAlign.js";
+import { SEAM_CONTEXT, savedWindows } from "./seams.js";
 import type { TranscribeInput, TranscribeResult, TranscriptionProvider } from "./index.js";
 
 const offsets = z.object({ from: z.number().finite(), to: z.number().finite() });
@@ -76,17 +77,6 @@ const CHUNK_SECONDS = 120;
  */
 const CRISPER_CHUNK_SECONDS = 600;
 const SEARCH_SECONDS = 4;
-/**
- * Seconds each window reads past both ends of the stretch it writes. Whisper given audio that stops mid-sentence
- * finishes the sentence itself: a window that ended in the quarter-second pause after "…is that it is" read "it is
- * insane.", and ended 40 ms later "it is incredible.", where the speaker said "it is a fine model" (2026-11-18). The
- * aligner squeezed the made-up word into the pause, and a pass cut the real words around it as an abandoned wording.
- * Read on past the seam, Whisper hears how the sentence goes, and the words either side of a seam come from windows
- * that heard what came before and after them.
- */
-const SEAM_CONTEXT = 8;
-/** Seconds two windows' times for one word may differ by and still be the same word said once. */
-const SAME_WORD_SECONDS = 1;
 
 /** Where a window that starts at `start` ends: the quietest 200 ms within a few seconds of `seconds` later. */
 export async function chunkEnd(audio: Awaited<ReturnType<typeof decodedRecording>>, start: number, duration: number, seconds: number) {
@@ -141,44 +131,35 @@ export class WhisperCppProvider implements TranscriptionProvider {
     const { onProgress } = input;
     const result = { ...checkpoint.result, segments: [...checkpoint.result.segments] };
     const part = join(input.tmpDir, newId("wcpp") + ".wav");
-    const keep = (through: number, segments: TranscriptSegment[]) => {
+    const windows = savedWindows(checkpoint.through, (through, segments) => {
       checkpoint.save(through, { language: result.language, modelLabel: result.modelLabel, segments }, through / duration);
       result.segments.push(...segments);
-    };
+    });
     try {
-      /** The words of the window before, from the last save on, until the next window says where it hands over. */
-      let held: { segments: TranscriptSegment[]; seam: number } | undefined;
       for (let from = checkpoint.through; from < duration;) {
         input.signal?.throwIfAborted();
         const seam = await chunkEnd(audio, from, duration, this.opts.crisperScript ? CRISPER_CHUNK_SECONDS : CHUNK_SECONDS);
         const readFrom = Math.max(0, from - SEAM_CONTEXT), readTo = Math.min(duration, seam + SEAM_CONTEXT);
         const whole = readFrom === 0 && readTo === duration;
+        // How far this window's words are saved once it is read: the last SEAM_CONTEXT waits for the next window.
+        const reach = seam >= duration ? seam : Math.max(from, seam - SEAM_CONTEXT);
         if (!whole) await audio.writeWindow(part, readFrom, readTo);
         const selectedLanguage = input.language || this.opts.language;
         const language = selectedLanguage && selectedLanguage !== "auto" ? selectedLanguage : result.language;
         const chunk = await this.transcribeWav(whole ? wav : part, input.tmpDir, input.signal, language, undefined,
-          onProgress && (fraction => onProgress((from + (seam - from) * fraction) / duration)));
+          onProgress && (fraction => onProgress((from + (reach - from) * fraction) / duration)));
         input.signal?.throwIfAborted();
         // Whisper's 10 ms times can round past the last sample of a window. Keep its words inside the
         // audio it heard and place them on the original recording's clock.
         const at = (seconds: number) => Math.min(readTo, Math.max(readFrom, readFrom + seconds));
-        let segments = whole ? chunk.segments : chunk.segments.map(s => ({ ...s, start: at(s.start), end: at(s.end),
+        const segments = whole ? chunk.segments : chunk.segments.map(s => ({ ...s, start: at(s.start), end: at(s.end),
           words: s.words.map(w => ({ ...w, start: at(w.start), end: at(w.end) })) }));
         result.language ??= chunk.language;
         result.modelLabel ??= chunk.modelLabel;
-        if (held) {
-          const joined = seamWindows(held.segments, segments, held.seam);
-          keep(joined.through, joined.before);
-          segments = joined.after;
-        } else if (from > 0) {
-          // A resumed run: the saved words reach `from`, and this window's words before it are theirs.
-          segments = sideOfSeam(segments, from).after;
-        }
-        held = { segments, seam };
-        onProgress?.(seam / duration);
+        const saved = windows.add(segments, from, seam, seam >= duration);
+        onProgress?.(saved / duration);
         from = seam;
       }
-      if (held) keep(duration, held.segments);
       return result;
     } finally { await rm(part, { force: true }); }
   }
@@ -277,67 +258,3 @@ function repeatsTail(before: TranscriptSegment | undefined, segment: TranscriptS
   return copy.length > 0 && last.length === copy.length && copy.every((w, i) => w === last[i]);
 }
 
-const midpoint = (w: TranscriptWord) => (w.start + w.end) / 2;
-type Placed = { segment: number; word: TranscriptWord };
-const placed = (segments: readonly TranscriptSegment[]): Placed[] =>
-  segments.flatMap((s, segment) => s.words.map(word => ({ segment, word })));
-
-/** The segments with only the words `kept` holds; a segment with no words stays on the side its middle is on. */
-function keepWords(segments: readonly TranscriptSegment[], kept: ReadonlySet<TranscriptWord>, side: (time: number) => boolean) {
-  const out: TranscriptSegment[] = [];
-  for (const segment of segments) {
-    if (!segment.words.length) {
-      if (side((segment.start + segment.end) / 2)) out.push(segment);
-      continue;
-    }
-    const words = segment.words.filter(w => kept.has(w));
-    if (!words.length) continue;
-    if (words.length === segment.words.length) { out.push(segment); continue; }
-    out.push({ ...segment, text: words.map(w => w.text).join(" "),
-      start: words[0] === segment.words[0] ? segment.start : words[0]!.start,
-      end: words.at(-1) === segment.words.at(-1) ? segment.end : words.at(-1)!.end, words });
-  }
-  return out;
-}
-
-/** Words split by where their middle falls: before `seam` or from it on. */
-export function sideOfSeam(segments: readonly TranscriptSegment[], seam: number) {
-  const words = placed(segments).map(p => p.word);
-  return {
-    before: keepWords(segments, new Set(words.filter(w => midpoint(w) < seam)), t => t < seam),
-    after: keepWords(segments, new Set(words.filter(w => midpoint(w) >= seam)), t => t >= seam),
-  };
-}
-
-/**
- * Where two overlapping windows hand over. Each read the seam with audio either side, so where both readings have a
- * word near it, the earlier window's words run to that word and the later window's go on after it: nothing is written
- * twice or left out, whatever times each gave. With no word in common near the seam (quiet, or two different readings
- * of a garbled stretch), each keeps the words whose middle is on its own side. `through` is where the earlier words end.
- */
-export function seamWindows(before: readonly TranscriptSegment[], after: readonly TranscriptSegment[], seam: number) {
-  const a = placed(before).filter(p => midpoint(p.word) >= seam - SEAM_CONTEXT);
-  const b = placed(after).filter(p => midpoint(p.word) < seam + SEAM_CONTEXT);
-  const ta = a.map(p => normalizeTranscriptToken(p.word.text)), tb = b.map(p => normalizeTranscriptToken(p.word.text));
-  // Longest run of words both readings have in order, from the end, so the walk below goes forward.
-  const n = a.length, m = b.length, lcs = new Uint16Array((n + 1) * (m + 1)), at = (i: number, j: number) => i * (m + 1) + j;
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
-    lcs[at(i, j)] = ta[i] && ta[i] === tb[j] ? lcs[at(i + 1, j + 1)]! + 1 : Math.max(lcs[at(i + 1, j)]!, lcs[at(i, j + 1)]!);
-  }
-  let best: { i: number; j: number; off: number } | undefined;
-  for (let i = 0, j = 0; i < n && j < m;) {
-    if (ta[i] && ta[i] === tb[j] && lcs[at(i, j)] === lcs[at(i + 1, j + 1)]! + 1) {
-      const wa = a[i]!.word, wb = b[j]!.word;
-      const off = Math.abs((midpoint(wa) + midpoint(wb)) / 2 - seam);
-      if (Math.abs(midpoint(wa) - midpoint(wb)) <= SAME_WORD_SECONDS && (!best || off < best.off)) best = { i, j, off };
-      i++; j++;
-    } else if (lcs[at(i + 1, j)]! >= lcs[at(i, j + 1)]!) i++;
-    else j++;
-  }
-  if (!best) return { before: sideOfSeam(before, seam).before, after: sideOfSeam(after, seam).after, through: seam };
-  const last = a[best.i]!.word, first = b[best.j]!.word;
-  const wordsA = placed(before).map(p => p.word), wordsB = placed(after).map(p => p.word);
-  const keptA = new Set(wordsA.slice(0, wordsA.indexOf(last) + 1)), keptB = new Set(wordsB.slice(wordsB.indexOf(first) + 1));
-  const through = last.end;
-  return { before: keepWords(before, keptA, t => t < through), after: keepWords(after, keptB, t => t >= through), through };
-}

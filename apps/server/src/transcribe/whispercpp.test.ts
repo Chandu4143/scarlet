@@ -5,7 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as ffmpeg from "../render/ffmpeg.js";
 import { decodedRecording } from "../services/recordingAudio.js";
 import { newId } from "@scarlet/timeline";
-import { bundledWhisperOnGpu, parseWhisperJson, seamWindows, WhisperCppProvider, whisperThreads } from "./whispercpp.js";
+import { bundledWhisperOnGpu, parseWhisperJson, WhisperCppProvider, whisperThreads } from "./whispercpp.js";
+import { seamWindows } from "./seams.js";
 import type { TranscribeResult } from "./index.js";
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -360,8 +361,9 @@ it("reads each window on past both of its seams and hands over at a word both re
     await expect(whisper.transcribe({ ...input, signal: first.signal, checkpoint: { through: 0, result: { segments: [] },
       save(through, chunk, fraction) { save(through, chunk, fraction); first.abort(new Error("quit")); } } })).rejects.toThrow("quit");
     const { through, chunk } = saved[0]!;
-    expect(through).toBeGreaterThan(115);
-    expect(through).toBeLessThan(123);
+    // The first window's words are saved up to 8 s before its seam, in the pause at 122 s, as soon as it is read.
+    expect(through).toBeGreaterThan(114);
+    expect(through).toBeLessThan(115);
     const resumed = await whisper.transcribe({ ...input, checkpoint: { through, result: chunk, save } });
     // The resumed window's first word is the one Whisper leaves out, so only that word can go missing at a resume.
     expect(texts(resumed).filter(t => !t.startsWith("w") || said.includes(t))).toEqual(texts(resumed));
