@@ -156,6 +156,20 @@ describe("native retake boundaries", () => {
     expect(tail.reason).toMatch(/into the pause/);
     expect(checkDialogueJoin(tl,p,{start:tail.start,end:tail.end},[page]).status).toBe("unchanged");
   });
+  it("places an end that gives back the start of the kept word, however far into the pause, without asking", () => {
+    const { p, tl } = fixture();
+    // “next” is timed from 3.4 s, but its sound starts at 3.1 s. An end at 3.38 s, typed from the transcript, is in that
+    // sound and in no word; the quiet before it is 0.3 s back. Nothing kept is cut and nothing removed plays.
+    const early = [{ start: .98, end: 1.44 }, { start: 1.8, end: 2.26 }, { start: 3.1, end: 3.94 }];
+    const rms = Array.from({ length: 250 }, (_, i) => early.some(v => v.start <= i / 50 && i / 50 < v.end) ? .12 : .001);
+    const pages = [{ ...page, edges: joinEvidence(words, { from: 0, to: 5, peaks: rms, rms, speechActivity: early }) }];
+    const placed = checkDialogueJoin(tl, p, { start: 2.6, end: 3.38 }, pages);
+    expect(placed.status).toBe("snapped");
+    expect(placed.end).toBeLessThan(3.1);
+    expect(placed.reason).toMatch(/end moved 0\.\d+ s earlier into the pause\./);
+    // An end inside a word is still a question of which words were meant: it waits for the editor.
+    expect(checkDialogueJoin(tl, p, { start: 2.6, end: 3.6 }, pages).status).not.toBe("snapped");
+  });
   it("trims a fragment of the removed take onto the silence before it", () => {
     const { p, tl } = fixture();
     // The removal should start before “first”, but begins 50 ms after its onset. The nearest silent frame

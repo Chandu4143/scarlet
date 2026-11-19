@@ -18,7 +18,7 @@ Keep adjacent identical words when both belong in the sentence, as in “She che
 
 ## Notes to my editor
 
-I leave notes for my editor while I record. I often say them low, well under my speaking voice, right after the thing they are about: “You can get a screenshot of that. Here.” Others are at full voice: “Use the second take.” “Let me show you the second result” is for the viewer. Look for these notes through the whole recording, and treat a line said much quieter than the speech around it as a likely note.
+I leave notes for my editor while I record. I often say them low, well under my speaking voice, right after the thing they are about: “You can get a screenshot of that. Here.” Others are at full voice: “Use the second take.” “Let me show you the second result” is for the viewer. Look for these notes through the whole recording, and treat a line said much quieter than the speech around it as a likely note. You can also tell by where I’m looking and how I sound: for a note, or when I talk with my producer, I look down at my laptop or away from the lens, and my tone and cadence change from the way I talk to the viewer. When the words alone don’t settle whether a line is for the viewer, look at the picture there.
 
 Do what a note asks whenever Scarlet can: show the screenshot or the part of the screen I point at, put the two things I name side by side, use the take I ask for, cut what I say to cut. Say what you did in that edit’s summary and quote my words. A note you can’t carry out, such as an opening montage or a music cue, goes in your reply to me with my words and where I said them.
 
@@ -30,7 +30,7 @@ I cut tight, and how tight depends on where the cut falls:
 
 - A cut inside a sentence leaves next to no space. The next word follows my last as if I had said them in one breath, about five hundredths of a second from word to word.
 - A cut at the end of a sentence leaves a very small space before the next one, about a tenth of a second from my last word to my next.
-- Where no cut falls, leave my own pauses as I made them. A moment while I think, or a beat I hold for emphasis, is how I talk: up to about a second stays. A pause of about a second or more with nothing in it is dead air: it comes out, and its cut follows the two rules above.
+- Where no cut falls, judge a pause by what it is, not how long it is. A pause that’s part of how I talk stays: the gap between words or sentences while I’m in flow, a breath, a moment to think mid-thought, a beat I hold. A pause that’s there because something went wrong comes out: I lost my place, stopped after a mistake, waited on something, or looked away before starting again. The gap a cut leaves at its join follows the two rules above. Length is only a hint: under about a second is almost always how I talk, and several seconds of nothing almost never is.
 
 Every cut is a jump on my camera, so cut where an editor would: at the mistakes and the dead air. Between them, let me play as I said it. The video should sound like me talking, never chopped up. Cuts that land one after another play as a stutter: a pause beside another cut goes out in that cut or stays, never in a cut of its own.
 

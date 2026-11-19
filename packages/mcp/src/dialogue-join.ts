@@ -212,7 +212,9 @@ const FRAME_TOLERANCE = .001;
 /** A shorter quiet run inside a transcript word may be a stop consonant's closure, not a gap between words. */
 const inWordGap = .1;
 interface SourceEdge { clip: MediaClip; page: NonNullable<JoinPage["edges"]>; at: number; clipped: Word[]; touching: Word[] }
-interface Edge { at: number; label?: string; problem?: string; note?: string; snapped?: boolean; unmeasured?: boolean; dip?: boolean; inSound?: boolean; inWord?: boolean }
+interface Edge { at: number; label?: string; problem?: string; note?: string; snapped?: boolean; unmeasured?: boolean; dip?: boolean; inSound?: boolean; inWord?: boolean;
+  /** Placed further than a snap, by giving footage back up to a pause with no word between. */
+  gaveBack?: boolean }
 type Sound = "quiet" | "valley" | "sound";
 
 /** The instant is inside the word's timing, clear of both its edges. */
@@ -484,7 +486,13 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
       const a = timelineToSource(s.clip, d.at), b = timelineToSource(s.clip, next);
       return s.page.words.some(w => Math.min(a, b) < (w.start + w.end) / 2 && (w.start + w.end) / 2 < Math.max(a, b));
     });
-    if (state === "quiet") return distance > snapLimit + 1e-7 && dip && acrossWord(dip) ? dip : { at: placed, label: words || undefined, note, snapped: distance <= snapLimit + 1e-7 };
+    // A move that gives footage back and passes no word the scan read takes nothing the cut was asked to keep and leaves
+    // nothing it was asked to take: the sound between is the kept word's own start, timed late by the transcript, or a
+    // breath before it. It is placed, not in doubt. Held for the editor instead, a 19 s cut of four false starts waited on
+    // them as a call because its end had gone 0.20 s back into the pause before the take it kept (2026-11-19).
+    if (state === "quiet") return distance > snapLimit + 1e-7 && dip && acrossWord(dip) ? dip
+      : { at: placed, label: words || undefined, note, snapped: distance <= snapLimit + 1e-7 || (narrowing && !words),
+        ...(distance > snapLimit + 1e-7 && narrowing && !words && { gaveBack: true }) };
     fallback ??={ at: next, label: words || undefined, note, problem: "Voice activity continues through the low-level gap"+(words ? " near "+words : "")+". Audition that edge." };
   }
   if (dip) return dip;
@@ -883,7 +891,8 @@ export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinP
   const fps = project.settings.fps, duration = timelineDuration(tl);
   const edge = (at: number, direction: 1 | -1, named?: number, air?: JoinPace) =>
     checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named, air ?? pace, !!air);
-  const judge = (range: TimeRange, namedWords?: TimeRange, air?: JoinPace): JoinCheck => {
+  // `near` counts only a snap as placed: a same-word join asks whether both edges sit in quiet as given.
+  const judge = (range: TimeRange, namedWords?: TimeRange, air?: JoinPace, near = false): JoinCheck => {
     const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start, air) : { at: range.start };
     const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end, air) : { at: range.end };
     const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
@@ -899,7 +908,7 @@ export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinP
     // short removal comes out of the middle of running speech, as with word references (wordCutRange).
     if (left.dip && right.dip) return { start: left.at, end: right.at, status: "review",
       reason: `No pause on either side: ${notes.join(", ")}. Audition the join.` };
-    const snapped = !problems && [left, right].every(e => !e.note || e.snapped);
+    const snapped = !problems && [left, right].every(e => !e.note || (e.snapped && !(near && e.gaveBack)));
     return { start: left.at, end: right.at, status: problems ? "partial" : snapped ? "snapped" : "adjusted", ...(inSound.length && { inSound }), ...(inWord.length && { inWord }),
       reason: [(snapped ? (left.dip || right.dip ? "Placed on the recording: " : "Snapped to the recording's silence: ") : "Adjusted retake boundaries: ")+notes.join(", ")+".", problems,
         snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
@@ -912,7 +921,7 @@ export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinP
     if (Math.abs(same.start - range.start) < 2e-3) return { start: same.start, end: same.end, status: "review", sameWord: same.word,
       reason: `The cut starts as the first ${said} begins and the second ${said} follows it. The word before runs into the first with no pause, so its start was found by matching the two ` +
         `${said}s on their sound. No kept word is cut as measured. Scarlet can't hear the join, and neither can you: the editor hears it.` };
-    const checked = judge(range, namedWords, air);
+    const checked = judge(range, namedWords, air, true);
     // A removal with quiet at both edges needs no other way in.
     if (checked.status === "unchanged" || checked.status === "snapped") return checked;
     return { ...checked, sameWordJoin: { start: same.start, end: same.end, word: same.word, ...(same.takesFirst && { takesFirst: true as const }),
