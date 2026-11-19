@@ -78,6 +78,8 @@ let endedPassage = false;
  */
 let borrower: { pause(): void } | undefined;
 let pendingPlay: AbortController | undefined;
+/** Who hears the editor pause the video. */
+const editorPauses = new Set<() => void>();
 /**
  * The element that was playing came down without a pause: the video changed under it (an edit landed, its preview
  * finished, its timeline was read again). The editor didn't stop it, so the element put up in its place, in the same
@@ -479,10 +481,22 @@ export const player = {
       this.seek(usePlayerStore.getState().time, true);
     };
   },
+  /** The editor's own play or pause: Space, the play button or a click on the picture. */
   toggle() {
     if (!video) return;
     if (!pendingPlay && (video.paused || video.ended)) this.play();
-    else this.pause();
+    else {
+      this.pause();
+      // The clock is published a few times a second while playing: read the frame it stopped on before telling
+      // anyone, so a pause heard here has the time the picture shows.
+      if (video) readClock(video);
+      for (const heard of editorPauses) heard();
+    }
+  },
+  /** Hear each pause the editor makes with `toggle`, not one the app makes on its own. */
+  onEditorPause(heard: () => void) {
+    editorPauses.add(heard);
+    return () => { editorPauses.delete(heard); };
   },
   setRate(rate: number) {
     if (video) {
