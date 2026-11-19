@@ -14,6 +14,7 @@ import { useNearView } from "../lib/useNearView";
 import { needNumbers } from "../lib/needNumbers";
 import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/chat/QueueTray";
 import { recordEditReview } from "../lib/editReviews";
+import { lastStep, recordUndo, undoKey, undoLast, undoWords, useUndoStore } from "../lib/undo";
 import { editKey, keepEdits, reviewKey } from "../lib/keptEdits";
 import { AgentChip, useAgentAvailability, useModelNeedsYou } from "../components/agent/AgentChip";
 import { Composer, type PausedAt } from "../components/agent/Composer";
@@ -30,7 +31,7 @@ import { CutMark, EditPassage } from "../components/review/CutTranscript";
 import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
-import { ignorePageShortcut, useHotkeys } from "../lib/hotkeys";
+import { ignorePageShortcut, isEditableTarget, useHotkeys } from "../lib/hotkeys";
 import { RequestMetrics, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
@@ -2989,7 +2990,15 @@ export function SimpleWorkspace() {
     appLog("action", "keep-edit", { edit: shownIndex + 1, of: threadEdits.length, change: reviewingEdit.changeId, flagged: !!reviewingEdit.check || undefined });
     // An edit made in several places is kept in all of them: it is one edit, on one row.
     const row = editsByRow[shownRow] ?? [reviewingEdit];
-    if (keepEdits(current.id, focusThread.id, row, head ?? undefined)) recordEditReview(current.id, threadTimeline.selectedTarget, "keep");
+    if (keepEdits(current.id, focusThread.id, row, head ?? undefined)) {
+      recordEditReview(current.id, threadTimeline.selectedTarget, "keep");
+      // ⌘Z takes it back, and opens this edit again. It goes by the name its tag in the box has.
+      const target = threadTimeline.selectedTarget;
+      const named = target && (cutName(target) ?? targetName(target));
+      recordUndo({ kind: "keep", word: reviewingEdit.marker ? "Done" : "Keep", projectId: current.id, threadId: focusThread.id, refs: row,
+        edit: { changeId: reviewingEdit.changeId, spot: reviewingEdit.spot, ...(threadTimeline.single && { single: true }) },
+        ...(named && { name: threadTimeline.selectedMoment ? `${threadTimeline.selectedMoment.edits.length} edits` : tagOf(named) }) });
+    }
     moveOnFromShown();
   }
   // Keep and Reject edit go on to the same place: the next edit or call that still waits, else the card closes.
@@ -2998,6 +3007,38 @@ export function SimpleWorkspace() {
     else if (nextCallAfterKeep) actions.listen(pass!, nextCallAfterKeep);
     else closeEdit();
   }
+  // ⌘Z takes back the editor's last Keep or revision, and the one before it on the next press. A Keep taken back opens
+  // its edit again, where it waits on the editor. The label in the timeline's bottom row says what the next ⌘Z takes back.
+  const threadsNow = useRef(threads);
+  threadsNow.current = threads;
+  const latestActions = useRef(actions);
+  latestActions.current = actions;
+  const undoKeys = useRef({ undo: async () => {} });
+  undoKeys.current.undo = async () => {
+    const project = useProjectStore.getState().current;
+    if (!project || project.id !== current.id) return;
+    const step = await undoLast(current.id, project, version => useProjectStore.getState().historyEdit(version, "revert"));
+    // A Keep or a Reject edit moved the card on: taken back, the card goes back to the edit it was about.
+    const opened = step?.kind === "keep" ? step : step?.edit && step.threadId ? { threadId: step.threadId, edit: step.edit } : undefined;
+    const thread = opened && threadsNow.current.find(t => t.id === opened.threadId);
+    if (opened && thread) latestActions.current.openEdit(thread, opened.edit, undefined, opened.edit.single);
+  };
+  useEffect(() => {
+    if (!workspaceActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.defaultPrevented) return;
+      // Words being written keep their own ⌘Z. The message box, once empty, leaves it here when it had no tag to put back.
+      const box = e.target instanceof HTMLTextAreaElement && e.target.closest(".composer-box") && !e.target.value;
+      if (isEditableTarget(e.target) && !box) return;
+      if (document.querySelector('dialog[open], [role="dialog"], [role="menu"]')) return;
+      if (!lastStep(useUndoStore.getState().steps, current.id)) return;
+      e.preventDefault();
+      if (!e.repeat) void undoKeys.current.undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [workspaceActive, current.id]);
+  const undoFoot = <UndoLabel projectId={current.id} onUndo={() => void undoKeys.current.undo()} />;
   // With a pass's list of every edit open, watching the video is the review: a moment the video plays through, from
   // before it starts to past its end without a jump, is kept, all its edits at once. Only the moments that need no
   // decision of the editor's are: one that asks for a look, or a spot marked for them, waits for their own Keep. While
@@ -3187,9 +3228,14 @@ export function SimpleWorkspace() {
         {/* Reject edit is a small × after Keep, as Skip is after a call's Approve: it asks Scarlet to put back just this
             edit, or the moment that's open, and goes on as Keep does. A spot marked for the editor changed nothing, so
             it has none. Each edit has its own: one on its way for the edit before doesn't hold this one's back. */}
-        {appliedTarget && !shownMarker && <RejectEdit key={`reject ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget} onSent={() => {
+        {appliedTarget && !shownMarker && <RejectEdit key={`reject ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget} onSent={task => {
           follow.current = true;
           appLog("action", "reject-edit", { edit: shownIndex + 1, of: threadEdits.length, change: reviewingEdit.changeId });
+          // ⌘Z takes the rejection back as it does a revision, and the card goes back to this edit.
+          const named = cutName(appliedTarget) ?? targetName(appliedTarget);
+          recordUndo({ kind: "revision", word: "Reject", projectId: current.id, taskId: task.id, threadId: focusThread.id,
+            edit: { changeId: reviewingEdit.changeId, spot: reviewingEdit.spot, ...(threadTimeline.single && { single: true }) },
+            ...(named && { name: threadTimeline.selectedMoment ? `${threadTimeline.selectedMoment.edits.length} edits` : tagOf(named) }) });
           // An edit the editor stepped to meanwhile stays open: the rejection wasn't about it.
           if (openEditNow.current === openEditKey) moveOnFromShown();
         }} />}
@@ -3771,7 +3817,7 @@ export function SimpleWorkspace() {
         <div className="workspace-stage simple-stage">
           {/* An applied cut plays on the version before it, where the working cut's times don't hold, and a suggestion's
               dots are all its own: neither has dots beside its band. */}
-          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : shownMarks, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard,
+          <CutPreview simple={{ seekFromMessage, typedTimes, marks: source || beforeCut ? [] : suggestion && lineFocus ? marks : shownMarks, fit: fitTimeline, focus: lineFocus, label: onVideo, compareHost: reviewingEdit ? compareHost : undefined, above: editCard ?? callCard ?? suggestCard, foot: undoFoot,
             gaps: cutKey ? gaps : callGaps, skippedRanges: joinedPlayer?.clock.removed ?? stepsOver(appliedListen ?? playedAudition),
             nextCutPlayback, cutPlayback: appliedListen && beforeTimeline && cutKey && appliedCut
               ? { key: editPlaybackKey(reviewingEdit!, appliedAfterVersion), start: appliedListen.start, side: appliedSide,
@@ -3822,6 +3868,31 @@ export function SimpleWorkspace() {
     {panel === "export" && <ExportSheet hasCut={hasCut} onClose={() => setPanel(null)} />}
     {panel === "shorts" && <MakeShortsSheet onClose={() => setPanel(null)} />}
   </EditHoverContext.Provider>;
+}
+
+/**
+ * What the next ⌘Z takes back, in the timeline's bottom row, while there is something to take back: "Undo Keep ⌘Z".
+ * Its hover names the cut or edit. A press does what ⌘Z does.
+ */
+function UndoLabel({ projectId, onUndo }: { projectId: string; onUndo(): void }) {
+  const step = useUndoStore(s => lastStep(s.steps, projectId));
+  const undoing = useUndoStore(s => s.undoing !== undefined);
+  const error = useUndoStore(s => s.error?.projectId === projectId ? s.error : undefined);
+  // The reason goes after a while, as soon as anything else is done or taken back.
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => useUndoStore.setState(s => s.error === error ? { error: undefined } : s), 10_000);
+    return () => clearTimeout(timer);
+  }, [error]);
+  if (!step && !error) return null;
+  const words = step && undoWords(step);
+  return <span className="timeline-undo">
+    {/* Why the last one couldn't be taken back. It went from the list, so the next press goes on to the one before. */}
+    {error && <span className="timeline-undo-error" role="alert" title={error.text}>{error.text}</span>}
+    {step && words && <button type="button" className="timeline-undo-button" data-key={undoKey()} aria-keyshortcuts="Meta+Z Control+Z" title={words.title}
+      disabled={undoing} onClick={e => { if (e.detail) e.currentTarget.blur(); onUndo(); }}>
+      <Icon name="undo" size={12} />{undoing ? "Undoing…" : words.label}</button>}
+  </span>;
 }
 
 /** The passage Scarlet asks the editor to check, as the clock reads it: one time for a moment, from and to for a stretch. */

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { historyLineage } from "@scarlet/timeline";
-import { matchesEdit, threadEditList, threadRevision, isThreadDone, REVISED_CHECK, type EditRef, type Thread, type ThreadEdit, type VersionSummary } from "@scarlet/shared";
+import { matchesEdit, threadEditList, threadRevision, isThreadDone, REVISED_CHECK, type EditRef, type Task, type Thread, type ThreadEdit, type VersionSummary } from "@scarlet/shared";
 import { recordEditReview, requestPosition } from "../../lib/editReviews";
 import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
@@ -30,7 +30,7 @@ export function rejectInstruction(target: Pick<AgentContext, "editNumber" | "lab
  * nothing, so the request reads "Reject edit" under its edit's tag, in the chat and in the queue; what Scarlet is asked
  * to do is the instruction, which is for the agent.
  */
-export function RejectEdit({ projectId, thread, target, onSent }: { projectId: string; thread: Thread; target: AgentContext; onSent(): void }) {
+export function RejectEdit({ projectId, thread, target, onSent }: { projectId: string; thread: Thread; target: AgentContext; onSent(task: Task): void }) {
   const { effective, unavailableReason } = useAgentAvailability();
   const createTask = useProjectStore(s => s.createTask);
   const head = useProjectStore(s => s.current?.project.head ?? undefined);
@@ -43,10 +43,10 @@ export function RejectEdit({ projectId, thread, target, onSent }: { projectId: s
     setBusy(true);
     setError("");
     try {
-      await createTask(projectId, { kind: "edit", ...effective, instruction: rejectInstruction(target),
+      const task = await createTask(projectId, { kind: "edit", ...effective, instruction: rejectInstruction(target),
         context: { version: head, ...requestPosition(target), threadId: thread.id, message: "Reject edit" } });
       recordEditReview(projectId, target, "undo");
-      onSent();
+      onSent(task);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
