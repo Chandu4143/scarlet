@@ -248,6 +248,7 @@ export class MockClient implements ScarletApi {
   async recordEditReview(): Promise<void> { /* The demo has no analytics engine. */ }
   /** The demo has no runs to tell: this window remembers its Keeps. */
   async keepEdits(): Promise<void> {}
+  async unkeepEdits(): Promise<void> {}
   async threadEdits(id: string, threadId: string) {
     const project = this.projectById(id);
     const thread = this.projectThread(id, threadId);

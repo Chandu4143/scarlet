@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { logId } from "../logText.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
-import { agentTarget, beginRevision, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type KeepEditsRequest, type KeptEdit, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
+import { agentTarget, beginRevision, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type KeepEditsRequest, type KeptEdit, type UnkeepEditsRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
@@ -2328,6 +2328,22 @@ export function keepEdits(ctx: Ctx, projectId: string, body: KeepEditsRequest) {
     if (kept.length !== (change.kept?.length ?? 0)) saveChange(ctx, { ...change, kept });
   }
   return { added };
+}
+
+/** The editor took these Keeps back (⌘Z). Taking back one that isn't recorded changes nothing. Caller holds the write lock. */
+export function unkeepEdits(ctx: Ctx, projectId: string, body: UnkeepEditsRequest) {
+  const byChange = new Map<string, UnkeepEditsRequest["edits"]>();
+  for (const edit of body.edits) byChange.set(edit.changeId, [...byChange.get(edit.changeId) ?? [], edit]);
+  let removed = 0;
+  for (const [changeId, edits] of byChange) {
+    const change = ctx.repos.changes.get(changeId);
+    if (!change || change.projectId !== projectId) throw notFound(`change ${changeId}`);
+    const kept = (change.kept ?? []).filter(k => k.threadId !== body.threadId || !edits.some(e => e.spot === k.spot && e.recheck === k.recheck));
+    if (kept.length === (change.kept?.length ?? 0)) continue;
+    removed += (change.kept?.length ?? 0) - kept.length;
+    saveChange(ctx, { ...change, kept: kept.length ? kept : undefined });
+  }
+  return { removed };
 }
 
 /** What the editor kept in a request, oldest first, as its runs hear of it. */

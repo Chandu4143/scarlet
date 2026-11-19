@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { agentTarget, type PictureMarks, type Task, type TaskAttachment } from "@scarlet/shared";
 import { canStartCutReview, cutSummary, type Project } from "@scarlet/timeline";
 import { recordEditReview, requestPosition } from "../../lib/editReviews";
+import { recordUndo } from "../../lib/undo";
 import { api, errorMessage, IS_DESKTOP } from "../../lib/client";
 import { messageTimestamps, type MessageClock } from "../../lib/messageTimestamps";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
@@ -203,9 +204,10 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       const position = anchor && { ...requestPosition(anchor), ...stoppedAt() };
       // A revision takes no files, so one that carries some is a request in the thread, as a reply is.
       if (revising && !attachments) {
-        await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),
+        const task = await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),
           effort: effective.effort, serviceTier: effective.serviceTier, ...(position && { position }) });
         recordEditReview(project.id, anchor, "revise");
+        if (task) recordRevision(task);
         return true;
       }
       context = { skillIds, version: head, ...position, threadId: thread.id, ...carried };
@@ -223,10 +225,17 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     }
     const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context });
     // A reply stays in its thread; anything else is a new request the page goes to.
-    if (replying) recordEditReview(project.id, anchor, "revise");
-    else onCreated?.(task);
+    if (replying) {
+      recordEditReview(project.id, anchor, "revise");
+      recordRevision(task);
+    } else onCreated?.(task);
     return true;
   };
+  /** A revision sent is one ⌘Z can take back, named as its tag read when it went. */
+  function recordRevision(task: Task) {
+    const name = targetTag && targetTag !== "Reply" && targetTag !== "Answer" ? targetTag : undefined;
+    recordUndo({ kind: "revision", projectId: project.id, taskId: task.id, ...(name && { name }) });
+  }
   /** The frame the editor stopped on, for a message to a cut or an edit. */
   function stoppedAt() {
     if (!pausedAt) return {};

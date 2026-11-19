@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type RefObject } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { createStore, useStore } from "zustand";
 import { filmstripBatches, type TimeRange } from "@scarlet/timeline";
 import { api } from "../../lib/client";
@@ -188,6 +188,8 @@ function MediaLanes({ start, duration, pictureAspect, frameAt, preview, waveform
 
 interface TimelineScrubberProps {
   activeShortcuts?: boolean;
+  /** Sits in the timeline's bottom row, between the clock and the zoom: what ⌘Z takes back. */
+  foot?: ReactNode;
   duration: number;
   start?: number;
   playhead?: number;
@@ -544,7 +546,7 @@ export function TimelineScrubber(props: TimelineScrubberProps) {
   </HeldStillsContext.Provider>;
 }
 
-function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, subject, kept,
+function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, subject, kept, foot,
   pictureAspect = 16 / 9, frameAt, previewStrip, hoverVideo, onSeek, onSelectTime, onScrubStart, highlight, marks, typedTimes, gaps, skippedRanges, onGap, onBand, fit, range, onRange, fps = 30 }:
   TimelineScrubberProps & { subject: string; kept: RefObject<KeptView | undefined> }) {
   const litMark = useStore(useContext(EditHoverContext));
@@ -794,6 +796,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const zoomValue = zoomRange && intendedSpan > 0 ? Math.round(Math.max(0, Math.min(1, Math.log(total / intendedSpan) / zoomRange)) * ZOOM_STEPS) : 0;
   const zoomFoot = <div className="timeline-foot">
     <TimelineClock playhead={playhead} start={start} end={end} total={total} />
+    {foot}
     <div className="timeline-zoom-row" role="group" aria-label="Timeline zoom" title="Scroll or pinch over the timeline to zoom">
       <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="-" title="Zoom out (−)"
         disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
