@@ -453,7 +453,7 @@ export function ProjectsPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const { notice } = useImportTranscription();
+  const { notice, local } = useImportTranscription();
   // Where the grid puts what the list has in its heading row: the box that selects every project beside the layout
   // switch, and what is selected over the title.
   const [selectAllSlot, setSelectAllSlot] = useState<HTMLElement | null>(null);
@@ -594,7 +594,7 @@ export function ProjectsPage() {
               <input id="np-name" className="field" value={name} required disabled={busy} onChange={e => setName(e.target.value)} placeholder="Enter a name" />
             </Field>
             <fieldset>
-              <legend className="label">Media files <span className="text-dim">(optional)</span></legend>
+              <legend className="label">Media files</legend>
               <input ref={fileInput} type="file" hidden multiple accept={ACCEPTED_MEDIA} onChange={e => {
                 if (e.target.files) addFootage(Array.from(e.target.files));
                 e.target.value = "";
@@ -602,8 +602,9 @@ export function ProjectsPage() {
               <button type="button" className="btn-ghost" aria-describedby="np-file-types" disabled={busy} onClick={() => void pick()}>
                 {files.length ? "Add files…" : "Choose files…"}
               </button>
-              {files.length > 0 && <button type="button" className="btn-quiet" disabled={busy} onClick={() => selectFootage([])}>Clear</button>}
-              <p id="np-file-types" className="mt-2 text-[12px] text-muted">{MEDIA_FORMAT_HINT}</p>
+              {/* Each file has its own ×: Clear is for a longer list. */}
+              {files.length > 1 && <button type="button" className="btn-quiet" disabled={busy} onClick={() => selectFootage([])}>Clear</button>}
+              <p id="np-file-types" className="sr-only">{MEDIA_FORMAT_HINT}</p>
             </fieldset>
             {files.length > 0 && <>
               <ul aria-label="Selected files" className="new-project-files">
@@ -613,8 +614,8 @@ export function ProjectsPage() {
                     onClick={() => removeFootage(index)}><Icon name="x" size={11} /></button>
                 </li>)}
               </ul>
-              <p className="mt-2 text-[12px] text-muted">The project format will match the first video.</p>
-              <p className="mt-2 text-[12px] text-muted">{notice}</p>
+              {/* Said only when audio leaves this computer or can't be transcribed: local transcription is the quiet default. */}
+              {notice && !local && <p className="mt-2 text-[12px] text-muted">{notice}</p>}
             </>}
             <InlineError>{err}</InlineError>
           </Dropzone>

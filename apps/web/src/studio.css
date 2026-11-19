@@ -672,7 +672,8 @@
 .list .project-card.is-short { margin-left: 44px; }
 
 /* The files a new project will import, one row each, each with its own ×. */
-.new-project-files { margin-top: 8px; max-height: 168px; overflow-y: auto; font-size: 12px; }
+/* Names start on the label's and button's edge, and each × ends on the name field's: the hover fill reaches past both. */
+.new-project-files { margin: 8px -8px 0; max-height: 168px; overflow-y: auto; font-size: 12px; }
 .new-project-files li { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 2px 0 8px; border-radius: 6px; }
 .new-project-files li:hover { background: var(--color-raised); }
 .new-project-files li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
