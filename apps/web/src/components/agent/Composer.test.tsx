@@ -722,6 +722,30 @@ it("sends words chosen in a call's passage as a revision of that one cut, where 
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
 });
 
+it("shows where the editor paused in an open cut's tag, and sends the message to the cut with that frame", async () => {
+  const ready = buildThreads(current).find(t => t.needs === "decision")!;
+  useUiStore.getState().setAgentContext({ changeId: ready.latest!.id, cutIndex: 0, version: project.head!, time: 2.3, end: 2.5, clipIds: [], label: "Cut at 0:02" });
+  await show({ thread: ready, targetTag: "Cut at 0:02", pausedAt: { time: 37.12, version: "ver_before" } });
+  // One time in the box: where the video stopped. The tag's full name still says which cut the message goes to.
+  expect(aimName()?.textContent).toBe("0:37");
+  expect(aimName()?.title).toBe("About Cut at 0:02, stopped at 0:37");
+  expect(container.querySelector("textarea")!.value).toBe("");
+  await type("trim more here");
+  await submit();
+  expect(useProjectStore.getState().revise).toHaveBeenCalledWith(ready.latest!.id, expect.objectContaining({ text: "trim more here",
+    position: expect.objectContaining({ cutIndex: 0, time: 2.3, messageTime: { time: 37.12, version: "ver_before" } }) }));
+});
+
+it("names the open cut by its own time and sends no stopped frame without a pause", async () => {
+  const ready = buildThreads(current).find(t => t.needs === "decision")!;
+  useUiStore.getState().setAgentContext({ changeId: ready.latest!.id, cutIndex: 0, version: project.head!, time: 2.3, end: 2.5, clipIds: [], label: "Cut at 0:02" });
+  await show({ thread: ready, targetTag: "Cut at 0:02" });
+  expect(aimName()?.textContent).toBe("0:02");
+  await type("trim more");
+  await submit();
+  expect(vi.mocked(useProjectStore.getState().revise).mock.calls[0]![1].position).not.toHaveProperty("messageTime");
+});
+
 it("clears a sent message's text and its own target, and keeps a target the box was aimed at since", () => {
   const ui = useUiStore.getState();
   const captions = { changeId: "chg_1", editIndex: 1, time: 0.2, clipIds: [], label: "captions" };

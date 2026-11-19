@@ -397,6 +397,12 @@ export const AgentEffort = AgentOptionId;
 /** A stretch of the timeline the editor marked on its ruler, in seconds on `version`, or of `mediaId`'s own footage. */
 export const MarkedRange = z.object({ version: Id.optional(), mediaId: Id.optional(), start: Seconds, end: Seconds });
 export type MarkedRange = z.infer<typeof MarkedRange>;
+/**
+ * The frame the editor paused the video on while writing to a cut or an edit, in seconds on `version` (or of `mediaId`'s
+ * own footage): the timeline the player showed, not necessarily the edit's.
+ */
+export const MessageTime = z.object({ version: Id.optional(), mediaId: Id.optional(), time: Seconds });
+export type MessageTime = z.infer<typeof MessageTime>;
 
 /** A point on the picture, as fractions of the frame's width and height from its top left. */
 const FramePoint = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);
@@ -431,7 +437,9 @@ export const ReviseRequest = ModelTuning.extend({
   skillIds: z.array(Id).optional(),
   position: Note.pick({ time: true, end: true, clipIds: true }).extend({ version: Id.optional(), mediaId: Id.optional(), cutIndex: z.number().int().nonnegative().optional(),
     /** A stretch the editor marked on the timeline for this request, besides the cut or edit it is about. */
-    markedRange: MarkedRange.optional() }).optional(),
+    markedRange: MarkedRange.optional(),
+    /** The frame the editor paused on while writing to this cut or edit. */
+    messageTime: MessageTime.optional() }).optional(),
   text: z.string().min(1),
   voiceTranscript: z.string().optional(),
   /** Agent to send the revision to. Defaults to the change's author. */
@@ -793,6 +801,8 @@ export const Task = z.object({
       clipIds: z.array(Id).optional(),
       /** A stretch the editor marked on the timeline for this request. `time` and `end` stay those of the cut or edit it is about. */
       markedRange: MarkedRange.optional(),
+      /** The frame the editor paused on while writing to the cut or edit `time` is about. */
+      messageTime: MessageTime.optional(),
       reviewAllCuts: z.boolean().optional(),
       /** Product shortcut chosen by the editor, independent of the guides pinned to this task. */
       dialogueOperation: z.enum(["none", "first-cut", "local-pauses"]).optional(),

@@ -39,7 +39,7 @@ const it = partedIt(vitestIt);
 
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
 type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void; onRestoreTarget?(): boolean;
-  messageClock?: import("../lib/messageTimestamps").MessageClock;
+  messageClock?: import("../lib/messageTimestamps").MessageClock; pausedAt?: import("../components/agent/Composer").PausedAt;
   rewording?: { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void } };
 const composer = vi.hoisted(() => ({ props: undefined as BoxProps | undefined }));
 vi.mock("../components/agent/Composer", () => ({ Composer: (props: BoxProps) => { composer.props = props; return props.tray ?? null; } }));
@@ -8771,6 +8771,42 @@ it("writes the time the editor pauses on into an empty box, as if they had typed
   await act(async () => usePlayerStore.setState({ playing: false }));
   expect(box()).toEqual(["0:06 zoom in here", undefined]);
   expect(useUiStore.getState().agentContext).toMatchObject({ time: 6, fromMessage: true });
+});
+
+it("shows the time the editor pauses on in an open edit's tag, and the message stays the edit's", async () => {
+  appliedEdits();
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[0]!);
+  await act(async () => {});
+  const tag = boxTag();
+  const aim = useUiStore.getState().agentContext;
+  expect(aim).toMatchObject({ changeId: "chg_approved_2" });
+  let playing = true;
+  vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockImplementation(() => !playing);
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => { playing = false; });
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => { playing = true; });
+  const box = () => [useUiStore.getState().agentDraft, boxTag(), useUiStore.getState().agentContext, composer.props!.pausedAt?.time];
+  await act(async () => usePlayerStore.setState({ playing: true, time: 7 }));
+  // Space stops the video away from the edit: nothing is written in the box, the tag takes the time, and it is still the edit's.
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: false }));
+  expect(box()).toEqual(["", tag, aim, 7]);
+  // A seek moves it.
+  await press("ArrowLeft");
+  expect(box()).toEqual(["", tag, aim, 2]);
+  // Playing on takes it off, back to the edit's own time.
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: true, time: 9 }));
+  expect(box()).toEqual(["", tag, aim, undefined]);
+  // Words written keep it through playing on, and a later pause doesn't move it.
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: false }));
+  await act(async () => useUiStore.getState().setAgentDraft("trim this"));
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: true, time: 12 }));
+  await press(" ");
+  await act(async () => usePlayerStore.setState({ playing: false }));
+  expect(box()).toEqual(["trim this", tag, aim, 9]);
 });
 
 it("moves an empty box's point to the next manual seek, and releases it on playback", async () => {
