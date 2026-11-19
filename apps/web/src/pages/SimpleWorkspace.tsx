@@ -1177,14 +1177,12 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
       .some(r => aboutOne(r) && isWorking(r.task.state));
     const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time.`}>Working on {atOnce} at once</span> : null);
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
-    // A request that edits the video has a ⋯ with Stop this edit for as long as Scarlet has it, paused or not: the
-    // tray's Pause holds every request and Continue picks them up, while this ends just the one.
+    // A request that edits the video has Stop for as long as Scarlet has it, paused or not: the tray's Pause
+    // holds every request and Continue picks them up, while this ends just the one. It is the only action, so no menu,
+    // and it reads as Pause does: an icon and the word, at the band's size.
     const editActions = editsProject && stop ?
-      <div className="unit-actions"><Dropdown label={request ? `Edit actions for ${request.text}` : "Edit actions"} align="right" width={168} floating
-        button={<span className="unit-actions-icon"><Icon name="more" size={16} /></span>}>
-        {close => <MenuItem title="End just this edit. What it already changed stays, and the next request can start."
-          onClick={() => { close(); stop(); }}><Icon name="stop" size={14} />Stop this edit</MenuItem>}
-      </Dropdown></div> : undefined;
+      <div className="unit-actions"><button type="button" className="unit-stop-edit" aria-label={request ? `Stop this edit: ${request.text}` : "Stop this edit"}
+        title="Stop this edit. What it already changed stays, and the next request can start." onClick={stop}><Icon name="stop" size={12} />Stop</button></div> : undefined;
     const requestControl = editsProject ? editActions : stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>;
     const headingEnd = <><RequestMetrics attempts={run.attempts} events={events} />{requestControl}</>;
     const bundle = <RunBundle task={task} events={events[task.id] ?? []} changes={thread.changes} finalChange={final} banded={!!request} callNumber={actions.callNumber}
