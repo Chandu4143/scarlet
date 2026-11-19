@@ -233,6 +233,13 @@
 .simple-timeline-closing { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; width: 44px; margin-left: -22px; pointer-events: none;
   border-radius: 3px; border: 1px solid rgba(255, 160, 156, .7); background: rgba(255, 160, 156, .26);
   transform: scaleX(0); animation: timeline-close .3s cubic-bezier(.5, 0, .75, 0) both; }
+/* An edit the editor rejected leaves the same way it came: its band drains where it is and its marker shrinks away,
+   before the card goes on to the next edit. With motion reduced, they are simply gone. */
+.simple-timeline-band.is-leaving, .simple-timeline-cut.is-leaving { animation: timeline-leave .42s cubic-bezier(.4, 0, .2, 1) both; }
+.simple-timeline-band.is-leaving span, .simple-timeline-cut.is-leaving span { animation: timeline-leave .18s ease-out both; }
+.simple-timeline-mark[data-leaving] { animation: timeline-leave-mark .3s cubic-bezier(.5, 0, .75, 0) both; }
+@keyframes timeline-leave { from { opacity: 1; } to { opacity: 0; } }
+@keyframes timeline-leave-mark { from { transform: none; opacity: 1; } to { transform: scale(.35); opacity: 0; } }
 @keyframes timeline-land { from { transform: scale(.35); opacity: 0; } 60% { transform: scale(1.18); opacity: 1; } to { transform: none; opacity: 1; } }
 @keyframes timeline-land-ring { from { transform: scale(1); opacity: .8; } to { transform: scale(2.4); opacity: 0; } }
 @keyframes timeline-close { from { transform: scaleX(1); opacity: 1; } to { transform: scaleX(0); opacity: .5; } }
@@ -699,7 +706,6 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 /* An edit the editor rejected: a × where a kept one has its tick, its words dim, and "Rejected" where it said how much
    it took. Nothing is left of it to open, so its row doesn't light under the pointer. */
 .simple-pass-tick.is-rejected { color: var(--color-dim); }
-.simple-pass-list > li > button.is-rejected, .simple-edit.is-rejected { cursor: default; }
 .simple-pass-list > li > button.is-rejected :is(.simple-pass-label, .simple-pass-time, .simple-pass-value),
 .simple-edit.is-rejected :is(.simple-edit-title, .simple-edit-value) { color: var(--color-dim); }
 .edit-badge.is-rejected { border-color: var(--color-line); color: var(--color-dim); }

@@ -15,12 +15,10 @@ import { useAgentAvailability } from "../agent/AgentChip";
 import { useHotkeys } from "../../lib/hotkeys";
 import type { AgentContext } from "../../stores/ui";
 
-/** What Scarlet is asked to do when the editor rejects one edit of a change that made several, or one moment of it. */
-export function rejectInstruction(target: Pick<AgentContext, "editNumber" | "label" | "momentEdits">) {
+/** What Scarlet is asked to do when the editor rejects an edit the engine can't put back itself. One × is one edit. */
+export function rejectInstruction(target: Pick<AgentContext, "editNumber" | "label">) {
   const which = [target.editNumber && `edit ${target.editNumber}`, target.label && `“${target.label}”`].filter(Boolean).join(", ");
-  const moment = !!target.momentEdits?.length;
-  return `The editor rejected ${which || "this edit"}${moment ? " and every other edit of its moment" : ""}. ` +
-    `Put back exactly what ${moment ? "they" : "it"} changed and leave every other edit as it is.`;
+  return `The editor rejected ${which || "this edit"}. Put back exactly what it changed and leave every other edit as it is.`;
 }
 
 /** An edit as the engine needs it to put back what it changed: where it is in the video now and, for a cut, what it took out. */
@@ -31,12 +29,15 @@ export type RejectedEdit = Parameters<ReturnType<typeof useProjectStore.getState
  * Wherever the engine knows exactly what the edit changed it goes back there, at once and with no model: a cut's
  * footage, a look an edit gave its clips, a whole request's only edit (`edits`, located on the version `editsOn`). An
  * edit the engine can't put back itself, or one a later edit changed, is a request to Scarlet to put back just that
- * edit (or the whole moment that's open), with the same agent and the same target as
- * typing it would. The editor pressed the × and wrote nothing, so that request reads "Reject edit" under its edit's
+ * edit, with the same agent and the same target as typing it would. On a moment's card it is the edit the card is
+ * named for, never the whole moment. The editor pressed the × and wrote nothing, so that request reads "Reject edit" under its edit's
  * tag, in the chat and in the queue; what Scarlet is asked to do is the instruction, which is for the agent.
  */
-export function RejectEdit({ projectId, thread, target, edits, editsOn, onSent }: { projectId: string; thread: Thread; target: AgentContext;
-  edits?: RejectedEdit[]; editsOn?: string; onSent(sent: { task?: Task; version?: string }): void }) {
+export function RejectEdit({ projectId, thread, target, edits, editsOn, onEngine, onSent }: { projectId: string; thread: Thread; target: AgentContext;
+  edits?: RejectedEdit[]; editsOn?: string;
+  /** The engine is asked to put the edit back (`true`), or didn't after all (`false`): the video may change under the card meanwhile. */
+  onEngine?(asked: boolean): void;
+  onSent(sent: { task?: Task; version?: string }): void }) {
   const { effective, unavailableReason } = useAgentAvailability();
   const createTask = useProjectStore(s => s.createTask);
   const rejectEdits = useProjectStore(s => s.rejectEdits);
@@ -50,12 +51,14 @@ export function RejectEdit({ projectId, thread, target, edits, editsOn, onSent }
     setError("");
     try {
       if (edits?.length && editsOn && editsOn === head) {
+        onEngine?.(true);
         try {
           const version = await rejectEdits(thread.id, editsOn, edits);
           recordEditReview(projectId, target, "undo");
           onSent({ version });
           return;
         } catch (e) {
+          onEngine?.(false);
           // The engine says when an edit isn't its to put back, or the video moved on meanwhile: Scarlet is asked then.
           if (!(e instanceof ScarletApiError) || e.status !== 409) throw e;
         }
@@ -246,7 +249,8 @@ export function ThreadEdits({ projectId, thread, edits, rejected = noEdits, show
   const revising = useRevising(thread);
   const rejecting = useRejecting(thread);
   const opened = useRef<HTMLButtonElement>(null);
-  const open = edits.findIndex(edit => !!showing && matchesEdit(showing, edit));
+  // A rejected edit that's open is its own row: the edit that took its place in the video's order isn't lit for it.
+  const open = showing?.rejected ? -1 : edits.findIndex(edit => !!showing && matchesEdit(showing, edit));
   const openKey = open >= 0 ? editKey(edits[open]!) : undefined;
   // ← → and Keep move to another edit, so keep the open one in view.
   useEffect(() => { opened.current?.scrollIntoView?.({ block: "nearest" }); }, [openKey]);
@@ -262,12 +266,18 @@ export function ThreadEdits({ projectId, thread, edits, rejected = noEdits, show
   });
   // In the list of every edit, a rejected one keeps its place in the video's order, after the edits before it.
   const gone = only ? [] : [...rejected].sort((a, b) => a.range.start - b.range.start);
-  const goneAfter = (from: number, to: number) => gone.filter(e => e.range.start >= from && e.range.start < to).map(e =>
-    <li key={editKey(e)}><button type="button" className="simple-edit is-rejected" disabled aria-label={`${e.label}, rejected`}>
+  // A press shows it again: where it was on the timeline, with its note, over the video as it plays without it.
+  const goneAfter = (from: number, to: number) => gone.filter(e => e.range.start >= from && e.range.start < to).map(e => {
+    // Lit for the edit it was, too, while that one is still on its card, leaving.
+    const on = !!showing && (matchesEdit(showing, e) || matchesEdit(e as ThreadEdit, showing));
+    return <li key={editKey(e)}><button type="button" className={on ? "simple-edit is-rejected is-on" : "simple-edit is-rejected"} aria-current={on || undefined}
+      data-log-control="open-edit" data-log-label="Rejected edit" aria-label={`${e.label}, rejected`}
+      onClick={event => { if (event.detail) event.currentTarget.blur(); onPlay(e); }}>
       <span className="edit-badge is-rejected" aria-hidden="true"><Icon name="x" size={9} /></span>
       <span className="simple-edit-title">{e.label}</span>
       <span className="simple-edit-value">Rejected</span>
-    </button></li>);
+    </button></li>;
+  });
   return <ol className="simple-edits" aria-label={only ? "Edits that need you" : "Edits in this thread"}>
     {goneAfter(-Infinity, rows[0]?.edit.range.start ?? Infinity)}
     {rows.map(({ edit, i, n, places, needs, allKept, nested, took }, at) => {

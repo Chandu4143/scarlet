@@ -422,7 +422,10 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
         // A rejected edit keeps its own words on its row, which then says it was rejected: nothing is left to check.
         if (rejects(change)) {
           edit.rejected = true;
-          edit.label = replaced.label;
+          // The engine's own put-back is named as the row was when the editor rejected it, which for a cut is the words
+          // beside it (`cutRowWords`): the saved label would turn its row back into "Shortened a pause". What Scarlet
+          // put back, it named itself ("Restored…"), so that one reads as the edit it took out.
+          if (!change.rejects) edit.label = replaced.label;
           if (replaced.summary) edit.summary = replaced.summary; else delete edit.summary;
           if (replaced.reason) edit.reason = replaced.reason; else delete edit.reason;
           delete edit.check;
