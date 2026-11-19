@@ -80,28 +80,33 @@ cost when you ask.
 ## 5. Score it against the published video
 
 The ledger says whether old mistakes stay fixed. The scorecard says how good the cut is: each scored pass is read
-against the video the editor's own editor published from the same recording, and comes down to a percentage for each
-thing a dialogue cut has to get right, and one overall figure.
+against the video the editor's own editor published from the same recording, and comes down to **Watchability** (four
+craft-bug factors scored by rate per 10 minutes of cut), **Editorial match** (alignment with the editor's decisions and
+pacing), and **Overall** (the geometric mean of Watchability and Editorial match, so severe craft defects cannot hide
+behind high editorial averages).
 
-| Factor | 100% means |
-|---|---|
-| Cut decisions | every removal the editor made, Scarlet made, and no others; a removal counts once, long or short |
-| Take choice | where a line was said twice, Scarlet kept the take the editor kept, and only that one |
-| Lines kept | every sentence the editor kept is still in |
-| Same cuts | every cut of the editor's that can be told apart, Scarlet made between the same two words |
-| No mid-word cuts | no join cuts into a word that is sounding |
-| Pauses left alone | every pause the editor left as it was said, Scarlet left too |
-| Pauses trimmed | every pause the editor shortened, Scarlet shortened too |
-| Dead air | as much dead air left as the editor left |
-| Cut count | as many cuts as the editor made |
-| Space at a cut | at cuts both made, the pause is within 0.1 s of the editor's |
-| No restarts left in | no more restarts or doubled words play than in the editor's cut |
-| No stutter cuts | no piece between two cuts plays for under a second |
-| Known mistakes | every spot that went wrong before comes out right, or is asked about |
+| Factor | Group | 100% means |
+|---|---|---|
+| No mid-word cuts | Watchability | no join cuts into a sounding word (50% at 4/10 min) |
+| No wrong cuts | Watchability | no run of 2+ words cut that the editor kept (50% at 3/10 min) |
+| No long misses | Watchability | no run of 6+ words left in that the editor cut (50% at 3/10 min) |
+| No stutter cuts | Watchability | no piece under 1 s between two cuts (50% at 2/10 min) |
+| Cut decisions | Editorial match | every removal the editor made, Scarlet made, and no others; a removal counts once, long or short |
+| Take choice | Editorial match | where a line was said twice, Scarlet kept the take the editor kept, and only that one |
+| Lines kept | Editorial match | every sentence the editor kept is still in |
+| Same cuts | Editorial match | every cut of the editor's that can be told apart, Scarlet made between the same two words |
+| Pauses left alone | Editorial match | every pause the editor left as it was said, Scarlet left too |
+| Pauses trimmed | Editorial match | every pause the editor shortened, Scarlet shortened too |
+| Dead air | Editorial match | as much dead air left as the editor left |
+| Cut count | Editorial match | as many cuts as the editor made |
+| Space at a cut | Editorial match | at cuts both made, the pause is within 0.1 s of the editor's |
+| No restarts left in | Editorial match | no more restarts or doubled words play than in the editor's cut |
+| Known mistakes | Editorial match | every spot that went wrong before comes out right, or is asked about |
 
-Under the card is the count it is easiest to feel: **mistakes you'd notice in every 10 minutes of the cut**. A run of two
-words or more Scarlet cut that the editor kept, one it left in that the editor cut, a word a cut lands inside, a
-stutter cut.
+Under the card is the count it is easiest to feel: **hard mistakes per 10 min** (runs of 2+ words Scarlet cut that the
+editor kept, long passages of 6+ words Scarlet left in that the editor cut, sounding words a cut lands inside, and
+stutter cuts under 1 s). Shorter 2–5 word phrases Scarlet left in that the editor trimmed (`"kind of"`, `"And so"`) are
+counted separately as **short tightenings left in** so taste differences don't inflate craft-bug counts.
 
 ```sh
 # One run, or one pass: its card, and for a single pass what each figure is made of.

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { cutDetail, type CutDetail } from "../src/cutDetail.ts";
 import type { PacingSummary } from "../src/metrics.ts";
 import type { Score } from "../src/score.ts";
-import { card, factors, ledgerPct, mistakes, overallOf, ratio, scorecardMarkdown, FACTORS } from "../src/scorecard.ts";
+import {
+  card, EDITORIAL_IDS, factors, FACTORS, ledgerPct, mistakes, overallOf, rateScore, ratio, scorecardMarkdown, WATCHABILITY_IDS,
+} from "../src/scorecard.ts";
 
 const pace = (o: { dead: number; joins: number; restarts?: number }): PacingSummary => ({
   words: 100, joins: o.joins, gaps: { inside: 0, atJoins: 0, long: 0, excessSeconds: o.dead }, medianJoinGapSeconds: null,
@@ -46,14 +48,27 @@ describe("ratio", () => {
   });
 });
 
+describe("rateScore", () => {
+  it("scores 100 at zero defects, 50 at the half-life rate per 10 min, and 25 at twice the half-life", () => {
+    expect(rateScore(0, 1200, 4)).toBe(100);
+    expect(rateScore(8, 1200, 4)).toBe(50);
+    expect(rateScore(16, 1200, 4)).toBe(25);
+    expect(rateScore(2, 0, 4)).toBeNull();
+  });
+});
+
 describe("factors", () => {
-  it("reads each factor on the scale of the editor's own cut", () => {
+  it("reads Watchability by defect rate per 10 min and Editorial match on the editor's scale", () => {
     const f = factors(score(), detail());
+    // 2 clipped words in 20 min = 1/10 min; half-life 4 -> 100 * 0.5^(1/4) = 84.1%.
+    expect(f.wholeWords).toMatchObject({ pct: 84.1, detail: "2 of 100 cut edges land inside a sounding word (1/10 min)" });
+    expect(f.noWrongCuts.pct).toBe(100);
+    expect(f.noLongMisses.pct).toBe(100);
+    expect(f.noStutter.pct).toBe(100);
     expect(f.cutDecisions.pct).toBe(100);
     expect(f.takeChoice.pct).toBe(80);
     expect(f.linesKept.pct).toBe(100);
     expect(f.sameCuts.pct).toBe(75);
-    expect(f.wholeWords).toMatchObject({ pct: 98, detail: "2 of 100 cut edges land inside a sounding word" });
     // The editor left 60 pauses alone and Scarlet trimmed 10 of them; of the 40 the editor trimmed, Scarlet trimmed 20.
     expect(f.pausesLeft.pct).toBeCloseTo(83.3, 1);
     expect(f.pausesTrimmed.pct).toBe(50);
@@ -61,8 +76,20 @@ describe("factors", () => {
     expect(f.cutCount.pct).toBe(100);
     expect(f.spaceAtCut.pct).toBe(75);
     expect(f.nothingLeftIn.pct).toBe(100);
-    expect(f.noStutter.pct).toBe(100);
     expect(f.knownMoments.pct).toBeNull();
+  });
+
+  it("penalizes clipped words, wrong cuts, long misses, and stutters steeply by rate per 10 min", () => {
+    // On a 20 min cut: 8 clipped = 4/10m (50%), 6 wrong cuts = 3/10m (50%), 6 long misses = 3/10m (50%), 4 stutters = 2/10m (50%).
+    // Short 2-5w leftIn runs do not penalize noLongMisses.
+    const f = factors(
+      score({ clipped: 8 }),
+      detail({ wrong: [1, 2, 2, 3, 4, 5, 6], left: [2, 3, 5, 6, 6, 7, 8, 9, 12], short: 4 }),
+    );
+    expect(f.wholeWords.pct).toBe(50);
+    expect(f.noWrongCuts.pct).toBe(50);
+    expect(f.noLongMisses.pct).toBe(50);
+    expect(f.noStutter.pct).toBe(50);
   });
 
   it("scores dead air against what the editor left, not against the recording's", () => {
@@ -88,18 +115,25 @@ describe("factors", () => {
   it("has no figure for what needs the case's words or the published video when they aren't there", () => {
     const noWords = factors(score());
     expect(noWords.cutDecisions.pct).toBeNull();
+    expect(noWords.noWrongCuts.pct).toBeNull();
+    expect(noWords.noLongMisses.pct).toBeNull();
     expect(noWords.pausesTrimmed.pct).toBeNull();
     expect(noWords.linesKept.pct).toBe(100);
     const noVideo = factors(score({ reference: false }));
     expect(noVideo.deadAir.pct).toBeNull();
-    expect(noVideo.wholeWords.pct).toBe(98);
+    expect(noVideo.wholeWords.pct).toBe(84.1);
   });
 });
 
 describe("mistakes", () => {
-  it("counts runs of two words or more, clipped words and stutter cuts, for every ten minutes the cut plays", () => {
-    const m = mistakes(score({ clipped: 4 }), detail({ wrong: [1, 2, 6], left: [1, 1, 3], short: 1 }));
-    expect(m).toMatchObject({ wronglyCut: 2, leftIn: 1, clippedWords: 4, stutters: 1, total: 8, per10Min: 4 });
+  it("counts hard craft bugs separately from short 2–5 word style tightenings left in", () => {
+    const m = mistakes(score({ clipped: 4 }), detail({ wrong: [1, 2, 6], left: [1, 2, 5, 6, 12], short: 1 }));
+    // Hard bugs: 2 wrong (>=2w) + 2 longMissed (>=6w) + 4 clipped + 1 stutter = 9 in 20 min (4.5 / 10 min).
+    // Short tightenings: 2 (words 2 and 5) in 20 min (1 / 10 min). Total leftIn = 4.
+    expect(m).toMatchObject({
+      wronglyCut: 2, longMissed: 2, clippedWords: 4, stutters: 1, total: 9, per10Min: 4.5,
+      styleLeftIn: 2, stylePer10Min: 1, leftIn: 4,
+    });
   });
 });
 
@@ -139,15 +173,19 @@ describe("card", () => {
     expect(c.trials).toBe(4);
     expect(c.facts.tokens!.mean).toBe(3_000_000);
     expect(c.mistakesPer10Min).toBeNull();
+    expect(c.stylePer10Min).toBeNull();
   });
 
-  it("compares two sides only on the factors both have", () => {
+  it("combines Watchability and Editorial match as a geometric mean and compares two sides only on common factors", () => {
     const withMoments = card("change", [{ caseId: "a", score: score({ moments: ["wrong"] }), detail: detail() }]);
     const without = card("main", [{ caseId: "a", score: score(), detail: detail() }]);
     const common = FACTORS.map(f => f.id).filter(id => id !== "knownMoments");
+    expect(without.watchability).toBe(overallOf(without.factors, WATCHABILITY_IDS));
+    expect(without.editorial).toBe(overallOf(without.factors, EDITORIAL_IDS));
+    expect(without.overall).toBe(Math.round(Math.sqrt(without.watchability! * without.editorial!) * 10) / 10);
     expect(overallOf(withMoments.factors, common)).toBe(overallOf(without.factors, common));
     expect(withMoments.overall).toBeLessThan(without.overall!);
-    expect(scorecardMarkdown([without, withMoments])).toContain("the mean of the 12 factors every side has");
+    expect(scorecardMarkdown([without, withMoments])).toContain("geometric mean of Watchability (4) and Editorial match (10)");
   });
 });
 
@@ -159,10 +197,16 @@ describe("scorecardMarkdown", () => {
     expect(scorecardMarkdown([main, side("change", [5, 4])])).toContain("| Lines kept | 75% (70–80) | 91% (90–92) | +16 |");
   });
 
-  it("lists the mistakes a viewer would notice, and warns when there is too little to read much into it", () => {
-    const md = scorecardMarkdown([card("main", [{ caseId: "a", score: score(), detail: detail({ wrong: [3], left: [2, 4] }) }])]);
-    expect(md).toContain("| **In every 10 minutes of the cut** | 2.5 |");
-    expect(md).toContain("| Left in, and the editor cut it | 2 |");
+  it("splits hard craft mistakes from short editorial tightenings and warns on small sample sizes", () => {
+    const md = scorecardMarkdown([card("main", [{ caseId: "a", score: score(), detail: detail({ wrong: [3], left: [2, 4, 8] }) }])]);
+    // Hard bugs: 1 wrong + 1 longMissed (8w) + 2 clipped + 0 stutter = 4 in 20 min -> 2/10 min.
+    // Short tightenings: 2 (words 2, 4) in 20 min -> 1/10 min.
+    expect(md).toContain("| **Watchability** |");
+    expect(md).toContain("| **Editorial match** |");
+    expect(md).toContain("| **Hard mistakes per 10 min** | 2 |");
+    expect(md).toContain("| Long passage left in | 1 |");
+    expect(md).toContain("| Short tightenings left in (per 10 min) | 1 |");
+    expect(md).toContain("| Short tightenings left in | 2 |");
     expect(md).toContain("Fewer than 4 passes a side");
     expect(md).toContain("With fewer than three");
   });

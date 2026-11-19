@@ -7,6 +7,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 19, 2026
 
 - A false start the transcript missed is no longer left in: Scarlet won’t shorten a “pause” it heard words in, and after each part of a pass it checks for words still playing that the transcript doesn’t have.
+- Approving a call or keeping a flagged edit while on the See all list now moves to the next item in that list instead of skipping ahead to the next For you item.
+- The Approve and Apply buttons now show their A shortcut inside the button, matching Keep and Revise.
+- The Transcript column keeps its words up when an edit lands or a cut opens, instead of emptying to “Loading transcript…” and reading the whole transcript again.
 - The talking-head skill leaves natural pauses alone again: a pause under about a second stays as said, and only longer dead air comes out.
 - Hovering any of the picture-marking icons above the video explains what it does, and marks you place on a frame can now be grabbed and moved directly on the video.
 - While you're still talking about a demo or reacting to it, your screen stays up instead of cutting to your camera; your camera comes back once you've moved on.

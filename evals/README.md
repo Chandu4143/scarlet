@@ -31,10 +31,12 @@ replays of the model's real requests through today's code) and compares with the
 
 ## The dialogue scorecard
 
-`scorecard.ts` turns scored passes into a percentage for each factor of a dialogue cut (cut decisions, take choice,
-lines kept, same cuts, mid-word cuts, pauses, dead air, cut count, space at a cut, restarts left in, stutter cuts,
-known mistakes), one overall figure and a count of the mistakes a viewer would notice, read against the published
-video decision by decision (`cutDetail.ts`). Give it one run for its card or two to compare them. See [DIALOGUE.md](DIALOGUE.md).
+`scorecard.ts` turns scored passes into **Watchability** (four craft-bug factors scored by rate per 10 minutes: mid-word
+cuts, wrong cuts, long missed removals, and stutter cuts), **Editorial match** (cut decisions, take choice, lines kept,
+same cuts, pauses, dead air, cut count, space at a cut, restarts left in, known mistakes), a combined **Overall**
+(geometric mean of Watchability and Editorial match), and a count of hard mistakes vs. short editorial tightenings left
+in, read against the published video decision by decision (`cutDetail.ts`). Give it one run for its card or two to
+compare them. See [DIALOGUE.md](DIALOGUE.md).
 
 ## What it measures
 

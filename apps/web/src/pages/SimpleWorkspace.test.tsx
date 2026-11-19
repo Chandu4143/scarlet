@@ -23,7 +23,7 @@ import { useProjectStore, type ProjectData } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
 import { useUiStore, type AgentContext } from "../stores/ui";
 import { SimpleWorkspace } from "./SimpleWorkspace";
-import { cutOnWorkingCut, keepGoesTo } from "../lib/passCalls";
+import { callGoesTo, cutOnWorkingCut, keepGoesTo } from "../lib/passCalls";
 import { cutAudition } from "../lib/cutAudition";
 import { lengthLabel } from "../lib/format";
 import * as watch from "./WatchPage";
@@ -500,9 +500,9 @@ it("lists a thread's edits once, numbered, and opens one with its decisions unde
   expect(editPanel()!.querySelector(".edit-card-bar")!.textContent).not.toContain("Check");
   expect(rows()[2]!.querySelector(".edit-badge")?.classList.contains("is-check")).toBe(true);
 
-  // Keep records the review and moves on to the next flagged edit that hasn't been kept. That was the only one.
+  // Keep records the review and, on See all, moves on to the next unkept edit in the list (wrapping to music bed).
   await click(buttonIn(editPanel()!, "Keep")!);
-  expect(editPanel()).toBeNull();
+  expect(openTitle()).toBe("music bed");
   expect(rows()[2]!.querySelector(".edit-badge")?.classList.contains("is-kept")).toBe(true);
   expect(rows()[2]!.querySelector(".edit-badge svg")).not.toBeNull();
   expect(rows()[2]!.querySelector(".edit-badge")?.textContent).toBe("3");
@@ -11834,6 +11834,106 @@ it("goes from a kept edit Scarlet didn't flag to a call still waiting, or a flag
   expect(keepGoesTo(rows, 4, still, [{ call: "cut 2", at: 27 }])).toEqual({ edit: rows[1]![0] });
   // Nothing else waits: the card closes.
   expect(keepGoesTo([[edit(13, undefined, true)], [edit(21)]], 1, still, [])).toBeUndefined();
+});
+
+it("goes from an approved call in See all to the next item in time order, edit or call", () => {
+  const edit = (at: number, check?: string, kept = false) => ({ changeId: "chg_pass", spot: at, label: `at ${at}`, range: { start: at, end: at + 1 }, previous: [], kept, ...(check && { check }) });
+  const rows = [[edit(13, undefined, true)], [edit(21)], [edit(35)], [edit(45, "Listen to the join.")], [edit(50)]];
+  const still = (e: object) => !(e as { kept: boolean }).kept;
+  // Approved call at 0:27: the unflagged edit at 0:35 is next in See all, ahead of the waiting call at 0:55.
+  expect(callGoesTo(rows, still, [{ call: "cut 2", at: 55, after: true }], 27)).toEqual({ edit: rows[2]![0] });
+  // Approved call at 0:27: when another waiting call comes at 0:30 before the edit at 0:35, it goes to that call.
+  expect(callGoesTo(rows, still, [{ call: "cut 2", at: 30, after: true }], 27)).toEqual({ call: "cut 2" });
+  // Approved last call at 0:55: wraps past the kept 0:13 to the first unkept edit at 0:21.
+  expect(callGoesTo(rows, still, [], 55)).toEqual({ edit: rows[1]![0] });
+  // Nothing else waits: the card closes.
+  expect(callGoesTo([[edit(13, undefined, true)]], still, [], 27)).toBeUndefined();
+});
+
+it("steps through See all in list order when approving a call or keeping a flagged edit on a pass", async () => {
+  const { save } = runningPass(STAGED.slice(0, 2)); // calls at 0:02 (Cut 1) and 0:06 (Cut 2)
+  const part = { ...data.changes.find(c => c.id === "chg_approved_2")!, id: "chg_part", taskId: "task_done", threadId: undefined, noteIds: [],
+    timelineEdits: [
+      { label: "intro trim", range: { start: 1, end: 1.5 } },
+      { label: "mid trim", range: { start: 4, end: 4.5 } },
+      { label: "mid check", range: { start: 5, end: 5.2 }, check: CHECK, summary: SUMMARY },
+      { label: "late trim", range: { start: 5.5, end: 5.8 } },
+      { label: "outro trim", range: { start: 9, end: 10 } },
+    ] };
+  data = { ...data, changes: [...data.changes, part], tasks: data.tasks.map(t => t.id === "task_done" ? { ...t, changeIds: [...t.changeIds, part.id] } : t) };
+  useProjectStore.setState({ current: data });
+  const request = threadWith("chg_ready").id;
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: useProjectStore.getState().current!.project.head!,
+    edits: threadId !== request ? [] : [
+      { changeId: "chg_part", spot: 0, label: "intro trim", range: { start: 1, end: 1.5 }, previous: [] },
+      { changeId: "chg_part", spot: 1, label: "mid trim", range: { start: 4, end: 4.5 }, previous: [] },
+      { changeId: "chg_part", spot: 2, label: "mid check", range: { start: 5, end: 5.2 }, previous: [], check: CHECK, summary: SUMMARY },
+      { changeId: "chg_part", spot: 3, label: "late trim", range: { start: 5.5, end: 5.8 }, previous: [] },
+      { changeId: "chg_part", spot: 4, label: "outro trim", range: { start: 9, end: 10 }, previous: [] },
+    ] }));
+  const cardTitle = () => editPanel()?.querySelector(".edit-card-title")?.textContent;
+  await show();
+  await act(async () => {});
+  // Switch to the See all list: intro trim (0:01), Cut 1 (0:02), mid trim (0:04), mid check (0:05), late trim (0:05.5), Cut 2 (0:06), outro trim (0:09).
+  await click(seeAll(passCard())!);
+  await act(async () => {});
+  await click(passRow("intro trim"));
+  await act(async () => {});
+  expect(cardTitle()).toBe("intro trim");
+  // Keep intro trim -> goes to Cut 1 (For you call).
+  await press("k");
+  expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 1");
+  // Approve Cut 1 on See all -> goes to mid trim (non-For-you edit), NOT skipping to Cut 2 or mid check!
+  await press("a");
+  await act(async () => {});
+  expect(container.querySelector('[aria-label="Call"]')).toBeNull();
+  expect(cardTitle()).toBe("mid trim");
+  // Keep mid trim -> goes to mid check (flagged For you edit).
+  await press("k");
+  expect(cardTitle()).toBe(SUMMARY);
+  // Keep mid check on See all -> goes to late trim (non-For-you edit), NOT skipping to Cut 2!
+  await press("k");
+  expect(cardTitle()).toBe("late trim");
+  // Keep late trim -> goes to Cut 2 (next in See all).
+  await press("k");
+  expect(call().querySelector(".edit-card-count")?.textContent).toBe("Cut 2");
+  // Approve Cut 2 (last waiting call) on See all -> schedules the pass and moves to outro trim instead of closing!
+  await press("a");
+  await act(async () => {});
+  expect(save).toHaveBeenLastCalledWith("chg_ready", expect.objectContaining({ applyWhenDone: true }));
+  expect(container.querySelector('[aria-label="Call"]')).toBeNull();
+  expect(cardTitle()).toBe("outro trim");
+  // Keep outro trim -> every item in See all is done, so the card closes.
+  await press("k");
+  expect(editPanel()).toBeNull();
+});
+
+it("keeps advancing through See all from a flagged edit instead of skipping to the next For you edit", async () => {
+  appliedEdits();
+  vi.spyOn(api, "threadEdits").mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.2, end: 2.4 }, previous: [], check: "Check the second line" },
+      { changeId: "chg_approved_2", spot: 2, label: "zoom", range: { start: 4, end: 6 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 3, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY },
+    ] }));
+  await show();
+  await act(async () => {});
+  const turn = turnFor("chg_approved_2");
+  // Switch to See all and start on the first edit.
+  await click(seeAll(turn)!);
+  await act(async () => {});
+  await click(turn.querySelector(".simple-edits .simple-edit")!);
+  expect(openTitle()).toBe("music bed");
+  await press("k");
+  expect(openTitle()).toBe("captions");
+  // On See all, keeping the flagged captions edit goes to zoom (next in list), not skipping to wrap (next For you).
+  await press("k");
+  expect(openTitle()).toBe("zoom");
+  await press("k");
+  expect(openTitle()).toBe("wrap");
+  await press("k");
+  expect(editPanel()).toBeNull();
 });
 
 

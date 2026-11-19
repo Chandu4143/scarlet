@@ -68,7 +68,8 @@ export function inspectionPictures(ctx: Ctx) {
     return windows;
   }
   const scenes = new AnalysisCache<Block>(b => (b.pixels?.length ?? 0) + b.changes.length * 8, 24 * 1024 * 1024);
-  const stills = new AnalysisCache<Buffer>(b => b.length, 12 * 1024 * 1024);
+  // The picture lane decides how many stills decode at once, as it does for the editor's frames.
+  const stills = new AnalysisCache<Buffer>(b => b.length, 12 * 1024 * 1024, Infinity);
   const sheets = new AnalysisCache<Sheet>(s => s.jpeg.length + s.timestamps.length * 8, 24 * 1024 * 1024);
   // A GPU or a preview copy that fails does so for every block read, so the retry is logged once a minute.
   const retried = throttledLog(line => ctx.log(line));
@@ -147,13 +148,12 @@ export function inspectionPictures(ctx: Ctx) {
       }
       const indices = indicesFor([...changes].sort((a, b) => a - b));
       const raw = indices.every(i => tiles.has(i));
-      const frames: Buffer[] = [];
-      for (const i of indices) {
-        if (raw) frames.push(tiles.get(i)!);
-        else frames.push(await stills.get(JSON.stringify([identity, i]), demand => ctx.track(read(demand, (options, active) =>
+      // A sheet's stills are asked for together and take their turns in the picture lane, a few at a time: one after
+      // another, a sheet of six waited for six decodes while the lane's other slots stood empty.
+      const frames = raw ? indices.map(i => tiles.get(i)!)
+        : await Promise.all(indices.map(i => stills.get(JSON.stringify([identity, i]), demand => ctx.track(read(demand, (options, active) =>
           renderTimelineFrame(project, timeline, { start: i / fps, end: (i + 1) / fps }, mediaRoot, active, 320,
-            { ...options, decoder: timelinePreviewDecoder(accel, options.decoder) })), project.id), { signal }));
-      }
+            { ...options, decoder: timelinePreviewDecoder(accel, options.decoder) })), project.id), { signal })));
       const sheet = await packSheet(frames, indices.map(i => i / fps), raw, signal);
       return { ...sheet, changedFrames: activity ? changes.size : undefined };
     })(), project.id), { signal: subscriber });
