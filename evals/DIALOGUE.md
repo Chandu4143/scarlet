@@ -72,12 +72,77 @@ speech). A change ships only when:
 - any whole-pass movement is explained. A fix for one spot that moves dozens of edges in other passes needs a look at
   those edges before it ships.
 
-**Model passes cost the editor tokens. Never start one without asking.** Ask only when the change alters what the
-model reads (prompt, skills, tool descriptions or results) or the entry's cause is `model`, and propose the smallest
-run that can answer: a clone of the reported project cut down to the minute around the spot, 4 passes an arm, against
-4 on main. Say the expected cost when you ask.
+**Model passes cost the editor tokens.** The standard scorecard run in step 5 is the one he has asked for on every
+change to what the model reads. Anything beyond it needs his yes: propose the smallest run that can answer (a clone of
+the reported project cut down to the minute around the spot, 4 passes an arm against 4 on main) and say the expected
+cost when you ask.
 
-## 5. Record
+## 5. Score it against the published video
+
+The ledger says whether old mistakes stay fixed. The scorecard says how good the cut is: each scored pass is read
+against the video the editor's own editor published from the same recording, and comes down to a percentage for each
+thing a dialogue cut has to get right, and one overall figure.
+
+| Factor | 100% means |
+|---|---|
+| Cut decisions | every removal the editor made, Scarlet made, and no others; a removal counts once, long or short |
+| Take choice | where a line was said twice, Scarlet kept the take the editor kept, and only that one |
+| Lines kept | every sentence the editor kept is still in |
+| Same cuts | every cut of the editor's that can be told apart, Scarlet made between the same two words |
+| No mid-word cuts | no join cuts into a word that is sounding |
+| Pauses left alone | every pause the editor left as it was said, Scarlet left too |
+| Pauses trimmed | every pause the editor shortened, Scarlet shortened too |
+| Dead air | as much dead air left as the editor left |
+| Cut count | as many cuts as the editor made |
+| Space at a cut | at cuts both made, the pause is within 0.1 s of the editor's |
+| No restarts left in | no more restarts or doubled words play than in the editor's cut |
+| No stutter cuts | no piece between two cuts plays for under a second |
+| Known mistakes | every spot that went wrong before comes out right, or is asked about |
+
+Under the card is the count it is easiest to feel: **mistakes you'd notice in every 10 minutes of the cut**. A run of two
+words or more Scarlet cut that the editor kept, one it left in that the editor cut, a word a cut lands inside, a
+stutter cut.
+
+```sh
+# One run, or one pass: its card, and for a single pass what each figure is made of.
+node_modules/.bin/tsx evals/src/scorecard.ts <run folder | evaluation.json>
+# Main against a change: each factor side by side, and which differences are inside the spread between passes.
+node_modules/.bin/tsx evals/src/scorecard.ts <main's run> <the change's run> --labels main,change --ledger
+```
+
+A scorecard costs nothing: it reads what `run.ts` already scored, and every run writes its own `scorecard.md`. Only the
+passes cost tokens.
+
+**Every change to what the model reads ships with its scorecard beside main's** (the editor's rule, 2026-11-18): a
+skill, the prompt, a tool's description or what a tool returns. The standard run is two passes on each recording that
+has a published video, with the change, against the latest recorded run of main on the same recordings
+(`history.md` names it and the library to run in). Run main again only when it has moved since. Report the card, what
+moved outside the spread and what the run cost. A larger run needs the editor's yes first. A change that alters only
+placement or the transcript is judged by the ledger and replays, and by a scorecard when a replay can't show it.
+
+Reading it:
+
+- **Passes disagree.** Two passes of the same code differ by a few points on most factors. Run 4 a side, and treat a
+  difference marked "within the spread" as no result. A change ships on the scorecard when the overall goes up and no
+  factor falls clear of the spread.
+- **Recordings count once each.** A side's figure is the mean over recordings of the mean over that recording's passes.
+  With fewer than three recordings the card describes those videos more than the cutting: add a case for every
+  recording the editor supplies with its published video (`dataset.ts build … --published-media`, see `README.md`).
+- **Everything is on the scale of the editor's cut, never the raw recording's.** Most of what comes out of a recording
+  is long retakes and production talk that any pass removes, so a figure counted over all of it reads high whatever
+  happened to the hard calls: two passes that left three times the editor's dead air scored 98% for it against the
+  recording, and 94% for words cut while missing a quarter of the editor's removals (2026-11-18). A removal counts
+  once, and an amount is scored as the smaller over the larger, so too tight scores as low as too loose.
+- **A disagreement of one word isn't counted as a mistake.** The published video's words are matched to the recording's
+  through two transcripts, which differ by a word at the edge of a piece often enough to drown the real ones. So a
+  single wrong word, like a cut that takes the first word of the kept take, is the ledger's to catch, not the card's.
+- **The editor's cut is one editor's taste.** Where the editor's own words say otherwise (pauses under a second are how
+  he talks), his words win and the factor is read with that in mind, not tuned toward.
+- **Past mistakes** is the ledger's pass rate on this checkout (`--ledger`), beside the card, not in the overall.
+- Calls for the editor, minutes and tokens are printed under the card and not scored: fewer calls is not better when
+  the call was the editor's to make.
+
+## 6. Record
 
 - After the change merges, run `ledger.ts check --record --label "<PR>"` on main, so the next thread compares against it.
 - Mark the entry `fixed` with the PR, and update `history.md`: the cause, what worked, what didn't and what's left open.
