@@ -63,7 +63,7 @@ describe("dialogue plan", () => {
     sources.words = async () => said;
     const plan = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ mediaId: "mic", fromWord: 1, toWord: 3 })] }, sources);
     expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: .9, end: 2.18, review: true }] });
-    if (plan.outcome === "ready") expect(plan.gate.get(0)?.evidence).toContain("No measured silence");
+    if (plan.outcome === "ready") expect(plan.gate.get(0)?.evidence).toContain("No pause on either side of “now start over”");
     // The held cut says what Scarlet measured, what the join plays and what keeping it plays, for the agent to settle.
     if (plan.outcome === "ready") expect(plan.decisions[0]!.held).toBe("The words named run on into the ones beside them at the start and end: no pause or low point where they part, a join in running speech. As placed the join plays “… ready ‖ again …”. Kept, it plays “… ready now start over again …”.");
   });
@@ -716,15 +716,13 @@ describe("dialogue plan", () => {
     // to watch the join is the agent's call, so Scarlet flags nothing itself.
     expect(dipped.decision.check).toBeUndefined();
     expect(dipped.gate.evidence).toContain("the removed sound starts 0.02 s after the cut");
-    // Spoken straight through, or with a dip no deeper than a sibilant's hiss, there is nowhere to cut, and the agent
-    // settles the held cut with what Scarlet measured and what the join plays.
+    // Spoken straight through, or with a dip no deeper than a sibilant's hiss, the words part where the transcript parts
+    // them: where an editor cuts running speech (2026-11-18). The cut applies there, and the gate says so.
     for (const level of [.12, .008]) {
       const through = await plan(level);
-      expect(through.decision!.review).toBe(true);
-      expect(through.gate!.evidence).toContain("No measured silence between “recognized” and “that”");
-      // What Scarlet measured is its own field. The reason stays the sentence the agent wrote for the editor.
-      expect(through.decision!.held).toBe("The words named run on into the ones beside them at the start: no pause or low point where they part, a join in running speech. As placed the join plays “… recognized ‖ that likely …”. Kept, it plays “… recognized that that likely …”.");
-      expect(through.decision!.reason).not.toContain("run on");
+      expect(through.decision).toMatchObject({ review: false, start: 1.4 });
+      expect(through.decision!.held).toBeUndefined();
+      expect(through.gate!.evidence).toContain("No pause or low point between “recognized” and “that”: they run together, and the start is where the transcript parts them.");
     }
   });
 
