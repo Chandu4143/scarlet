@@ -1687,7 +1687,10 @@ export function SimpleWorkspace() {
     made && head && made.version !== head && before !== head ? { version: head, removed: undefined } : made;
   const editPlaybackKey = (edit: ThreadEdit, after?: string) => JSON.stringify([current.id, firstKey(edit), edit.beforeCut?.version, after,
     edit.beforeCut?.removed.start, edit.beforeCut?.removed.end]);
-  const reviewContext = useMemo(() => fullRenderContext(current.project), [current.project]);
+  // Cuts are prepared and drafted on the working cut on screen: one saved under a playing listen waits with it, so the
+  // listen's own version isn't thrown away and asked for again with each save.
+  const shownProject = useMemo(() => head && head !== current.project.head ? { ...current.project, head } : current.project, [current.project, head]);
+  const reviewContext = useMemo(() => fullRenderContext(shownProject), [shownProject]);
   const draftCache = useMemo<SingleCutDrafts>(() => new Map(),
     [reviewContext, pass?.id, pass?.toVersion, current.renderSettingsRevision]);
   const preparedCandidates = useMemo(() => new Map<string, PreparedCut>(), [draftCache]);
@@ -3008,7 +3011,7 @@ export function SimpleWorkspace() {
   const openCut = !activeReview ? undefined : beforeCut ?? (openCall && openVersion && heard ? { version: openVersion, removed: heard } : undefined);
   const openPlaybackKey = reviewingEdit ? editPlaybackKey(reviewingEdit, appliedAfterVersion)
     : listening && beforeVersion ? callPlaybackKey(listening.index, beforeVersion) : undefined;
-  const nextCutPlayback = usePrepareReviewCuts(current.project, current.renderSettingsRevision, reviewQueue, draftCache, preparedCandidates,
+  const nextCutPlayback = usePrepareReviewCuts(shownProject, current.renderSettingsRevision, reviewQueue, draftCache, preparedCandidates,
     openCut && { ...openCut, key: openPlaybackKey });
 
   function keepShown() {

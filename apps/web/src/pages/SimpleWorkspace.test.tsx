@@ -3659,6 +3659,7 @@ it("keeps staged cuts a frame apart as two cuts while the cut list is on its way
 it("plays a call straight through while the pass saves its next parts, and takes them up once the video stops", async () => {
   runningPass();
   const listen = vi.spyOn(player, "audition");
+  const drafts = vi.spyOn(api, "cutReviewDraft");
   await show();
   await act(async () => {});
   await openCall("Repeated aside.");
@@ -3678,6 +3679,8 @@ it("plays a call straight through while the pass saves its next parts, and takes
   expect(listen).toHaveBeenCalledTimes(listens);
   expect(container.querySelector("video")).toBe(video);
   expect(container.querySelector(".caught-up-notice")?.textContent).toContain("New edits ready");
+  // Nothing is drafted or prepared on the newer working cut meanwhile: the listen's own version stays as it is.
+  expect(drafts.mock.calls.map(call => call[2])).not.toContain("ver_part2");
   // Paused, the card goes onto the newest part, on the same cut, now the fourth and 1.5 s earlier. The listen isn't
   // started again: it is taken up where it is, paused.
   await pauses();
