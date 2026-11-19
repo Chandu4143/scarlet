@@ -368,6 +368,30 @@ it("keeps zoom controls in the row under the timeline and draws no edit points, 
   expect(container.textContent).not.toContain("edit points");
 });
 
+it("brings the playhead part of the way to the middle with each zoom in, and leaves it where it is zooming out", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
+  await show(<TimelineScrubber activeShortcuts duration={200} playhead={190} frameAt={() => undefined} onSeek={() => {}} />);
+  const key = (name: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
+  const at = () => parseFloat(container.querySelector<HTMLElement>(".timeline-playhead")!.style.left);
+  expect(at()).toBeCloseTo(95, 0);
+  const seen = [];
+  for (let i = 0; i < 4; i++) {
+    await key("+");
+    seen.push(at());
+  }
+  // Each zoom moves it closer, never past the middle and never all the way at once.
+  for (const [i, left] of seen.entries()) {
+    expect(left).toBeGreaterThan(50);
+    expect(left).toBeLessThan(i ? seen[i - 1]! : 95);
+  }
+  expect(seen[0]).toBeGreaterThan(70);
+  const near = seen.at(-1)!;
+  await key("-");
+  expect(at()).toBeCloseTo(near, 5);
+});
+
 it("keeps the stretch the editor zoomed to when a new working cut builds the timeline again", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -382,10 +406,10 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   const whole = stamps();
   await key("+");
   await key("+");
-  // 4×: fifty seconds around the playhead.
+  // 4×: fifty seconds around the playhead, which each zoom brought nearer the middle.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
-  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:00$/), expect.stringMatching(/2:30$/)]);
+  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:10$/), expect.stringMatching(/2:40$/)]);
   // A revision lands. The head moves first and the new cut arrives a moment later, ten seconds shorter. The timeline is
   // built again each time, on the stretch it showed.
   await render(undefined, 200);

@@ -10,6 +10,9 @@ interface ZoomFrame {
   blend?: number;
 }
 
+/** How far off the middle the playhead stays after each doubling of a zoom in on it. */
+const TOWARD_MIDDLE = .6;
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 export const timelinePosition = (time: number, start: number, end: number) => Number.isFinite(time) ? clamp(time, start, end) : start;
@@ -116,9 +119,13 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
     if (!total || dragging.current || !(factor > 0)) return;
     const current = (!continuous && live.current.target) || live.current.view;
     const playheadFraction = (position() - current.from) / current.span;
-    const anchor = fraction ?? (playheadFraction >= 0 && playheadFraction <= 1 ? playheadFraction : .5);
+    const onPlayhead = fraction === undefined && playheadFraction >= 0 && playheadFraction <= 1;
+    const anchor = fraction ?? (onPlayhead ? playheadFraction : .5);
     const span = clamp(current.span / factor, minSpan, total);
-    const next = { span, from: clamp(current.from + (current.span - span) * anchor, start, end - span) };
+    let from = current.from + (current.span - span) * anchor;
+    // Zooming in on the playhead brings it part of the way to the middle each time, so it never ends up on an edge.
+    if (onPlayhead && span < current.span) from = position() - span * (.5 + (anchor - .5) * TOWARD_MIDDLE ** Math.log2(current.span / span));
+    const next = { span, from: clamp(from, start, end - span) };
     lookAt(next);
     move(next, continuous ? "gesture" : "animate");
   }
