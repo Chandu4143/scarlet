@@ -1,4 +1,5 @@
 /** Tools and failure paths server.test.ts leaves alone: sync, crossfades, comparisons, auditions, notes, annotations and what goes to stderr. */
+import "./cutSummaries.testkit.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";

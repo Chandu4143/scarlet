@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { PictureMark, PictureMarkKind } from "@scarlet/shared";
 import { player } from "../../lib/player";
-import { clock } from "../../lib/format";
 import { usePlayerStore } from "../../stores/player";
 import { usePictureMarksStore, type MarkedFrame } from "../../stores/pictureMarks";
 import { Icon } from "../ui/primitives";
@@ -47,7 +46,7 @@ function thin(points: [number, number][]): [number, number][] {
 }
 
 /**
- * The editor's marks on the picture. M (or the pen in the player's controls) pauses the video and lets them draw on
+ * The editor's marks on the picture. M (or a tool over the picture) pauses the video and lets them draw on
  * the frame: a line by hand, a box or a point. The marks ride on the next message, as a file dropped on the box does,
  * and show on the picture whenever the player rests on their frame.
  */
@@ -131,25 +130,34 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
       } : undefined}
       onPointerCancel={() => { drawing.current = undefined; setLive(undefined); }}>
       <MarksDrawing marks={frame.marks} live={live} />
-      {marking && <MarkTools projectId={projectId} frame={frame} tool={tool} />}
     </div>
   </div>;
 }
 
-function MarkTools({ projectId, frame, tool }: { projectId: string; frame: MarkedFrame; tool: PictureMarkKind }) {
+/**
+ * The marking tools, always in a row above the picture. A tool pressed while the video plays pauses it and marks
+ * the frame under the playhead; the lit tool pressed again ends the marking.
+ */
+export function PictureMarkTools({ projectId, enabled, onStart }: { projectId: string; enabled: boolean; onStart: () => void }) {
+  const marking = usePictureMarksStore(s => s.marking === projectId);
+  const tool = usePictureMarksStore(s => s.tool);
+  const count = usePictureMarksStore(s => s.byProject[projectId]?.marks.length ?? 0);
   const store = usePictureMarksStore.getState();
-  const count = frame.marks.length;
-  return <div className="picture-mark-tools" role="toolbar" aria-label="Mark the picture" onPointerDown={e => e.stopPropagation()}>
-    {TOOLS.map(t => <button key={t.tool} type="button" className="picture-mark-tool" aria-pressed={tool === t.tool}
-      aria-label={t.label} title={`${t.label} (${t.key})`} onClick={() => store.setTool(t.tool)}><Icon name={t.icon} size={15} /></button>)}
+  const pick = (next: PictureMarkKind) => {
+    if (marking && tool === next) return store.stop();
+    store.setTool(next);
+    if (!marking) onStart();
+  };
+  return <div className="picture-mark-tools" role="toolbar" aria-label="Mark the picture">
+    {TOOLS.map(t => <button key={t.tool} type="button" className="picture-mark-tool" aria-pressed={marking && tool === t.tool} disabled={!enabled}
+      aria-label={t.label} title={`${t.label} (${t.key})`} onClick={e => { if (e.detail) e.currentTarget.blur(); pick(t.tool); }}><Icon name={t.icon} size={15} /></button>)}
     <i className="picture-mark-sep" aria-hidden="true" />
     <button type="button" className="picture-mark-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!count} onClick={() => store.undo(projectId)}><Icon name="undo" size={15} /></button>
     <button type="button" className="picture-mark-tool" aria-label="Clear marks" title="Clear marks" disabled={!count} onClick={() => store.clear(projectId)}><Icon name="x" size={15} /></button>
-    <span className="picture-mark-note" role="status">{clock(frame.time)}{count ? ` · ${count === 1 ? "1 mark" : `${count} marks`}` : ""}</span>
   </div>;
 }
 
-/** Mark the frame under the playhead, or go back to the frame already marked. M, or the pen in the player's controls. */
+/** Mark the frame under the playhead, or go back to the frame already marked. M, or a tool over the picture. */
 export function toggleMarking(projectId: string, at: Omit<MarkedFrame, "marks">) {
   const store = usePictureMarksStore.getState();
   if (store.marking === projectId) return store.stop();

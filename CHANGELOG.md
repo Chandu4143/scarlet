@@ -8,6 +8,11 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 - Rejecting a cut puts its footage back at once, with no wait and no tokens: the cut is out of the video and off the timeline as soon as you press ×. Scarlet is only asked when it is another kind of edit, or a cut a later edit has changed.
 - A rejected edit stays in its request's list with a × and "Rejected", and is no longer counted as a passage put back.
+- Each cut in a pass's list of edits now says what came out and where, such as "Shortened the pause after ‘okay’", instead of the same reason on every row.
+- The drawing tools sit in a row above the video instead of over the picture.
+
+- The drawing tools now stay over the top left of the picture, so a press on one pauses the video and starts marking; the pen beside full screen is gone.
+
 - A dialogue pass leaves your own short pauses in and cuts only the ones that play as dead air, about a second or more, so cuts no longer land one after another.
 - ⌘Z takes back your last Keep, Reject or revision, and pressing it again goes on to the one before. "Undo Keep", "Undo Reject" or "Undo revision" under the timeline says what it will take back.
 - Scarlet now makes a cut between two words you say without a pause, where you'd cut it, instead of setting it aside.

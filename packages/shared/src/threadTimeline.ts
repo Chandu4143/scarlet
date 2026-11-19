@@ -1,4 +1,4 @@
-import { appliedReviewChange, clipRange, historyLineage, intervalCandidates, makeTimeMap, removedJoins, reviewCutSummaries, reviewReasons, timelineDuration, withHandles, type Change, type CutAssessment, type MediaAsset, type Timeline, type TimeRange } from "@scarlet/timeline";
+import { appliedReviewChange, clipRange, cutKindRow, historyLineage, intervalCandidates, makeTimeMap, removedJoins, reviewCutSummaries, reviewKindRows, reviewReasons, timelineDuration, withHandles, type Change, type CutAssessment, type MediaAsset, type Timeline, type TimeRange } from "@scarlet/timeline";
 import type { Thread } from "./threads.js";
 import { classifyEdits, type EditKind } from "./editKind.js";
 
@@ -140,7 +140,7 @@ function dialogueEdits(change: Change, smoothed = false) {
     // The review numbers its calls as planCutReview lists them: a cut that starts where the last ended is the same call.
     if (call < 0 || op.start > lastEnd) call++;
     const own = reason?.start === op.start && reason.end === op.end ? reason : undefined;
-    if (!skipped?.has(call)) result.push({ label: own?.summary ?? own?.reason ?? change.description,
+    if (!skipped?.has(call)) result.push({ label: own?.summary ?? cutKindRow(own?.kind) ?? own?.reason ?? change.description,
       range: { start: at, end: at }, removed: { start: op.start, end: op.end }, replaces: undefined,
       check: own?.check, summary: own?.summary, reason: own?.reason });
     removed += op.end - op.start;
@@ -341,6 +341,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
     const removals = new Map(cuts?.map(cut => [cut.range.start, cut]));
     const reasons = change.appliedReview && reviewReasons(change, change.appliedReview.joins);
     const summaries = change.appliedReview && reviewCutSummaries(change, change.appliedReview.joins);
+    const kindRows = change.appliedReview && reviewKindRows(change, change.appliedReview.joins);
     const cutNotes = appliedCutNotes(change);
     const approved = approvedNotes(change, applied);
     const entries = named ?? applied.ranges.map((range, index) => {
@@ -352,7 +353,7 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       const summary = cutNotes?.[index]?.summary ?? summaries?.[index] ?? note?.summary;
       const combined = reason && assessment && !plannedReasons?.includes(assessment)
         ? `${reason}${/[.!?]$/.test(reason) ? " " : ". "}${assessment}` : reason ?? assessment;
-      return { range, label: note?.label ?? summary ?? (planned || change.description), summary, reason: combined ?? note?.reason,
+      return { range, label: note?.label ?? summary ?? kindRows?.[index] ?? (planned || change.description), summary, reason: combined ?? note?.reason,
         check: note?.check, replaces: undefined };
     });
     const ranges = entries.map(e => e.range);
