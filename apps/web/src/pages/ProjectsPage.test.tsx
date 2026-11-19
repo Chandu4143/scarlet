@@ -74,7 +74,8 @@ it.each(["empty", "populated"])("can start a project from the %s library guide a
     expect(name.value).toBe("Interview");
     expect(container.querySelector('[aria-label="Selected files"]')?.textContent).toBe("take-one.mov");
     expect(create).not.toHaveBeenCalled();
-    await act(() => button("Clear").click());
+    expect(container.querySelector("dialog")?.textContent).not.toMatch(/optional|Clear|format will match|on this computer/);
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Remove take-one.mov"]')!.click());
     await act(async () => button("Create project").click());
     expect(create).toHaveBeenCalledExactlyOnceWith({ name: "Interview" });
     expect(container.textContent).toContain("Project workspace");
