@@ -39,6 +39,11 @@ describe("claude stream-json parser", () => {
     expect(st.mcpStatus).toBe("connected");
     expect(st.sessionId).toBe("s1");
   });
+  it("reports a compaction once it happens", () => {
+    const st = newClaudeState();
+    const evs = feed(['{"type":"system","subtype":"compact_boundary","session_id":"s1","compact_metadata":{"trigger":"auto","pre_tokens":161204}}'], st, parseClaudeLine);
+    expect(evs).toEqual([{ type: "log", text: "Context compacted", data: { kind: "compaction", trigger: "auto", preTokens: 161204 } }]);
+  });
   it("sees a resume that found no session as never started", () => {
     // Recorded from claude 2.1.316 with --resume <unknown id>.
     const st = newClaudeState();

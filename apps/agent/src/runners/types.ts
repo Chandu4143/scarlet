@@ -75,6 +75,9 @@ export function planEvent(steps: PlanStep[]): RunnerEvent {
   return { type: "plan", text: planText(steps), data: { steps } };
 }
 
+/** The harness compacted the run's context. The engine logs it, with the task, and keeps it out of the chat. */
+export const COMPACTED = { type: "log", text: "Context compacted", data: { kind: "compaction" } } as const satisfies RunnerEvent;
+
 /** Five times the longest silence measured across real editing runs (1.9 minutes). */
 export const DEFAULT_STALL_MS = 10 * 60 * 1000;
 

@@ -25,6 +25,14 @@ const ToolDiagnostic = z.object({
   resultMedia: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
 }).strict();
 
+/** One line for a compaction a host reported: the task, what set it off and the context's size before and after, as the harness gave them. */
+function compactionLine(task: Task, data: Record<string, unknown>) {
+  const figure = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? ` ${Math.round(v)}` : undefined;
+  const trigger = typeof data.trigger === "string" && /^[a-z_-]{1,20}$/.test(data.trigger) ? ` trigger=${data.trigger}` : "";
+  const before = figure(data.preTokens), after = figure(data.postTokens);
+  return `[task] compacted task=${task.id} agent=${task.agent}${trigger}${before ? ` tokensBefore=${before.trim()}` : ""}${after ? ` tokensAfter=${after.trim()}` : ""}`;
+}
+
 function usageGroupBy(value: string | undefined, fallback: UsageGroupBy): UsageGroupBy {
   if (value === undefined || value === "") return fallback;
   const parsed = UsageGroupBy.safeParse(value);
@@ -209,6 +217,8 @@ export function taskRoutes(ctx: Ctx) {
     ctx.db.transaction(() => {
       const task = requireTask(c.req.param("taskId"), c.req.param("projectId"));
       requireActiveAttempt(ctx, requestAttempt(c.req.raw) ?? { taskId: task.id, startedAt }, task.projectId, task.id);
+      // The harness compacted the run's context: said in the log, never in the chat.
+      if (body.type === "log" && body.data?.kind === "compaction") return void ctx.log(compactionLine(task, body.data));
       appendTaskEvent(ctx, task, body);
     }, "immediate")();
     return c.json({});

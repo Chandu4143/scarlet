@@ -34,6 +34,8 @@ pub struct CodexState {
     thread_id: Option<String>,
     /// The plan last passed on, so one Codex repeats isn't sent twice.
     pub plan: Option<Vec<PlanStep>>,
+    /// Whether this Codex reports a compaction as an item, so its older `thread/compacted` notice isn't a second one.
+    compaction_items: bool,
 }
 
 /// The steps of a `todo_list` item: Codex's `update_plan`, as `codex exec --json` reports it. Each step is its text and
@@ -191,6 +193,12 @@ fn codex_events(kind: &str, msg: &Value, st: &mut CodexState) -> Vec<RunnerEvent
                         events.push(RunnerEvent::with("tool", format!("web search {}", brief_input(item.get("query"), 120)), json!({"tool":"web_search"})));
                     }
                 }
+                "contextCompaction" | "context_compaction" => {
+                    st.compaction_items = true;
+                    if completed {
+                        events.push(RunnerEvent::with("log", "Context compacted", json!({"kind":"compaction"})));
+                    }
+                }
                 "todo_list" => {
                     // The whole plan each time: when the model first makes it, on every update, and once more as the turn ends.
                     record_codex_plan(codex_plan(item.get("items")), st, &mut events);
@@ -285,6 +293,8 @@ fn app_server_events(method: &str, params: &Value, st: &mut CodexState) -> Vec<R
             record_codex_plan(steps, st, &mut events);
             events
         }
+        // Codex compacted the thread's context. Newer versions report it as an item too, and that one counts.
+        "thread/compacted" if !st.compaction_items => vec![RunnerEvent::with("log", "Context compacted", json!({"kind":"compaction"}))],
         "item/started" => codex_events("item.started", params, st),
         "item/updated" => codex_events("item.updated", params, st),
         "item/completed" => codex_events("item.completed", params, st),
@@ -636,6 +646,22 @@ mod tests {
         assert_eq!(evs[5].text, "Proposed the first cut as chg_2.");
         assert!(st.turn_completed);
         assert_eq!(st.last_message.as_deref(), Some("Proposed the first cut as chg_2."));
+    }
+
+    #[test]
+    fn reports_a_compaction_once_whichever_way_codex_says_it() {
+        let compacted = RunnerEvent::with("log", "Context compacted", json!({"kind":"compaction"}));
+        let notice = json!({"threadId":"t1","turnId":"u1"});
+        // An App Server that reports it only as `thread/compacted`.
+        let mut st = CodexState::default();
+        assert_eq!(app_server_events("thread/compacted", &notice, &mut st), vec![compacted.clone()]);
+        // One that reports it as an item too: the item counts, the older notice after it doesn't.
+        let mut st = CodexState::default();
+        let item = json!({"item":{"id":"c1","type":"contextCompaction"}});
+        let mut evs = app_server_events("item/started", &item, &mut st);
+        evs.extend(app_server_events("item/completed", &item, &mut st));
+        evs.extend(app_server_events("thread/compacted", &notice, &mut st));
+        assert_eq!(evs, vec![compacted]);
     }
 
     #[test]
