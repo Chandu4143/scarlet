@@ -13,6 +13,7 @@ import { useKeptEdits } from "../lib/keptEdits";
 import { useNearView } from "../lib/useNearView";
 import { needNumbers } from "../lib/needNumbers";
 import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/chat/QueueTray";
+import { TipButton } from "../components/ui/TipButton";
 import { recordEditReview } from "../lib/editReviews";
 import { lastStep, recordUndo, undoKey, undoLast, undoWords, useUndoStore } from "../lib/undo";
 import { editKey, keepEdits, reviewKey } from "../lib/keptEdits";
@@ -875,7 +876,7 @@ const stepsOver = (listen: Audition | undefined) => listen?.beyond?.length ? [..
 const inFullScreen = () => !!document.fullscreenElement || !!document.querySelector(".cut-preview[data-expanded]");
 
 /** What a request paused with the project's editing waits for. */
-const PAUSED_HINT = "Editing is paused. Continue, above the message box, picks this up where it left off.";
+const PAUSED_HINT = "Editing is paused. Resume picks this up where it left off.";
 
 /**
  * One thread's requests. Each is the editor's message, then what Scarlet is doing about it or what it made. The request
@@ -896,6 +897,8 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
   const loadTaskEvents = useProjectStore(s => s.loadTaskEvents);
   const cancelTask = useProjectStore(s => s.cancelTask);
   const editingPaused = useProjectStore(s => s.current?.id === projectId && s.current.project.editingPaused);
+  const stopEditing = useProjectStore(s => s.stopEditing);
+  const resumeEditing = useProjectStore(s => s.resumeEditing);
   const retryRun = useProjectStore(s => s.retryTask);
   // Retry and Resume run on the model picked now, which may not be the one that failed.
   const { effective } = useAgentAvailability();
@@ -1175,7 +1178,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
     const tag = request?.revisionLabel ? tagOf(tagFor(request) ?? request.revisionLabel) : undefined;
     const about = aboutOne(run) ? actions.cutName?.(aimOf(run).context) ?? tag : undefined;
     // Where the request stands, at the right of its heading: a dot while Scarlet asks, a word once it stopped early or
-    // left a suggestion, and Paused while editing waits for Continue. The review count appears on For you.
+    // left a suggestion, and Paused while editing waits for Resume. The review count appears on For you.
     const ended = runEnded(task);
     const editsProject = isProjectEditTask(task);
     const paused = editingPaused && editsProject && task.state === "queued";
@@ -1189,12 +1192,18 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
       .some(r => aboutOne(r) && isWorking(r.task.state));
     const standing = stands ?? (among ? <span className="unit-word" title={`Scarlet is working on ${atOnce} cuts or edits at the same time.`}>Working on {atOnce} at once</span> : null);
     const stop = runIsActive(task) && !(waitingToStart(task) && run.root === task.id) ? () => attempt(run.root, cancelTask(task.id)) : undefined;
-    // A request that edits the video has Stop for as long as Scarlet has it, paused or not: the tray's Pause
-    // holds every request and Continue picks them up, while this ends just the one. It is the only action, so no menu,
-    // and it reads as Pause does: an icon and the word, at the band's size.
+    // A request that edits the video has its controls at the band's right for as long as Scarlet has it: Pause, which
+    // holds all editing in the project, then Resume once it is paused, which picks the paused work up first; and Stop,
+    // which ends just this one, paused or not. Each is an icon alone, named the moment the pointer rests on it.
+    const hold = editingPaused ? () => attempt(run.root, resumeEditing(projectId)) : () => attempt(run.root, stopEditing(projectId));
     const editActions = editsProject && stop ?
-      <div className="unit-actions"><button type="button" className="unit-stop-edit" aria-label={request ? `Stop this edit: ${request.text}` : "Stop this edit"}
-        title="Stop this edit. What it already changed stays, and the next request can start." onClick={stop}><Icon name="stop" size={12} />Stop</button></div> : undefined;
+      <div className="unit-actions">
+        <TipButton className="unit-pause-edit" tip={editingPaused ? "Resume editing" : "Pause editing"}
+          aria-description={editingPaused ? "Paused work picks up first, where it left off."
+            : "All editing in this project stops. Nothing new starts, and edits already made stay."}
+          onClick={hold}><Icon name={editingPaused ? "play" : "pause"} size={13} /></TipButton>
+        <TipButton className="unit-stop-edit" tip="Stop this edit" aria-label={request ? `Stop this edit: ${request.text}` : "Stop this edit"}
+          aria-description="What it already changed stays, and the next request can start." onClick={stop}><Icon name="stop" size={13} /></TipButton></div> : undefined;
     const requestControl = editsProject ? editActions : stop && <button type="button" className="simple-link unit-stop" onClick={stop}>Stop</button>;
     const headingEnd = <><RequestMetrics attempts={run.attempts} events={events} />{requestControl}</>;
     const bundle = <RunBundle task={task} events={events[task.id] ?? []} changes={thread.changes} finalChange={final} banded={!!request} callNumber={actions.callNumber}
@@ -3541,17 +3550,18 @@ export function SimpleWorkspace() {
   // Everything queued waits behind it, so it holds the same place until it's done and then joins the chat.
   const [pinHost, setPinHost] = useState<HTMLElement | null>(null);
   const editingPaused = current.project.editingPaused;
-  const editing = tasks.some(task => isProjectEditTask(task) && runIsActive(task));
   // A request in line again after its question was answered is still the one Scarlet is on: it holds its place for the
   // moment before Scarlet picks it back up, instead of dropping into the conversation and coming back.
   const front = tasks.find(t => t.kind !== "transcribe" && (t.state === "claimed" || t.state === "running" || t.state === "waiting_for_user"))
     ?? tasks.find(t => t.kind !== "transcribe" && t.state === "queued" && !!t.startedAt && !(editingPaused && isProjectEditTask(t)));
   const rootOf = useMemo(() => requestRoots(tasks), [tasks]);
+  // A request in the chat that Scarlet has, whose band holds Pause or Resume and Stop. A new one waiting its turn is
+  // in the tray instead.
+  const editing = tasks.some(task => isProjectEditTask(task) && runIsActive(task) && !(waitingToStart(task) && rootOf(task) === task.id));
   const pinned = front ? rootOf(front) : pass && passTask ? rootOf(passTask) : undefined;
   // The requests waiting their turn, in the order Scarlet will run them: a note on a call of the pass that waits goes
   // ahead of a new edit asked before it, which the calls hold back. An interrupted request keeps its place here.
   const cancelTask = useProjectStore(s => s.cancelTask);
-  const stopEditing = useProjectStore(s => s.stopEditing);
   const resumeEditing = useProjectStore(s => s.resumeEditing);
   const holdForRewording = useProjectStore(s => s.holdForRewording);
   const rewordTask = useProjectStore(s => s.rewordTask);
@@ -3747,10 +3757,12 @@ export function SimpleWorkspace() {
         setRewording(active => active === rewording ? undefined : active);
       },
       onCancel: () => setRewording(undefined) }}
-    tray={queuedItems.length > 0 || editing || editingPaused ? <QueueTray items={queuedItems} hint={queueHint} waits={!editingPaused && queued[0] ? waitsOnEditor(queued[0]) : undefined} rewording={rewordingItem?.id} opened={trayOpen}
+    // Pause, Resume and Stop are at the right of the band of the request Scarlet has. Only with no such band, editing
+    // paused while requests wait their turn, does the tray hold Resume.
+    tray={queuedItems.length > 0 || (editingPaused && !editing) ? <QueueTray items={queuedItems} hint={queueHint} waits={!editingPaused && queued[0] ? waitsOnEditor(queued[0]) : undefined} rewording={rewordingItem?.id} opened={trayOpen}
       onRemove={id => void queueAction(cancelTask(id, true)).catch(() => {})}
-      onPause={!editingPaused && editing ? () => queueAction(stopEditing(current.id)).catch(() => {}) : undefined}
-      onContinue={editingPaused ? () => queueAction(resumeEditing(current.id)).catch(() => {}) : undefined}
+      paused={editingPaused}
+      onContinue={editingPaused && !editing ? () => queueAction(resumeEditing(current.id)).catch(() => {}) : undefined}
       // The editor's calls are theirs to put off: the request they hold back can start without them.
       onStart={!editingPaused && queued[0] && waitFor(queued[0])?.kind === "review" ? id => void queueAction(startBeforeCalls(id)).catch(() => {}) : undefined}
       // The pencil of the request whose words are in the box puts them back as they were.

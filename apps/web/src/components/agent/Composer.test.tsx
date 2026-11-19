@@ -1000,8 +1000,8 @@ it("puts a spoken message that couldn't be sent back with the request it was sai
   expect(useUiStore.getState().agentDraft).toBe("Keep the last word");
 });
 
-const aimButton = () => container.querySelector<HTMLButtonElement>(".composer-row .composer-aim-button");
-const aimName = () => container.querySelector<HTMLElement>(".composer-row .composer-aim-name");
+const aimButton = () => container.querySelector<HTMLButtonElement>(".composer-aim-line .composer-aim-button");
+const aimName = () => container.querySelector<HTMLElement>(".composer-aim-line .composer-aim-name");
 const aimCard = () => container.querySelector(".composer-aim-card");
 const aimRowLabel = (name: string) => aimCard()?.querySelector(`.composer-aim-row[aria-label="${name}"] > span`);
 const aimField = () => container.querySelector<HTMLTextAreaElement>(".composer-message textarea")!;
@@ -1015,7 +1015,9 @@ it("names and clears the cut beside the draft", async () => {
   expect(aimName()).toBeNull();
   const onClearTarget = vi.fn();
   await show({ targetTag: "Cut at 2:05", onClearTarget });
-  expect(container.querySelector(".composer-row")?.firstElementChild?.classList.contains("composer-aim")).toBe(true);
+  // Where the message goes is a line of its own on top of the box, so the box keeps its width for the words.
+  expect(container.querySelector(".composer-aim-line")?.nextElementSibling?.classList.contains("composer-box")).toBe(true);
+  expect(container.querySelector(".composer-row .composer-aim")).toBeNull();
   expect(aimName()?.textContent).toBe("2:05");
   expect(aimName()?.title).toBe("About Cut at 2:05");
   expect(aimButton()).toBeNull();

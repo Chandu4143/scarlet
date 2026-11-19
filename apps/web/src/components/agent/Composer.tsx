@@ -425,6 +425,11 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
         {modelPicker && <div className="composer-model"><AgentChip threadInput={thread ? question ? "answer" : "reply" : undefined} /></div>}
       </div>
       {tray}
+      {/* Where the message goes (a cut, an edit, a moment, a stretch marked on the ruler) is a line of its own on top of
+          the box, under the queue's tray, so the box keeps its whole width for the words. */}
+      {primaryAim && <div className="composer-aim-line">
+        <ComposerAim items={[primaryAim, ...additionalAims]} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />
+      </div>}
       {(attached.length > 0 || markedFrame) && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }}
         marked={markedFrame} onOpenMarked={frame => {
           player.pause();
@@ -458,8 +463,6 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
         }}>
         <label htmlFor={inputId} className="composer-destination sr-only">{rewording ? "Changing the words of a queued request" : <>{mode}{editTitle && ` ${editTitle}`}</>}</label>
         <div className="composer-row">
-          {primaryAim && <ComposerAim items={[primaryAim, ...additionalAims]}
-            disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
           {wordTag && <span className="composer-tag" title={tagAct}>
             <span className="composer-tag-name">{wordTag}</span>
             {/* A spoken message stays where it was said until it is out: aiming the box elsewhere would drop it. */}
