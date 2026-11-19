@@ -129,6 +129,7 @@
  *   WS     /ws?token=<token>        server pushes WsEvent; client may send { type: "subscribe", projectId }
  */
 import { z } from "zod/v3";
+import { CheckIn } from "./checkIn.js";
 import {
   Author,
   Change,
@@ -1444,6 +1445,8 @@ export const ServerSettings = z.object({
   }),
   /** Default agent for new tasks when the UI doesn't pick one. */
   defaultAgent: AgentId.default("claude"),
+  /** How many of a pass's cuts, the ones Scarlet thinks most likely to be wrong, the editor is asked to check. */
+  checkIn: CheckIn.default("balanced"),
 });
 export type ServerSettings = z.infer<typeof ServerSettings>;
 

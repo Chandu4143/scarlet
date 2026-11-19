@@ -3881,6 +3881,21 @@ it("hands a request held by a dialogue pass to a waiting host as soon as the edi
   expect((answer as { task: Task | null }).task?.id).toBe(zoom.id);
 });
 
+it("tells a dialogue pass how many of its cuts the editor's setting asks them to check", async () => {
+  const { ctx } = workspace;
+  const pass = (await (await api("POST", projectsPath() + "/tasks", { agent: "codex", instruction: "/dialogue-pass" })).json()).task as Task;
+  const asked = async () => ((await (await api("GET", `/tasks/${pass.id}/prompt`)).json()).systemPrompt as string)
+    .match(/The editor asked to check (.*) of them: flag that many from the top of your order/)?.[1];
+  // Balanced until the editor says otherwise in Settings. The setting is the same for every project.
+  expect(ctx.settings().checkIn).toBe("balanced");
+  expect(await asked()).toBe("about one in four");
+  expect((await api("PATCH", "/settings", { checkIn: "more" })).status).toBe(200);
+  expect(await asked()).toBe("about half");
+  expect((await api("PATCH", "/settings", { checkIn: "less" })).status).toBe(200);
+  expect(await asked()).toBe("about one in ten");
+  ctx.repos.settings.update({ checkIn: "balanced" });
+});
+
 it("holds new requests while a dialogue pass's staged cuts wait for the editor, except ones about that pass", async () => {
   const { ctx } = workspace;
   vi.spyOn(ctx.render, "renderRange").mockImplementation(async (_project, _timeline, _range, file) => { writeFileSync(file, "preview"); });

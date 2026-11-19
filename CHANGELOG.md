@@ -10,6 +10,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- At the end of a dialogue pass Scarlet now picks out the cuts it thinks most likely to be wrong and puts them in For you, and a new setting, Checking with you in Settings, says how many: Less, Balanced or More.
 - Pause, Resume and Stop are small icons together at the right of the request Scarlet is working on, named as soon as you hover them, and the time or cut your message is about shows on the line just above the message box.
 - Templates are gone for now: the message box no longer lists them with $, and a graphic's card has no bookmark. Describe a look or a transition in a skill, or just ask for it.
 - Rejecting an edit undoes it at once, with no wait and no tokens, whenever Scarlet knows exactly what the edit changed: a cut, a change to how a shot looks or sounds, or a request's only edit. It is out of the video and off the timeline as soon as you press ×. Scarlet is only asked for the rest.

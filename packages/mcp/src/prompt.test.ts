@@ -122,6 +122,18 @@ describe("an editing prompt", () => {
   const base = { project: { project, timeline: emptyTimeline(project.id) }, skills: [] };
   const task = (context: Record<string, unknown>) => ({ kind: "edit" as const, instruction: "  Tighten this.  ", agent: "claude", context });
 
+  it("has a dialogue pass order its cuts by how likely each is to be wrong and flag as many as the editor's setting asks", () => {
+    const pass = (checkIn?: "less" | "balanced" | "more") => buildSystemPrompt({ ...base, checkIn,
+      task: { kind: "edit" as const, instruction: "/dialogue-pass", agent: "claude", context: { dialogueOperation: "first-cut" as const } } });
+    const asked = (prompt: string) => prompt.match(/- Before the pass is done, .* The editor asked to check (.*) of them: flag that many from the top of your order/)?.[1];
+    // The order is the model's. How far down it the editor is asked to look is theirs, and balanced when they haven't said.
+    expect(pass()).toContain("order those cuts from the most likely to be wrong to the least");
+    expect([pass(), pass("less"), pass("balanced"), pass("more")].map(asked)).toEqual(["about one in four", "about one in ten", "about one in four", "about half"]);
+    // A request about one cut or edit of the pass, a pause tightening and any other edit are not asked.
+    for (const context of [{ dialogueOperation: "first-cut", cutIndex: 0, changeId: "chg_1" }, { dialogueOperation: "first-cut", editIndex: 2 }, { dialogueOperation: "local-pauses" }, {}])
+      expect(buildSystemPrompt({ ...base, checkIn: "more", task: task(context) })).not.toContain("Before the pass is done");
+  });
+
   it("names where the editor was looking: a source passage in the source's own frames, or a place on the timeline", () => {
     const source = buildSystemPrompt({ ...base, task: task({ mediaId: "m1", time: 77, end: 80.5, version: "v4" }) });
     expect(source).toContain("## Instruction\nTighten this.");
