@@ -484,13 +484,6 @@ export type ChangeState = z.infer<typeof ChangeState>;
 
 export const EditIntent = z.enum(["requested", "suggestion", "alternative"]);
 
-/**
- * How sure Scarlet was that the editor would leave a cut as it made it, in its own word. `certain` leaves nothing in
- * doubt. The editor's setting (`checkIn`) decides which of the others they are asked to check.
- */
-export const CutConfidence = z.enum(["certain", "high", "medium", "low"]);
-export type CutConfidence = z.infer<typeof CutConfidence>;
-
 export const CutAssessment = z.object({
   index: z.number().int().nonnegative(), start: Seconds, end: Seconds,
   verdict: z.enum(["cut", "keep", "ask"]), reason: z.string().trim().min(1).max(800),
@@ -558,10 +551,6 @@ export const Change = z.object({
     kind: z.enum(["pause", "filler", "retake", "coaching"]).optional(),
     /** Why the editor should look or listen before keeping this applied cut. */
     check: z.string().trim().min(1).max(120).optional(),
-    /** How sure Scarlet said it was of this cut. Absent on cuts made before it was asked. */
-    confidence: CutConfidence.optional(),
-    /** What Scarlet said could be wrong with this cut, on a cut the editor's setting didn't bring to them: `check` is unset. */
-    doubt: z.string().trim().min(1).max(120).optional(),
     /** Why Scarlet held this cut for a closer look: what it measured at the edges. For the agent; the editor reads `reason`. */
     held: z.string().optional(),
     /** Nothing Scarlet measures can settle this cut's join, so it waits for the editor to hear it and no later cut replaces it. */

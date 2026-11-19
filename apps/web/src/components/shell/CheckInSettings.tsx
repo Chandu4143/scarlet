@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
-import type { CheckIn } from "@scarlet/shared";
+import { CHECK_IN_SHARE, type CheckIn } from "@scarlet/shared";
 import { api, errorMessage } from "../../lib/client";
 import { PreferenceSelect } from "../ui/PreferenceSelect";
 import { Icon, InlineError } from "../ui/primitives";
 
-const steps: { value: CheckIn; label: string; brings: string }[] = [
-  { value: "less", label: "Less", brings: "Only the cuts Scarlet calls a guess." },
-  { value: "balanced", label: "Balanced", brings: "Cuts Scarlet thinks are probably right but couldn’t settle, and its guesses." },
-  { value: "more", label: "More", brings: "Every cut Scarlet isn’t certain of." },
+const steps: { value: CheckIn; label: string }[] = [
+  { value: "less", label: "Less" },
+  { value: "balanced", label: "Balanced" },
+  { value: "more", label: "More" },
 ];
 
 /**
- * How much Scarlet checks with the editor. Scarlet says how sure it is of each cut as it makes it; this picks how far
- * down that scale the editor is asked to look. The same for every project, saved as soon as it is chosen.
+ * How much Scarlet checks with the editor. At the end of a pass Scarlet orders its cuts by how likely each is to be
+ * wrong; this picks how far down that order the editor is asked to look. The same for every project, saved as chosen.
  */
 export function CheckInSettings() {
   const [value, setValue] = useState<CheckIn | null>(null);
@@ -45,7 +45,7 @@ export function CheckInSettings() {
           <span className="transcription-glyph"><Icon name="review" size={22} /></span>
           <div>
             <h2 id="check-in-heading">Checking with you</h2>
-            <p>How many of the cuts Scarlet isn’t sure of it asks you to check.</p>
+            <p>How many of a pass’s cuts Scarlet asks you to check.</p>
           </div>
         </div>
         <div className="min-w-0">
@@ -53,7 +53,7 @@ export function CheckInSettings() {
           <PreferenceSelect id="check-in" value={value} disabled={busy} options={steps} onChange={next => void choose(next)} />
         </div>
       </div>
-      <p className="transcription-status text-muted">{steps.find(step => step.value === value)!.brings} They go into the video either way and wait in For you until you keep them.</p>
+      <p className="transcription-status text-muted">{CHECK_IN_SHARE[value].replace(/^a/, "A")} of the cuts that take words out: the ones Scarlet thinks most likely to be wrong. They go into the video either way and wait in For you until you keep them.</p>
       {error && <InlineError>{error}</InlineError>}
     </section>
   );

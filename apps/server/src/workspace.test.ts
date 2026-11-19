@@ -3881,46 +3881,6 @@ it("hands a request held by a dialogue pass to a waiting host as soon as the edi
   expect((answer as { task: Task | null }).task?.id).toBe(zoom.id);
 });
 
-it("asks the editor to check the doubts their setting brings them, and keeps the others on the cut's record", async () => {
-  const { ctx } = workspace;
-  vi.spyOn(ctx.render, "renderRange").mockImplementation(async (_project, _timeline, _range, file) => { writeFileSync(file, "preview"); });
-  const { host } = await (await api("POST", "/hosts/register", { name: "Editor", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
-  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "mic", path: "mic.wav", kind: "audio", duration: 60, hasAudio: true }, "ready");
-  const pass = (await (await api("POST", projectsPath() + "/tasks", { agent: "codex", instruction: "/first-cut-dialogue" })).json()).task as Task;
-  expect((await (await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id })).json()).task.id).toBe(pass.id);
-  let version = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Assemble",
-    ops: [{ op: "addClip", trackId: "a1", clip: { id: "raw", kind: "media", mediaId: "mic", timelineIn: 0, sourceIn: 0, sourceOut: 60 } }] }).change.toVersion;
-  // Scarlet grades each cut and says what could be wrong with the ones it isn't certain of. The setting only picks
-  // how far down its grades the editor is asked: the cut applies either way, and a doubt left out is kept as `doubt`.
-  const grades = ["certain", "high", "medium", "low"] as const;
-  const save = async () => {
-    const response = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: pass.id, fromVersion: version, description: "Part",
-      cuts: grades.map((confidence, i) => ({ start: 2 + 4 * i, end: 3 + 4 * i, review: false, kind: "retake", reason: "A false start.", summary: `Cut ${confidence}`,
-        confidence, ...(confidence !== "certain" && { check: `Doubt ${confidence}` }) })) });
-    expect(response.status).toBe(201);
-    const body = await response.json() as { changes: Change[]; head: string; editorChecks?: { doubts: number; forEditor: number } };
-    version = body.head;
-    const reasons = ctx.repos.changes.get(body.changes[0]!.id)!.cutReasons!;
-    expect(reasons.map(r => r.confidence)).toEqual([...grades]);
-    return { flagged: reasons.flatMap(r => r.check ?? []), aside: reasons.flatMap(r => r.doubt ?? []), checks: body.editorChecks };
-  };
-  expect(ctx.settings().checkIn).toBe("balanced");
-  expect(await save()).toMatchObject({ flagged: ["Doubt medium", "Doubt low"], aside: ["Doubt high"], checks: { doubts: 3, forEditor: 2 } });
-  ctx.repos.settings.update({ checkIn: "less" });
-  expect(await save()).toMatchObject({ flagged: ["Doubt low"], aside: ["Doubt high", "Doubt medium"], checks: { doubts: 3, forEditor: 1 } });
-  ctx.repos.settings.update({ checkIn: "more" });
-  expect(await save()).toMatchObject({ flagged: ["Doubt high", "Doubt medium", "Doubt low"], aside: [], checks: { doubts: 3, forEditor: 3 } });
-  // A check with no grade flags its cut as before, and so does one the agent wrote on a cut it called certain.
-  ctx.repos.settings.update({ checkIn: "less" });
-  const plain = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: pass.id, fromVersion: version, description: "Part",
-    cuts: [{ start: 2, end: 3, review: false, kind: "retake", reason: "A false start.", check: "No grade" },
-      { start: 6, end: 7, review: false, kind: "retake", reason: "A false start.", confidence: "certain", check: "Certain, with a check" }] });
-  const saved = await plain.json() as { changes: Change[]; editorChecks?: unknown };
-  expect(ctx.repos.changes.get(saved.changes[0]!.id)!.cutReasons!.map(r => r.check)).toEqual(["No grade", "Certain, with a check"]);
-  expect(saved.editorChecks).toBeUndefined();
-  ctx.repos.settings.update({ checkIn: "balanced" });
-});
-
 it("holds new requests while a dialogue pass's staged cuts wait for the editor, except ones about that pass", async () => {
   const { ctx } = workspace;
   vi.spyOn(ctx.render, "renderRange").mockImplementation(async (_project, _timeline, _range, file) => { writeFileSync(file, "preview"); });

@@ -847,7 +847,7 @@ describe("what goes to stderr when a read fails and the tool answers without it"
     const c = await connect();
     try {
       const result = await ok(c, "dialogue_apply_cuts", { version: "typing", description: "Tightened", range: { start: 0, end: 10 },
-        cuts: [{ start: 6.6, end: 7.6, kind: "pause", decision: "cut", confidence: "certain", reason: "A long wait." }] });
+        cuts: [{ start: 6.6, end: 7.6, kind: "pause", decision: "cut", reason: "A long wait." }] });
       const saved = JSON.parse((result.content[0] as { text: string }).text);
       expect(saved).toMatchObject({ continueFrom: "applied" });
       expect(saved).not.toHaveProperty("keptSilences");

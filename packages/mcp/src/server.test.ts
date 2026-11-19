@@ -1804,7 +1804,7 @@ describe("first-cut dialogue save checkpoints", () => {
     editor.callTool({ name: "dialogue_scan", arguments: { mediaId: "m1", from, noCutsReadyThrough } });
   const save = (start: number) => editor.callTool({ name: "dialogue_apply_cuts", arguments: {
     version: mock.state.project.head, description: "Remove the pause.",
-    cuts: [{ start, end: start + 1, kind: "pause", decision: "cut", confidence: "certain", reason: "Dead air." }],
+    cuts: [{ start, end: start + 1, kind: "pause", decision: "cut", reason: "Dead air." }],
   } });
 
   it("allows rereads but requires a successful save from this section before exposing more footage", async () => {
@@ -1882,7 +1882,7 @@ describe("first-cut dialogue save checkpoints", () => {
     const transcriptOnly = await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1" } });
     expect(transcriptOnly.isError, textOf(transcriptOnly)).toBeFalsy();
     const cuts = Array.from({ length: 13 }, (_, i) => ({
-      start: 10 + 2 * i, end: 11 + 2 * i, kind: "pause", decision: i % 2 ? "review" : "cut", confidence: "certain", reason: "Tighten this beat.",
+      start: 10 + 2 * i, end: 11 + 2 * i, kind: "pause", decision: i % 2 ? "review" : "cut", reason: "Tighten this beat.",
     }));
     const apply = (session: Client, decisions: typeof cuts) => session.callTool({ name: "dialogue_apply_cuts",
       arguments: { version: mock.state.project.head, description: "Tighten the pauses.", cuts: decisions } });
@@ -2245,7 +2245,7 @@ it("says what a join plays, so a check that takes out the whole retake shows the
       return true;
     };
     const applied = await isolated.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Keep the first setup",
-      cuts: [{ start: check.start, end: check.end, kind: "retake", decision: "cut", confidence: "certain", reason: "Keep the first setup through “would”." }] } }) as CallToolResult;
+      cuts: [{ start: check.start, end: check.end, kind: "retake", decision: "cut", reason: "Keep the first setup through “would”." }] } }) as CallToolResult;
     expect(JSON.parse(textOf(applied)).gate.decisions).toContainEqual(expect.objectContaining({ cut: 0, removes: "where you would",
       plays: "… there was a time where would ‖ occasionally see …" }));
   } finally {
@@ -2290,7 +2290,7 @@ it("inspects a split word and submits only the exact timing and disposition the 
     expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
     const submit = (decision: string, start: number) => isolated.callTool({ name: "dialogue_apply_cuts", arguments: {
       // The removal takes “everyone” with the restart “welcome back.”: the agent means it to go.
-      version: tl.version, description: "Remove the abandoned take", cuts: [{ start, end: range.end, kind: "retake", decision, confidence: "certain", reason: "Repeated start", dropWords: "everyone" }],
+      version: tl.version, description: "Remove the abandoned take", cuts: [{ start, end: range.end, kind: "retake", decision, reason: "Repeated start", dropWords: "everyone" }],
     } });
     const submitted = () => mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).at(-1)?.body;
     // An edge inside a word narrows onto the recording's silence and waits for audition.
@@ -2307,7 +2307,7 @@ it("inspects a split word and submits only the exact timing and disposition the 
     expect(snap.audio[0]).toMatchObject({ sound: "sound", transcriptSplitsWord: "back" });
     expect(snap.audio[0].levels).toContain("|");
     await isolated.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the pause",
-      cuts: [{ start: 1.76, end: 2.28, kind: "retake", decision: "cut", confidence: "certain", reason: "Repeated start" }] } });
+      cuts: [{ start: 1.76, end: 2.28, kind: "retake", decision: "cut", reason: "Repeated start" }] } });
     const snapped = mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).at(-1)?.body as { cuts: { start: number; end: number; originalRange?: unknown; reason: string }[] };
     expect(snapped.cuts[0]!.start).toBeCloseTo(60 / 30);
     expect(snapped.cuts[0]).toMatchObject({ end: 2.28, reason: expect.not.stringContaining("Adjusted") });
@@ -2334,7 +2334,7 @@ it("submits the chosen cut, review and fade and preserves engine receipts", asyn
   };
   try {
     const result = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tighten", crossfadeFrames: 4,
-      cuts: [{ start: 1, end: 1.4, kind: "pause", decision: "cut", confidence: "certain", reason: "Long pause." },
+      cuts: [{ start: 1, end: 1.4, kind: "pause", decision: "cut", reason: "Long pause." },
         { start: 3, end: 3.3, kind: "filler", decision: "keep", reason: "Keep her hesitation." },
         { start: 4, end: 4.5, kind: "coaching", decision: "review", reason: "Off-mic note." }] } }) as CallToolResult;
     expect(result.isError, textOf(result)).toBeFalsy();
@@ -2377,7 +2377,7 @@ it("moves the staged cut being revised past its old edges and steers the other e
   try {
     // The old selection doesn't fence the revision in, and the pass-wide tools point at the one that moves the cut.
     const apply = await scoped.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Move the cut",
-      cuts: [{ start: 1.6, end: 3, kind: "retake", decision: "cut", confidence: "certain", reason: "Repeat" }] } });
+      cuts: [{ start: 1.6, end: 3, kind: "retake", decision: "cut", reason: "Repeat" }] } });
     expect(apply.isError).toBe(true);
     expect(textOf(apply as CallToolResult)).toContain("dialogue_revise_cut");
     const propose = await scoped.callTool({ name: "timeline_propose", arguments: { description: "Move the cut", fromVersion: tl.version, intent: "requested",
@@ -2803,7 +2803,7 @@ it("checks each surviving side independently before preview and save, then accep
   const call = async (name: string, args: Record<string, unknown>) =>
     JSON.parse(textOf(await editor.callTool({ name, arguments: { version: tl.version, ...args } })));
   const plan = (start: number) => call("dialogue_apply_cuts", { only: "retake", description: "Keep the complete delivery.",
-    cuts: [{ start, end: 3.5, kind: "retake", decision: "cut", confidence: "certain", reason: "Remove the restart." }] });
+    cuts: [{ start, end: 3.5, kind: "retake", decision: "cut", reason: "Remove the restart." }] });
   try {
     const repeat = { words: "now", before: { start: 1.6, end: 1.78 }, after: { start: 3.6, end: 3.78 } };
     expect(await call("dialogue_check_join", { start: 1.9, end: 3.5 })).toMatchObject({ repeatAtJoin: repeat });
@@ -2922,7 +2922,7 @@ it("returns an opening trim that leaves two six-word deliveries, then saves the 
   };
   const apply = async (end: number) => {
     const result = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version,
-      description: "Open on the complete line.", cuts: [{ start: 0, end, kind: "coaching", decision: "cut", confidence: "certain", reason: "Remove the direction." }] } });
+      description: "Open on the complete line.", cuts: [{ start: 0, end, kind: "coaching", decision: "cut", reason: "Remove the direction." }] } });
     expect(result.isError, textOf(result)).toBeFalsy();
     return JSON.parse(textOf(result));
   };
@@ -2976,14 +2976,14 @@ it("exposes cross-page attempts and lets the agent choose whether to check the n
     expect(await apply([])).toContain("preserved");
     expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
     const resumeWith = "the new model from DeepSeek flew under the radar";
-    const cut = { start: 5, end: 7.125, resumeWith, decision: "cut", confidence: "certain", kind: "retake", reason: "Use the complete opening." };
+    const cut = { start: 5, end: 7.125, resumeWith, decision: "cut", kind: "retake", reason: "Use the complete opening." };
     const wrong = JSON.parse(await call("dialogue_check_join", { version: tl.version, start: cut.start, end: cut.end, resumeWith }));
     expect(wrong).toMatchObject({ status: "unchanged", resumeAtOriginalEnd: "different" });
     expect(wrong.nearbyWords.end[0].words).toContainEqual([7, expect.closeTo(7.1), "the"]);
     expect(JSON.parse(await apply([cut]))).toMatchObject({ needsRevision: true, disputedEdges: [{ start: 5, end: 7.125, cuts: [0] }] });
     expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
     // A dispute sets aside only the cuts that make it: the rest of the batch saves, and the result says what didn't.
-    const other = { start: 1, end: 1.5, decision: "cut", confidence: "certain", kind: "retake", reason: "Drop a false start." };
+    const other = { start: 1, end: 1.5, decision: "cut", kind: "retake", reason: "Drop a false start." };
     const partial = JSON.parse(await apply([other, cut]));
     expect(partial.needsRevision).toBeUndefined();
     expect(partial.notSaved).toMatchObject({ cuts: [1], disputedEdges: [{ start: 5, end: 7.125 }], next: expect.stringContaining("Resubmit only these") });
@@ -3009,7 +3009,7 @@ it("exposes cross-page attempts and lets the agent choose whether to check the n
     await apply([{ ...doubled, keepRepeat: repeat.words }]);
     expect(saves()).toBe(before + 1);
     // Finishing a production cut before both takes leaves a restart wholly in the kept recording.
-    const production = { start: 3.6, end: 5, kind: "coaching", decision: "cut", confidence: "certain", reason: "Remove the direction." };
+    const production = { start: 3.6, end: 5, kind: "coaching", decision: "cut", reason: "Remove the direction." };
     const pickup = { words: repeat.words, side: "end", first: { start: 5, end: 5.6 }, second: { start: 6, end: 6.6 } };
     expect(JSON.parse(await call("dialogue_check_join", { version: tl.version, start: production.start, end: production.end })))
       .toMatchObject({ pickupRepeats: [pickup] });
@@ -3072,13 +3072,13 @@ it("lists a silence the pauses miss with what its picture does, and reports it w
     const apply = (cuts: object[]) => call("dialogue_apply_cuts", { version: tl.version, description: "Tightened the tour", range: { start: 0, end: 30 }, cuts });
     const pause = { kind: "pause", picture: "safe", reason: "Static page." };
     // The undecided passage stays in the edit and is reported for the next decision.
-    const left = await apply([{ ...pause, start: 1.4, end: 2.5, decision: "cut", confidence: "certain" }]);
+    const left = await apply([{ ...pause, start: 1.4, end: 2.5, decision: "cut" }]);
     expect(left.keptSilences).toContainEqual(expect.objectContaining({ after: "note.", before: "You" }));
     // Cut to the result, staged for the editor or kept on purpose, it is decided and not reported.
     for (const decision of ["cut", "review"]) {
-      expect((await apply([{ ...pause, start: end + .3, end: 11.95, decision, confidence: "certain" }])).keptSilences).toBeUndefined();
+      expect((await apply([{ ...pause, start: end + .3, end: 11.95, decision }])).keptSilences).toBeUndefined();
     }
-    expect((await apply([{ ...pause, start: 1.4, end: 2.5, decision: "cut", confidence: "certain" }, { ...pause, start: end + .3, end: 11.95, decision: "keep" }])).keptSilences).toBeUndefined();
+    expect((await apply([{ ...pause, start: 1.4, end: 2.5, decision: "cut" }, { ...pause, start: end + .3, end: 11.95, decision: "keep" }])).keptSilences).toBeUndefined();
   } finally {
     mock.state.project.media = original.media;
     Object.assign(mock.state, { extra: original.extra, waveform: original.waveform, timeline: original.timeline, transcripts: original.transcripts });
@@ -3088,8 +3088,8 @@ it("lists a silence the pauses miss with what its picture does, and reports it w
 
 describe("checking a short piece of dialogue kept between cuts", () => {
   const word = { text: "we", start: 2.98, end: 3.18 };
-  const aside = { kind: "coaching", decision: "cut", confidence: "certain", start: 1, end: 3, reason: "Remove the direction." };
-  const pause = { kind: "pause", decision: "cut", confidence: "certain", start: 3.4, end: 4.7, reason: "Tighten the lead-in." };
+  const aside = { kind: "coaching", decision: "cut", start: 1, end: 3, reason: "Remove the direction." };
+  const pause = { kind: "pause", decision: "cut", start: 3.4, end: 4.7, reason: "Tighten the lead-in." };
 
   it.each([
     { title: "returns conflicting word times before saving either cut", conflict: true },
@@ -3206,7 +3206,7 @@ it("reports the pauses and doubled words a saved part still plays, and trims a p
     expect(r.isError, textOf(r)).toBeFalsy();
     return JSON.parse(textOf(r));
   };
-  const tail = { kind: "pause", reason: "Room tone after the last word.", start: 6.2, end: 9.4, decision: "cut", confidence: "certain" };
+  const tail = { kind: "pause", reason: "Room tone after the last word.", start: 6.2, end: 9.4, decision: "cut" };
   try {
     const first = await apply(tail);
     // With no length asked for, every pause above the rhythm of speech is listed: which ones matter is the agent's call.
@@ -3217,8 +3217,8 @@ it("reports the pauses and doubled words a saved part still plays, and trims a p
     expect(again).not.toHaveProperty("keptPauses");
     expect(again).not.toHaveProperty("repeatedWords");
     // Named by the word it follows, the pause comes down to the beat, and with the first “have” out nothing is left to report.
-    const second = await apply({ kind: "retake", reason: "Doubled “have”.", mediaId: "m1", fromWord: 3, toWord: 3, decision: "cut", confidence: "certain" },
-      { kind: "pause", reason: "Wait before “signatures”.", mediaId: "m1", afterWord: 4, leave: .25, decision: "cut", confidence: "certain" }, tail);
+    const second = await apply({ kind: "retake", reason: "Doubled “have”.", mediaId: "m1", fromWord: 3, toWord: 3, decision: "cut" },
+      { kind: "pause", reason: "Wait before “signatures”.", mediaId: "m1", afterWord: 4, leave: .25, decision: "cut" }, tail);
     expect(second).not.toHaveProperty("keptPauses");
     expect(second).not.toHaveProperty("repeatedWords");
     const sent = (mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).at(-1)!.body as { cuts: Array<{ start: number; end: number; kind: string }> }).cuts;
@@ -3262,7 +3262,7 @@ it("returns the quiet words between two pause cuts at their saved timeline posit
     res.end(JSON.stringify(data));
     return true;
   };
-  const pause = { kind: "pause", reason: "Trim the wait.", decision: "cut", confidence: "certain" };
+  const pause = { kind: "pause", reason: "Trim the wait.", decision: "cut" };
   const apply = async (keep = false, only?: string, session = editor) => {
     const cuts = [{ ...pause, start: 1.2, end: 1.8 },
       ...(keep ? [{ ...pause, kind: "coaching", decision: "keep", start: 2, end: 2.7 }] : []),
@@ -3345,7 +3345,7 @@ it("says what the recording holds between two words, in the transcript and in wh
       "  · 1.70 s gap, 0.70 s of it sound at speaking level that no word explains (3.10–3.50, 4.20–4.50)", "#2 4.60-5.00 see", "#3 5.05-5.30 all"]);
     // Trimmed as a pause by the word it follows, the sound in it would come out too: a pause trim removes quiet only,
     // so it is left out with what sounds there.
-    const refused = await apply({ kind: "pause", reason: "Wait before “see”.", mediaId: "m1", afterWord: 1, leave: .25, decision: "cut", confidence: "certain" });
+    const refused = await apply({ kind: "pause", reason: "Wait before “see”.", mediaId: "m1", afterWord: 1, leave: .25, decision: "cut" });
     expect(refused.needsRevision).toBe(true);
     expect(refused.disputedEdges).toEqual([{ cuts: [0], reason: "cuts[0]: This pause holds 0.70 s of sound at speaking level that no word explains " +
       "(3.10–3.50, 4.20–4.50 s in m1, 3.10–3.50, 4.20–4.50 s on version restart). A pause trim removes quiet only, so this one was not saved. " +
@@ -3355,7 +3355,7 @@ it("says what the recording holds between two words, in the transcript and in wh
     expect(reads).toBe(1);
     expect(mock.state.timeline.version).toBe(tl.version);
     // Cut in seconds up to the quiet before the second “you can”, that take's start still plays before “see”.
-    const partly = await apply({ kind: "pause", reason: "Wait before “see”.", start: 3, end: 4.1, decision: "cut", confidence: "certain" });
+    const partly = await apply({ kind: "pause", reason: "Wait before “see”.", start: 3, end: 4.1, decision: "cut" });
     expect(partly.unexplainedSound).toEqual([{ at: 4.2, mediaId: "m1", seconds: .3, after: "can", before: "see", sourceSeconds: [4.2, 4.5] }]);
   } finally {
     Object.assign(mock.state, original);
@@ -3413,7 +3413,7 @@ it("hands back a pause trim that takes only the quiet between takes the transcri
   try {
     // The quiet the trim would take, between “was,” and the next “it”, holds no sound; the words beside it are the
     // first take and the start of the second, which the transcript doesn't have. They are the model's to decide on.
-    const refused = await apply({ kind: "pause", reason: "Keep the sentence moving.", mediaId: "m1", afterWord: 2, leave: .1, decision: "cut", confidence: "certain" });
+    const refused = await apply({ kind: "pause", reason: "Keep the sentence moving.", mediaId: "m1", afterWord: 2, leave: .1, decision: "cut" });
     expect(refused.needsRevision).toBe(true);
     expect(refused.disputedEdges).toEqual([{ cuts: [0], reason: "cuts[0]: The transcript has nothing between “what” and “it” (#2, #3) for 1.30 s, " +
       "but the recording says “would do, it was, it” at 2.20–3.75 s in m1 (2.20–3.75 s on version tidied) there. " +
@@ -3424,7 +3424,7 @@ it("hands back a pause trim that takes only the quiet between takes the transcri
     expect(reads).toBe(1);
     expect(mock.state.timeline.version).toBe(tl.version);
     // Sound beside a trim that the reading finds no word in, such as a breath, plays as it did: the trim saves.
-    const saved = await apply({ kind: "pause", reason: "Keep the sentence moving.", mediaId: "m1", afterWord: 7, leave: .1, decision: "cut", confidence: "certain" });
+    const saved = await apply({ kind: "pause", reason: "Keep the sentence moving.", mediaId: "m1", afterWord: 7, leave: .1, decision: "cut" });
     expect(saved.needsRevision).toBeUndefined();
     expect(reads).toBe(2);
   } finally {
@@ -3460,7 +3460,7 @@ it("counts a silence as decided when its keep names words or its range is protec
     return JSON.parse(textOf(r));
   };
   const pause = { kind: "pause", reason: "He is typing the note." };
-  const cut = { ...pause, start: 6.1, end: 6.8, decision: "cut", confidence: "certain", summary: "Shorten the pause before signatures." };
+  const cut = { ...pause, start: 6.1, end: 6.8, decision: "cut", summary: "Shorten the pause before signatures." };
   try {
     // A cut without a summary has no row to show in the list, so nothing of the part saves until each has one.
     const unnamed = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tightened the tour",
@@ -3474,7 +3474,7 @@ it("counts a silence as decided when its keep names words or its range is protec
     const named = await apply({ ...pause, decision: "keep", mediaId: "m1", fromWord: 1, toWord: 2 }, cut);
     expect(named.keptSilences).toBeUndefined();
     // Marked for removal but protected for what the picture does: Scarlet keeps it, and it is decided.
-    const guarded = await apply({ ...pause, start: 1.6, end: 4.8, decision: "cut", confidence: "certain", picture: "protect" }, cut);
+    const guarded = await apply({ ...pause, start: 1.6, end: 4.8, decision: "cut", picture: "protect" }, cut);
     expect(guarded.keptSilences).toBeUndefined();
     const mine = expect.objectContaining({ start: 6.1, end: 6.8, review: false, summary: cut.summary, reason: cut.reason });
     expect(mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).map(r => (r.body as { cuts: unknown[] }).cuts)).toEqual([
@@ -3527,7 +3527,7 @@ it("accepts only bounded pause decisions for the local dialogue shortcut", async
     expect(missing.isError).toBe(true);
     expect(textOf(missing)).toContain("Supply the local timeline range for the pause edit.");
     const range = { start: .5, end: 2 };
-    const retake = await call({ range, cuts: [{ ...range, kind: "retake", decision: "cut", confidence: "certain", reason: "Repeat" }] }) as CallToolResult;
+    const retake = await call({ range, cuts: [{ ...range, kind: "retake", decision: "cut", reason: "Repeat" }] }) as CallToolResult;
     expect(textOf(retake)).toContain("Remove the retake decisions.");
     expect(textOf(await call({ range, cuts: [{ ...range, kind: "pause", decision: "keep", reason: "Intentional beat" }] }) as CallToolResult)).toContain("preserved");
     const ripple = (ops: object[]) => scoped.callTool({ name: "timeline_propose", arguments: {
@@ -3566,32 +3566,21 @@ it("submits only the agent's selected cuts and reviews, including when it used c
     expect(JSON.parse(textOf(project).split("\n\n").at(-1)!)).toMatchObject({ editContext: context });
     const plan = [
       // “welcome back.” goes, and the restart after it plays without “welcome”: the agent means it to.
-      { start: 1, end: 2, kind: "retake", decision: "cut", confidence: "certain", reason: "The pickup stops mid-sentence.", dropWords: "welcome" },
-      { start: 3, end: 4, kind: "coaching", decision: "cut", confidence: "certain", picture: "uncertain", reason: "The editor selected the director’s cue for removal." },
+      { start: 1, end: 2, kind: "retake", decision: "cut", reason: "The pickup stops mid-sentence.", dropWords: "welcome" },
+      { start: 3, end: 4, kind: "coaching", decision: "cut", picture: "uncertain", reason: "The editor selected the director’s cue for removal." },
       { start: 4, end: 5, kind: "filler", decision: "keep", reason: "Quoted hesitation." },
       { start: 6, end: 7, kind: "pause", decision: "review", reason: "Time to read the result." },
-      { start: 8, end: 9, kind: "pause", decision: "cut", confidence: "certain", picture: "protect", reason: "Protected screen action." },
+      { start: 8, end: 9, kind: "pause", decision: "cut", picture: "protect", reason: "Protected screen action." },
     ];
     const apply = (cuts: object[]) => editor.callTool({ name: "dialogue_apply_cuts", arguments: {
       version: tl.version, description: "Tighten the demo", cuts,
     } });
     expect((await apply([{ ...plan[0], start: 0 }])).isError).toBe(true);
     expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
-    // Every cut that applies says how sure the agent is, and what could be wrong when it isn't certain. A keep, a
-    // review and a protected range need neither. Everything missing is named at once, and nothing is saved.
-    const { confidence: _sure, ...ungraded } = plan[0]!;
-    const refused = await apply([ungraded, { ...plan[1], confidence: "medium" }, ...plan.slice(2)]);
-    expect(refused.isError).toBe(true);
-    expect(textOf(refused)).toContain("Give a confidence for each cut: certain, high, medium or low. Missing at cuts 0 (zero-based).");
-    expect(textOf(refused)).toContain("Say in check what could be wrong with each cut you are not certain of. Missing at cuts 1 (zero-based).");
-    expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
-    expect((await apply([plan[0]!, { ...plan[1], confidence: "medium", check: "The cue may be meant for the viewer." }, ...plan.slice(2)])).isError).toBeFalsy();
-    const sent = mock.requests.find(r => r.path.endsWith("/dialogue-cuts"))?.body as { cuts: Array<{ confidence?: string; check?: string }> };
-    expect(sent).toMatchObject({ cuts: [
-      { start: 1, end: 2, review: false, confidence: "certain" },
-      { start: 3, end: 4, review: false, confidence: "medium", check: "The cue may be meant for the viewer." }, { start: 6, end: 7, review: true },
+    expect((await apply(plan)).isError).toBeFalsy();
+    expect(mock.requests.find(r => r.path.endsWith("/dialogue-cuts"))?.body).toMatchObject({ cuts: [
+      { start: 1, end: 2, review: false }, { start: 3, end: 4, review: false }, { start: 6, end: 7, review: true },
     ] });
-    expect(sent.cuts[0]!.check).toBeUndefined();
   } finally { Object.assign(mock.state, original); await editor.close(); }
 });
 
@@ -3621,7 +3610,7 @@ it("lets a request sent from an applied edit cut outside where that edit plays, 
   const selecting = await session("selected-range", { time: 8.5, end: 11.5 });
   const sentence = { start: 3, end: 8 };
   const cuts = (editor: Client, extra: object = {}) => editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the sentence before the cut",
-    cuts: [{ ...sentence, kind: "retake", decision: "cut", confidence: "certain", reason: "The sentence before the cut." }], ...extra } }) as Promise<CallToolResult>;
+    cuts: [{ ...sentence, kind: "retake", decision: "cut", reason: "The sentence before the cut." }], ...extra } }) as Promise<CallToolResult>;
   const ripple = (editor: Client) => editor.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Remove the sentence before the cut", reason: "The editor asked to remove the preceding sentence.",
     ops: [{ op: "rippleDelete", ...sentence }] } }) as Promise<CallToolResult>;
   const refused = (results: CallToolResult[]) => results.filter(r => r.isError).map(textOf);
@@ -3661,7 +3650,7 @@ it("checks an optional production quote and leaves unselected pauses out of the 
   const editor = await connect(task.id, undefined, task);
   try {
     expect((await editor.callTool({ name: "dialogue_scan", arguments: { mediaId: "m1", until: 6 } })).isError).toBeFalsy();
-    const cut = { start: .96, end: 2, kind: "coaching", decision: "cut", confidence: "certain", productionQuote: segments[0]!.text, reason: "Spoken edit note." };
+    const cut = { start: .96, end: 2, kind: "coaching", decision: "cut", productionQuote: segments[0]!.text, reason: "Spoken edit note." };
     const apply = (extra: Record<string, unknown>) => editor.callTool({ name: "dialogue_apply_cuts",
       arguments: { version: tl.version, description: "Remove the spoken note", cuts: [cut], ...extra } });
     const submitted = () => mock.requests.filter(r => r.path.endsWith("/dialogue-cuts")).at(-1)?.body;
@@ -3730,7 +3719,7 @@ it("says how far a saved part's cuts reach, so a pass that read to the end first
   const saved = () => mock.state.events.filter(e => e.data?.kind === "pass_progress").map(e => e.data);
   const save = async (start: number, end: number) => {
     const r = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tighten the pauses",
-      cuts: [{ start, end, kind: "pause", decision: "cut", confidence: "certain", reason: "Dead air." }] } }) as CallToolResult;
+      cuts: [{ start, end, kind: "pause", decision: "cut", reason: "Dead air." }] } }) as CallToolResult;
     expect(r.isError, textOf(r)).toBeFalsy();
   };
   try {
@@ -3822,7 +3811,7 @@ it("cuts by word reference: edges go in the measured gaps, and every gate decisi
     expect(textOf(mixed)).toContain("either one range or a cuts list");
 
     const applied = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt",
-      cuts: [{ ...ref, kind: "retake", decision: "cut", confidence: "certain", reason: "The second take is cleaner." }] } }) as CallToolResult;
+      cuts: [{ ...ref, kind: "retake", decision: "cut", reason: "The second take is cleaner." }] } }) as CallToolResult;
     expect(applied.isError).toBeFalsy();
     // Both edges sit in measured silence, so the cut applies as decided. "welcome" starts 0.04 s after its start, close
     // enough for the picture to show it beginning: the report tells the agent, and the cut carries no check unless it gives one.
@@ -3837,7 +3826,7 @@ it("cuts by word reference: edges go in the measured gaps, and every gate decisi
     const deaf = await connect();
     try {
       const staged = JSON.parse(textOf(await deaf.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove it",
-        cuts: [{ ...ref, kind: "retake", decision: "cut", confidence: "certain", reason: "The second take is cleaner." }] } }) as CallToolResult));
+        cuts: [{ ...ref, kind: "retake", decision: "cut", reason: "The second take is cleaner." }] } }) as CallToolResult));
       expect(staged.gate.decisions[0]).toMatchObject({ cut: 0, outcome: "review", evidence: expect.stringContaining("No measured silence between “everyone” and “welcome”") });
     } finally { await deaf.close(); }
   } finally {
@@ -3890,7 +3879,7 @@ it("submits the chosen ranges and preserves silent picture between them across t
   const save = async () => {
     mock.requests.length = 0;
     const r = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tighten the pause", cuts: [
-      { start: 2.8, end: 3, kind: "pause", decision: "cut", confidence: "certain", reason: "Dead air." }, { start: 3.1667, end: 3.5, kind: "pause", decision: "cut", confidence: "certain", reason: "Dead air." }] } }) as CallToolResult;
+      { start: 2.8, end: 3, kind: "pause", decision: "cut", reason: "Dead air." }, { start: 3.1667, end: 3.5, kind: "pause", decision: "cut", reason: "Dead air." }] } }) as CallToolResult;
     expect(r.isError, textOf(r)).toBeFalsy();
     const sent = mock.requests.find(q => q.path.endsWith("/dialogue-cuts"))!.body as { cuts: Array<{ start: number; end: number }> };
     return { sent: sent.cuts.map(c => [c.start, c.end]), gate: JSON.parse(textOf(r)).gate, prepared: mock.requests.filter(q => q.path.endsWith("/prepare")).map(q => q.path) };
@@ -4249,7 +4238,7 @@ it("reads a transcript whose words are still being placed on the audio, and hold
     expect(read).toContain("Times after 1.0 s are estimates until Scarlet has placed those words on the audio. Placing them can add words the transcript missed");
     // An edge beside “Um,” needs the final times of it and the word after, so neither a check nor a save uses the estimates.
     const ref = { mediaId: "m1", fromWord: 2, toWord: 4 };
-    const cut = { ...ref, kind: "retake", decision: "cut", confidence: "certain", reason: "The second take is cleaner." };
+    const cut = { ...ref, kind: "retake", decision: "cut", reason: "The second take is cleaner." };
     const held = textOf(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, ...ref } }) as CallToolResult);
     expect(held).toContain("Scarlet is still placing the words of m1 on the audio: their times are final up to 1 s, and this needs them up to 6 s.");
     const unsaved = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [cut] } }) as CallToolResult;
@@ -4332,7 +4321,7 @@ it.each(["transcript_get", "transcript_search"])("refuses a word reference %s sh
     mock.state.transcripts = { m1: { ...transcript, segments: [{ ...segment!, words: [...segment!.words.slice(0, 4), { text: "so", start: 1.95, end: 2.1 }, ...segment!.words.slice(4)] }] } };
     await new Promise(resolve => setTimeout(resolve, 1600));
     // #2–#4 meant “welcome back. Um,” when it was read. Now #4 is “so”: nothing is cut beside the wrong word.
-    const cut = { mediaId: "m1", fromWord: 2, toWord: 4, kind: "retake", decision: "cut", confidence: "certain", reason: "The second take is cleaner." };
+    const cut = { mediaId: "m1", fromWord: 2, toWord: 4, kind: "retake", decision: "cut", reason: "The second take is cleaner." };
     const refused = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [cut] } }) as CallToolResult;
     expect(refused.isError).toBe(true);
     expect(textOf(refused)).toContain("The transcript of m1 changed since you read it");
@@ -4370,14 +4359,14 @@ it("refuses a word reference from an earlier read even after a later read showed
     await new Promise(resolve => setTimeout(resolve, 1600));
     // A later read of the opening shows the new list; the model still holds #2–#4 from the first read, which meant “welcome back. Um,”.
     expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 0, toWord: 1 } }) as CallToolResult)).toContain("#0");
-    const cut = { mediaId: "m1", fromWord: 2, toWord: 4, kind: "retake", decision: "cut", confidence: "certain", reason: "The second take is cleaner." };
+    const cut = { mediaId: "m1", fromWord: 2, toWord: 4, kind: "retake", decision: "cut", reason: "The second take is cleaner." };
     const refused = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the first attempt", cuts: [cut] } }) as CallToolResult;
     expect(refused.isError).toBe(true);
     expect(textOf(refused)).toContain("The transcript of m1 changed since you read it");
     expect(mock.requests.some(r => r.path.endsWith("/dialogue-cuts"))).toBe(false);
     // Words that read the same in both lists are named the same by either, and go through.
     const opening = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Remove the opening",
-      cuts: [{ mediaId: "m1", fromWord: 0, toWord: 1, kind: "retake", decision: "cut", confidence: "certain", reason: "A false start." }] } }) as CallToolResult;
+      cuts: [{ mediaId: "m1", fromWord: 0, toWord: 1, kind: "retake", decision: "cut", reason: "A false start." }] } }) as CallToolResult;
     expect(textOf(opening)).not.toContain("changed since you read it");
     // Read again, the new indices hold.
     expect(textOf(await editor.callTool({ name: "transcript_get", arguments: { mediaId: "m1", fromWord: 4, toWord: 5 } }) as CallToolResult)).toContain("#5 2.50-2.70 Um,");

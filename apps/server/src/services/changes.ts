@@ -3,7 +3,7 @@ import { isSea } from "node:sea";
 import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { logId } from "../logText.js";
-import { reachesEditor, boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
 import { agentTarget, beginRevision, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type KeepEditsRequest, type KeptEdit, type UnkeepEditsRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
@@ -572,7 +572,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) => a.start < b.end - 1e-6 && a.end > b.start + 1e-6;
     /** `asked` is where the plan put a cut the editor hasn't called, before it is moved onto the frame grid and the current version. */
     type Planned = DialogueCutsRequest["cuts"][number] & { crossfade?: number; legacySuggest?: true; assessment?: CutAssessment; choice?: CutChoice["choice"]; asked?: TimeRange;
-      submitted?: true; recovered?: boolean; preserveEdges?: boolean; protectedSlot?: string; lapsed?: true; doubt?: string };
+      submitted?: true; recovered?: boolean; preserveEdges?: boolean; protectedSlot?: string; lapsed?: true };
     // The editor's call on a staged cut stands: a later part doesn't decide that range again.
     const moveToHead = (r: TimeRange) => {
       if (!toHead) return r;
@@ -616,13 +616,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       : sourceTask.createdBy.type !== "human" ? "Scarlet started this request, not the editor, so its cuts wait for them."
       : !editsDialogue(sourceTask.kind) ? `A ${sourceTask.kind} request stages its cuts for the editor.`
       : "The editor moved to another version of the edit while this request ran.";
-    // Scarlet says how sure it is of each cut and what could be wrong. Which of those the editor is asked to check is
-    // their setting's to say (`reachesEditor`): a doubt it leaves out stays on the cut as `doubt` and flags nothing.
-    // A cut with no grade, or a check on a cut graded certain, is flagged as the agent asked.
-    const checkIn = ctx.settings().checkIn;
-    const aside = (c: DialogueCutsRequest["cuts"][number]) => !!c.check && !!c.confidence && c.confidence !== "certain" && !reachesEditor(c.confidence, checkIn);
-    const candidates = body.cuts.map(c => ({ ...c, ...(aside(c) && { check: undefined, doubt: c.check }),
-      crossfade: frames / fps, ...(current && { ...moveToHead(c), ...(c.originalRange && { originalRange: moveToHead(c.originalRange) }) }),
+    const candidates = body.cuts.map(c => ({ ...c, crossfade: frames / fps, ...(current && { ...moveToHead(c), ...(c.originalRange && { originalRange: moveToHead(c.originalRange) }) }),
       asked: { start: c.start, end: c.end } }));
     const overruled = candidates.filter(c => decided.some(d => overlaps(outer(c), d)));
     const held = candidates.filter(c => !overruled.includes(c) && heldRanges.some(r => overlaps(outer(c), outer(r)) ||
@@ -748,10 +742,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     if (!cuts.length) return { changes: [], ...satisfied };
     const applied = cuts.filter(c => requested && !c.review);
     const stagedConfident = stagedWhy ? cuts.filter(c => c.submitted && !c.review).length : 0;
-    const doubted = applied.filter(c => c.submitted && c.confidence && c.confidence !== "certain" && (c.check || c.doubt));
-    const editorChecks = doubted.length ? { doubts: doubted.length, forEditor: doubted.filter(c => c.check).length,
-      why: "The editor's setting picks which of the doubts you grade they are asked to check. The others stay on the cut's record." } : undefined;
-    const adjusted = { ...satisfied, ...(onFrames && { onFrames }), ...(stagedConfident && { stagedForEditor: { cuts: stagedConfident, why: stagedWhy! } }), ...(editorChecks && { editorChecks }) };
+    const adjusted = { ...satisfied, ...(onFrames && { onFrames }), ...(stagedConfident && { stagedForEditor: { cuts: stagedConfident, why: stagedWhy! } }) };
     if (protectedCuts.size) {
       let prior: Planned | undefined, removedBetween = 0;
       for (const cut of cuts) {
@@ -783,7 +774,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     const changes: Change[] = [];
     if (applied.length) {
       const { change } = persistProposal(ctx, user, projectId, { fromVersion: head, intent: "requested", ops: ops(applied),
-        description: whole && own ? own : describeDialogueRemovals(applied), taskId, author, noteIds }, ids[0], applied.map(({ start, end, reason, summary, kind, crossfade, check, confidence, doubt }) => ({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(check && { check }), ...(confidence && { confidence }), ...(doubt && { doubt }) })));
+        description: whole && own ? own : describeDialogueRemovals(applied), taskId, author, noteIds }, ids[0], applied.map(({ start, end, reason, summary, kind, crossfade, check }) => ({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(check && { check }) })));
       if (change.state !== "approved") throw conflict("cut_changed", "The confident cuts could not be applied to this version.");
       changes.push(change);
       version = change.appliedVersion ?? change.toVersion;
@@ -868,8 +859,6 @@ export interface DialogueCutsAdjustments {
   droppedFromReview?: Array<{ changeId: string; version: string; start: number; end: number; why: string }>;
   /** Cuts left out because they would have replaced a staged cut held for its join with other edges, applied only by unsureJoins cut. */
   heldCutsStay?: Array<{ asked: TimeRange; staged: TimeRange; why: string }>;
-  /** Applied cuts Scarlet named a doubt about, and how many of them the editor's setting asks them to check. */
-  editorChecks?: { doubts: number; forEditor: number; why: string };
 }
 
 const REVISED = "Replaced by a later revision of the same cut.";

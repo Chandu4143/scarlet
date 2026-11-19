@@ -163,13 +163,13 @@ it("picks how much Scarlet checks with the editor on General, saved as it is cho
   const pick = card.querySelector<HTMLElement>("#check-in")!;
   // Balanced until the editor says otherwise, and the line under it says what that step brings them.
   expect(pick.textContent).toBe("Balanced");
-  expect(card.querySelector(".transcription-status")?.textContent).toBe("Cuts Scarlet thinks are probably right but couldn’t settle, and its guesses. They go into the video either way and wait in For you until you keep them.");
+  expect(card.querySelector(".transcription-status")?.textContent).toBe("About one in four of the cuts that take words out: the ones Scarlet thinks most likely to be wrong. They go into the video either way and wait in For you until you keep them.");
   expect((await openOptions(pick)).map(option => option.textContent)).toEqual(["Less", "Balanced", "More"]);
   await act(async () => pick.click());
   await selectOption(pick, "More");
   expect(save).toHaveBeenCalledExactlyOnceWith({ checkIn: "more" });
   expect(pick.textContent).toBe("More");
-  expect(card.querySelector(".transcription-status")?.textContent).toContain("Every cut Scarlet isn’t certain of.");
+  expect(card.querySelector(".transcription-status")?.textContent).toContain("About half of the cuts that take words out");
 });
 
 const typeInto = (field: HTMLInputElement, value: string) => act(async () => {
