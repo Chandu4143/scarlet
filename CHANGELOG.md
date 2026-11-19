@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- Stopping a request Scarlet is working on is one click again, on Stop at the right of the request, instead of inside a ⋯ menu.
 - Pausing the video now writes its time at the start of the message box, so your next request is about the moment you stopped on.
 - The time a request is about shows alone in the message box, without "At".
 - Times in the message box are a little greyer instead of underlined.
