@@ -46,16 +46,18 @@ export function ModelSettings({ onSignIn }: { onSignIn?: () => void } = {}) {
         {!matches.length && <p className="py-4 text-[13px] text-muted">No matching models.</p>}
         <div className="max-h-[46vh] overflow-auto">
           {[true, false].map(starred => {
-            const rows = matches.filter(m => favorites.includes(m.key) === starred);
+            const rows = matches
+              .filter(m => favorites.includes(m.key) === starred)
+              .sort((a, b) => Number(hidden.includes(a.key)) - Number(hidden.includes(b.key)));
             if (!rows.length) return null;
             return <section key={String(starred)}>
               <h4 className="eyebrow border-b border-line py-2">{starred ? "Favorites" : "Models"}</h4>
               <ul className="divide-y divide-line/60">{rows.map((m) => (
-                <li key={m.key} className="flex items-center gap-2 py-1.5">
+                <li key={m.key} className="flex items-center gap-2 py-1">
                   <FavoriteButton choice={m} />
-                  <div className="min-w-0 flex-1">
-                    <div className={`truncate text-[13px] ${hidden.includes(m.key) ? "text-dim" : "text-fg"}`}>{m.label}</div>
-                    {m.model && m.model !== m.label && <div className="truncate font-mono text-[11px] text-dim">{m.model}</div>}
+                  <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span className={`truncate text-[13px] ${hidden.includes(m.key) ? "text-dim" : "text-fg"}`}>{m.label}</span>
+                    {m.model && m.model !== m.label && <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-dim">{m.model}</span>}
                   </div>
                   <Toggle checked={!hidden.includes(m.key)} label={`Show ${AGENT_LABEL[m.agent]} · ${m.label} in selector`} onChange={(v) => setVisible([m.key], v)} />
                 </li>

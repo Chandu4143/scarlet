@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- Each model in the model picker sits on one line, with hidden models listed below the active ones.
 - A cut Scarlet saved without its own summary is named in the list by the words beside it (“Shortened the pause after “okay””), so a pass's rows no longer all read the same.
 - A request's sentence says footage put back as “put back 1 passage”, not “made 1 passage put back”.
 - A call you play while Scarlet is still editing plays straight through: the edits Scarlet saves meanwhile come in when you pause, as they do with nothing open.
