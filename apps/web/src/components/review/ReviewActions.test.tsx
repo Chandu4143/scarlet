@@ -96,3 +96,22 @@ it("lets go of the focus when the decision is clicked, and keeps it when pressed
   expect(document.activeElement).not.toBe(keep);
   expect(named("Keep")).toBe(keep);
 });
+
+it("shows the R, K and A shortcuts inside review action buttons via workspace.css", async () => {
+  const css = (await import("../../workspace.css?inline")).default;
+  const match = css.match(/(\.review-actions[^{]*)::after\s*\{[^}]*content:\s*attr\(data-key\)/);
+  expect(match).not.toBeNull();
+  const selector = match![1]!.trim();
+
+  await show({ approveLabel: "Apply", approveKey: "A" });
+  expect(named("Revise").matches(selector)).toBe(true);
+  expect(named("Apply").matches(selector)).toBe(true);
+
+  await show({ approveLabel: "Keep", approveKey: "K" });
+  expect(named("Keep").matches(selector)).toBe(true);
+
+  const approveBtn = document.createElement("button");
+  approveBtn.setAttribute("data-key", "A");
+  container.querySelector(".review-actions")!.append(approveBtn);
+  expect(approveBtn.matches(selector)).toBe(true);
+});
