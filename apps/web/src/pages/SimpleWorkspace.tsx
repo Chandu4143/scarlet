@@ -8,7 +8,7 @@ import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { closingCheckFailed, isAsideTask, fullRenderContext, isProjectEditTask, matchesEdit, queueOrder, queueWaits, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
-import { EditBadge, editGroups, EditVersion, RejectEdit, RejectedMark, SaveAsTemplate, ThreadAction, ThreadEdits, useRejecting, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
+import { EditBadge, editGroups, EditVersion, RejectEdit, RejectedMark, ThreadAction, ThreadEdits, useRejecting, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { useNearView } from "../lib/useNearView";
 import { needNumbers } from "../lib/needNumbers";
@@ -3183,7 +3183,7 @@ export function SimpleWorkspace() {
   // The transcript stays folded away. Its icon on the card opens it for this edit only.
   const scriptKey = reviewingEdit && beforeCut ? editKey(reviewingEdit) : undefined;
   const scriptOpen = !!scriptKey && scriptFor === scriptKey;
-  // Save as template and Reject edit are about the open edit, whatever the message box is aimed at just then: a message
+  // Reject edit is about the open edit, whatever the message box is aimed at just then: a message
   // still being written may be about another one.
   const openTarget = reviewingEdit && shownChange && focusThread ? threadTimeline.selectedTarget : undefined;
   // An edit another request made, open here because this request flagged it, is saved or rejected from here too.
@@ -3240,9 +3240,6 @@ export function SimpleWorkspace() {
           : !shownMarker && <span ref={setCompareHost} className="review-compare" />}
       </span>
       <span className="edit-card-acts">
-        {/* A graphic can be saved to use again, as a template the editor picks with $ in the message box. */}
-        {appliedTarget && reviewingEdit.kind === "graphic" && <SaveAsTemplate key={`template ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget}
-          onSent={() => { follow.current = true; }} />}
         <ReviewActions revise={() => actions.revise(focusThread, shownChange)} approve={keepShown}
           approveLabel={shownMarker ? "Done" : "Keep"} approveKey={shownMarker ? "D" : "K"} />
         {/* Reject edit is a small × after Keep, as Skip is after a call's Approve: it asks Scarlet to put back just this

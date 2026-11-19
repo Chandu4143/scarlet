@@ -53,9 +53,6 @@ export interface PromptContext {
   capabilities?: AgentCapabilities;
   /** Files the editor attached to this request, where they are on disk. */
   attachments?: Array<{ id: string; name: string; size: number; mime?: string; path: string }>;
-  /** Saved templates the editor named with $name in their words, or that a skill they chose names (`skill`). */
-  pickedTemplates?: Array<{ id: string; name: string; title: string; fields: string[]; kind?: "graphic" | "transition";
-    transition?: { type: string; duration: number; direction?: string; color?: string }; skill?: string }>;
   /** The project's style guide: pasted text in full, or the file it is in. */
   styleGuide?: { name: string; text?: string; path?: string; mime?: string };
 }
@@ -98,8 +95,7 @@ The editor sets the brief. You decide what context to inspect, which tools to us
 - Use requested intent for authorized edits, suggestion for optional or preview-only changes, and alternative for competing options. Check the returned state when reporting what applied. When Scarlet adjusts a submitted edit, such as moving an edge onto measured silence, the result lists each adjustment with its evidence. An edit can name its individual ranges in \`timelineEdits\`. A revision can link to its prior change and spot with \`replaces\` and to feedback with \`noteIds\`.
 - \`task_log\` can show the current activity, a finding, or both. Attach a saved change ID and spot to the exact phrase the editor can select to see the change. \`task_question\` hands a decision to the editor and pauses the task; the answer comes back as your next message.
 - Scarlet renders project media. \`render_request\` supports a short range or an explicitly requested full delivery.
-- A motion graphic is an HTML/CSS page Scarlet draws into a video with alpha (\`graphic_render\`), from your page or a saved template (\`template_list\`). It goes over the picture on a track of its own with \`timeline_propose\`, as an edit like any other. A project has one style guide, saved with \`style_guide_save\` when the editor gives you one.
-- A $name in the editor's words or in a skill is a saved template (\`template_list\`): a graphic, or a transition, which \`timeline_transition\` puts on the joins it names.
+- A motion graphic is an HTML/CSS page Scarlet draws into a video with alpha (\`graphic_render\`). It goes over the picture on a track of its own with \`timeline_propose\`, as an edit like any other. A project has one style guide, saved with \`style_guide_save\` when the editor gives you one.
 
 ## Writing for the editor
 
@@ -339,12 +335,6 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       const where = `${drawn.mediaId ? "source" : "timeline"} ${drawn.time.toFixed(2)} s (${formatTimecode(drawn.time, fps)})${drawn.version ? ` on version ${drawn.version}` : ""}`;
       ctxLines.push(`- The editor drew ${drawn.marks.length === 1 ? "a mark" : `${drawn.marks.length} numbered marks`} on the picture at ${where}, in fractions of the frame from its top left: ${drawn.marks.map((m, i) => pictureMarkLine(m, i + 1, drawn.marks.length > 1)).join("; ")}.` +
         (picture ? ` The frame with the marks drawn on it is attachment ${picture.id} ("${picture.name}").` : ""));
-    }
-    for (const t of ctx.pickedTemplates ?? []) {
-      const who = t.skill ? `The skill ${t.skill} names` : "The editor picked";
-      ctxLines.push(t.kind === "transition"
-        ? `- ${who} the transition template $${t.name}: "${t.title}" (template ${t.id}), a ${t.transition?.type ?? "transition"} over ${t.transition?.duration ?? "?"} s.`
-        : `- ${who} the graphic template $${t.name}: "${t.title}" (template ${t.id}), with the fields ${t.fields.map(f => `"${f}"`).join(", ") || "none"}.`);
     }
     if (ctxLines.length) {
       lines.push("");

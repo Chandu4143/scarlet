@@ -86,8 +86,6 @@ export type ScarletApi = Pick<
   | "usage"
   | "hosts"
   | "skills"
-  | "listTemplates"
-  | "templatePreviewUrl"
   | "uploadAttachment"
   | "createSkill"
   | "skill"

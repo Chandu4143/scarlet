@@ -3119,11 +3119,10 @@ ${OPS_DOC}`,
 
   tool(
     "timeline_transition",
-    "Put a transition on joins between clips on a video track, or take it off (none). A transition is how the picture moves from one clip to the next, centred on the join: dissolve, dip (through a colour), push, slide or whip (a push with a sideways blur). The sound at the join is not changed. Name a saved transition template with template (what the editor typed after $, such as swipe), or give type and duration; either way type, duration, direction and color you pass win over the template's. Find a join by the clip it leads into (clipId) or by its time on the track (at, timeline seconds; the bottom video track unless trackId). A transition shows a little more footage either side of the join, from each clip's own source; with less footage than half its length on a side it runs shorter, and with none it stays a straight cut: the result says what each join got. All joins form one proposal.",
+    "Put a transition on joins between clips on a video track, or take it off (none). A transition is how the picture moves from one clip to the next, centred on the join: dissolve, dip (through a colour), push, slide or whip (a push with a sideways blur). The sound at the join is not changed. Give its type and duration. By their usual names, unless the editor or a skill gives another length: a swipe is a push of 0.4 s, a whip pan a whip of 0.3 s, a slide 0.4 s, a dissolve 0.5 s, and a dip to black a dip of 0.6 s. Find a join by the clip it leads into (clipId) or by its time on the track (at, timeline seconds; the bottom video track unless trackId). A transition shows a little more footage either side of the join, from each clip's own source; with less footage than half its length on a side it runs shorter, and with none it stays a straight cut: the result says what each join got. All joins form one proposal.",
     {
       intent: intentInput,
       joins: z.array(z.object({ clipId: z.string().optional(), at: z.number().finite().nonnegative().optional(), trackId: z.string().optional() })).min(1),
-      template: z.string().min(1).optional().describe("A saved transition template, by name or id"),
       type: z.enum(["dissolve", "dip", "push", "slide", "whip"]).optional(),
       duration: z.number().finite().positive().max(10).optional().describe("Seconds, centred on the join"),
       direction: z.enum(["left", "right", "up", "down"]).optional().describe("push, slide and whip: the way the picture travels; left brings the next picture in from the right"),
@@ -3133,19 +3132,14 @@ ${OPS_DOC}`,
       reason: editReasonInput,
       noteIds: z.array(z.string()).optional(),
     },
-    async ({ intent, joins, template, type, duration, direction, color, none, description, reason, noteIds }) => {
+    async ({ intent, joins, type, duration, direction, color, none, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
       const { project } = await getProject();
       const before = await getTimeline(base);
       let style: Transition | null = null;
       if (!none) {
-        const saved = template ? (await client.template(template)).template : undefined;
-        if (saved && saved.kind !== "transition") throw new Error(`$${saved.name} is a graphic template, not a transition. graphic_render draws it.`);
-        const from = saved?.transition;
-        const kind = type ?? from?.type;
-        if (!kind) throw new Error("Name a transition template, or give its type and duration.");
-        style = Transition.parse({ ...from, type: kind, duration: duration ?? from?.duration ?? 0.5, ...(direction && { direction }), ...(color && { color }),
-          ...(saved && { template: saved.name }) });
+        if (!type) throw new Error("Give the transition's type and duration.");
+        style = Transition.parse({ type, duration: duration ?? 0.5, ...(direction && { direction }), ...(color && { color }) });
       }
       const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
       const result = await propose({ intent, ops, description, reason, noteIds }, before);

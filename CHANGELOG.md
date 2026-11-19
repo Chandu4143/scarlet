@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- Templates are gone for now: the message box no longer lists them with $, and a graphic's card has no bookmark. Describe a look or a transition in a skill, or just ask for it.
 - Rejecting an edit undoes it at once, with no wait and no tokens, whenever Scarlet knows exactly what the edit changed: a cut, a change to how a shot looks or sounds, or a request's only edit. It is out of the video and off the timeline as soon as you press ×. Scarlet is only asked for the rest.
 - A rejected edit stays in its request's list with a × and "Rejected", and is no longer counted as a passage put back.
 - While a video is still caching, Scarlet now says you can start editing without waiting for it.
