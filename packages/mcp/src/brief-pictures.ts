@@ -230,3 +230,108 @@ export function flashesOntoCuts(before: Timeline | null, after: Timeline, media:
 
 export const MET_CUT_NEXT = `Each stretch in metCut showed a picture for ${FLASH_SECONDS} s or less between two others: Scarlet moved the listed ` +
   "clips' edges onto the cut beside it, so the shot over it now changes on that cut.";
+
+/** An insert's edge Scarlet moved onto a cut in its recording: it was at `from` and is now at `to`, on `source` seconds of the recording. */
+export interface MetRecordingCut { from: number; to: number; seconds: number; clips: string[]; source: number }
+
+/**
+ * The ops that move an insert's edge onto a cut in its recording when what it shows between them plays under a second. A pass laid a
+ * screen insert that started on the game's menu and switched to the game 0.45 s later, and others that ended a moment
+ * after the recording switched to a search page or scrolled, so the viewer saw a picture for a moment between two
+ * others (2026-11-18). briefPictures told the run with the cut's time, and its next pass left five of them: it frames
+ * from a few frames and never sees the switch. The editor: "it should never do that". No one lays a picture of the
+ * recording that plays under a second before it changes, so the edge goes onto the cut, and every picture's edge at
+ * that time goes with it (the camera inset beside the screen, the next insert, the camera's change of framing), so the
+ * change of picture is then the recording's own cut. A run of brief pictures at the edge goes with it, as at 1:20 of
+ * that pass, where the reply showed, then another window for 0.87 s, then the reply for 0.33 s: the insert ends where
+ * the recording first switched. The sound stays as it was: an audible clip's edge doesn't move, and a picture of a
+ * recording that is heard (the camera, or its inset) moves only where it plays straight on into the clip beside it or
+ * gives up time with no clip after it to fill in, since the speaker's lips would otherwise show words cut from the
+ * sound. Only the insert's tail goes: one that would lose as much as it keeps is mostly brief pictures (a game whose
+ * view swings round reads as cuts too), and what plays there is the run's call. An edge that can't move, or whose move
+ * would leave a brief picture or the empty background where it lands, stays in briefPictures for the run.
+ */
+export function edgesOntoRecordingCuts(before: Timeline | null, after: Timeline, media: readonly MediaAsset[], canvas: { width: number; height: number },
+  cuts: ReadonlyMap<string, readonly RecordingCut[]>, stable: (clipId: string) => boolean, fresh: ReadonlySet<string> = new Set()): { ops: TimelineOp[]; met: MetRecordingCut[] } {
+  const assets = new Map(media.map(m => [m.id, m]));
+  const ops: TimelineOp[] = [], met: MetRecordingCut[] = [];
+  const heard = new Set(after.tracks.flatMap(track => track.clips.flatMap(c => c.kind === "media" && c.volume > 0 && !track.muted &&
+    (track.kind === "audio" || assets.get(c.mediaId)?.hasAudio !== false) ? [c.mediaId] : [])));
+  let tl = after;
+  const flashes = newBriefPictures(before, after, media, canvas, cuts, fresh).filter(f => f.recordingCuts?.length);
+  const isCut = (t: number) => flashes.some(f => f.recordingCuts!.some(c => near(c.at, t, 0.002)));
+  const done: number[] = [];
+  for (const flash of flashes) {
+    // The flash's clip edge, at one end, with a cut in the recording at the other.
+    const side = !isCut(flash.to) && isCut(flash.from) ? "end" : !isCut(flash.from) && isCut(flash.to) ? "start" : undefined;
+    if (!side) continue;
+    const edge = side === "end" ? flash.to : flash.from;
+    if (done.some(t => near(t, edge, 0.002))) continue;
+    // Brief pictures in a row from the edge inward, each from one cut in the recording to the next.
+    const targets: number[] = [side === "end" ? flash.from : flash.to];
+    for (;;) {
+      const last = targets.at(-1)!;
+      const next = flashes.find(f => side === "end" ? near(f.to, last, 0.002) && isCut(f.from) : near(f.from, last, 0.002) && isCut(f.to));
+      const at = next && (side === "end" ? next.from : next.to);
+      if (at === undefined || targets.some(t => near(t, at, 0.002))) break;
+      targets.push(at);
+    }
+    const edges = tl.tracks.flatMap(track => track.kind !== "video" || track.hidden ? [] : track.clips.flatMap(clip => clip.kind !== "media" ? [] :
+      ([["start", clip.timelineIn], ["end", clipEnd(clip)]] as const).filter(([, at]) => near(at, edge, 0.002)).map(([end]) => ({ clip, end, track: track.id }))));
+    const playsOn = (e: (typeof edges)[number]) => edges.some(o => o.track === e.track && o.end !== e.end && o.clip.mediaId === e.clip.mediaId &&
+      (o.clip.speed ?? 1) === (e.clip.speed ?? 1) && near(e.end === "end" ? e.clip.sourceOut : e.clip.sourceIn, o.end === "end" ? o.clip.sourceOut : o.clip.sourceIn, 0.002));
+    const mated = (e: (typeof edges)[number]) => edges.some(o => o.track === e.track && o.end !== e.end);
+    for (const to of targets.reverse()) {
+      // A heard recording's picture keeps its edge unless it plays straight on, or only gives up time with nothing to fill in after it.
+      const moving = edges.filter(e => !heard.has(e.clip.mediaId) || playsOn(e) || (!mated(e) && (e.end === "end" ? to < edge : to > edge)));
+      const holder = moving.find(e => e.clip.id === flash.recordingCuts![0]!.clip);
+      if (!holder) continue;
+      // Only a tail: an insert that would lose as much as it keeps is mostly brief pictures, and what to show there is the run's call.
+      const kept = holder.end === "end" ? to - holder.clip.timelineIn : clipEnd(holder.clip) - to;
+      if (Math.abs(edge - to) >= kept) continue;
+      const patches: TimelineOp[] = [];
+      for (const { clip, end } of moving) {
+        const asset = assets.get(clip.mediaId), speed = clip.speed ?? 1;
+        if (!stable(clip.id) || (clip.volume > 0 && asset?.hasAudio !== false)) { patches.length = 0; break; }
+        const delta = to - (end === "start" ? clip.timelineIn : clipEnd(clip));
+        const sourceIn = end === "start" ? clip.sourceIn + delta * speed : clip.sourceIn;
+        const sourceOut = end === "end" ? clip.sourceOut + delta * speed : clip.sourceOut;
+        if (sourceIn < 0 || sourceOut <= sourceIn || (asset?.duration && sourceOut > asset.duration + 1e-6)) { patches.length = 0; break; }
+        patches.push({ op: "updateClip", clipId: clip.id, patch: end === "start"
+          ? { timelineIn: to, sourceIn, ...(clip.keyframes?.length && { keyframes: clip.keyframes.map(k => ({ ...k, time: k.time - delta })) }) }
+          : { sourceOut } } as TimelineOp);
+      }
+      if (!patches.length) continue;
+      let next: Timeline;
+      try { next = applyOps(tl, patches); } catch { continue; }
+      const moved = new Set(moving.map(e => e.clip.id));
+      const overlaps = next.tracks.some(track => track.clips.some((c, i) => i > 0 && (moved.has(c.id) || moved.has(track.clips[i - 1]!.id)) &&
+        c.timelineIn < clipEnd(track.clips[i - 1]!) - 1e-6));
+      if (overlaps || !fillsFrame(next, media, canvas, (edge + to) / 2) ||
+        briefPictures(next, media, canvas, BRIEF_PICTURE_SECONDS, cuts).some(f => near(f.from, to, 0.002) || near(f.to, to, 0.002))) continue;
+      tl = next;
+      ops.push(...patches);
+      done.push(edge);
+      const cut = flashes.flatMap(f => f.recordingCuts!).find(c => near(c.at, to, 0.002))!;
+      met.push({ from: r3(edge), to: r3(to), seconds: r3(Math.abs(edge - to)), clips: moving.map(e => e.clip.id), source: cut.source });
+      break;
+    }
+  }
+  return { ops, met };
+}
+
+/** Whether an opaque picture fills the whole video at `t`, so no empty background shows. */
+function fillsFrame(tl: Timeline, media: readonly MediaAsset[], canvas: { width: number; height: number }, t: number) {
+  const assets = new Map(media.map(m => [m.id, m]));
+  return tl.tracks.some(track => track.kind === "video" && !track.hidden && track.clips.some(clip => {
+    if (clip.kind !== "media" || clip.enabled === false || clip.opacity < 1 || !(clip.timelineIn <= t && t < clipEnd(clip))) return false;
+    const asset = assets.get(clip.mediaId);
+    if (!asset || (asset.kind !== "video" && asset.kind !== "image") || asset.hasAlpha || clip.transform?.rotation) return false;
+    const box = pictureBox(clip, t - clip.timelineIn, { width: asset.width || canvas.width, height: asset.height || canvas.height }, canvas);
+    return box[0] <= 0.004 && box[1] <= 0.004 && box[2] >= 0.996 && box[3] >= 0.996;
+  }));
+}
+
+export const MET_RECORDING_CUT_NEXT = "Each edge in metRecordingCut ran past a cut in its recording by pictures that each played under a second, " +
+  "so the viewer saw them for a moment before the picture changed again: Scarlet moved the listed clips' edges from `from` to `to`, onto the recording's cut " +
+  "at `source` seconds of it, so the picture now changes there.";

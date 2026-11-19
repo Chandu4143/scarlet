@@ -558,6 +558,14 @@ describe("timeline_propose", () => {
       ]);
       // The camera that speaks plays as recorded: only the screen's cuts are read.
       expect(mock.requests.filter(q => q.path.endsWith("/picture-cuts")).map(q => q.path)).toEqual(["/projects/prj_test/media/scr/picture-cuts"]);
+      // With more of the reply before the switch, the insert ends on the recording's first cut instead, and the result says so.
+      mock.state.timeline = tl;
+      const longer = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Show the reply", reason: "He reads the reply aloud.",
+        ops: [{ op: "addTrack", track: { id: "v2", kind: "video", name: "Screen", clips: [] } },
+          { op: "addClip", trackId: "v2", clip: { id: "reply", kind: "media", mediaId: "scr", sourceIn: 99, sourceOut: 102.5, timelineIn: 2, volume: 0 } }] } }) as CallToolResult;
+      expect(longer.isError, textOf(longer)).toBeFalsy();
+      expect(firstJson(longer).metRecordingCut).toEqual([{ from: 5.5, to: 4.2, seconds: 1.3, clips: ["reply"], source: 101.2 }]);
+      expect(firstJson(longer).briefPictures).toBeUndefined();
     } finally {
       Object.assign(mock.state, { timeline: original.timeline, pictureCuts: original.cuts });
       Object.assign(mock.state.project, { head: original.head, media: original.media });
