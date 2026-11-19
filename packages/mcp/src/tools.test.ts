@@ -834,6 +834,32 @@ describe("what goes to stderr when a read fails and the tool answers without it"
     } finally { await broken.close(); }
   });
 
+  it("lists the words the scan read in what a saved part still plays that the transcript has no word for", async () => {
+    const tl = emptyTimeline("prj_test");
+    tl.version = "tidied";
+    tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 12, 0)];
+    mock.state.timeline = tl;
+    // Said “And it just feel, uh. It just feels like this. [wait] Next.”; the transcript has “And it just feels like this. Next.”.
+    const stored = [["And", .5, .75], ["it", 1.1, 1.5], ["just", 5.3, 5.6], ["feels", 5.6, 5.9], ["like", 5.9, 6.1], ["this.", 6.1, 6.4], ["Next.", 9.4, 9.8]]
+      .map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+    const read = [["And", .5, .7], ["it", .7, .8], ["just", .95, 1.3], ["feel,", 1.4, 1.75], ["uh.", 1.75, 2.3], ["It", 5.2, 5.3], ["just", 5.3, 5.6], ["feels", 5.6, 5.9],
+      ["like", 5.9, 6.1], ["this.", 6.1, 6.4], ["Next.", 9.4, 9.8]].map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+    mock.state.transcripts = { m1: { ...transcript, segments: [{ ...transcript.segments[0]!, words: stored, text: stored.map(w => w.text).join(" "), end: 9.8 }] } };
+    const applied = { ...tl, version: "applied", tracks: tl.tracks.map((t, i) => i ? t : { ...t, clips: [makeMediaClip("m1", 0, 7, 0), makeMediaClip("m1", 9, 12, 7)] }) };
+    mock.state.extra = (req, res) => req.path.endsWith("/dialogue-cuts") ? reply(res, { changes: [{ id: "chg_1", intent: "requested", state: "approved", fromVersion: "tidied", toVersion: "applied", description: "Tightened" }], head: "applied" })
+      : req.path === "/projects/prj_test/timeline" && req.query.get("version") === "applied" ? reply(res, { timeline: applied })
+      : req.path.endsWith("/dialogue-verbatim") ? reply(res, { words: read }) : false;
+    const c = await connect();
+    try {
+      const result = await ok(c, "dialogue_apply_cuts", { version: "tidied", description: "Tightened", range: { start: 0, end: 12 },
+        cuts: [{ start: 7, end: 9, kind: "pause", decision: "cut", reason: "A long wait.", summary: "Shortened the wait before “Next”" }] });
+      const saved = JSON.parse((result.content[0] as { text: string }).text);
+      // The false start has no index in the transcript: it is named with where it plays, so a cut of it can be given in seconds.
+      expect(saved.heardNotInTranscript).toEqual([{ at: 0.95, seconds: 4.35, text: "just feel, uh. It", context: "And it just feel, uh. It just feels like this.",
+        mediaId: "m1", sourceSeconds: [0.95, 5.3] }]);
+    } finally { await c.close(); }
+  });
+
   it("notes that a saved part's kept silences could not be placed, and saves the part all the same", async () => {
     const tl = emptyTimeline("prj_test");
     tl.version = "typing";

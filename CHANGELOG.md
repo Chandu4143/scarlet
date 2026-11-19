@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- A false start the transcript missed is no longer left in: Scarlet won’t shorten a “pause” it heard words in, and after each part of a pass it checks for words still playing that the transcript doesn’t have.
 - Approving a call or keeping a flagged edit while on the See all list now moves to the next item in that list instead of skipping ahead to the next For you item.
 - The Approve and Apply buttons now show their A shortcut inside the button, matching Keep and Revise.
 - The Transcript column keeps its words up when an edit lands or a cut opens, instead of emptying to “Loading transcript…” and reading the whole transcript again.
