@@ -250,9 +250,28 @@ it("pauses and resumes processing from the Media hover card during audio-only tr
   expect(update).toHaveBeenNthCalledWith(2, PRJ, { mediaPaused: false });
 });
 
+it("omits Pause from the Media hover card and More menu until media processing is working or paused", async () => {
+  // Empty project: no hover card and no Pause menu item.
+  await show([]);
+  expect(container.querySelector(".media-hover-card")).toBeNull();
+  expect(container.querySelectorAll('[role="menuitem"]')).toHaveLength(0);
+  // Cached video with nothing running: hover card shows status without Pause.
+  vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "ready" }] });
+  await show([video("cam")]);
+  expect(container.querySelector(".media-hover-card")?.textContent).toContain("Video cached for playback");
+  expect(container.querySelector(".media-hover-card button")).toBeNull();
+  expect(container.querySelectorAll('[role="menuitem"]')).toHaveLength(0);
+  // A file being read shows Pause in both places.
+  vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [] });
+  await show([video("cam", { status: "ingesting", preparation: { stage: "waveform", fraction: 0.2 } })]);
+  expect(container.querySelector(".media-hover-card button")?.textContent).toBe("Pause");
+  expect([...container.querySelectorAll('[role="menuitem"]')].map(item => item.textContent)).toEqual(["Pause"]);
+});
+
 it("lets a keyboard user dismiss the Media hover card with Escape", async () => {
   document.body.append(container);
   try {
+    vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "caching", progress: 0.4 }] });
     const media = await show([video("cam")]);
     const card = container.querySelector(".media-hover")!;
     const pause = card.querySelector<HTMLButtonElement>(".media-hover-card button")!;

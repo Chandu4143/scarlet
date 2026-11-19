@@ -105,10 +105,10 @@ export function MediaPage({ uploads, onPlay }: {
   return (
     <>
       <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
-        <button type="button" className="btn-quiet mr-auto aria-disabled:opacity-60" aria-disabled={processing.busy}
+        {processing.available && <button type="button" className="btn-quiet mr-auto aria-disabled:opacity-60" aria-disabled={processing.busy}
           title={processing.description} onClick={() => void processing.toggle()}>
           <Icon name={processing.icon} size={12} />{processing.label}
-        </button>
+        </button>}
         <button className="btn-ghost" onClick={() => setImportOpen(true)}>
           <Icon name="link" size={12} /> Add from a link
         </button>

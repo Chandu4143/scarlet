@@ -294,6 +294,13 @@ it("manages a project from either library layout", async () => {
   try {
     await act(async () => root.render(<MemoryRouter><ProjectsPage /></MemoryRouter>));
     expect(container.querySelector(".library-count")).toBeNull();
+    // Idle project has no media work running, so Pause is omitted.
+    await actions();
+    expect(textButton("Pause")).toBeUndefined();
+    expect(textButton("Resume")).toBeUndefined();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
+    // Once media processing is active, Pause appears and switches to Resume while paused.
+    await act(async () => useProjectStore.setState({ list: [{ ...summary, activity: [{ kind: "caching", fraction: 0.4 }] }] }));
     await actions();
     expect(textButton("Pause")?.title).toBe("Pause media processing");
     await tap(textButton("Pause"));
