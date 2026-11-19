@@ -472,6 +472,12 @@ export const KeepEditsRequest = z.object({
     label: z.string().trim().min(1).max(180).optional(), check: z.string().trim().min(1).max(120).optional(), range: TimeRange.optional() })).min(1).max(500),
 });
 export type KeepEditsRequest = z.infer<typeof KeepEditsRequest>;
+/** Keeps the editor took back with ⌘Z, named as they were recorded. The edits wait on the editor again. */
+export const UnkeepEditsRequest = z.object({
+  threadId: Id,
+  edits: z.array(z.object({ changeId: Id, spot: z.number().int().nonnegative(), recheck: z.string().max(64).optional() })).min(1).max(500),
+});
+export type UnkeepEditsRequest = z.infer<typeof UnkeepEditsRequest>;
 /** An edit the editor kept, as a run of its request hears of it. */
 export interface KeptEdit { changeId: string; spot: number; label: string; check?: string; at: string; place?: { version: string; range: TimeRange } }
 

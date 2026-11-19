@@ -13,6 +13,7 @@ import type { Author, Change, CutAssessment, CutReview, MediaAsset, Note, Projec
 import type {
   ActivityEntry,
   KeepEditsRequest,
+  UnkeepEditsRequest,
   KeptEdit,
   MakeShortsRequest,
   AgentHost,
@@ -525,6 +526,10 @@ export class ScarletClient {
   /** Record that the editor kept these edits, so the runs of their request hear of it. */
   keepEdits(projectId: string, body: KeepEditsRequest) {
     return this.post<void>(`/projects/${encodeURIComponent(projectId)}/kept-edits`, body);
+  }
+  /** Take back the editor's Keep of these edits, so they wait on the editor again. */
+  unkeepEdits(projectId: string, body: UnkeepEditsRequest) {
+    return this.post<void>(`/projects/${encodeURIComponent(projectId)}/kept-edits/undo`, body);
   }
   /** The edits the editor kept in a request (`threadId`), oldest first. */
   keptEdits(projectId: string, threadId: string) {

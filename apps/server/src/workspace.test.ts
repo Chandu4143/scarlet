@@ -7169,4 +7169,10 @@ it("records the editor's Keep on the edit's change, once, and tells the request'
   // Another request hears nothing of it, and an edit of another project can't be kept here.
   expect((await (await api("GET", `${projectsPath()}/kept-edits?thread=other`)).json()).kept).toEqual([]);
   expect((await keep([{ changeId: "chg_elsewhere", spot: 0 }])).status).toBe(404);
+  // ⌘Z takes the Keep back: the edit waits on the editor again and the runs hear of it no more. Taking it back twice is harmless.
+  const unkeep = () => api("POST", projectsPath() + "/kept-edits/undo", { threadId: task.id, edits: [{ changeId: saved.id, spot: 0 }] });
+  expect((await unkeep()).status).toBe(204);
+  expect((await unkeep()).status).toBe(204);
+  expect(ctx.repos.changes.get(saved.id)!.kept).toBeUndefined();
+  expect((await (await api("GET", `${projectsPath()}/kept-edits?thread=${task.id}`)).json()).kept).toEqual([]);
 });

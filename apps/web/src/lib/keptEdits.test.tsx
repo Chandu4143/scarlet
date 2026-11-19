@@ -1,14 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { startAppLog, stopAppLog } from "./appLog";
-import { editKey, keepEdits, reviewKey, useKeptEdits } from "./keptEdits";
+import { editKey, keepEdits, reviewKey, unkeepEdits, useKeptEdits } from "./keptEdits";
 import { useReviewed } from "../components/review/ThreadEdits";
 import { api } from "./client";
 import type { Thread } from "@scarlet/shared";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
-beforeEach(() => { vi.spyOn(api, "keepEdits").mockResolvedValue(undefined); });
+beforeEach(() => {
+  vi.spyOn(api, "keepEdits").mockResolvedValue(undefined);
+  vi.spyOn(api, "unkeepEdits").mockResolvedValue(undefined);
+});
 afterEach(() => { stopAppLog(); vi.restoreAllMocks(); localStorage.clear(); });
 
 function readKept(projectId: string, threadId: string, changes: Thread["changes"] = []) {
@@ -87,3 +90,22 @@ it("asks again about a cut the editor called once a later save gives it a new re
   act(() => root.unmount());
 });
 
+
+it("takes a Keep back (⌘Z) here and on the engine, whose record no longer counts until it lets go", async () => {
+  const sent: string[] = [];
+  vi.mocked(api.keepEdits).mockImplementation(async () => { sent.push("keep"); });
+  vi.mocked(api.unkeepEdits).mockImplementation(async () => { sent.push("unkeep"); });
+  keepEdits("prj", "undo", [{ changeId: "chg", spot: 2, reviewRef: { changeId: "first", spot: 2 } }]);
+  const recorded = [{ id: "first", kept: [{ spot: 2, threadId: "undo", at: "2026-11-18T22:25:32Z" }] }] as unknown as Thread["changes"];
+  expect(readKept("prj", "undo", recorded).has("first/2")).toBe(true);
+  unkeepEdits("prj", "undo", [{ changeId: "chg", spot: 2, reviewRef: { changeId: "first", spot: 2 } }]);
+  // The engine still holds it for now: it doesn't count.
+  expect(readKept("prj", "undo", recorded).size).toBe(0);
+  await vi.waitFor(() => expect(sent).toEqual(["keep", "unkeep"]));
+  expect(api.unkeepEdits).toHaveBeenCalledWith("prj", { threadId: "undo", edits: [{ changeId: "first", spot: 2 }] });
+  // Once the engine lets go and the editor keeps it again, it is kept and sent again.
+  expect(readKept("prj", "undo").size).toBe(0);
+  keepEdits("prj", "undo", [{ changeId: "chg", spot: 2, reviewRef: { changeId: "first", spot: 2 } }]);
+  expect(readKept("prj", "undo", recorded).has("first/2")).toBe(true);
+  await vi.waitFor(() => expect(sent).toEqual(["keep", "unkeep", "keep"]));
+});

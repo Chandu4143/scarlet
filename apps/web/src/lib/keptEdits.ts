@@ -56,7 +56,7 @@ function read(projectId: string, threadId: string): ReadonlySet<string> {
   return value;
 }
 
-type KeptRef = EditRef & { recheck?: string; reviewRef?: EditRef } & Partial<Pick<ThreadEdit, "label" | "check" | "range">>;
+export type KeptRef = EditRef & { recheck?: string; reviewRef?: EditRef } & Partial<Pick<ThreadEdit, "label" | "check" | "range">>;
 
 export function keepEdits(projectId: string, threadId: string, refs: KeptRef[], version?: string) {
   const key = storageKey(projectId, threadId);
@@ -86,9 +86,54 @@ export function keepEdits(projectId: string, threadId: string, refs: KeptRef[], 
   return true;
 }
 
+/**
+ * Take back the editor's Keep of these edits (⌘Z): they wait on the editor again, here and on the engine. Until the
+ * engine says it has let go, its record of them doesn't count here.
+ */
+export function unkeepEdits(projectId: string, threadId: string, refs: KeptRef[]) {
+  const key = storageKey(projectId, threadId);
+  const before = read(projectId, threadId);
+  const keys = new Set(refs.map(reviewKey));
+  const next = new Set([...before].filter(k => !keys.has(k)));
+  for (const k of keys) {
+    sent.delete(`${projectId}/${threadId}/${k}`);
+    unkept.add(`${projectId}/${threadId}/${k}`);
+  }
+  const raw = JSON.stringify([...next]);
+  try {
+    localStorage.setItem(key, raw);
+    cache.set(key, { raw, value: next });
+  } catch (error) {
+    appLog("review", "keep-persist-failed", { project: projectId, thread: threadId, count: keys.size, name: errorName(error) }, { level: "warn" });
+    cache.set(key, { raw: null, value: next, sessionOnly: true });
+  }
+  appLog("review", "unkept", { project: projectId, thread: threadId, count: keys.size });
+  for (const listener of listeners) listener();
+  const edits = refs.map(ref => {
+    const { changeId, spot } = ref.reviewRef ?? ref;
+    return { changeId, spot, ...(ref.recheck && { recheck: ref.recheck }) };
+  });
+  // After any Keep of the same edits still on its way, so the engine hears them in the order the editor made them.
+  toEngine(() => api.unkeepEdits(projectId, { threadId, edits }), error => {
+    appLog("review", "unkeep-send-failed", { project: projectId, thread: threadId, count: edits.length, name: errorName(error) }, { level: "warn" });
+  });
+}
+
+/** Keeps and their undoing go to the engine in the order the editor made them: at once, or after the one still on its way. */
+let outbox: Promise<unknown> = Promise.resolve();
+let onTheWay = 0;
+function toEngine(send: () => Promise<unknown>, failed: (error: unknown) => void) {
+  const sending = (onTheWay ? outbox.then(send) : send()).catch(failed);
+  onTheWay++;
+  outbox = sending.finally(() => { onTheWay--; });
+}
+/** Keeps taken back on this session, which the engine's record may still hold until it hears of it. */
+const unkept = new Set<string>();
+
 function sendKeeps(projectId: string, threadId: string, edits: KeepEditsRequest["edits"], version?: string) {
   if (!edits.length) return;
-  void api.keepEdits(projectId, { threadId, ...(version && { version }), edits }).catch((error: unknown) => {
+  for (const edit of edits) unkept.delete(`${projectId}/${threadId}/${edit.changeId}/${edit.spot}${edit.recheck ? `@${edit.recheck}` : ""}`);
+  toEngine(() => api.keepEdits(projectId, { threadId, ...(version && { version }), edits }), error => {
     appLog("review", "keep-send-failed", { project: projectId, thread: threadId, count: edits.length, name: errorName(error) }, { level: "warn" });
   });
 }
@@ -113,7 +158,19 @@ const sent = new Set<string>();
 export function useKeptEdits(projectId: string, thread: Thread | undefined): ReadonlySet<string> {
   const threadId = thread?.id;
   const local = useSyncExternalStore(subscribe, () => threadId ? read(projectId, threadId) : empty);
-  const engine = useMemo(() => engineKeys(thread), [thread]);
+  const engine = useMemo(() => {
+    const keys = new Set(engineKeys(thread));
+    if (!threadId) return keys;
+    // A Keep taken back here counts no more, whatever the engine's record still says; once that lets go, it is forgotten.
+    for (const key of [...unkept]) {
+      const [project, id, ...rest] = key.split("/");
+      if (project !== projectId || id !== threadId) continue;
+      const own = rest.join("/");
+      if (keys.has(own)) keys.delete(own); else unkept.delete(key);
+    }
+    return keys;
+    // Taking a Keep back changes this window's record, which is when the engine's has to be read again.
+  }, [thread, projectId, threadId, local]); // eslint-disable-line react-hooks/exhaustive-deps
   // A Keep made before the engine recorded them, or that didn't reach it, is sent on.
   useEffect(() => {
     if (!threadId) return;
