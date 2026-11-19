@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- The talking-head skill leaves natural pauses alone again: a pause under about a second stays as said, and only longer dead air comes out.
 - Hovering any of the picture-marking icons above the video explains what it does, and marks you place on a frame can now be grabbed and moved directly on the video.
 - While you're still talking about a demo or reacting to it, your screen stays up instead of cutting to your camera; your camera comes back once you've moved on.
 - Each model in the model picker sits on one line, with hidden models listed below the active ones.
