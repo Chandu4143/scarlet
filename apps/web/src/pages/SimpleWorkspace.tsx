@@ -21,7 +21,7 @@ import { Composer, type PausedAt } from "../components/agent/Composer";
 import { useImportTranscription } from "../components/media/TranscriptionAction";
 import { Dropzone, useImportCount, useUploader } from "../components/media/UploadDropzone";
 import { MediaDrawer } from "../components/media/MediaDrawer";
-import { CachingMenuItem, MediaButton } from "../components/media/MediaMenuItems";
+import { CachingMenuItem, MediaButton, useVideoCaching } from "../components/media/MediaMenuItems";
 import { LearningsPanel, learningsToReview } from "../components/review/LearningsPanel";
 import { usePlaybackCache } from "../components/player/usePlaybackCache";
 import { focusAround } from "../components/player/SimpleProgress";
@@ -1313,6 +1313,8 @@ export function SimpleWorkspace() {
     return { id, project, changes, tasks, notes, timeline, media, renderSettingsRevision, reviewStatus, reviewError, headError };
   }))!;
   const { changes, tasks, notes, media } = current;
+  // While the videos cache, an empty chat says the editor needn't wait for it to finish.
+  const caching = useVideoCaching().active;
   // The working cut on screen. While the video plays, the saves a pass makes under it wait until it stops.
   const { head, timeline } = useShownCut();
   const fps = current.project.settings.fps;
@@ -3820,7 +3822,8 @@ export function SimpleWorkspace() {
                   pinned={pinned} pinHost={pinHost} list={listOf(thread.id)}
                   reportReviewMarkers={showOtherFlags && thread.id !== focusThread?.id && thread.id !== passThread?.id
                     ? reportReviewMarkers : undefined} />)
-                : !media.length && <p className="simple-empty">Drop footage here, then say what you want.</p>}
+                : !media.length ? <p className="simple-empty">Drop footage here, then say what you want.</p>
+                : caching && <p className="simple-empty" role="status">You can start editing while the video caches.</p>}
               {/* A new timeline that keeps failing to read is said after the conversation, which stays where it is. */}
               {!current.reviewStatus && current.headError && <p className="simple-error" role="alert">{current.headError}{" "}
                 <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>}
