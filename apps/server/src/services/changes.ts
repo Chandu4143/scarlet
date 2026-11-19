@@ -621,7 +621,21 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     const overruled = candidates.filter(c => decided.some(d => overlaps(outer(c), d)));
     const held = candidates.filter(c => !overruled.includes(c) && heldRanges.some(r => overlaps(outer(c), outer(r)) ||
       ((c.review || !requested) && (Math.abs(c.start - r.end) < 1e-5 || Math.abs(c.end - r.start) < 1e-5))));
-    const planned = candidates.filter(c => !overruled.includes(c) && !held.includes(c));
+    // A staged cut Scarlet held for how its join measured is the model's to settle where it placed it: cut there, keep
+    // it, or ask. A cut that takes its place with other edges, and applies only because the model sent unsureJoins cut,
+    // swaps one join Scarlet couldn't place for another and changes what the line says, with no one hearing either:
+    // held at "thing. ‖ And so in this video", a closing save cut "And so" as well and applied it (2026-11-18). The
+    // staged cut stays, and the model is told.
+    const heldCutsStay: NonNullable<DialogueCutsAdjustments["heldCutsStay"]> = [];
+    const replacesHeld = candidates.filter(c => {
+      if (c.review || !c.appliedAsPlaced || overruled.includes(c) || held.includes(c)) return false;
+      const staged = earlier.flatMap(change => change.cutReasons!.filter(r => r.held && !r.unheard && !editorChoice(change, r) &&
+        overlaps(outer(c), outer(r)) && (Math.abs(outer(c).start - outer(r).start) >= LEFT_OF_STAGED_CUT || Math.abs(outer(c).end - outer(r).end) >= LEFT_OF_STAGED_CUT)));
+      for (const r of staged) heldCutsStay.push({ asked: c.asked, staged: { start: r.start, end: r.end },
+        why: `This cut takes the place of the staged cut at ${r.start.toFixed(2)}–${r.end.toFixed(2)} s with other edges, and Scarlet couldn't place its join either, so it applied only as unsureJoins cut. Moving a held cut onto other words changes what the line says. The staged cut stays as you first placed it: cut it there with unsureJoins cut, record keep, or ask the editor.` });
+      return staged.length > 0;
+    });
+    const planned = candidates.filter(c => !overruled.includes(c) && !held.includes(c) && !replacesHeld.includes(c));
     const carried: Planned[] = [];
     // A note on staged cuts that touch is about all of them: how many staged cuts each note covers.
     const noted = new Map<CutAssessment, number>();
@@ -660,9 +674,9 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     if (second > 0) throw badRequest("invalid_cuts", `The ranges ${span(sorted[second-1]!)} and ${span(sorted[second]!)} overlap. End the first where the second starts, or merge them.`);
     if (sorted.reduce((n, c) => n + c.end - c.start, 0) >= duration - 1e-7) throw badRequest("invalid_cuts", "These ranges remove the whole timeline. Retain some footage.");
     // A pass that repeats only calls already on this version has nothing to save or announce.
-    if (!planned.length && held.length && waiting.length === 1 && !alreadyRemoved.length && waiting[0]!.fromVersion === head) {
-      return { changes: waiting, carriedForward: carried.length, heldForReview: held.map(c => c.asked),
-        ...(droppedFromReview.length && { droppedFromReview }),
+    if (!planned.length && (held.length || heldCutsStay.length) && waiting.length === 1 && !alreadyRemoved.length && waiting[0]!.fromVersion === head) {
+      return { changes: waiting, carriedForward: carried.length, ...(held.length && { heldForReview: held.map(c => c.asked) }),
+        ...(droppedFromReview.length && { droppedFromReview }), ...(heldCutsStay.length && { heldCutsStay }),
         ...(overruled.length && { editorDecided: overruled.map(c => c.asked) }) };
     }
     if (toHead) {
@@ -724,7 +738,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       }
       return start === c.originalRange.start && end === c.originalRange.end ? c : { ...c, originalRange: { start, end } };
     });
-    const satisfied = { ...(alreadyRemoved.length && { alreadyRemoved }), ...(droppedFromReview.length && { droppedFromReview }) };
+    const satisfied = { ...(alreadyRemoved.length && { alreadyRemoved }), ...(droppedFromReview.length && { droppedFromReview }), ...(heldCutsStay.length && { heldCutsStay }) };
     if (!cuts.length) return { changes: [], ...satisfied };
     const applied = cuts.filter(c => requested && !c.review);
     const stagedConfident = stagedWhy ? cuts.filter(c => c.submitted && !c.review).length : 0;
@@ -843,6 +857,8 @@ export interface DialogueCutsAdjustments {
   onFrames?: { cuts: number; largestShift: number; why: string };
   /** Staged cuts of an earlier part that left the review because their footage changed, on the version they were staged on. */
   droppedFromReview?: Array<{ changeId: string; version: string; start: number; end: number; why: string }>;
+  /** Cuts left out because they would have replaced a staged cut held for its join with other edges, applied only by unsureJoins cut. */
+  heldCutsStay?: Array<{ asked: TimeRange; staged: TimeRange; why: string }>;
 }
 
 const REVISED = "Replaced by a later revision of the same cut.";

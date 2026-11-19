@@ -4486,6 +4486,36 @@ it("lets no later cut replace one staged for the editor's ear, and says when a s
   expect(ctx.repos.projects.header(project.id)!.head).not.toBe(head);
 });
 
+it("keeps a cut held for its join where the model placed it when a later cut would move it onto other words by unsureJoins cut", async () => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit, listed } = dialoguePassInParts();
+  // "… really good. ‖ And so in this video": the join runs on, so Scarlet held the cut where the model placed it.
+  const { review } = await submit(base, [{ ...staged(8, 10), held: "The words named run on into the ones beside them at the end." }]);
+  // The closing save cuts "And so" as well, at another join Scarlet couldn't place, applied only as unsureJoins cut.
+  const moved = await submit(base, [{ ...staged(8, 10.3), review: false, appliedAsPlaced: true }]) as Awaited<ReturnType<typeof submit>> & { heldCutsStay?: unknown };
+  expect(moved.heldCutsStay).toEqual([{ asked: { start: 8, end: 10.3 }, staged: { start: 8, end: 10 }, why: expect.stringMatching(/staged cut at 8\.00–10\.00 s.*cut it there with unsureJoins cut, record keep, or ask/) }]);
+  expect(ctx.repos.projects.header(project.id)!.head).toBe(base);
+  expect(await listed(moved.review)).toEqual([[8, 10]]);
+  expect(moved.review.id).toBe(review.id);
+  // Cut where it was placed, it applies.
+  const placed = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: base, description: "Part",
+    cuts: [{ start: 8, end: 10, review: false, reason: "Retake.", appliedAsPlaced: true }] });
+  expect(placed.status).toBe(201);
+  expect(await placed.json()).not.toHaveProperty("heldCutsStay");
+  expect(ctx.repos.projects.header(project.id)!.head).not.toBe(base);
+});
+
+it("lets a cut sent with unsureJoins cut take the place of a staged cut that wasn't held for its join", async () => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit } = dialoguePassInParts();
+  await submit(base, [staged(8, 10)]);
+  const res = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: base, description: "Part",
+    cuts: [{ start: 8, end: 10.5, review: false, reason: "Retake.", appliedAsPlaced: true }] });
+  expect(res.status).toBe(201);
+  expect(await res.json()).not.toHaveProperty("heldCutsStay");
+  expect(ctx.repos.projects.header(project.id)!.head).not.toBe(base);
+});
+
 it("hands off one call while the pass can still trim and assess its other cuts", async () => {
   const { ctx } = workspace;
   const { task, base, staged, submit, assess, listed } = dialoguePassInParts();
