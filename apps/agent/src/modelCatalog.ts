@@ -222,9 +222,10 @@ export async function discoverModels(agent: CliAgent, file: string, env: NodeJS.
       send({ type: "control_request", request_id: "catalog", request: { subtype: "initialize" } });
       proc.child.stdin?.end();
     } else {
+      const base = { clientInfo: { name: "scarlet", version: "0.1.4" } };
       const params = agent === "codex"
-        ? { clientInfo: { name: "scarlet", version: "0.1.4" }, capabilities: { experimentalApi: true } }
-        : { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "scarlet", version: "0.1.4" } };
+        ? { ...base, capabilities: { experimentalApi: true } }
+        : { protocolVersion: 1, clientCapabilities: {}, ...base };
       send({ id: requestId, method: "initialize", params });
     }
     const outcome = await proc.done;
