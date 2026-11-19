@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyOps, emptyTimeline, type MediaAsset, type Timeline } from "@scarlet/timeline";
-import { newBriefPictures, briefPictures, flashesOntoCuts, CUT_GRID, cutShareOf, type RecordingCut } from "./brief-pictures.js";
+import { newBriefPictures, briefPictures, edgesOntoRecordingCuts, flashesOntoCuts, CUT_GRID, cutShareOf, type RecordingCut } from "./brief-pictures.js";
 
 const canvas = { width: 3840, height: 2160 };
 const media = [
@@ -152,3 +152,59 @@ describe("flashesOntoCuts", () => {
   });
 });
 
+
+describe("edgesOntoRecordingCuts", () => {
+  const all = () => true;
+  const cutAt = (at: number): RecordingCut => ({ at, share: 1, cells: Buffer.alloc(CUT_GRID.cols * CUT_GRID.rows / 8, 0xff).toString("base64") });
+  const reply = { x: -0.06, y: -0.588, scale: 3.745, rotation: 0, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 };
+  const base = applyOps(emptyTimeline("p"), [
+    { op: "addTrack", track: { id: "v_screen", kind: "video", name: "Screen", clips: [] } },
+    { op: "addTrack", track: { id: "v_inset", kind: "video", name: "Inset", clips: [] } },
+    { op: "addClip", trackId: "v1", clip: { id: "wide", kind: "media", mediaId: "camera", sourceIn: 300, sourceOut: 340, timelineIn: 70 } },
+  ] as never);
+  /** A silent screen insert with the camera inset beside it over the same time, from `start` to `end` of the timeline. */
+  const laid = (start: number, end: number, sourceIn: number, volume = 0) => applyOps(base, [
+    { op: "addClip", trackId: "v_screen", clip: { id: "screen", kind: "media", mediaId: "screen", sourceIn, sourceOut: sourceIn + end - start, timelineIn: start, volume, transform: reply,
+      keyframes: [{ time: 0, transform: reply }, { time: 2, transform: { ...reply, scale: 3 } }] } },
+    { op: "addClip", trackId: "v_inset", clip: { id: "inset", kind: "media", mediaId: "camera", sourceIn: 310, sourceOut: 310 + end - start, timelineIn: start, volume: 0,
+      transform: { x: 0.35, y: 0.35, scale: 0.25, rotation: 0, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 } } },
+  ] as never);
+
+  it("ends the insert at 1:20 where the recording first switched, taking out the other window and the reply's return", () => {
+    // 2.48 s of the recording from 323.82, which switched to another window at 325.1 and back at 325.967 (2026-11-18).
+    const cuts = new Map([["screen", [cutAt(325.1), cutAt(325.967), cutAt(326.667)]]]);
+    const after = laid(79.613, 82.093, 323.82);
+    const { ops, met } = edgesOntoRecordingCuts(base, after, media, canvas, cuts, all);
+    expect(met).toEqual([{ from: 82.093, to: 80.893, seconds: 1.2, clips: ["screen", "inset"], source: 325.1 }]);
+    const fixed = applyOps(after, ops);
+    for (const id of ["screen", "inset"]) {
+      const clip = fixed.tracks.flatMap(t => t.clips).find(c => c.id === id)!;
+      expect(clip.timelineIn).toBeCloseTo(79.613, 6);
+      expect(clip.timelineIn + clip.sourceOut - clip.sourceIn).toBeCloseTo(80.893, 6);
+    }
+    expect(briefPictures(fixed, media, canvas, undefined, cuts)).toEqual([]);
+  });
+
+  it("starts an insert that opens on a menu half a second before the game on the game, keeping its moves where they were", () => {
+    const cuts = new Map([["screen", [cutAt(448.729)]]]);
+    const after = laid(94.161, 99.73, 448.282);
+    const { ops, met } = edgesOntoRecordingCuts(base, after, media, canvas, cuts, all);
+    expect(met).toEqual([{ from: 94.161, to: 94.608, seconds: 0.447, clips: ["screen", "inset"], source: 448.729 }]);
+    const screen = applyOps(after, ops).tracks.find(t => t.id === "v_screen")!.clips[0]!;
+    expect(screen.timelineIn).toBeCloseTo(94.608, 3);
+    expect(screen.sourceIn).toBeCloseTo(448.729, 3);
+    expect(screen.kind === "media" && screen.keyframes!.map(k => k.time)).toEqual([expect.closeTo(-0.447, 3), expect.closeTo(1.553, 3)]);
+  });
+
+  it("leaves a switch and back in the middle of an insert, one that would leave the insert brief, an audible insert and one it can't name", () => {
+    expect(edgesOntoRecordingCuts(base, laid(70, 76, 100), media, canvas, new Map([["screen", [cutAt(102), cutAt(102.5)]]]), all).met).toEqual([]);
+    expect(edgesOntoRecordingCuts(base, laid(70, 71.5, 100), media, canvas, new Map([["screen", [cutAt(100.8)]]]), all).met).toEqual([]);
+    // A game whose view swings round twice in an insert's last 1.8 s, with 0.5 s before: the insert would lose most of itself.
+    expect(edgesOntoRecordingCuts(base, laid(70, 72.3, 100), media, canvas, new Map([["screen", [cutAt(100.5), cutAt(101.3)]]]), all).met).toEqual([]);
+    const late = new Map([["screen", [cutAt(105.5)]]]);
+    expect(edgesOntoRecordingCuts(base, laid(70, 76, 100), media, canvas, late, all).met).toHaveLength(1);
+    expect(edgesOntoRecordingCuts(base, laid(70, 76, 100, 1), media, canvas, late, all).met).toEqual([]);
+    expect(edgesOntoRecordingCuts(base, laid(70, 76, 100), media, canvas, late, id => id !== "inset").met).toEqual([]);
+    expect(edgesOntoRecordingCuts(laid(70, 76, 100), laid(70, 76, 100), media, canvas, late, all).met).toEqual([]);
+  });
+});

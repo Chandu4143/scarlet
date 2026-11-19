@@ -1,6 +1,6 @@
 import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
-import { BRIEF_PICTURES_NEXT, flashesOntoCuts, MET_CUT_NEXT, newBriefPictures, type MetCut } from "./brief-pictures.js";
+import { BRIEF_PICTURES_NEXT, edgesOntoRecordingCuts, flashesOntoCuts, MET_CUT_NEXT, MET_RECORDING_CUT_NEXT, newBriefPictures, type MetCut, type MetRecordingCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
 import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
 import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
@@ -1016,14 +1016,21 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    * The pictures an edit leaves on screen briefly, with those that a cut in the recording itself brings about. A
    * recording's cuts are read once and kept, so only the first save that shows a recording waits for them.
    */
-  async function briefOn(before: Timeline | null, made: Timeline) {
+  async function cutsRead(made: Timeline) {
     const { project } = await getProject();
     const read = await perception.cutsOn(made, project, { wait: CUTS_WAIT_SECONDS })
       .catch(error => { noteUnmeasured("where the recordings cut", error); return undefined; });
     const fresh = new Set([...cutsUnread].filter(id => read?.cuts.has(id) && !read.unreadIds.includes(id)));
     for (const id of fresh) cutsUnread.delete(id);
     for (const id of read?.unreadIds ?? []) cutsUnread.add(id);
-    return { brief: newBriefPictures(before, made, project.media, project.settings, read?.cuts, fresh), unread: read?.unread ?? [] };
+    return { read, fresh };
+  }
+  /** `early` is the read of the recordings' cuts taken before the save, when there was one. */
+  async function briefOn(before: Timeline | null, made: Timeline, early?: Awaited<ReturnType<typeof cutsRead>>) {
+    const { project } = await getProject();
+    const { read, fresh } = early?.read && !early.read.unreadIds.length ? early : await cutsRead(made);
+    const freshToo = new Set([...fresh, ...early?.fresh ?? []]);
+    return { brief: newBriefPictures(before, made, project.media, project.settings, read?.cuts, freshToo), unread: read?.unread ?? [] };
   }
   /** One frame of a source recording, or of `area` of it in percent, `width` pixels wide. */
   async function sourceFrame(mediaId: string, t: number, width: number, area?: readonly number[], grid?: boolean) {
@@ -1068,16 +1075,29 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }
     // A picture the edit leaves on screen for a flash between two others goes onto the cut beside it, reported as metCut.
     let metCut: MetCut[] = [];
+    let metRecordingCut: MetRecordingCut[] = [];
+    let early: Awaited<ReturnType<typeof cutsRead>> | undefined;
     if (ctx.author.type === "agent" && before && (body.timeline || body.ops)) {
       const asked = body.timeline ?? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })();
       if (asked) {
         const had = new Set(before.tracks.flatMap(t => t.clips.map(c => c.id)));
         const named = new Set((body.ops ?? []).flatMap(op => op.op === "addClip" && op.clip.id ? [op.clip.id] : []));
         const { project } = await getProject();
-        const closed = flashesOntoCuts(before, asked, project.media, project.settings, id => !!body.timeline || had.has(id) || named.has(id));
+        const stable = (id: string) => !!body.timeline || had.has(id) || named.has(id);
+        const closed = flashesOntoCuts(before, asked, project.media, project.settings, stable);
         if (closed.ops.length) {
           body = body.timeline ? { ...body, timeline: applyOps(body.timeline, closed.ops) } : { ...body, ops: [...body.ops!, ...closed.ops] };
           metCut = closed.met;
+        }
+        // An insert's edge that runs under a second past a cut in its recording goes onto that cut, reported as metRecordingCut.
+        const laid = closed.ops.length ? applyOps(asked, closed.ops) : asked;
+        early = await cutsRead(laid).catch(() => undefined);
+        if (early?.read?.cuts.size) {
+          const onCuts = edgesOntoRecordingCuts(before, laid, project.media, project.settings, early.read.cuts, stable, early.fresh);
+          if (onCuts.ops.length) {
+            body = body.timeline ? { ...body, timeline: applyOps(body.timeline, onCuts.ops) } : { ...body, ops: [...body.ops!, ...onCuts.ops] };
+            metRecordingCut = onCuts.met;
+          }
         }
       }
     }
@@ -1098,7 +1118,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const lines = diffDescription ?? (before && timeline ? describeDiff(diffTimelines(before, timeline), undefined, clipById) : []);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
     const bare = made && !notApplied ? await getProject().then(({ project }) => backgroundShows(before, made, project.media, project.settings)).catch(() => []) : [];
-    const briefNow = made && !notApplied ? await briefOn(before, made).catch(error => { noteUnmeasured("the pictures this edit shows briefly", error); return undefined; }) : undefined;
+    const briefNow = made && !notApplied ? await briefOn(before, made, early).catch(error => { noteUnmeasured("the pictures this edit shows briefly", error); return undefined; }) : undefined;
     const brief = briefNow?.brief ?? [];
     const framedNow = made && !notApplied ? await framedOn(before, made).catch(error => { noteUnmeasured("the framing this edit made", error); return undefined; }) : undefined;
     const insetNow = caps.images && made && !notApplied ? await insetLooks(before, made).catch(error => { noteUnmeasured("pictures of the inset", error); return undefined; }) : undefined;
@@ -1124,6 +1144,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(brief.length && { briefPictures: brief.slice(0, 20), briefNext: BRIEF_PICTURES_NEXT }),
       ...(briefNow?.unread.length && { recordingCutsUnread: briefNow.unread }),
       ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
+      ...(metRecordingCut.length && { metRecordingCut: metRecordingCut.slice(0, 20), metRecordingCutNext: MET_RECORDING_CUT_NEXT }),
       ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
       ...(insetNow?.content.length && { insetLook: insetNow.insets.map(i => ({ mediaId: i.mediaId, trackId: i.trackId, clips: i.clips,
         crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
