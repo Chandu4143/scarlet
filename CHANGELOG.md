@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- The Approve and Apply buttons now show their A shortcut inside the button, matching Keep and Revise.
 - The Transcript column keeps its words up when an edit lands or a cut opens, instead of emptying to “Loading transcript…” and reading the whole transcript again.
 - The talking-head skill leaves natural pauses alone again: a pause under about a second stays as said, and only longer dead air comes out.
 - Hovering any of the picture-marking icons above the video explains what it does, and marks you place on a frame can now be grabbed and moved directly on the video.

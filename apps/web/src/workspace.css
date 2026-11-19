@@ -443,7 +443,7 @@
 .reading-passage { margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 .reading-passage + .reading-passage { margin-top: 7px; }
 
-.review-actions button:is([data-key="R"], [data-key="K"])::after {
+.review-actions button:is([data-key="R"], [data-key="K"], [data-key="A"])::after {
   content: attr(data-key);
   content: attr(data-key) / "";
   font-size: 10px;
