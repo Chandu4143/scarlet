@@ -235,6 +235,11 @@ it("saves which input is the editor's voice only once the recording shows two is
   expect(await choose("podcast", { me: 3, other: 1 })).toEqual([200, { me: 3, other: 1 }]);
   expect(ctx.repos.projects.getMedia("podcast")).toMatchObject({ voiceRoles: { me: 3, other: 1 }, status: "ready" });
   expect(published).toEqual(["podcast"]);
+
+  // Pausing background media work must not break an explicit user save of voice roles.
+  await api("PATCH", `/projects/${project.id}`, { mediaPaused: true });
+  expect(await choose("podcast", { me: 1, other: 3 })).toEqual([200, { me: 1, other: 3 }]);
+  expect(ctx.repos.projects.getMedia("podcast")).toMatchObject({ voiceRoles: { me: 1, other: 3 }, status: "ready" });
 });
 
 it("shows the first frame of a file that is still being imported, and only of a file given by its full path", async () => {

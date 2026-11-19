@@ -369,10 +369,20 @@ function opsOnWholeFrames(ctx: Ctx, projectId: string, body: ProposeChangeReques
       const placed = drift.place(op);
       const aligned = selectedRange(task?.context) ? frameAlignedRemoval(placed, fps, placed) : frameAligned(placed, fps);
       const removed = { start: aligned.start, end: placed.end >= duration - 1e-6 ? placed.end : aligned.end };
-      if (!op.trackIds) drift.removed(op, removed);
+      if (!op.trackIds) {
+        drift.removed(op, removed);
+        const cut = Math.max(0, Math.min(duration, removed.end) - Math.min(duration, removed.start));
+        duration = Math.max(0, duration - cut);
+      }
       return { ...op, ...removed };
     }
-    if (op.op === "rippleInsertGap") return near(op, ["at", "duration"]);
+    if (op.op === "rippleInsertGap") {
+      const snapped = near(op, ["at", "duration"]);
+      if (!snapped.trackIds && duration != null && typeof snapped.duration === "number" && snapped.duration > 0) {
+        duration += snapped.duration;
+      }
+      return snapped;
+    }
     if (op.op === "moveClip") return near(op, ["timelineIn"]);
     if (op.op === "splitClip") return near(op, ["at"]);
     if (op.op === "addClip" && op.clip && typeof op.clip === "object") return { ...op, clip: near(op.clip, clipTimes) };

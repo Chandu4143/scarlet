@@ -116,7 +116,8 @@ export async function putBackWords(segments: readonly TranscriptSegment[], pages
   for (const run of runs) {
     signal?.throwIfAborted();
     const { added, replaced } = run;
-    const at = replaced.length ? current.indexOf(replaced[0]!) : run.after ? current.indexOf(run.after) + 1 : 0;
+    const afterAt = !replaced.length && run.after ? current.indexOf(run.after) : -1;
+    const at = replaced.length ? current.indexOf(replaced[0]!) : run.after ? (afterAt < 0 ? -1 : afterAt + 1) : 0;
     if (at < 0 || replaced.some((w, k) => current[at + k] !== w)) continue;
     const from = Math.min(added[0]!.start, replaced[0]?.start ?? Infinity), to = Math.max(added.at(-1)!.end, replaced.at(-1)?.end ?? -Infinity);
     let a = at;

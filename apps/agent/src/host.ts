@@ -78,6 +78,7 @@ export class AgentHost {
   /** Running task count per runtime; each may run up to maxParallel at once. */
   private busy = new Map<AgentId, number>();
   private stopped = false;
+  private stopController = new AbortController();
   private wakeResolve: (() => void) | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private ws: WebSocket | null = null;
@@ -103,6 +104,7 @@ export class AgentHost {
   /** Register, start heartbeats, WS and the claim loop. Resolves when the loop ends (after stop()). */
   async start(): Promise<void> {
     this.stopped = false;
+    this.stopController = new AbortController();
     // An old folder's Claude sessions go with it, unless Claude Code was told to keep its files somewhere other than the home.
     const home = (this.opts.env ?? process.env).CLAUDE_CONFIG_DIR ? undefined : homedir();
     const [agents] = await Promise.all([
@@ -121,6 +123,7 @@ export class AgentHost {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopController.abort();
     this.wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.wsTimer) clearTimeout(this.wsTimer);
@@ -255,7 +258,12 @@ export class AgentHost {
       try {
         // `wait` makes the server hold the request until a task is queued (long-poll);
         // `agents` restricts the claim to runtimes that are idle here.
-        const res = await this.client.post<{ task: Task | null }>(`/hosts/${this.config.hostId}/claim?wait=${wait}`, { agents: idle });
+        const res = await this.client.request<{ task: Task | null }>(
+          "POST",
+          `/hosts/${this.config.hostId}/claim?wait=${wait}`,
+          { agents: idle },
+          { signal: this.stopController.signal },
+        );
         task = res?.task ?? null;
       } catch (err) {
         if (this.stopped) break;

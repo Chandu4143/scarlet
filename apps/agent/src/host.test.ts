@@ -669,20 +669,47 @@ describe("AgentHost when a run or the engine misbehaves", { timeout: 30_000 }, (
     expect(registrations(down)).toBe(1);
   });
 
+  it("aborts an idle long-poll claim promptly when stopping", async ({ signal }) => {
+    const srv = await startServer();
+    srv.queue = [];
+    const release = new AbortController();
+    srv.claimGate = () => delay(60_000, undefined, { signal: release.signal }).catch(() => undefined);
+    const { host } = makeHost(srv, async () => ({ ok: true, summary: "" }), undefined, { claimWaitSeconds: 25 });
+    try {
+      await startHostAndWait(host, once(srv.events, "claim", { signal }));
+      const started = performance.now();
+      await host.stop();
+      expect(performance.now() - started).toBeLessThan(5_000);
+    } finally {
+      release.abort();
+    }
+  });
+
   it("hands back a task it claimed while shutting down, and logs it when the engine refuses", async ({ signal }) => {
     const stopDuringClaim = async (refuse: boolean) => {
       const srv = await startServer();
       const release = new AbortController();
-      srv.claimGate = () => delay(60_000, undefined, { signal: release.signal }).catch(() => undefined);
       if (refuse) srv.failNext.complete = 503;
       const { lines, log } = logging();
       let ran = false;
-      const { host } = makeHost(srv, async () => {
+      const { host, client } = makeHost(srv, async () => {
         ran = true;
         return { ok: true, summary: "" };
       }, undefined, { log });
+      // Simulate the server having already answered the claim right as host.stop() runs.
+      const originalRequest = client.request.bind(client);
+      let claimResolved!: () => void;
+      const gotClaim = new Promise<void>((r) => { claimResolved = r; });
+      client.request = (async (method, path, body, init, readBinary) => {
+        const res = await originalRequest(method, path, body, init, readBinary);
+        if (path.includes("/claim")) {
+          claimResolved();
+          await delay(60_000, undefined, { signal: release.signal }).catch(() => undefined);
+        }
+        return res;
+      }) as typeof client.request;
       try {
-        await startHostAndWait(host, once(srv.events, "claim", { signal }));
+        await startHostAndWait(host, gotClaim);
         const stopping = host.stop();
         release.abort();
         await stopping;

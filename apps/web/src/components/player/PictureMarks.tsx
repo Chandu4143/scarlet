@@ -142,15 +142,32 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
   const dragging = useRef<{ index: number; origin: PictureMark; start: [number, number]; id: number; moved: boolean }>(undefined);
   const surface = useRef<HTMLDivElement>(null);
 
-  // Playing on, or another video under the player, ends the marking and cancels any active drag. The marks stay with the message.
+  // Playing on, leaving marking, or another video under the player ends any active stroke or drag. The marks stay with the message.
   useEffect(() => {
     if (marking && (playing || !sameVideo)) usePictureMarksStore.getState().stop();
-    if (playing || !sameVideo) {
+    if (!marking || playing || !sameVideo) {
+      drawing.current = undefined;
+      setLive(undefined);
+    }
+    if (playing || !sameVideo || (!marking && !onFrame)) {
       dragging.current = undefined;
       setDrag(undefined);
       setHovered(undefined);
     }
-  }, [marking, playing, sameVideo]);
+  }, [marking, playing, sameVideo, onFrame]);
+  // Seeking away from the marked frame while paused ends marking so strokes never attach to the wrong frame.
+  useEffect(() => {
+    if (!marking) return;
+    let last = usePlayerStore.getState().time;
+    return usePlayerStore.subscribe((state) => {
+      if (state.time === last) return;
+      last = state.time;
+      const current = usePictureMarksStore.getState().byProject[projectId];
+      if (!current || Math.abs(state.time - current.time) >= 0.5 / Math.max(1, fps)) {
+        usePictureMarksStore.getState().stop();
+      }
+    });
+  }, [marking, projectId, fps]);
   useEffect(() => () => { if (usePictureMarksStore.getState().marking === projectId) usePictureMarksStore.getState().stop(); }, [projectId]);
 
   // While marking (or dragging a mark), its keys come first, unless the editor is typing: Esc cancels a drag or leaves, ⌘Z takes the last mark off, D B P pick the tool.
@@ -165,6 +182,8 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
           dragging.current = undefined;
           setDrag(undefined);
         } else if (marking) {
+          drawing.current = undefined;
+          setLive(undefined);
           usePictureMarksStore.getState().stop();
         } else return;
       } else if (marking) {
@@ -236,7 +255,7 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
           setDrag({ index: move.index, mark: translateMark(move.origin, dx, dy) });
           return;
         }
-        if (!marking) return;
+        if (!marking || usePictureMarksStore.getState().marking !== projectId) return;
         const line = drawing.current;
         if (!line || line.id !== e.pointerId) return;
         const point = at(e);
@@ -257,7 +276,11 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
           }
           return;
         }
-        if (!marking) return;
+        if (!marking || usePictureMarksStore.getState().marking !== projectId) {
+          drawing.current = undefined;
+          setLive(undefined);
+          return;
+        }
         const line = drawing.current;
         if (!line || line.id !== e.pointerId) return;
         drawing.current = undefined;

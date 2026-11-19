@@ -217,3 +217,25 @@ it("lets the editor grab and move boxes, freehand marks, and points, clamping to
   expect(marks()[2]).toEqual({ kind: "point", box: { x: 0.5, y: 0.5, w: 0, h: 0 } });
 });
 
+it("ends marking when seeking away while paused and drops any mid-draw stroke on Esc", async () => {
+  await show();
+  await act(async () => toggleMarking("prj", { time: 7, version: "v1" }));
+  expect(usePictureMarksStore.getState().marking).toBe("prj");
+  // Start a box stroke, then press Esc before lifting the pointer.
+  await act(async () => (container.querySelector('[aria-label="Box"]') as HTMLButtonElement).click());
+  await press("pointerdown", 40, 40);
+  await press("pointermove", 160, 100);
+  expect(container.querySelector(".picture-marks")?.hasAttribute("data-drawing")).toBe(true);
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(usePictureMarksStore.getState().marking).toBeNull();
+  expect(container.querySelector(".picture-marks")).toBeNull();
+  expect(marks()).toHaveLength(0);
+
+  // Re-enter marking on frame 7, then seek to frame 10 while still paused: marking ends so strokes don't attach to frame 7.
+  await act(async () => toggleMarking("prj", { time: 7, version: "v1" }));
+  expect(usePictureMarksStore.getState().marking).toBe("prj");
+  await act(async () => usePlayerStore.setState({ time: 10 }));
+  expect(usePictureMarksStore.getState().marking).toBeNull();
+  expect(container.querySelector(".picture-marks")).toBeNull();
+});
+

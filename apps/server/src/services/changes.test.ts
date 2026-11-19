@@ -40,6 +40,12 @@ it("places an agent's later ripple removal on the footage it was written for, af
   // The footage after the second removal resumes at 23.0 s of the source, inside the 22.01–23.01 s asked, not before it.
   const clips = cut.timeline.tracks.find(t => t.id === "a1")!.clips;
   expect(clips.map(c => c.kind === "media" && c.sourceIn)).toEqual([0, 12, expect.closeTo(631 / 30 + (12 - 301 / 30), 9)]);
+
+  // A second removal running to the end of the shortened timeline leaves no sub-frame tail stub.
+  const tail = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: task.id, description: "Trim middle and tail",
+    ops: [{ op: "rippleDelete", start: 2, end: 4 }, { op: "rippleDelete", start: 40, end: 56 }] });
+  const tailClips = tail.timeline.tracks.find(t => t.id === "a1")!.clips;
+  expect(tailClips.every(c => c.kind === "media" && (c.sourceOut - c.sourceIn) >= 1 / 30 - 1e-6)).toBe(true);
 });
 
 it("flags an edit once for a run, also when the run was resumed as a new attempt", async () => {

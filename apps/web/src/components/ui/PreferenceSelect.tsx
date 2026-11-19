@@ -125,7 +125,7 @@ export function PreferenceSelect<const T extends string | number>({ id, label, o
     </button>
     {open && createPortal(<ul ref={panel} role="listbox" id={list} aria-labelledby={triggerId} data-shortcut-overlay className="preference-options">
       {options.map((option, i) => <Fragment key={option.value}>
-        {option.group && option.group !== options[i - 1]?.group && <li role="presentation" className="preference-group">{option.group}</li>}
+        {option.group && option.group !== options[i - 1]?.group && <li role="presentation" className="preference-group" onMouseDown={e => e.preventDefault()}>{option.group}</li>}
         <li id={list + "-" + i} role="option" aria-selected={i === selected} data-detailed={option.detail ? "" : undefined}
           data-active={i === index} onPointerMove={() => setActive(i)} onMouseDown={e => e.preventDefault()} onClick={() => choose(i)}>
           {option.detail ? <span className="preference-option-text"><span>{option.label}</span><span className="preference-option-detail">{option.detail}</span></span> : option.label}

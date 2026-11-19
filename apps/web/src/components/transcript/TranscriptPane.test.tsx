@@ -262,3 +262,12 @@ it("leaves alone an arrow the page has already taken, and moves between words on
   await down();
   expect(document.activeElement).toBe(at(5));
 });
+
+it("ignores right-click when starting drag selection on words", async () => {
+  await mount();
+  await act(async () => {
+    at(2).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 2 }));
+    at(5).dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  });
+  expect(button("Ask about this")).toBeUndefined();
+});

@@ -31,8 +31,9 @@ interface GraphicsDeps {
  */
 export function relativeLinks(html: string): string[] {
   const links = new Set<string>();
-  for (const match of html.matchAll(/(?:\b(?:src|href)\s*=\s*["']|url\(\s*["']?)([^"')\s>#?]+)/gi)) {
-    let link = match[1]!;
+  for (const match of html.matchAll(/(?:\b(?:src|href)\s*=\s*|url\(\s*)(?:"([^"]*)"|'([^']*)'|([^"')\s>]+))/gi)) {
+    let link = (match[1] ?? match[2] ?? match[3] ?? "").trim().split(/[?#]/, 1)[0]!;
+    if (!link) continue;
     try { link = decodeURIComponent(link); } catch { /* A stray % is part of the file's name. */ }
     if (/^[a-z][a-z0-9+.-]*:/i.test(link) || link.startsWith("/") || link.startsWith("\\")) continue;
     links.add(link);
