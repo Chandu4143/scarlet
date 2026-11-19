@@ -210,6 +210,22 @@ it("leaves out a video that failed or isn't to be cached, as the project list do
   expect(figure()).toBe("Caching 99%");
 });
 
+it("says on hover that editing can go on while videos cache, and only then", async () => {
+  const card = () => container.querySelector(".media-hover-card")!.textContent;
+  vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "caching", progress: 0.4 }] });
+  await show([video("cam")]);
+  expect(card()).toContain("You can keep editing meanwhile.");
+  // A pause holds the cache: the hover says so, and nothing is under way to edit beside.
+  await show([video("cam")], [], vi.fn(), true);
+  expect(card()).not.toContain("editing");
+  // Once the video is cached there is nothing to wait for.
+  vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "ready" }] });
+  await show([video("cam")]);
+  await act(async () => useProjectStore.setState(s => ({ current: { ...s.current!, sourcePreviewRevisions: { cam: 1 } } })));
+  await act(async () => {});
+  expect(card()).not.toContain("editing");
+});
+
 it("counts a single video as one video, and says how many files are being added", async () => {
   vi.mocked(api.sourceCaches).mockResolvedValue({ caches: [{ mediaId: "cam", state: "uncached" }] });
   expect((await show([video("cam")])).getAttribute("aria-description")).toBe("0 of 1 video cached");
