@@ -30,9 +30,11 @@ I cut tight, and how tight depends on where the cut falls:
 
 - A cut inside a sentence leaves next to no space. The next word follows my last as if I had said them in one breath, about five hundredths of a second from word to word.
 - A cut at the end of a sentence leaves a very small space before the next one, about a tenth of a second from my last word to my next.
-- Where no cut falls, a pause I make myself can run a little longer: a slight moment while I think before my next words is fine. Keep it tight still. A pause longer than about four tenths of a second comes out, and its cut follows the two rules above.
+- Where no cut falls, leave my own pauses as I made them. A moment while I think, or a beat I hold for emphasis, is how I talk: up to about a second stays. A pause of about a second or more with nothing in it is dead air: it comes out, and its cut follows the two rules above.
 
-This holds at every cut, one you place by its seconds included. Once I finish a sentence, cut before I look away from the camera: that glance never plays. A reveal, a reaction or a change of subject still gets the time it earns.
+Every cut is a jump on my camera, so cut where an editor would: at the mistakes and the dead air. Between them, let me play as I said it. The video should sound like me talking, never chopped up. Cuts that land one after another play as a stutter: a pause beside another cut goes out in that cut or stays, never in a cut of its own.
+
+The two spacings above hold at every cut, one you place by its seconds included. Once I finish a sentence, cut before I look away from the camera: that glance never plays. A reveal, a reaction or a change of subject still gets the time it earns.
 
 Cut silent typing, searching and loading to the result, and hold the result long enough to see what changed. Flag any silence of two seconds or more that you keep in full, with what the viewer sees or hears during it.
 
