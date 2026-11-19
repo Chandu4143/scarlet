@@ -99,6 +99,26 @@ describe("attachments", () => {
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
     expect(existsSync(workspace.ctx.paths.attachments(project.id))).toBe(false);
   });
+
+  it("sandboxes attachment downloads and forces active types like HTML and SVG to download", async () => {
+    const html = await attach("poc.html", "<script>alert(1)</script>", "text/html");
+    const svg = await attach("icon.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml");
+    const png = await attach("frame.png", "png", "image/png");
+    for (const active of [html, svg]) {
+      const res = await api("GET", `/projects/${project.id}/attachments/${active.id}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
+      expect(res.headers.get("Content-Disposition")).toBe("attachment");
+      expect(res.headers.get("Content-Security-Policy")).toBe("sandbox; default-src 'none'");
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    }
+    const img = await api("GET", `/projects/${project.id}/attachments/${png.id}`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("Content-Type")).toBe("image/png");
+    expect(img.headers.get("Content-Disposition")).toBeNull();
+    expect(img.headers.get("Content-Security-Policy")).toBe("sandbox; default-src 'none'");
+    expect(img.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
 });
 
 describe("the style guide", () => {

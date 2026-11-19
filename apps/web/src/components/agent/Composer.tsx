@@ -305,8 +305,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     if (voiceReword.current) return saveWords(voiceReword.current, text);
     const anchor = voiceAnchor.current === undefined ? displayAnchor : voiceAnchor.current;
     try {
-      const { files, done } = await filesFor();
-      done(await send(text, text, anchor, undefined, files));
+      const { files, drawn, done } = await filesFor();
+      done(await send(text, text, anchor, undefined, files, drawn));
     } catch (e) {
       // What was said isn't lost with the failed send: it waits in the box it was said into, which is kept through a
       // quit, still aimed where it was sent. Another request's box the editor turned to meanwhile is left as it is.

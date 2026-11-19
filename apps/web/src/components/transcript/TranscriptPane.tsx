@@ -258,6 +258,7 @@ export function TranscriptPane({ source, draft, onAsk }: { draft?: Timeline; sou
       </div>}
       <div ref={listRef} tabIndex={0} role="group" aria-label="Transcript words"
         onMouseDown={e => {
+          if (e.button !== 0) return;
           const word = wordAt(e.target);
           if (!word) return;
           e.preventDefault();

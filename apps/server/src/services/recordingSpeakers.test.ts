@@ -279,3 +279,55 @@ it("starts the next analysis when one stops before its recording is looked up", 
   expect(thrown).toBe(true);
   expect((await both).some(result => result instanceof Error && result.message === "project gone")).toBe(true);
 });
+
+it("cancels a queued speaker analysis on pause without backing off after resume", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scarlet-speakers-queue-pause-"));
+  const { ctx } = createApp({ dataDir: dir, skillsSeedDir: dir, env: {}, log: () => {} });
+  onTestFinished(async () => {
+    await ctx.close();
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const project = ctx.repos.projects.insert(createProject("Speakers"));
+  ctx.paths.ensureProject(project.id);
+  ctx.speakers.beside = true;
+  vi.spyOn(LocalWhisperModel.prototype, "get").mockResolvedValue("model");
+  vi.spyOn(ffmpeg, "extractWav").mockImplementation(async (_file, wav) => { await writeFile(wav, "pcm"); });
+  const workers: Array<() => void> = [];
+  vi.spyOn(ffmpeg, "run").mockImplementation((_bin, _args, opts) => new Promise((resolve, reject) => {
+    opts?.signal?.addEventListener("abort", () => reject(opts.signal!.reason), { once: true });
+    workers.push(() => resolve(Buffer.from("[]")));
+  }));
+  ctx.repos.settings.update({ transcription: { provider: "whispercpp", whisperCppPath: process.execPath } });
+  const logs: string[] = [];
+  ctx.log = line => logs.push(line);
+  const addMedia = async (id: string) => {
+    const media = ctx.repos.projects.putMedia(project.id, { id, name: id, path: id + ".wav", kind: "audio", transcriptId: "trs_" + id }, "ready");
+    await writeFile(join(ctx.paths.media(project.id), media.path), id);
+    ctx.repos.transcripts.put({ id: "trs_" + id, projectId: project.id, mediaId: id, segments: [] });
+    return { media, transcript: ctx.repos.transcripts.get("trs_" + id)! };
+  };
+  // Occupy all speaker worker slots with priority analyses so the next background ensure() waits in queue.
+  const slots = speakersAtOnce();
+  const blockers = await Promise.all(Array.from({ length: slots }, (_, i) => addMedia(`b${i}`)));
+  const blocking = blockers.map(({ media }) => ctx.speakers.turns(ctx, project.id, media, undefined, true));
+  await vi.waitFor(() => expect(workers).toHaveLength(slots));
+  const queued = await addMedia("queued");
+  const pausedAttempt = ctx.speakers.ensure(ctx, project.id, queued.media, queued.transcript, undefined, false);
+  await (ctx.speakers as unknown as { placed: Promise<void> }).placed;
+  // Pause then immediately resume before the queued analysis ever gets a worker slot.
+  ctx.repos.projects.update(project.id, { mediaPaused: true });
+  ctx.stopMedia(project.id);
+  ctx.repos.projects.update(project.id, { mediaPaused: false });
+  await pausedAttempt;
+  // No error was logged and no 5-minute retry backoff was recorded.
+  expect(logs.filter(l => l.includes("[speakers] queued:"))).toEqual([]);
+  for (const done of workers) done();
+  await Promise.all(blocking);
+  // Retrying ensure() after resume succeeds immediately rather than being blocked by retryAfter.
+  const resumed = ctx.speakers.ensure(ctx, project.id, queued.media, queued.transcript, undefined, false);
+  await vi.waitFor(() => expect(workers).toHaveLength(slots + 1));
+  workers.at(-1)!();
+  await resumed;
+  expect(ctx.repos.projects.getMedia("queued")?.transcriptId).not.toBe("trs_queued");
+});

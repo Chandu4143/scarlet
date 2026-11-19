@@ -50,7 +50,14 @@ export function graphicRoutes(ctx: Ctx) {
     const project = requireProjectHeader(ctx, c.req.param("id"));
     const found = await findAttachment(ctx, project.id, c.req.param("attachmentId"));
     if (!found) throw notFound("attachment");
-    return serveFile(c.req.raw, found.path, { contentType: found.attachment.mime ?? "application/octet-stream", cacheControl: "private, no-cache" });
+    const type = found.attachment.mime ?? "application/octet-stream";
+    const passive = type.startsWith("audio/") || type.startsWith("video/") ||
+      ["image/jpeg", "image/png", "image/gif", "image/webp", "image/x-icon"].includes(type);
+    const response = serveFile(c.req.raw, found.path, { contentType: passive ? type : "application/octet-stream", cacheControl: "private, no-cache" });
+    response.headers.set("Content-Security-Policy", "sandbox; default-src 'none'");
+    response.headers.set("X-Content-Type-Options", "nosniff");
+    if (!passive) response.headers.set("Content-Disposition", "attachment");
+    return response;
   });
 
   r.post("/projects/:id/documents/read", async (c) => {

@@ -531,16 +531,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
 
   useEffect(() => { if (!active) player.pause(); }, [active]);
 
-  // Marks drawn on the picture for the message in the box. M, or a tool over the picture, marks the frame under the
-  // playhead.
-  const canMark = !!simple.onPick && playable && !beforeShown.current;
-  const markFrame = () => {
-    if (!canMark) return;
-    const time = Math.min(usePlayerStore.getState().time, lastFrame);
-    const picture = source ? api.frameUrl(source.id, time, 1280) : cutFrameUrl(current.project, displayedTimeline, time, true, true);
-    toggleMarking(current.id, { time, version: source ? undefined : rangeVersion, mediaId: source?.id, picture });
-  };
-
   // The press that last played the change.
   const playedChange = useRef(playChange);
   useLayoutEffect(() => {
@@ -577,6 +567,15 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   // The next edit can carry the same request number, so a stretch left behind would play as its passage.
   useLayoutEffect(() => { if (!selectedEdit) setReach(undefined); }, [selectedEdit]);
   const playingBefore = before && !framing;
+  // Marks drawn on the picture for the message in the box. M, or a tool over the picture, marks the frame under the
+  // playhead.
+  const canMark = !!simple.onPick && playable && !playingBefore && !framing;
+  const markFrame = () => {
+    if (!canMark) return;
+    const time = Math.min(usePlayerStore.getState().time, lastFrame);
+    const picture = source ? api.frameUrl(source.id, time, 1280) : cutFrameUrl(current.project, displayedTimeline, time, true, true);
+    toggleMarking(current.id, { time, version: source ? undefined : rangeVersion, mediaId: source?.id, picture });
+  };
   const reviewPassage = selectedEdit && simple.reviewRange && !playingBefore ? editPlaybackRange(simple.reviewRange, duration) : undefined;
   const passage = simple.holdPassage ? undefined : reached?.range ?? reviewPassage ?? selectedPassage;
   useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
@@ -738,7 +737,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   return (
     <section ref={stage} className="cut-preview" aria-label={view} data-expanded={expanded || undefined}>
       <AmbientLight stage={stage} monitor={monitor} />
-      {simple.onPick && (source || cut || change || draftVersion) && <PictureMarkTools projectId={current.id} enabled={canMark && !playingBefore && !framing} onStart={markFrame} />}
+      {simple.onPick && (source || cut || change || draftVersion) && <PictureMarkTools projectId={current.id} enabled={canMark} onStart={markFrame} />}
       <div className="watch-viewport">
         <div ref={monitor} className="watch-monitor" data-landscape={pictureAspect > 1 || undefined}
           style={{ "--picture-aspect": pictureAspect } as CSSProperties}

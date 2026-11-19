@@ -70,7 +70,7 @@ function footage(clip: MediaClip | ColorClip, asset: TransitionSource | undefine
 function layer(clip: MediaClip | ColorClip, id: string, start: number, length: number, offset: number): MediaClip | ColorClip {
   if (clip.kind === "color") return { ...clip, id, timelineIn: start, timelineOut: start + length, label: undefined };
   const speed = clip.speed || 1;
-  const sourceIn = clip.sourceIn + offset * speed;
+  const sourceIn = Math.max(0, clip.sourceIn + offset * speed);
   return {
     ...clip, id, timelineIn: start, sourceIn, sourceOut: sourceIn + length * speed, label: undefined,
     volume: 0, audioFadeIn: 0, audioFadeOut: 0, videoFadeIn: 0, videoFadeOut: 0, transitionIn: undefined,

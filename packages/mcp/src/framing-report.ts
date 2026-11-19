@@ -118,10 +118,10 @@ export function framingReport(before: Timeline | null, after: Timeline, media: r
     // The frame along the stretch, sampled.
     const samples: Array<{ t: number; frame: Box | null }> = [];
     for (const clip of run) {
-      const end = clipEnd(clip), speed = clip.speed ?? 1;
+      const end = clipEnd(clip);
       for (let t = clip.timelineIn; t < end - 1e-6; t = Math.min(end, t + STEP)) {
-        samples.push({ t, frame: frameShown(clip, (t - clip.timelineIn) * speed, source, canvas) });
-        if (end - t <= STEP) { samples.push({ t: end - 1e-3, frame: frameShown(clip, (end - 1e-3 - clip.timelineIn) * speed, source, canvas) }); break; }
+        samples.push({ t, frame: frameShown(clip, t - clip.timelineIn, source, canvas) });
+        if (end - t <= STEP) { samples.push({ t: end - 1e-3, frame: frameShown(clip, Math.max(0, end - 1e-3 - clip.timelineIn), source, canvas) }); break; }
       }
     }
     const same = (a: Box | null, b: Box | null) => a === b || (!!a && !!b && a.every((n, i) => Math.abs(n - b[i]!) < STILL));
@@ -168,7 +168,7 @@ export function framingReport(before: Timeline | null, after: Timeline, media: r
         const seen = meet(onVideo, [0, 0, 1, 1]);
         if (area(seen) <= 0) continue;
         const covers = layers.filter(l => l.index > trackIndex && l.clip.timelineIn <= s.t && s.t < clipEnd(l.clip))
-          .map(l => pictureBox(l.clip, (s.t - l.clip.timelineIn) * (l.clip.speed ?? 1), size(l.clip.mediaId), canvas))
+          .map(l => pictureBox(l.clip, s.t - l.clip.timelineIn, size(l.clip.mediaId), canvas))
           .map(b => meet(b, [0, 0, 1, 1])).filter(b => area(b) > 0 && area(b) < 0.9);
         cover = Math.max(cover, Math.min(1, covers.reduce((n, c) => n + area(meet(seen, c)), 0) / area(onVideo)));
       }
