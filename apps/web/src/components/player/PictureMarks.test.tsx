@@ -112,3 +112,108 @@ it("starts marking from a tool over the picture, and ends it when the lit tool i
   await act(async () => tool("Clear marks").click());
   expect(marks()).toHaveLength(0);
 });
+
+it("explains each top-left icon on hover (including disabled buttons) and hides when leaving", async () => {
+  await show();
+  const hoverItem = (label: string, type: "pointerover" | "pointerout") => act(async () => {
+    const item = container.querySelector(`[aria-label="${label}"]`)!.parentElement!;
+    item.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "mouse" }));
+  });
+  const tip = () => container.querySelector('[role="tooltip"]');
+
+  expect(tip()).toBeNull();
+  for (const [label, snippet] of [
+    ["Draw", "Draw freehand"],
+    ["Box", "Drag a box"],
+    ["Point", "Drop a pin"],
+    ["Undo", "Remove the last mark"],
+    ["Clear marks", "Remove all marks"],
+  ] as const) {
+    await hoverItem(label, "pointerover");
+    expect(tip()?.textContent).toContain(label);
+    expect(tip()?.textContent).toContain(snippet);
+    expect(container.querySelector(`[aria-label="${label}"]`)?.getAttribute("aria-describedby")).toBe(tip()?.id);
+    // Keep the pill itself text-free.
+    expect(container.querySelector(".picture-mark-tools")?.textContent).toBe("");
+    await hoverItem(label, "pointerout");
+    expect(tip()).toBeNull();
+  }
+});
+
+it("lets the editor grab and move boxes, freehand marks, and points, clamping to the frame and canceling on Esc", async () => {
+  await show();
+  await act(async () => toggleMarking("prj", { time: 7, version: "v1" }));
+
+  // Draw a box (index 0): x=0.1..0.3, y=0.2..0.5 (40..120, 40..100 on 400x200)
+  await act(async () => (container.querySelector('[aria-label="Box"]') as HTMLButtonElement).click());
+  await press("pointerdown", 40, 40);
+  await press("pointermove", 120, 100);
+  await press("pointerup", 120, 100);
+
+  // Draw a freehand loop (index 1)
+  await act(async () => (container.querySelector('[aria-label="Draw"]') as HTMLButtonElement).click());
+  for (const [type, x, y] of [
+    ["pointerdown", 240, 60],
+    ["pointermove", 280, 60],
+    ["pointermove", 300, 100],
+    ["pointermove", 280, 140],
+    ["pointermove", 240, 140],
+    ["pointermove", 220, 100],
+    ["pointerup", 242, 62],
+  ] as const) await press(type, x, y);
+
+  // Drop a point (index 2)
+  await act(async () => (container.querySelector('[aria-label="Point"]') as HTMLButtonElement).click());
+  await press("pointerdown", 360, 160);
+  await press("pointerup", 360, 160);
+  expect(marks()).toHaveLength(3);
+  expect(container.querySelector('polyline.picture-mark-hit[data-mark-index="1"]')?.hasAttribute("data-closed")).toBe(true);
+
+  const dragEl = async (selector: string, x1: number, y1: number, x2: number, y2: number, opts?: { esc?: boolean }) => {
+    const el = container.querySelector(selector)!;
+    await act(async () => {
+      el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: x1, clientY: y1, pointerId: 2, button: 0 }));
+    });
+    await act(async () => {
+      el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x2, clientY: y2, pointerId: 2, button: 0 }));
+    });
+    if (opts?.esc) {
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      });
+      await act(async () => {
+        el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x2, clientY: y2, pointerId: 2, button: 0 }));
+      });
+      return;
+    }
+    await act(async () => {
+      el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x2, clientY: y2, pointerId: 2, button: 0 }));
+    });
+  };
+
+  // Grab and move the box (+80px = +0.2 in x, +40px = +0.2 in y)
+  await dragEl('rect.picture-mark-hit[data-mark-index="0"]', 80, 70, 160, 110);
+  expect(marks()[0]).toEqual({ kind: "box", box: { x: 0.3, y: 0.4, w: 0.2, h: 0.3 } });
+
+  // Clicking a mark without dragging neither moves it nor creates a stray point.
+  await dragEl('rect.picture-mark-hit[data-mark-index="0"]', 160, 110, 160, 110);
+  expect(marks()).toHaveLength(3);
+  expect(marks()[0]).toEqual({ kind: "box", box: { x: 0.3, y: 0.4, w: 0.2, h: 0.3 } });
+
+  // Esc while dragging cancels the move and keeps marking active.
+  await dragEl('rect.picture-mark-hit[data-mark-index="0"]', 160, 110, 260, 150, { esc: true });
+  expect(marks()[0]).toEqual({ kind: "box", box: { x: 0.3, y: 0.4, w: 0.2, h: 0.3 } });
+  expect(usePictureMarksStore.getState().marking).toBe("prj");
+
+  // Grab the freehand mark by its number badge and drag it past the left edge — it clamps without squishing.
+  await dragEl('.picture-mark-number[data-mark-index="1"]', 220, 60, -100, 60);
+  expect(marks()[1]!.box).toEqual({ x: 0, y: 0.3, w: 0.2, h: 0.4 });
+  expect(marks()[1]!.points!.every(([px, py]) => px >= 0 && px <= 1 && py >= 0 && py <= 1)).toBe(true);
+
+  // Leave marking mode: marks can still be grabbed and moved while paused on the marked frame.
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(usePictureMarksStore.getState().marking).toBeNull();
+  await dragEl('.picture-mark-point[data-mark-index="2"]', 360, 160, 200, 100);
+  expect(marks()[2]).toEqual({ kind: "point", box: { x: 0.5, y: 0.5, w: 0, h: 0 } });
+});
+

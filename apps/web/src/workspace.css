@@ -486,23 +486,51 @@
 .picture-marks { z-index: 3; pointer-events: none; }
 .picture-marks-frame { container-type: size; }
 .picture-marks[data-marking] .picture-marks-frame { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.picture-marks[data-dragging] .picture-marks-frame { pointer-events: auto; cursor: grabbing; touch-action: none; }
 .picture-marks-lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; fill: none; stroke: #f4f1e9;
   stroke-width: 3px; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 2px rgb(0 0 0 / 65%)); }
-.picture-marks-lines rect { fill: rgb(244 241 233 / 8%); }
+.picture-marks-lines rect:not(.picture-mark-hit) { fill: rgb(244 241 233 / 8%); }
+.picture-marks-lines [data-active]:not(.picture-mark-hit) { stroke: #fff; filter: drop-shadow(0 0 4px rgb(244 241 233 / 65%)); }
+.picture-marks-lines rect:not(.picture-mark-hit)[data-active] { fill: rgb(244 241 233 / 16%); }
+.picture-marks-lines .picture-mark-hit { fill: none; stroke: transparent; stroke-width: 18px; filter: none; pointer-events: stroke; cursor: grab; touch-action: none; }
+.picture-marks-lines rect.picture-mark-hit,
+.picture-marks-lines polyline.picture-mark-hit[data-closed] { fill: transparent; pointer-events: all; }
+.picture-marks[data-drawing] .picture-mark-hit,
+.picture-marks[data-drawing] [data-grabbable] { pointer-events: none; }
+.picture-marks[data-dragging] .picture-mark-hit,
+.picture-marks[data-dragging] [data-grabbable] { cursor: grabbing; }
 .picture-mark-point, .picture-mark-number { position: absolute; display: grid; place-items: center; box-sizing: border-box;
   border-radius: 999px; background: #f4f1e9; color: #141312; font: 700 12px/1 var(--font-sans, system-ui); box-shadow: 0 1px 3px rgb(0 0 0 / 65%); }
+.picture-mark-point[data-grabbable], .picture-mark-number[data-grabbable] { pointer-events: auto; cursor: grab; touch-action: none; user-select: none; transition: transform .1s ease; }
+.picture-mark-point[data-grabbable]::after { content: ""; position: absolute; inset: -8px; border-radius: 999px; }
+.picture-mark-point[data-active], .picture-mark-number[data-active] { transform: scale(1.12); background: #fff; box-shadow: 0 2px 6px rgb(0 0 0 / 80%); }
 .picture-mark-point { width: 12px; height: 12px; margin: -6px 0 0 -6px; }
 .picture-mark-point:not(:empty) { width: 20px; height: 20px; margin: -10px 0 0 -10px; }
 .picture-mark-number { width: 20px; height: 20px; margin: -10px 0 0 -10px; }
 /* Above the picture, in a row of its own: nothing of it covers the video. */
-.picture-mark-tools { position: relative; z-index: 1; align-self: flex-start; flex: none; margin-bottom: 8px; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
+.picture-mark-anchor { position: relative; z-index: 6; align-self: flex-start; flex: none; margin-bottom: 8px; }
+.picture-mark-tools { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px;
   background: rgb(11 11 11 / 80%); border: 1px solid rgb(255 255 255 / 12%); color: #bdbab2; backdrop-filter: blur(8px); cursor: default; }
-.picture-mark-tool { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px; background: none; color: inherit; }
+.picture-mark-item { display: inline-flex; }
+.picture-mark-tool { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 999px; background: none; color: inherit; cursor: pointer; }
 .picture-mark-tool:hover:enabled { color: #f4f1e9; }
 .picture-mark-tool[aria-pressed="true"] { background: #f4f1e9; color: #141312; }
-.picture-mark-tool:disabled { opacity: .35; }
+.picture-mark-tool:disabled { opacity: .35; pointer-events: none; }
 .picture-mark-tool:focus-visible { outline: 2px solid #f4f1e9; outline-offset: 1px; }
 .picture-mark-sep { width: 1px; height: 16px; margin: 0 3px; background: rgb(255 255 255 / 15%); }
+.picture-mark-tip { position: absolute; top: calc(100% + 6px); left: 0; pointer-events: none; width: max-content; max-width: 245px;
+  padding: 6px 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 2px;
+  background: rgb(14 14 14 / 92%); border: 1px solid rgb(255 255 255 / 14%); color: #bdbab2; backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 45%); font-size: 12px; line-height: 1.35; }
+.picture-mark-tip-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.picture-mark-tip-head strong { font-weight: 500; color: #f4f1e9; }
+.picture-mark-tip-head kbd { padding: 0 5px; border-radius: 4px; border: 1px solid rgb(255 255 255 / 16%);
+  background: rgb(255 255 255 / 8%); color: #f4f1e9; font: 500 10.5px/1.5 var(--font-mono, ui-monospace, monospace); }
+.picture-mark-tip-desc { color: #bdbab2; }
+@media (prefers-reduced-motion: no-preference) {
+  .picture-mark-tip { animation: picture-mark-tip-in 90ms ease-out; }
+  @keyframes picture-mark-tip-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
+}
 
 /* The marked frame on the line of files over the message box: its picture with the marks, then its name. */
 .composer-marked-frame { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }

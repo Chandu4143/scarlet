@@ -27,6 +27,7 @@ interface PictureMarksState {
   stop(): void;
   setTool(tool: PictureMarkKind): void;
   add(projectId: string, mark: PictureMark): void;
+  replace(projectId: string, index: number, mark: PictureMark): void;
   undo(projectId: string): void;
   /** Take every mark off, and the frame with them. */
   clear(projectId: string): void;
@@ -53,6 +54,13 @@ export const usePictureMarksStore = create<PictureMarksState>((set, get) => ({
   add: (projectId, mark) => set(state => {
     const frame = state.byProject[projectId];
     return frame ? { byProject: { ...state.byProject, [projectId]: { ...frame, marks: [...frame.marks, mark].slice(0, MAX_MARKS) } } } : {};
+  }),
+  replace: (projectId, index, mark) => set(state => {
+    const frame = state.byProject[projectId];
+    if (!frame || index < 0 || index >= frame.marks.length) return {};
+    const marks = frame.marks.slice();
+    marks[index] = mark;
+    return { byProject: { ...state.byProject, [projectId]: { ...frame, marks } } };
   }),
   undo: projectId => set(state => {
     const frame = state.byProject[projectId];
