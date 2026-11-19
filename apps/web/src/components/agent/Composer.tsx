@@ -39,6 +39,8 @@ export function Composer(props: ComposerProps) {
 
 interface Rewording { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void }
 
+export interface PausedAt { time: number; version?: string; mediaId?: string }
+
 interface ComposerProps {
   /** What sits attached to the top of the message box: the requests queued behind the one Scarlet is on. */
   tray?: ReactNode;
@@ -58,9 +60,14 @@ interface ComposerProps {
    * the box is done with the queued one.
    */
   rewording?: Rewording;
+  /**
+   * Where the editor paused the video while a cut or an edit is open, on the timeline the player showed. The tag shows
+   * that time in place of the cut's or the edit's; the message is still theirs, and Scarlet is told the frame too.
+   */
+  pausedAt?: PausedAt;
   selectedEdit?: AgentContext; onClearSelectedEdit?(): void; thread?: Thread; onCreated?(task: Task): void; onSent?(): void; modelPicker?: boolean }
 
-function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, onRestoreTarget, rewording, messageClock }: ComposerProps & { project: Project }) {
+function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, onRestoreTarget, rewording, messageClock, pausedAt }: ComposerProps & { project: Project }) {
   const media = useProjectStore(s => s.current?.media);
   const createTask = useProjectStore((s) => s.createTask);
   const createNote = useProjectStore((s) => s.createNote);
@@ -193,7 +200,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     let context: Parameters<typeof createTask>[1]["context"];
     if (replying) {
       if (anchor?.changeId && ![...thread.changes, ...thread.flagged ?? []].some(c => c.id === anchor.changeId)) throw new Error("This suggestion is unavailable. Select the edit again.");
-      const position = anchor && requestPosition(anchor);
+      const position = anchor && { ...requestPosition(anchor), ...stoppedAt() };
       // A revision takes no files, so one that carries some is a request in the thread, as a reply is.
       if (revising && !attachments) {
         await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),
@@ -220,6 +227,12 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     else onCreated?.(task);
     return true;
   };
+  /** The frame the editor stopped on, for a message to a cut or an edit. */
+  function stoppedAt() {
+    if (!pausedAt) return {};
+    const { time, version, mediaId } = pausedAt;
+    return { messageTime: { time, ...version && { version }, ...mediaId && { mediaId } } };
+  }
   /** The files ready to go with a message, once any still being added have landed, and taking them off the line once it's out. */
   const filesFor = async () => {
     const frame = usePictureMarksStore.getState().byProject[project.id];
@@ -359,9 +372,12 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     if (onClearTarget) onClearTarget(); else setContext("whole");
     inputRef.current?.focus();
   };
+  // Paused with a cut or an edit open, the tag shows the one time the editor is looking at: where they stopped. Its full
+  // name still says which cut or edit the message goes to.
+  const stopped = replying && !targetIsPoint && pausedAt ? clock(pausedAt.time) : undefined;
   const aimItems: AimItem[] = [
-    ...placeTag ? [{ key: `target:${placeTag}`, name: targetIsPoint ? placeTag.replace(/^At /, "") : placeTag,
-      displayName: placeTag.replace(/^(?:(?:Cut|Edit) at|At) /, ""),
+    ...placeTag ? [{ key: `target:${placeTag}`, name: targetIsPoint ? placeTag.replace(/^At /, "") : stopped ? `${placeTag}, stopped at ${stopped}` : placeTag,
+      displayName: stopped ?? placeTag.replace(/^(?:(?:Cut|Edit) at|At) /, ""),
       clearLabel: targetIsPoint ? `Take “${placeTag}” off: the message is about the whole video` : `Start a new edit instead of ${tagAct!.charAt(0).toLowerCase()}${tagAct!.slice(1)}`,
       onClear: takeOffTarget }] : [],
     ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: `Range ${markedWords}`,

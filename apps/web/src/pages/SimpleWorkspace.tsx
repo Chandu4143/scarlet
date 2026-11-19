@@ -16,7 +16,7 @@ import { QueueTray, useRewordingHold, type QueuedRequest } from "../components/c
 import { recordEditReview } from "../lib/editReviews";
 import { editKey, keepEdits, reviewKey } from "../lib/keptEdits";
 import { AgentChip, useAgentAvailability, useModelNeedsYou } from "../components/agent/AgentChip";
-import { Composer } from "../components/agent/Composer";
+import { Composer, type PausedAt } from "../components/agent/Composer";
 import { useImportTranscription } from "../components/media/TranscriptionAction";
 import { Dropzone, useImportCount, useUploader } from "../components/media/UploadDropzone";
 import { MediaDrawer } from "../components/media/MediaDrawer";
@@ -3562,26 +3562,41 @@ export function SimpleWorkspace() {
   }, [hasMarkedRange]);
   // The time a pause wrote into the box, while it is all the box holds.
   const pausedTime = useRef<string | undefined>(undefined);
+  // With a cut or an edit open, a pause puts its time in the box's tag instead, and the message stays the cut's or the
+  // edit's. It goes when the video plays on with nothing written, and when another cut or edit opens.
+  const [pausedAt, setPausedAt] = useState<PausedAt>();
+  const pausedAtRef = useRef(pausedAt);
+  pausedAtRef.current = pausedAt;
   useEffect(() => usePlayerStore.subscribe((now, was) => {
-    if (!now.playing || was.playing || !pausedTime.current) return;
+    if (!now.playing || was.playing) return;
     const box = useUiStore.getState();
+    if (pausedAtRef.current && !box.agentDraft.trim()) setPausedAt(undefined);
+    if (!pausedTime.current) return;
     if (box.agentDraft === pausedTime.current) {
       box.setAgentDraft("");
       box.setAgentContext(null);
     }
     pausedTime.current = undefined;
   }), []);
+  useLayoutEffect(() => () => setPausedAt(undefined), [replyTo]);
   // A press, a scrub or a skip on the timeline, or N, aims a new edit at that moment at once: the box shows it as its
   // edit-point icon. A message aimed at a cut or an edit, or one being written, stays where it was. Words chosen in the
   // transcript or a stretch marked on the ruler stay through a seek; only N takes their place.
   // A pause writes its time into an empty box as the start of the message ("0:04 "), as if the editor had typed it.
   // While the box holds only that, the next pause or seek moves it, and playing on takes it out again.
+  // With a cut or an edit open, a pause into an empty box shows its time in the tag, and the next seek moves it there:
+  // the message stays the cut's or the edit's, and Scarlet is told the frame the editor stopped on besides.
   const pickPoint = (picked: AgentContext, how: "seek" | "n" | "pause") => {
     const box = useUiStore.getState();
-    if (replyTo || rewordingItem || box.speaking) return;
+    if (rewordingItem || box.speaking) return;
     const onlyPaused = !!pausedTime.current && box.agentDraft === pausedTime.current;
     const written = onlyPaused ? "" : box.agentDraft.trim();
     const target = box.agentContext;
+    if (replyTo) {
+      if (!aimedAtChange(target) || box.agentDraft.trim() || how === "n" || (how === "seek" && !pausedAtRef.current)) return;
+      setPausedAt({ time: picked.time, version: picked.version, ...picked.mediaId && { mediaId: picked.mediaId } });
+      return;
+    }
     if (target && target !== "whole" && (target.changeId || written)) return;
     // A message being written about the whole video, aimed or not yet, stays so through a seek: the line above the
     // box offers to bring it along.
@@ -3644,7 +3659,7 @@ export function SimpleWorkspace() {
     onCreated={() => { follow.current = true; }} onSent={sentUnder(aims.current)}
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
-    messageClock={messageClock}
+    messageClock={messageClock} pausedAt={replyTo ? pausedAt : undefined}
     targetTag={boxTag} onClearTarget={clearTarget} onRestoreTarget={restoreTarget}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
     rewording={rewordingItem && { id: rewordingItem.id, text: rewording!.text,
@@ -3796,6 +3811,11 @@ export function SimpleWorkspace() {
 }
 
 /** The passage Scarlet asks the editor to check, as the clock reads it: one time for a moment, from and to for a stretch. */
+/** The box is aimed at a cut or an edit, not at a moment or the whole video. */
+function aimedAtChange(aim: AgentContext | "whole" | null) {
+  return !!aim && aim !== "whole" && !!aim.changeId;
+}
+
 function checkSpan({ start, end }: TimeRange) {
   return end - start < 0.05 ? clockLabel(start) : clockRange(start, end);
 }

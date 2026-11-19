@@ -294,6 +294,12 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     if (marked && !(marked.start === c.time && marked.end === c.end)) {
       ctxLines.push(`- Stretch the editor marked on the ${marked.mediaId ? "source" : "timeline"}: ${marked.start.toFixed(2)} s (${formatTimecode(marked.start, fps)}) to ${marked.end.toFixed(2)} s (${formatTimecode(marked.end, fps)})${marked.version ? ` on version ${marked.version}` : ""}`);
     }
+    // The editor paused the video with the cut or edit open, and wrote while stopped there: the frame is on the timeline
+    // the player showed them, which may not be the edit's version.
+    const stopped = c.messageTime;
+    if (stopped && c.changeId) {
+      ctxLines.push(`- Where the editor stopped the video as they wrote this: ${stopped.mediaId ? "source" : "timeline"} ${stopped.time.toFixed(2)} s (${formatTimecode(stopped.time, fps)})${stopped.version ? ` on version ${stopped.version}` : ""}`);
+    }
     if (c.clipIds?.length) ctxLines.push(`- Clip ids under the playhead: ${c.clipIds.join(", ")}`);
     if (c.noteIds?.length) ctxLines.push(`- Note ids to address: ${c.noteIds.join(", ")} (pass them as noteIds when proposing)`);
     if (c.changeId) ctxLines.push(`- Change being revised: ${c.changeId}`);

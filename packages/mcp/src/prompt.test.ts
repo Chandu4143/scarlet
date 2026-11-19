@@ -135,6 +135,9 @@ describe("an editing prompt", () => {
     const marked = buildSystemPrompt({ ...base, task: task({ time: 10, end: 12, markedRange: { start: 42, end: 51.5, version: "v5" } }) });
     expect(marked).toContain("- Timeline position referenced: 10.00 s (0:10.00) to 12.00 s (0:12.00)");
     expect(marked).toContain("- Stretch the editor marked on the timeline: 42.00 s (0:42.00) to 51.50 s (0:51.12) on version v5");
+    // A message to an open edit written while the video was paused says the frame it stopped on and its version.
+    const stopped = buildSystemPrompt({ ...base, task: task({ changeId: "chg1", time: 32, end: 37.3, messageTime: { time: 37.5, version: "v5" } }) });
+    expect(stopped).toContain("- Where the editor stopped the video as they wrote this: timeline 37.50 s (0:37.12) on version v5");
     // Marked with nothing open it is the position itself, said once.
     expect(buildSystemPrompt({ ...base, task: task({ time: 42, end: 51.5, markedRange: { start: 42, end: 51.5 } }) })).not.toContain("Stretch the editor marked");
     // With nothing recorded there is no context section.
