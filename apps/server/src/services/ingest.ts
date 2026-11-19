@@ -636,11 +636,15 @@ function runClaimedTranscription(ctx: Ctx, projectId: string, asset: MediaAsset,
  * One progress figure for a transcription and its word alignment, saved on the task so Media and a run
  * waiting for the transcript can show it. Ten minutes of dialogue took about 25 s in local Whisper and
  * 50 s in word alignment on a Core Ultra 9, so Whisper is the first third. A cloud provider only uploads.
+ * `rereads`: local Whisper reads an English recording again a minute at a time for the words its transcript tidied
+ * away (saidWords.ts), which took as long as alignment on 45-minute recordings (2026-11-19), so it is the last third
+ * and alignment the middle one. Without it, a bar at 100% sat there for a quarter of an hour.
  * `words` is the same figure for the words alone, which is all a dialogue pass waits for.
  */
-export function transcriptionProgress(ctx: Ctx, task: Task, provider: TranscriptionProvider["name"]) {
+export function transcriptionProgress(ctx: Ctx, task: Task, provider: TranscriptionProvider["name"], rereads = false) {
   type Stage = NonNullable<Task["progress"]>["stage"];
   const share = provider === "whispercpp" ? 1 / 3 : 1 / 2;
+  const aligned = provider === "whispercpp" && rereads ? 2 / 3 : 1;
   let started: { at: number; fraction: number; words: number } | undefined;
   let saved: { stage: Stage; percent: number; at: number } | undefined;
   function save(stage: Stage, fraction: number, words: number) {
@@ -662,7 +666,8 @@ export function transcriptionProgress(ctx: Ctx, task: Task, provider: Transcript
   return {
     queued: () => save("queued", 0, 0),
     transcribing: (fraction: number) => save("transcribing", fraction * share, fraction),
-    aligning: (fraction: number) => save("aligning", share + fraction * (1 - share), 1),
+    aligning: (fraction: number) => save("aligning", share + fraction * (aligned - share), 1),
+    rereading: (fraction: number) => save("aligning", aligned + fraction * (1 - aligned), 1),
   };
 }
 
@@ -695,7 +700,8 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
       return openTranscriptionWork(ctx, task, identity, checkRunning);
     }, "immediate")();
     early = !!saved.alignment;
-    const progress = transcriptionProgress(ctx, task, provider.name);
+    // Whether the recording is read again is known once Whisper names its language; until then the setting says.
+    const progress = transcriptionProgress(ctx, task, provider.name, readsEnglishSpeech(ctx.settings().transcription.language === "auto" ? undefined : ctx.settings().transcription.language));
     ctx.speakers.begin(ctx, projectId, asset);
     const recognized = saved.fraction ?? (asset.duration ? Math.min(1, saved.recognition.through / asset.duration) : 0);
     const transcribe = () => {
@@ -802,6 +808,7 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
       try {
         if (!wav) await extractWav(src, full, { signal });
         return await putBackTidiedWords({ wav: full, segments, tmpDir: ctx.paths.tmp, signal, log: message => ctx.log(`${message} (${asset.id})`),
+          onProgress: progress.rereading,
           read: async (page, prompt) => (await lane.run(work, signal, () => provider.transcribe({ path: page, dialogueWindow: { prompt }, tmpDir: ctx.paths.tmp, signal, language }))).segments,
           frames: async (start, end) => {
             let emissions = await opened();

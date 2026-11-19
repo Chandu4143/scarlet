@@ -185,7 +185,9 @@ export async function putBackWords(segments: readonly TranscriptSegment[], pages
  */
 export async function putBackTidiedWords(input: { wav: string; segments: TranscriptSegment[]; tmpDir: string; signal: AbortSignal;
   read(wav: string, prompt: string): Promise<TranscriptSegment[]>;
-  frames(start: number, end: number): Promise<Emissions | undefined>; log(message: string): void }) {
+  frames(start: number, end: number): Promise<Emissions | undefined>; log(message: string): void;
+  /** How much of the recording has been read again, after each minute. */
+  onProgress?(fraction: number): void }) {
   const { signal } = input;
   const started = Date.now();
   const audio = await decodedRecording(input.wav);
@@ -202,6 +204,7 @@ export async function putBackTidiedWords(input: { wav: string; segments: Transcr
       const onClock = (t: number) => Math.min(to, Math.max(from, from + t));
       pages.push({ from, to, words: segments.flatMap(s => s.words.map(w => ({ ...w, start: onClock(w.start), end: onClock(w.end) }))) });
       from = to;
+      input.onProgress?.(Math.min(1, from / duration));
     }
   } finally { await rm(page, { force: true }); }
   const { segments, found } = await putBackWords(input.segments, pages, input.frames, signal);
