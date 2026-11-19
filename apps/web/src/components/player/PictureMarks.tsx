@@ -1,35 +1,93 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { PictureMark, PictureMarkKind } from "@scarlet/shared";
 import { player } from "../../lib/player";
 import { usePlayerStore } from "../../stores/player";
 import { usePictureMarksStore, type MarkedFrame } from "../../stores/pictureMarks";
 import { Icon } from "../ui/primitives";
 
+/** True when a freehand mark loops close to where it started, so clicking inside the loop also grabs it. */
+function isClosedDraw(mark: PictureMark): boolean {
+  if (mark.kind !== "draw" || !mark.points || mark.points.length < 6) return false;
+  const diag = Math.hypot(mark.box.w, mark.box.h);
+  if (diag < 0.03) return false;
+  const first = mark.points[0]!, last = mark.points[mark.points.length - 1]!;
+  return Math.hypot(first[0] - last[0], first[1] - last[1]) <= diag * 0.5;
+}
+
 /** The marks on a frame, drawn over whatever shows it: the picture on the player, or its small copy by the message box. */
-export function MarksDrawing({ marks, live }: { marks: readonly PictureMark[]; live?: PictureMark }) {
+export function MarksDrawing({ marks, live, active, onGrab, onHover }: {
+  marks: readonly PictureMark[];
+  live?: PictureMark;
+  active?: number;
+  onGrab?: (index: number, e: ReactPointerEvent) => void;
+  onHover?: (index: number | undefined, leaving?: number) => void;
+}) {
   const all = live ? [...marks, live] : marks;
   // One mark needs no number. With several, each has its own, so the words can say which.
   const numbered = all.length > 1;
   return <>
     <svg className="picture-marks-lines" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
       {all.map((mark, i) => mark.kind === "box"
-        ? <rect key={i} x={mark.box.x} y={mark.box.y} width={mark.box.w} height={mark.box.h} vectorEffect="non-scaling-stroke" />
-        : mark.kind === "draw" && mark.points && <polyline key={i} points={mark.points.map(p => p.join(",")).join(" ")} vectorEffect="non-scaling-stroke" />)}
+        ? <rect key={i} x={mark.box.x} y={mark.box.y} width={mark.box.w} height={mark.box.h} vectorEffect="non-scaling-stroke" data-active={active === i || undefined} />
+        : mark.kind === "draw" && mark.points && <polyline key={i} points={mark.points.map(p => p.join(",")).join(" ")} vectorEffect="non-scaling-stroke" data-active={active === i || undefined} />)}
+      {onGrab && marks.map((mark, i) => {
+        const hitProps = {
+          className: "picture-mark-hit",
+          "data-mark-index": i,
+          vectorEffect: "non-scaling-stroke" as const,
+          onPointerDown: (e: ReactPointerEvent) => onGrab(i, e),
+          onPointerEnter: () => onHover?.(i),
+          onPointerLeave: () => onHover?.(undefined, i),
+          onClick: (e: ReactMouseEvent) => e.stopPropagation(),
+        };
+        if (mark.kind === "box") return <rect key={`hit-${i}`} {...hitProps} x={mark.box.x} y={mark.box.y} width={mark.box.w} height={mark.box.h} />;
+        if (mark.kind === "draw" && mark.points) {
+          return <polyline key={`hit-${i}`} {...hitProps} data-closed={isClosedDraw(mark) || undefined} points={mark.points.map(p => p.join(",")).join(" ")} />;
+        }
+        return null;
+      })}
     </svg>
-    {all.map((mark, i) => mark.kind === "point"
-      ? <span key={i} className="picture-mark-point" style={{ left: `${mark.box.x * 100}%`, top: `${mark.box.y * 100}%` }}>{numbered ? i + 1 : ""}</span>
-      : numbered && <span key={i} className="picture-mark-number" style={{ left: `${mark.box.x * 100}%`, top: `${mark.box.y * 100}%` }}>{i + 1}</span>)}
+    {all.map((mark, i) => {
+      const grabbable = !!onGrab && i < marks.length;
+      const badgeProps = grabbable ? {
+        "data-mark-index": i,
+        "data-grabbable": "",
+        "data-active": active === i || undefined,
+        onPointerDown: (e: ReactPointerEvent) => onGrab(i, e),
+        onPointerEnter: () => onHover?.(i),
+        onPointerLeave: () => onHover?.(undefined, i),
+        onClick: (e: ReactMouseEvent) => e.stopPropagation(),
+      } : {};
+      return mark.kind === "point"
+        ? <span key={i} className="picture-mark-point" {...badgeProps} style={{ left: `${mark.box.x * 100}%`, top: `${mark.box.y * 100}%` }}>{numbered ? i + 1 : ""}</span>
+        : numbered && <span key={i} className="picture-mark-number" {...badgeProps} style={{ left: `${mark.box.x * 100}%`, top: `${mark.box.y * 100}%` }}>{i + 1}</span>;
+    })}
   </>;
 }
 
-const TOOLS: { tool: PictureMarkKind; label: string; key: string; icon: "pencil" | "box" | "point" }[] = [
-  { tool: "draw", label: "Draw", key: "D", icon: "pencil" },
-  { tool: "box", label: "Box", key: "B", icon: "box" },
-  { tool: "point", label: "Point", key: "P", icon: "point" },
+interface MarkToolTip {
+  id: string;
+  label: string;
+  key?: string;
+  description: string;
+}
+
+const TOOLS: { tool: PictureMarkKind; label: string; key: string; description: string; icon: "pencil" | "box" | "point" }[] = [
+  { tool: "draw", label: "Draw", key: "D", description: "Draw freehand on the video to highlight something for your next message.", icon: "pencil" },
+  { tool: "box", label: "Box", key: "B", description: "Drag a box around an area on the video for your next message.", icon: "box" },
+  { tool: "point", label: "Point", key: "P", description: "Drop a pin on a specific spot in the video for your next message.", icon: "point" },
 ];
+
+const UNDO_KEY = typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
+const ACTIONS: Record<"undo" | "clear", MarkToolTip> = {
+  undo: { id: "undo", label: "Undo", key: UNDO_KEY, description: "Remove the last mark from this frame." },
+  clear: { id: "clear", label: "Clear marks", description: "Remove all marks from this frame." },
+};
 
 /** How far apart, in fractions of the frame, the points kept along a line drawn by hand are. */
 const STEP = 0.004;
+/** Minimum pointer movement (fraction of the frame) before a grab commits a move. */
+const DRAG_MIN = 0.002;
 const clamp = (n: number) => Math.min(1, Math.max(0, n));
 const round = (n: number) => Math.round(n * 1e4) / 1e4;
 
@@ -45,10 +103,30 @@ function thin(points: [number, number][]): [number, number][] {
   return Array.from({ length: 200 }, (_, i) => points[Math.round(i * (points.length - 1) / 199)]!);
 }
 
+/** Move a mark by (dx, dy) in fractions of the frame while keeping its entire shape inside [0, 1]. */
+function translateMark(mark: PictureMark, dx: number, dy: number): PictureMark {
+  if (mark.kind === "draw" && mark.points?.length) {
+    let minX = 1, maxX = 0, minY = 1, maxY = 0;
+    for (const [px, py] of mark.points) {
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
+    const cdx = Math.min(1 - maxX, Math.max(-minX, dx));
+    const cdy = Math.min(1 - maxY, Math.max(-minY, dy));
+    const points: [number, number][] = mark.points.map(([px, py]) => [round(clamp(px + cdx)), round(clamp(py + cdy))]);
+    return { ...mark, box: boxOf(points), points };
+  }
+  const x = round(Math.min(Math.max(0, 1 - mark.box.w), Math.max(0, mark.box.x + dx)));
+  const y = round(Math.min(Math.max(0, 1 - mark.box.h), Math.max(0, mark.box.y + dy)));
+  return { ...mark, box: { x, y, w: mark.box.w, h: mark.box.h } };
+}
+
 /**
  * The editor's marks on the picture. M (or a tool over the picture) pauses the video and lets them draw on
- * the frame: a line by hand, a box or a point. The marks ride on the next message, as a file dropped on the box does,
- * and show on the picture whenever the player rests on their frame.
+ * the frame: a line by hand, a box or a point. Placed marks can be grabbed and moved directly on the video.
+ * The marks ride on the next message, as a file dropped on the box does, and show on the picture whenever the player rests on their frame.
  */
 export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: string; version?: string; mediaId?: string; fps: number }) {
   const frame = usePictureMarksStore(s => s.byProject[projectId]);
@@ -58,38 +136,60 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
   const onFrame = usePlayerStore(s => !!frame && Math.abs(s.time - frame.time) < 0.5 / Math.max(1, fps));
   const sameVideo = !!frame && frame.version === version && frame.mediaId === mediaId;
   const [live, setLive] = useState<PictureMark>();
+  const [drag, setDrag] = useState<{ index: number; mark: PictureMark }>();
+  const [hovered, setHovered] = useState<number>();
   const drawing = useRef<{ start: [number, number]; points: [number, number][]; id: number }>(undefined);
+  const dragging = useRef<{ index: number; origin: PictureMark; start: [number, number]; id: number; moved: boolean }>(undefined);
   const surface = useRef<HTMLDivElement>(null);
 
-  // Playing on, or another video under the player, ends the marking. The marks stay with the message.
-  useEffect(() => { if (marking && (playing || !sameVideo)) usePictureMarksStore.getState().stop(); }, [marking, playing, sameVideo]);
+  // Playing on, or another video under the player, ends the marking and cancels any active drag. The marks stay with the message.
+  useEffect(() => {
+    if (marking && (playing || !sameVideo)) usePictureMarksStore.getState().stop();
+    if (playing || !sameVideo) {
+      dragging.current = undefined;
+      setDrag(undefined);
+      setHovered(undefined);
+    }
+  }, [marking, playing, sameVideo]);
   useEffect(() => () => { if (usePictureMarksStore.getState().marking === projectId) usePictureMarksStore.getState().stop(); }, [projectId]);
 
-  // While marking, its keys come first, unless the editor is typing: Esc leaves, ⌘Z takes the last mark off, D B P pick the tool.
+  // While marking (or dragging a mark), its keys come first, unless the editor is typing: Esc cancels a drag or leaves, ⌘Z takes the last mark off, D B P pick the tool.
   useEffect(() => {
-    if (!marking) return;
+    if (!marking && !drag) return;
     const key = (e: KeyboardEvent) => {
       const typing = e.target instanceof Element && !!e.target.closest("input, textarea, select, [contenteditable='true']");
       if (typing || e.isComposing) return;
       const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
-      const store = usePictureMarksStore.getState();
-      const pick = plain && TOOLS.find(t => t.key.toLowerCase() === e.key.toLowerCase());
-      if (e.key === "Escape" && plain) store.stop();
-      else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z") store.undo(projectId);
-      else if (pick) store.setTool(pick.tool);
-      else return;
+      if (e.key === "Escape" && plain) {
+        if (dragging.current) {
+          dragging.current = undefined;
+          setDrag(undefined);
+        } else if (marking) {
+          usePictureMarksStore.getState().stop();
+        } else return;
+      } else if (marking) {
+        const store = usePictureMarksStore.getState();
+        const pick = plain && TOOLS.find(t => t.key.toLowerCase() === e.key.toLowerCase());
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z") store.undo(projectId);
+        else if (pick) store.setTool(pick.tool);
+        else return;
+      } else return;
       e.preventDefault();
       e.stopImmediatePropagation();
     };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [marking, projectId]);
+  }, [marking, drag, projectId]);
 
   if (!frame || !sameVideo || !(marking || (onFrame && !playing && frame.marks.length))) return null;
 
-  const at = (e: ReactPointerEvent): [number, number] => {
+  const rawAt = (e: ReactPointerEvent): [number, number] => {
     const box = surface.current!.getBoundingClientRect();
-    return [round(clamp((e.clientX - box.left) / box.width)), round(clamp((e.clientY - box.top) / box.height))];
+    return [(e.clientX - box.left) / box.width, (e.clientY - box.top) / box.height];
+  };
+  const at = (e: ReactPointerEvent): [number, number] => {
+    const [x, y] = rawAt(e);
+    return [round(clamp(x)), round(clamp(y))];
   };
   const shape = (start: [number, number], points: [number, number][]): PictureMark | undefined => {
     const end = points[points.length - 1]!;
@@ -99,8 +199,23 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
     if (bounds.w < 0.01 && bounds.h < 0.01) return { kind: "point", box: { x: start[0], y: start[1], w: 0, h: 0 } };
     return tool === "box" ? { kind: "box", box: bounds } : { kind: "draw", box: bounds, points: thin(points) };
   };
+  const startGrab = (index: number, e: ReactPointerEvent) => {
+    if (e.button !== 0 || drawing.current) return;
+    const origin = frame.marks[index];
+    if (!origin) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* a pointer already gone */ }
+    dragging.current = { index, origin, start: rawAt(e), id: e.pointerId, moved: false };
+    setDrag({ index, mark: origin });
+  };
+  const onHover = (index: number | undefined, leaving?: number) => {
+    setHovered(cur => leaving !== undefined ? (cur === leaving ? undefined : cur) : index);
+  };
+  const shownMarks = drag ? frame.marks.map((m, i) => i === drag.index ? drag.mark : m) : frame.marks;
+  const activeMark = live ? undefined : drag ? drag.index : hovered;
 
-  return <div className="video-surface picture-marks" data-marking={marking || undefined}>
+  return <div className="video-surface picture-marks" data-marking={marking || undefined} data-drawing={live ? "" : undefined} data-dragging={drag ? "" : undefined}>
     <div ref={surface} className="video-frame picture-marks-frame"
       onPointerDown={marking ? e => {
         if (e.button !== 0) return;
@@ -111,7 +226,17 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
         drawing.current = { start, points: [start], id: e.pointerId };
         setLive(shape(start, [start]));
       } : undefined}
-      onPointerMove={marking ? e => {
+      onPointerMove={e => {
+        const move = dragging.current;
+        if (move && move.id === e.pointerId) {
+          const cur = rawAt(e);
+          const dx = cur[0] - move.start[0], dy = cur[1] - move.start[1];
+          if (!move.moved && Math.hypot(dx, dy) < DRAG_MIN) return;
+          move.moved = true;
+          setDrag({ index: move.index, mark: translateMark(move.origin, dx, dy) });
+          return;
+        }
+        if (!marking) return;
         const line = drawing.current;
         if (!line || line.id !== e.pointerId) return;
         const point = at(e);
@@ -119,17 +244,34 @@ export function PictureMarks({ projectId, version, mediaId, fps }: { projectId: 
         if (Math.hypot(point[0] - last[0], point[1] - last[1]) < STEP) return;
         line.points.push(point);
         setLive(shape(line.start, line.points));
-      } : undefined}
-      onPointerUp={marking ? e => {
+      }}
+      onPointerUp={e => {
+        const move = dragging.current;
+        if (move && move.id === e.pointerId) {
+          dragging.current = undefined;
+          setDrag(undefined);
+          const cur = rawAt(e);
+          const dx = cur[0] - move.start[0], dy = cur[1] - move.start[1];
+          if (move.moved || Math.hypot(dx, dy) >= DRAG_MIN) {
+            usePictureMarksStore.getState().replace(projectId, move.index, translateMark(move.origin, dx, dy));
+          }
+          return;
+        }
+        if (!marking) return;
         const line = drawing.current;
         if (!line || line.id !== e.pointerId) return;
         drawing.current = undefined;
         setLive(undefined);
         const mark = shape(line.start, [...line.points, at(e)]);
         if (mark) usePictureMarksStore.getState().add(projectId, mark);
-      } : undefined}
-      onPointerCancel={() => { drawing.current = undefined; setLive(undefined); }}>
-      <MarksDrawing marks={frame.marks} live={live} />
+      }}
+      onPointerCancel={() => {
+        drawing.current = undefined;
+        dragging.current = undefined;
+        setLive(undefined);
+        setDrag(undefined);
+      }}>
+      <MarksDrawing marks={shownMarks} live={live} active={activeMark} onGrab={startGrab} onHover={onHover} />
     </div>
   </div>;
 }
@@ -142,18 +284,62 @@ export function PictureMarkTools({ projectId, enabled, onStart }: { projectId: s
   const marking = usePictureMarksStore(s => s.marking === projectId);
   const tool = usePictureMarksStore(s => s.tool);
   const count = usePictureMarksStore(s => s.byProject[projectId]?.marks.length ?? 0);
+  const [hovered, setHovered] = useState<MarkToolTip>();
+  const [focused, setFocused] = useState<MarkToolTip>();
+  const tipId = useId();
+  const tip = hovered ?? focused;
   const store = usePictureMarksStore.getState();
+
+  useEffect(() => {
+    if (!count && (focused?.id === "undo" || focused?.id === "clear")) setFocused(undefined);
+  }, [count, focused]);
+  useEffect(() => {
+    if (!enabled && focused && focused.id !== "undo" && focused.id !== "clear") setFocused(undefined);
+  }, [enabled, focused]);
+
   const pick = (next: PictureMarkKind) => {
     if (marking && tool === next) return store.stop();
     store.setTool(next);
     if (!marking) onStart();
   };
-  return <div className="picture-mark-tools" role="toolbar" aria-label="Mark the picture">
-    {TOOLS.map(t => <button key={t.tool} type="button" className="picture-mark-tool" aria-pressed={marking && tool === t.tool} disabled={!enabled}
-      aria-label={t.label} title={`${t.label} (${t.key})`} onClick={e => { if (e.detail) e.currentTarget.blur(); pick(t.tool); }}><Icon name={t.icon} size={15} /></button>)}
-    <i className="picture-mark-sep" aria-hidden="true" />
-    <button type="button" className="picture-mark-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!count} onClick={() => store.undo(projectId)}><Icon name="undo" size={15} /></button>
-    <button type="button" className="picture-mark-tool" aria-label="Clear marks" title="Clear marks" disabled={!count} onClick={() => store.clear(projectId)}><Icon name="x" size={15} /></button>
+  const wrap = (item: MarkToolTip) => ({
+    className: "picture-mark-item",
+    onPointerEnter: (e: ReactPointerEvent) => { if (e.pointerType !== "touch") setHovered(item); },
+    onPointerLeave: () => setHovered(cur => cur?.id === item.id ? undefined : cur),
+  });
+  const focusProps = (item: MarkToolTip) => ({
+    "aria-describedby": tip?.id === item.id ? tipId : undefined,
+    onFocus: () => setFocused(item),
+    onBlur: () => setFocused(cur => cur?.id === item.id ? undefined : cur),
+  });
+
+  return <div className="picture-mark-anchor">
+    <div className="picture-mark-tools" role="toolbar" aria-label="Mark the picture">
+      {TOOLS.map(t => {
+        const item: MarkToolTip = { id: t.tool, label: t.label, key: t.key, description: t.description };
+        return <span key={t.tool} {...wrap(item)}>
+          <button type="button" className="picture-mark-tool" aria-pressed={marking && tool === t.tool} disabled={!enabled}
+            aria-label={t.label} {...focusProps(item)}
+            onClick={e => { if (e.detail) e.currentTarget.blur(); pick(t.tool); }}><Icon name={t.icon} size={15} /></button>
+        </span>;
+      })}
+      <i className="picture-mark-sep" aria-hidden="true" />
+      <span {...wrap(ACTIONS.undo)}>
+        <button type="button" className="picture-mark-tool" aria-label="Undo" disabled={!count} {...focusProps(ACTIONS.undo)}
+          onClick={e => { if (e.detail) e.currentTarget.blur(); store.undo(projectId); }}><Icon name="undo" size={15} /></button>
+      </span>
+      <span {...wrap(ACTIONS.clear)}>
+        <button type="button" className="picture-mark-tool" aria-label="Clear marks" disabled={!count} {...focusProps(ACTIONS.clear)}
+          onClick={e => { if (e.detail) e.currentTarget.blur(); store.clear(projectId); }}><Icon name="x" size={15} /></button>
+      </span>
+    </div>
+    {tip && <div id={tipId} role="tooltip" className="picture-mark-tip">
+      <span className="picture-mark-tip-head">
+        <strong>{tip.label}</strong>
+        {tip.key && <kbd>{tip.key}</kbd>}
+      </span>
+      <span className="picture-mark-tip-desc">{tip.description}</span>
+    </div>}
   </div>;
 }
 
