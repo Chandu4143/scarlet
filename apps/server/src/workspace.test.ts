@@ -26,6 +26,7 @@ import { continueReadyRuns, continueWhenReady, recoverTasks } from "./services/t
 import { OpenAIProvider } from "./transcribe/openai.js";
 import { importTranscriptionPolicy } from "./transcribe/index.js";
 import { WhisperCppProvider } from "./transcribe/whispercpp.js";
+import { VERBATIM_PROMPT } from "./transcribe/saidWords.js";
 import { speakerAnalysisVersion } from "./transcribe/speakerLabels.js";
 import { alignmentVersion } from "./transcribe/wordAlign.js";
 import { LocalWhisperModel } from "./transcribe/localModel.js";
@@ -649,7 +650,10 @@ function twoTurnTranscription(onTurn: (turn: number) => void | Promise<void> = (
     const id = ctx.repos.projects.getMedia(media.id)?.transcriptId;
     return id ? ctx.repos.transcripts.get(id) : undefined;
   };
-  return { ctx, media, reader, linked, task: () => ctx.repos.tasks.select("kind = 'transcribe'", [], "created_at, rowid").at(-1)!,
+  // The audio recognized into a transcript. The reading in hesitant speech that follows alignment (saidWords.ts)
+  // only puts back words the first one tidied away, so it isn't one of these.
+  const recognitions = () => reader.mock.calls.filter(call => call[4] !== VERBATIM_PROMPT).length;
+  return { ctx, media, reader, recognitions, linked, task: () => ctx.repos.tasks.select("kind = 'transcribe'", [], "created_at, rowid").at(-1)!,
     restore: () => { worker.mockRestore(); speakers.mockRestore(); models.mockRestore(); reader.mockRestore(); decode.mockRestore(); } };
 }
 
@@ -705,7 +709,7 @@ it("resumes the remaining alignment turn when the library reopens", async () => 
     await t.ctx.close();
     workspace = openWorkspace();
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
-    expect(t.reader).toHaveBeenCalledOnce();
+    expect(t.recognitions()).toBe(1);
     // One completed turn, one interrupted attempt, and one turn on reopen.
     expect(turns).toBe(3);
     expect(workspace.ctx.repos.transcripts.get(id)).toMatchObject({ segments: [{ words: [{ start: 10.1 }] }, { words: [{ start: 400.1 }] }] });
@@ -864,7 +868,7 @@ it("finishes a legacy transcript left part-aligned without recognizing its audio
   try {
     expect(await (await api("GET", "/media/speech/transcript")).json()).toMatchObject({ id: linked.id, aligning: { through: 10.5 } });
     while (t.ctx.pending.size) await Promise.allSettled([...t.ctx.pending]);
-    expect(t.reader).not.toHaveBeenCalled();
+    expect(t.recognitions()).toBe(0);
     expect(t.linked()).toMatchObject({ segments: [{ id: "first", words: [{ start: 10.1 }] }, { id: "second", words: [{ start: 400.1 }] }] });
     expect(t.linked()?.aligning).toBeUndefined();
   } finally { t.restore(); }
@@ -886,7 +890,7 @@ it("places an older transcript's words again with the current aligner, keeping i
     expect(now.id).not.toBe(old.id);
     expect(now).toMatchObject({ alignment: alignmentVersion, speakerAnalysis: old.speakerAnalysis,
       segments: [{ id: "first", words: [{ text: "hello", start: 10.2, detectedSpeaker: 1 }, { text: "again", start: 11.1, detectedSpeaker: 1 }] }] });
-    expect(t.reader).not.toHaveBeenCalled();
+    expect(t.recognitions()).toBe(0);
     expect(await (await realign()).json()).toEqual({ state: "current" });
     expect(t.linked()!.id).toBe(now.id);
   } finally { t.restore(); }
@@ -961,7 +965,7 @@ it.each(["failure", "interruption"] as const)("keeps the complete transcript rea
     }
     while (ctx.pending.size) await Promise.allSettled([...ctx.pending]);
     expect(t.task()).toMatchObject({ state: "done", context: { localModel: "custom" } });
-    expect(t.reader).toHaveBeenCalledTimes(outcome === "interruption" ? 1 : 2);
+    expect(t.recognitions()).toBe(outcome === "interruption" ? 1 : 2);
     const replacement = await read();
     expect(replacement.id).not.toBe(old.id);
     expect(peer.ctx.repos.projects.getMedia(t.media.id)?.lastTranscription).toEqual({
@@ -1002,7 +1006,7 @@ it("keeps the times a transcript has when its alignment fails or can't be finish
     await api("PATCH", "/settings", { transcription: { provider: "none" } });
     expect((await (await api("GET", "/media/speech/transcript")).json()).aligning).toEqual({ through: 10.5 });
     expect((await (await api("GET", "/media/speech/transcript")).json()).aligning).toBeUndefined();
-    expect(t.reader).toHaveBeenCalledTimes(1);
+    expect(t.recognitions()).toBe(1);
   } finally { t.restore(); }
 });
 
@@ -2680,7 +2684,7 @@ it("keeps a part-aligned transcript's times, without transcribing again, after a
   try {
     await transcribeMedia(t.ctx, project.id, t.media);
     while (t.ctx.pending.size) await Promise.all([...t.ctx.pending]);
-    expect(t.reader).toHaveBeenCalledTimes(1);
+    expect(t.recognitions()).toBe(1);
     // A later run failed by itself, so the next one is the editor's Retry, not something a read starts.
     const failed = createTask(t.ctx, { projectId: project.id, kind: "transcribe", agent: "api", state: "running",
       instruction: "Transcribe Interview", context: { mediaId: t.media.id }, createdBy: { type: "scarlet", name: "Scarlet" } });
@@ -2698,7 +2702,7 @@ it("keeps a part-aligned transcript's times, without transcribing again, after a
     expect(await read()).toBeUndefined();
     expect(t.task().id).toBe(failed.id);
     expect(cloud).not.toHaveBeenCalled();
-    expect(t.reader).toHaveBeenCalledTimes(1);
+    expect(t.recognitions()).toBe(1);
   } finally { cloud.mockRestore(); t.restore(); }
 });
 

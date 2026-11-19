@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { historyLineage } from "@scarlet/timeline";
 import { matchesEdit, threadEditList, threadRevision, isThreadDone, REVISED_CHECK, type EditRef, type Thread, type ThreadEdit, type VersionSummary } from "@scarlet/shared";
-import { recordEditReview, requestPosition } from "../../lib/editReviews";
+import { requestPosition } from "../../lib/editReviews";
 import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
 import { removedSeconds } from "../../lib/format";

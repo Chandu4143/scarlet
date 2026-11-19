@@ -5,7 +5,7 @@ import { reviewDecisions, reviewExport } from "./decisions.ts";
 import type { Engine, ReviewChangeExport, TaskRecord } from "./engine.ts";
 import { mediaEvidence, type StoredEvidence } from "./evidence.ts";
 import { loadMoments } from "./moments.ts";
-import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type LabeledRange, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
+import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
 import { scoreRun, type Score } from "./score.ts";
 import { audibleMediaIds, type MediaInfo } from "./timeline.ts";
 

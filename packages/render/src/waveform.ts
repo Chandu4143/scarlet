@@ -257,7 +257,7 @@ export function speechActivityStart(from: number) {
 /** The same from audio already decoded: `pcm` is 16 kHz mono from `start` (see `speechActivityStart`) to `to`. */
 export async function speechActivityOf(pcm: Int16Array, start: number, from: number, to: number) {
   if (from < 0 || to <= from || to > from + 60) throw new Error("Choose a speech window up to 60 seconds.");
-  const { Detector, mode, voice } = await (vadFactory ??= loadVad());
+  const { Detector, mode, voice } = await (vadFactory ??= loadVad().catch(error => { vadFactory = undefined; throw error; }));
   const detector = new Detector(mode, DECODE_RATE);
   const frame = new Int16Array(DECODE_RATE / 50);
   const spans: Array<{ start: number; end: number }> = [];

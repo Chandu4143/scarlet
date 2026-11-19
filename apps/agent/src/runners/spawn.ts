@@ -50,6 +50,9 @@ export interface SpawnHandle {
   kill: () => void;
 }
 
+/** Node runs a timer set for longer than this (about 24.8 days) after 1 ms instead. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /** Quote one argument for a cmd.exe command string. */
 export function quoteForCmd(arg: string): string {
   if (arg === "") return '""';
@@ -131,7 +134,7 @@ export function spawnLines(file: string, args: string[], opts: SpawnLinesOptions
   const timer = opts.timeoutMs === undefined ? undefined : setTimeout(() => {
     timedOut = true;
     stop();
-  }, opts.timeoutMs);
+  }, Math.min(opts.timeoutMs, MAX_TIMER_MS));
   // The agent CLIs stream an event for every step, tool call and message, so a long silence means a hang.
   let lastOutput = Date.now();
   let stalled = false;
@@ -144,7 +147,7 @@ export function spawnLines(file: string, args: string[], opts: SpawnLinesOptions
       stop();
       return;
     }
-    stallTimer = setTimeout(watchStall, opts.stallMs - quiet);
+    stallTimer = setTimeout(watchStall, Math.min(opts.stallMs - quiet, MAX_TIMER_MS));
   };
   watchStall();
   const onAbort = () => {

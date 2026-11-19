@@ -1044,7 +1044,6 @@ export const EditSkillRequest = RunChoice.extend({
   prompt: z.string().trim().min(1).max(8000),
 });
 
-/** Source seconds in a dialogue scan. A page has no "to" until the scanner finishes it. */
 /**
  * A standing rule Scarlet picked up from a request, for one of the editor's skills. It changes nothing until the
  * editor approves it; approving it has an agent work it into the skill.
@@ -1100,6 +1099,7 @@ export type ApproveLearningRequest = z.infer<typeof ApproveLearningRequest>;
 export const ReviseLearningRequest = z.object({ rule: LearningRule });
 export type ReviseLearningRequest = z.infer<typeof ReviseLearningRequest>;
 
+/** Source seconds in a dialogue scan. A page has no "to" until the scanner finishes it. */
 export const DialogueScanPage = z.object({
   mediaId: Id,
   from: z.number().finite().nonnegative(),

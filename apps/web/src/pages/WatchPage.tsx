@@ -62,7 +62,6 @@ interface ThreadTimelineView {
   originalChange?: Change;
   cutReview?: { cuts: ThreadEdit[] };
   framing?: { beforeVersion: string; cue?: number };
-  framingFor?(edit: ThreadEdit): ThreadTimelineView["framing"];
   request: number;
   loading?: boolean;
   error?: string;
@@ -682,7 +681,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     } else if (e.key.toLowerCase() === "m" && simple.onPick && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
       if (!e.repeat) markFrame();
-    } else if (e.key.toLowerCase() === "n" && simple) {
+    } else if (e.key.toLowerCase() === "n") {
       e.preventDefault();
       // Held down, N is one press too: it has already picked the moment and asked for the cursor.
       if (e.repeat) return;
@@ -730,7 +729,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     previousChange.current = change?.id;
   }, [change?.id, expanded]);
   async function toggleFullscreen() {
-    if (document.fullscreenElement) await document.exitFullscreen();
+    if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
     else if (expanded) setExpanded(false);
     else if (document.fullscreenEnabled && stage.current?.requestFullscreen) {
       try { await stage.current.requestFullscreen(); } catch { setExpanded(true); }

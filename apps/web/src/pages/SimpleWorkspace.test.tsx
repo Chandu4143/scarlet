@@ -5754,6 +5754,10 @@ it("drags the divider to resize the chat against the player, and remembers the w
     expect(rail.style.width).toBe("480px");
     divider().setPointerCapture = vi.fn();
     const pointer = (type: string, clientX: number) => new PointerEvent(type, { bubbles: true, button: 0, isPrimary: true, pointerId: 1, clientX });
+    // A press that doesn't drag chooses no width.
+    await act(() => divider().dispatchEvent(pointer("pointerdown", 480)));
+    await act(() => divider().dispatchEvent(pointer("pointerup", 480)));
+    expect(localStorage.getItem("scarlet.simpleChatWidth")).toBeNull();
     await act(() => divider().dispatchEvent(pointer("pointerdown", 480)));
     await act(() => divider().dispatchEvent(pointer("pointermove", 580)));
     expect(rail.style.width).toBe("580px");

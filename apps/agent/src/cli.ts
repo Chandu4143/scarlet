@@ -165,6 +165,7 @@ async function cmdRun(flags: Record<string, string>, positional: string[]): Prom
   const instruction = positional.join(" ").trim();
   if (!projectId) throw new Error("--project is required");
   if (!instruction) throw new Error("instruction is required");
+  if (flags.timeout && !(Number(flags.timeout) > 0)) throw new Error("--timeout takes a number of minutes");
   const client = new ScarletClient({ baseUrl: cfg.server, token: cfg.token });
   const detail = await client.workspace(projectId);
   const { skills } = await client.skills({ projectId, view: "prompt" }).catch((err) => {

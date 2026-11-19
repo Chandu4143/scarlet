@@ -87,10 +87,8 @@ pub fn parse_gemini_line(line: &str, st: &mut GeminiState) -> Vec<RunnerEvent> {
                 return events;
             }
             let text = content_text(first(&msg, &["content", "text"]));
-            if msg.get("delta") == Some(&Value::Bool(true)) {
-                st.partial.push_str(&text);
-            } else {
-                st.partial.push_str(&text);
+            st.partial.push_str(&text);
+            if msg.get("delta") != Some(&Value::Bool(true)) {
                 flush_partial(st, &mut events);
             }
         }

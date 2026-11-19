@@ -588,7 +588,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const highlightKey = highlightView ? `${highlightView.start}/${highlightView.end}` : "";
   // The timeline this one takes the place of, when all that changed is the working cut under it.
   const [carried] = useState(() => kept.current?.subject === subject && kept.current.highlight === highlightKey ? kept.current : undefined);
-  const { view: { from, span }, samples, target, blend, minSpan, zoomBy, fitRange, stopZoom } = useTimelineZoom(track, start, total, playhead, drag, undefined, undefined, carried?.view);
+  const { view: { from, span }, samples, target, blend, minSpan, zoomBy, fitRange, stopZoom } = useTimelineZoom(track, start, total, playhead, drag, carried?.view);
   const shownFrom = target?.from ?? from, shownSpan = target?.span ?? span;
   // A timeline that doesn't know the video's length yet has shown nothing to keep, and couldn't zoom to its change.
   useLayoutEffect(() => {
@@ -731,7 +731,6 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     setAimed(false);
     open();
   };
-  const timeline = !waveform?.source && !waveform?.original ? waveform?.timeline : undefined;
   const intendedSpan = target?.span ?? span;
   const zoomPercent = span ? Math.round(total / span * 100) : 100;
   const handleZoomKey = (e: KeyboardEvent) => {

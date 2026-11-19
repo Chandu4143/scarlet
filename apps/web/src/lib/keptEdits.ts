@@ -74,8 +74,11 @@ export function keepEdits(projectId: string, threadId: string, refs: KeptRef[], 
     appLog("review", "keep-persist-failed", { ...fields, name: errorName(error) }, { level: "warn" });
     cache.set(key, { raw: null, value: next, sessionOnly: true });
   }
+  const fresh = refs.filter(ref => !before.has(reviewKey(ref)));
+  // Sent here with what the editor read, so the hook doesn't send each one again, bare.
+  for (const ref of fresh) sent.add(`${projectId}/${threadId}/${reviewKey(ref)}`);
   for (const listener of listeners) listener();
-  sendKeeps(projectId, threadId, refs.filter(ref => !before.has(reviewKey(ref))).map(ref => {
+  sendKeeps(projectId, threadId, fresh.map(ref => {
     const { changeId, spot } = ref.reviewRef ?? ref;
     return { changeId, spot, ...(ref.recheck && { recheck: ref.recheck }), ...(ref.label && { label: ref.label }),
       ...(ref.check && { check: ref.check }), ...(ref.range && version && { range: ref.range }) };

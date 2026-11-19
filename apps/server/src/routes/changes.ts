@@ -143,7 +143,7 @@ export function changeRoutes(ctx: Ctx) {
       // frames, so a range within a frame names this one: an agent that copied 18.9667 for 18.96666… was refused,
       // twice in one pass, and one that gave the range it had asked for, 9.59 to 11.33 s for a cut saved a frame
       // inward as 9.6 to 11.3 s, once more. The cut's own range is what gets saved.
-      const slack = 1 / (ctx.repos.projects.get(change.projectId)?.settings.fps || 30) + 0.001;
+      const slack = 1 / (ctx.repos.projects.header(change.projectId)?.settings.fps || 30) + 0.001;
       for (const { amend, ...given } of body.assessments) {
         const span = review.cuts[given.index]?.removed;
         if (!span) throw badRequest("wrong_cut", `This pass has no cut ${given.index}. Its cuts are numbered 0 to ${review.cuts.length - 1}.`);

@@ -10,7 +10,7 @@ import { errorMessage, IS_MOCK } from "../../lib/client";
 import { plural } from "../../lib/format";
 import { AGENT_LABEL, isConfiguredAgent } from "../../stores/hosts";
 import { AgentSignIn, authLabel, canSignIn, useLocalHost } from "./AgentSignIn";
-import { Field, InlineError, Loading, SectionTitle } from "../ui/primitives";
+import { InlineError, Loading, SectionTitle } from "../ui/primitives";
 
 const ENGINE_LABEL: Record<EngineStatus["state"], string> = {
   starting: "starting…",

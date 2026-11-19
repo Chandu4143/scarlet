@@ -29,8 +29,10 @@ interface PerceptionDeps {
   /** The portion of an edited transcript actually returned to the agent. */
   readPassage(version: string, range: { start: number; end: number }): void;
   getProject(): Promise<Pick<ProjectDetail, "project">>;
-  /** A media's words in transcript_get order (index = stable word index), or null without a transcript. */
-  /** With `through`, only words whose times are final up to that source second: it rejects while alignment hasn't reached it. */
+  /**
+   * A media's words in transcript_get order (index = stable word index), or null without a transcript.
+   * With `through`, only words whose times are final up to that source second: it rejects while alignment hasn't reached it.
+   */
   transcriptWords(mediaId: string, prepareMissing?: boolean, through?: number): Promise<TranscriptWord[] | null>;
   /** Of these words of a recording (transcript index, source seconds), the ones heard only on the input its dialogue isn't on. */
   otherInputWords?(mediaId: string, words: Array<{ index: number; start: number; end: number }>): Promise<Set<number>>;
@@ -432,7 +434,6 @@ export function registerPerception(deps: PerceptionDeps) {
     motionOn,
     besideOn,
     cutsOn,
-    /** Audit the joins at timeline times `at` on a version (e.g. a staged cut's join on its toVersion). */
     /**
      * Audit the join a cut left at timeline time `at` on a version (e.g. a staged cut's join on its
      * toVersion). A crossfade counts when `at` falls inside its overlap. Without a join, `noJoin` says

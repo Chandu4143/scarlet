@@ -1273,6 +1273,11 @@ describe("task events", () => {
       .toEqual({ text: "Nothing was saved. Check the edge.", data: { result: { needsRevision: true, disputedEdges: [{ start: 1, end: 2 }] } } });
     expect(toolRefusal({ content: [{ type: "text", text: JSON.stringify({ changeId: "chg_1" }) }] })).toBeUndefined();
   });
+  it("still reads a refusal when a line was added after the save's answer", async () => {
+    const refused = JSON.stringify({ needsRevision: true, next: "Nothing was saved. Check the edge." });
+    expect(toolRefusal({ content: [{ type: "text", text: refused }, { type: "text", text: "The editor kept Cut 2 since your last save." }] }))
+      .toEqual({ text: "Nothing was saved. Check the edge.", data: { result: { needsRevision: true } } });
+  });
   it("posts plain progress text with explicit per-edit references", async () => {
     const edits = [{ phrase: "leveled the dialogue", changeId: "chg_sound", spot: 1 }];
     await client.callTool({ name: "task_log", arguments: { text: "I leveled the dialogue in the interview.", edits } });

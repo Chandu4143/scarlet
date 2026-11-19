@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { usePlayerStore } from "../../stores/player";
-import type { TimeRange } from "@scarlet/timeline";
 
 interface TimeWindow { from: number; span: number }
 
@@ -27,7 +26,7 @@ function follow(view: TimeWindow, time: number, start: number, end: number): Tim
  * own length, and stays there until the playhead moves.
  */
 export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: number, total: number,
-  playhead: number | undefined, dragging: RefObject<unknown>, previewRequest?: number, passage?: TimeRange, carried?: TimeWindow) {
+  playhead: number | undefined, dragging: RefObject<unknown>, carried?: TimeWindow) {
   const end = start + total;
   const position = () => timelinePosition(playhead ?? usePlayerStore.getState().time, start, end);
   const minSpan = Math.min(1, total);
@@ -134,12 +133,7 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
 
   useLayoutEffect(() => {
     inspecting.current = false;
-    if (!previewRequest || !passage) return;
-    if (passage.end - passage.start > live.current.view.span) {
-      const padding = Math.max(0.5, (passage.end - passage.start) * 0.15);
-      fitRange(Math.max(start, passage.start - padding), Math.min(end, passage.end + padding), false);
-    } else stopZoom();
-  }, [previewRequest, passage?.start, passage?.end, start, end, fitRange, stopZoom]);
+  }, [start, end, fitRange, stopZoom]);
   // Opening a review can fit or carry a view before the transport leaves the previous video's time.
   // Re-running the effect at that same time must not page away from the newly centered band.
   const lastPosition = useRef(position());
@@ -188,11 +182,13 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
     // WKWebView reports trackpad magnification as cumulative gesture scales.
     // WebView2 reports it as Control + wheel, handled above.
     function gesture(event: Event) {
+      // A pinch that ends during a drag has still ended: the wheel answers again after it.
+      if (event.type === "gestureend") previousScale = 0;
       if (!total || dragging.current) return;
       event.preventDefault();
       const { scale, clientX } = event as Event & { scale: number; clientX: number };
-      if (event.type === "gestureend") previousScale = 0;
-      else if (event.type === "gesturestart") previousScale = scale || 1;
+      if (event.type === "gestureend") return;
+      if (event.type === "gesturestart") previousScale = scale || 1;
       else if (previousScale && Number.isFinite(scale) && scale > 0) {
         zoomBy(scale / previousScale, fraction(clientX), true);
         previousScale = scale;
