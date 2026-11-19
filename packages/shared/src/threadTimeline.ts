@@ -51,7 +51,19 @@ export interface ThreadEdit extends EditRef {
    * says. It outlives a revision, whose `check` then only says it was revised.
    */
   todo?: string;
+  /**
+   * The editor rejected this edit and what it changed was put back. It isn't in the video any more: its row stays in
+   * its request's list, marked Rejected, at the place it was.
+   */
+  rejected?: true;
 }
+
+/** The editor's words for a rejection Scarlet was asked to make, in the chat and in the queue. */
+export const REJECT_MESSAGE = "Reject edit";
+
+/** A request the × on an edit's card sent: the editor wrote nothing, and what Scarlet is told is its instruction. */
+export const isRejectRequest = (task: { instruction?: string; context: { message?: string } }) =>
+  task.context.message === REJECT_MESSAGE && task.instruction !== REJECT_MESSAGE;
 
 /** Why a revision of a flagged edit asks for a look when Scarlet gave it no reason of its own. */
 export const REVISED_CHECK = "Revised";
@@ -272,6 +284,9 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
   const edits: SavedEdit[] = [];
   // The latest doubt this request's runs raised about an edit already in the video (`Change.flags`).
   const runs = new Set(thread.tasks?.map(t => t.id));
+  // A change that put a rejected edit back: the engine's own says so, and one Scarlet made was asked for by the ×.
+  const rejections = new Set(thread.tasks?.filter(isRejectRequest).map(t => t.id));
+  const rejects = (change: Change) => !!change.rejects || (!!change.taskId && rejections.has(change.taskId));
   const flagOn = (change: Change, spot: number) => change.flags?.findLast(f => f.spot === spot && runs.has(f.taskId));
   const raise = (edit: SavedEdit, flag: NonNullable<Change["flags"]>[number] | undefined) => {
     if (!flag) return;
@@ -404,9 +419,17 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       if (prior >= 0) {
         const replaced = edits[prior]!;
         edit.previous = [...replaced.previous, { changeId: replaced.changeId, spot: replaced.spot }];
+        // A rejected edit keeps its own words on its row, which then says it was rejected: nothing is left to check.
+        if (rejects(change)) {
+          edit.rejected = true;
+          edit.label = replaced.label;
+          if (replaced.summary) edit.summary = replaced.summary; else delete edit.summary;
+          if (replaced.reason) edit.reason = replaced.reason; else delete edit.reason;
+          delete edit.check;
+        }
         // The editor sent back an edit that was theirs to check, so its new version is theirs to check too, whether
         // or not Scarlet flagged it again. The old reason was about the old version.
-        if (replaced.check && !edit.check) edit.check = REVISED_CHECK;
+        else if (replaced.check && !edit.check) edit.check = REVISED_CHECK;
         // A revised marker that doesn't say again what to do still asks what it asked.
         if (edit.marker && replaced.todo && (!edit.todo || edit.todo === edit.markerSays)) edit.todo = replaced.todo;
         edits[prior] = edit;
@@ -698,7 +721,7 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     const back = typeof backStart === "number" && typeof backEnd === "number" && backEnd > backStart ? { start: backStart, end: backEnd } : undefined;
     // Footage put back and since taken out again is not in the video, as with any edit whose footage is gone.
     if (putBack && !back) continue;
-    if (back) {
+    if (back && !edit.rejected) {
       // Footage put back on the left of a join leaves the join at its end, and on the right at its start.
       const trimmed = revised(edit, [back.end, back.start], back);
       if (trimmed) {
@@ -711,9 +734,9 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
         result.splice(result.indexOf(gone), 1);
         continue;
       }
-      // Named at a point, footage put back is still a stretch of the video, and is drawn as one.
-      if (edit.range.start === edit.range.end) edit.range = putBack!;
     }
+    // Named at a point, footage put back is still a stretch of the video, and is drawn as one.
+    if (back && edit.range.start === edit.range.end) edit.range = putBack!;
     const point = edit.range.end === edit.range.start;
     const right = map(edit.range.start, "right"), left = point || right === null ? map(edit.range.start, "left") : null;
     // Footage put back since on the right of a join moved the frame after it along. The join is where the frame before it ends.
@@ -729,6 +752,11 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
     if (review) placed.reviewRange = review.range;
     if (review?.says) placed.reviewSays = review.says;
     if (placed.check && reviewLocation) flaggedAt.set(placed.check, reviewLocation);
+    // A rejected edit is listed where it was, as it was: it is no part of another edit.
+    if (placed.rejected) {
+      result.push(placed);
+      continue;
+    }
     const first = (resaved && placed.at !== undefined ? revised(placed, [placed.at], { start: placed.at, end: placed.at }) ?? revised(placed, [placed.at]) : undefined) ??
       (still && placed.at !== undefined ? cutThere(placed) : undefined) ?? sameAs(placed, named);
     if (first) {

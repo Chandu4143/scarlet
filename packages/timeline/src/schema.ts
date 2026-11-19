@@ -570,6 +570,8 @@ export const Change = z.object({
     briefToPlayableMs: z.number().nonnegative().optional() }).optional(),
   /** Note(s) this change responds to. */
   noteIds: z.array(Id).default([]),
+  /** The editor rejected the edits this change's own `replaces`: it put back what they changed, and nothing else. */
+  rejects: z.literal(true).optional(),
   /** Named, individually playable edits on toVersion. Overlapping edits keep distinct identities. */
   timelineEdits: z.array(z.object({ label: z.string().trim().min(1).max(180), range: TimeRange,
     /** Editorial reason shown on the edit's card. Optional for earlier edits. */
