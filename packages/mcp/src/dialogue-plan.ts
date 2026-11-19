@@ -5,7 +5,7 @@
  * offline replay (evals/src/replay.ts) supplies stored ones, so both run the same code.
  */
 import { cutScope, normalizeTranscriptToken, selectedRange, type RepeatOccurrence, type DialogueCutKind, type DialogueDetections, type Task } from "@scarlet/shared";
-import { clipDuration, clipsAt, indexClipsAt, frameAlignedRemoval, mergeRanges, timelineDuration, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange, type TranscriptWord } from "@scarlet/timeline";
+import { clipDuration, clipsAt, indexClipsAt, frameAlignedRemoval, mergeRanges, timelineDuration, timelineToSource, type CutConfidence, type MediaClip, type Project, type Timeline, type TimeRange, type TranscriptWord } from "@scarlet/timeline";
 import { audibleClipsByTrack, round3 } from "./analysis.js";
 import { quietKeptWords, type QuietKeptWord } from "./quiet-kept-word.js";
 import { edgeOvershoots } from "./edge-overshoot.js";
@@ -42,6 +42,8 @@ export interface DialogueCutInput {
   summary?: string;
   /** A doubt the editor must settle by listening or looking, for a cut that applies. */
   check?: string;
+  /** How sure the agent is of a cut that applies. The editor's setting decides whether its `check` reaches them. */
+  confidence?: CutConfidence;
 }
 
 /** The reads planning needs. The MCP server reads live; replay reads a stored case. */
@@ -426,6 +428,7 @@ interface PlannedDecision extends TimeRange {
   originalRange: TimeRange | undefined;
   /** Marks an applied cut as needing the editor until they keep it. */
   check?: string;
+  confidence?: CutConfidence;
   /** Why Scarlet held a cut the agent sent to apply: what it measured at the edges. The agent's reason stays its own. */
   held?: string;
   /** Nothing Scarlet measures can settle this join (a same-word join): the cut waits for the editor, and the engine lets no later cut replace it. */
@@ -621,7 +624,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
   const unheard = new Set<number>();
   const decisions = removals.map(c => {
     const decided: PlannedDecision = { start: c.start, end: c.end, reason: c.reason, review: c.decision === "review", kind: c.kind,
-      originalRange: undefined, ...(c.check && { check: c.check }), ...(c.summary && { summary: c.summary }) };
+      originalRange: undefined, ...(c.check && { check: c.check }), ...(c.confidence && { confidence: c.confidence }), ...(c.summary && { summary: c.summary }) };
     const adjust = (next: PlannedDecision, found: string) => {
       const reach = next.originalRange ?? next;
       if (reach.start < scope.start || reach.end > scope.end || kept.some(k => reach.start < k.end && reach.end > k.start)) {

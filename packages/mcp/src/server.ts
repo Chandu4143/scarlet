@@ -40,6 +40,7 @@ import {
   applyOps,
   audioCrossfadeOps,
   CutAssessment,
+  CutConfidence,
   CaptionStyle,
   captionsFromWords,
   clipDuration,
@@ -2384,11 +2385,21 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         picture: z.enum(["safe", "uncertain", "protect"]).optional().describe("Protect preserves this range. For all other picture verdicts, decision controls whether the range is cut or staged for review."),
         reason: z.string().trim().min(1).describe("One short sentence on why you chose to cut, stage or keep this passage, shown on its card"),
         summary: CutAssessment.shape.summary.describe("Required for a cut or review: its row in the chat's list of edits. Say what came out and where, by the words beside it (\"Shortened the pause after ‘okay’\", \"Cut the false start ‘so the’\"), never why: the reason says why. Rows read in a list, so no two alike."),
-        check: z.string().trim().min(1).max(120).optional().describe("For a cut that applies: a few words naming a doubt the editor must settle by listening or looking. Marks the cut as needing them until they keep it; omit when nothing is in doubt") }))
+        confidence: CutConfidence.optional().describe("Required for a cut: how sure you are that the editor, hearing the result, would leave this cut as you made it. certain: nothing about it could go another way. high: you would make it again and can name what might be wrong. medium: more likely right than wrong. low: a guess. The cut applies whichever you give. The editor's setting picks which of high, medium and low they are asked to check"),
+        check: z.string().trim().min(1).max(120).optional().describe("Required unless confidence is certain: a few words naming what could be wrong with the cut, for the editor to settle by listening or looking, such as which delivery was meant, whether a line said differently is a retake, whether a word belongs to the sentence that stays or whether a pause was meant. On a cut that is theirs to check, its card shows these words until they keep it") }))
         .describe("For a faint line that still plays, keptQuietPhrases returns mediaId and fromWord/toWord for use here, its position on continueFrom (at), and the phrase and neighboring speech levels in dBFS.") },
     async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames, pausesFrom, pace, unsureJoins }) => {
       const unnamed = requested.flatMap((c, i) => c.decision !== "keep" && c.picture !== "protect" && !c.summary ? [i] : []);
       if (unnamed.length) throw new Error(`Give a summary for each cut and review: what it takes out and where, by the words beside it. Missing at cuts ${unnamed.join(", ")} (zero-based). Nothing was saved.`);
+      // Every cut that applies says how sure the agent is, and what could be wrong when it isn't certain: asked only
+      // "any doubt?", passes flagged 0 or 1 of 142 to 273 applied cuts (2026-11-18).
+      const applies = (c: (typeof requested)[number]) => c.decision === "cut" && c.picture !== "protect";
+      const ungraded = requested.flatMap((c, i) => applies(c) && !c.confidence ? [i] : []);
+      const unsaid = requested.flatMap((c, i) => applies(c) && c.confidence && c.confidence !== "certain" && !c.check ? [i] : []);
+      if (ungraded.length || unsaid.length) throw new Error([
+        ungraded.length && `Give a confidence for each cut: certain, high, medium or low. Missing at cuts ${ungraded.join(", ")} (zero-based).`,
+        unsaid.length && `Say in check what could be wrong with each cut you are not certain of. Missing at cuts ${unsaid.join(", ")} (zero-based).`,
+        "Nothing was saved."].filter(Boolean).join(" "));
       const operation = await dialogueOperation();
       if (ctx.taskId && operation === "first-cut" && requested.filter(c => c.decision !== "keep" && c.picture !== "protect").length > FIRST_CUT_BATCH_SIZE)
         throw new Error(`Save up to ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions in each first-pass batch, with their keep and protected ranges. Send the first settled group now. For the next group use source word references or map its positions on continueFrom with timeline_at.`);

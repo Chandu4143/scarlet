@@ -1,4 +1,5 @@
 import { AboutSettings } from "../components/shell/AboutSettings";
+import { CheckInSettings } from "../components/shell/CheckInSettings";
 import { LocalModelNotice, TranscriptionGuide, useLocalModelStatus } from "../components/shell/LocalModelNotice";
 import { PreferenceSelect } from "../components/ui/PreferenceSelect";
 import { StorageSettings } from "../components/shell/StorageSettings";
@@ -327,6 +328,7 @@ export function SettingsPage() {
           <>
             <DesktopAgents />
             <ServerSettingsForm section="general" />
+            <CheckInSettings />
           </>
         )}
         {tab === "models" && <ModelSettings />}

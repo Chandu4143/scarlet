@@ -516,6 +516,7 @@ export class ScarletClient {
       droppedFromReview?: Array<{ changeId: string; version: string; start: number; end: number; why: string }>;
       /** Cuts left out because they would have swapped a held staged cut for other edges Scarlet couldn't place either. */
       heldCutsStay?: Array<{ asked: TimeRange; staged: TimeRange; why: string }>;
+      editorChecks?: { doubts: number; forEditor: number; why: string };
       /** The project head after this submission. Older engines omit it. */
       head?: string }>(
       `/projects/${encodeURIComponent(projectId)}/dialogue-cuts`, body);

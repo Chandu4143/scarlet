@@ -129,10 +129,12 @@
  *   WS     /ws?token=<token>        server pushes WsEvent; client may send { type: "subscribe", projectId }
  */
 import { z } from "zod/v3";
+import { CheckIn } from "./checkIn.js";
 import {
   Author,
   Change,
   CutAssessment,
+  CutConfidence,
   EditIntent,
   ChangeState,
   DEFAULT_PREVIEW_HEIGHT,
@@ -331,6 +333,8 @@ export const DialogueCutsRequest = ProposeChangeRequest.pick({ description: true
     kind: DialogueCutKind.optional(),
     /** A doubt the editor must settle by listening or looking. Marks an applied cut as needing them until they keep it. */
     check: z.string().trim().min(1).max(120).optional(),
+    /** How sure the agent is of a cut that applies. With one, the editor's setting decides whether `check` reaches them. */
+    confidence: CutConfidence.optional(),
     /** Why Scarlet held a cut the agent sent to apply: what it measured. Kept apart from the agent's reason. */
     held: z.string().trim().min(1).max(800).optional(),
     /** Scarlet staged this cut because nothing it measures can settle its join: only the editor's ear can. No later cut takes its place. */
@@ -1444,6 +1448,8 @@ export const ServerSettings = z.object({
   }),
   /** Default agent for new tasks when the UI doesn't pick one. */
   defaultAgent: AgentId.default("claude"),
+  /** How much of what Scarlet isn't certain of the editor is asked to check. */
+  checkIn: CheckIn.default("balanced"),
 });
 export type ServerSettings = z.infer<typeof ServerSettings>;
 
