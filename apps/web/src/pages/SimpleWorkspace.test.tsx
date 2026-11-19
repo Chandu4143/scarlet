@@ -1880,7 +1880,7 @@ it("answers Scarlet's question with the next message when nothing is open, until
   await click(answer());
   await act(async () => composer.props!.onSent!());
   expect(target()).toContain("Answering");
-  // Taking the tag off makes the next message a new edit. The line above the box then says so and offers the way back.
+  // Taking the tag off makes the next message a new edit. The line for screen readers says so, and nothing shows above the box.
   useUiStore.setState({ composerFocus: 0 });
   await act(async () => composer.props!.onClearTarget!());
   expect(boxTag()).toBeUndefined();
@@ -1889,9 +1889,7 @@ it("answers Scarlet's question with the next message when nothing is open, until
   // The box is built again for its new aim. The caret goes back into it, so what is typed next is the message and
   // not A, S, R or K on whatever card is open.
   expect(useUiStore.getState().composerFocus).toBe(1);
-  await click(buttonIn(container.querySelector(".simple-target")!, "Move here")!);
-  expect(boxTag()).toBe("Answer");
-  expect(useUiStore.getState().composerFocus).toBe(2);
+  expect(container.querySelector(".simple-target button")).toBeNull();
 });
 
 it("keeps the editor's answer and a note of theirs to two lines, with the whole of it in the title", async () => {
@@ -7272,14 +7270,11 @@ it("aims the message box at the cut that's open, and lets go of it when the cut 
   expect(boxTag()).not.toBe("Cut 1");
 });
 
-/** The line above the message box: what it says, whether it's only for screen readers, and the button it offers. */
-const aimLine = () => {
-  const line = container.querySelector<HTMLElement>(".simple-target");
-  return line ? [line.querySelector("span")?.textContent, line.classList.contains("is-quiet"), line.querySelector("button")?.textContent] : null;
-};
+/** The line that names where the message box is aimed, for screen readers only. */
+const aimLine = () => container.querySelector<HTMLElement>(".simple-target")?.textContent ?? null;
 const boxNow = () => { const ui = useUiStore.getState(); return [ui.agentDraft, ui.agentContext, ui.draftOwner]; };
 
-it("leaves a message being written aimed where it was, says where, and brings it along when asked", async () => {
+it("leaves a message being written aimed where it was, and offers nothing above the box to move it", async () => {
   appliedEdits();
   // Scarlet hasn't asked anything, so with nothing open the box starts a new edit.
   data = { ...data, tasks: data.tasks.map(t => t.state === "waiting_for_user" ? { ...t, state: "done" as const, question: null } : t) };
@@ -7288,36 +7283,28 @@ it("leaves a message being written aimed where it was, says where, and brings it
   const edits = () => turnFor("chg_approved_2").querySelectorAll<HTMLElement>(".simple-edits .simple-edit");
   await click(edits()[1]!);
   await act(async () => {});
-  // The box is on the edit that's open, and its tag says so, so the line that names it is for screen readers.
-  expect(aimLine()).toEqual(["Revising “captions” at 0:00", true, undefined]);
+  // The box is on the edit that's open, and its tag says so. The line that names it is for screen readers.
+  expect(aimLine()).toBe("Revising “captions” at 0:00");
   expect(boxTag()).toBe("Edit at 0:00");
   await act(async () => useUiStore.getState().setAgentDraft("Make the captions smaller"));
-  // Esc closes the edit, but the message is still about the captions. Now the line shows, and offers to start a new
-  // edit with the message instead.
+  // Esc closes the edit, but the message is still about the captions: its tag stays, and nothing offers to move it.
   await press("Escape");
   expect(editPanel()).toBeNull();
-  expect(aimLine()).toEqual(["Revising “captions” at 0:00", false, "New edit instead"]);
+  expect(aimLine()).toBe("Revising “captions” at 0:00");
+  expect(boxTag()).toBe("Edit at 0:00");
+  expect(container.querySelector(".simple-target button")).toBeNull();
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_approved_2", editIndex: 1 });
-  await click(container.querySelector(".simple-target button")!);
-  // A message made a new edit is about the whole video: typing on doesn't pin it to the playhead.
+  // The × on the tag makes it a new edit about the whole video: typing on doesn't pin it to the playhead.
+  await act(async () => composer.props!.onClearTarget!());
   expect(boxNow()).toEqual(["Make the captions smaller", "whole", JSON.stringify([PRJ, null])]);
   expect(aimLine()).toBeNull();
   expect(boxTag()).toBeUndefined();
-  // With another edit open the message still starts a new edit, and the line offers to move it there. It comes whole,
-  // and nothing of it is left behind.
+  // With another edit open the message still starts a new edit, with no line over the box.
   await click(edits()[2]!);
   await act(async () => {});
-  expect(aimLine()).toEqual(["Starting a new edit", false, "Move here"]);
-  await click(container.querySelector(".simple-target button")!);
-  expect(boxNow()).toMatchObject(["Make the captions smaller", { changeId: "chg_approved_2", editIndex: 2 }, JSON.stringify([PRJ, threadWith("chg_approved_2").id])]);
-  expect(aimLine()?.slice(1)).toEqual([true, undefined]);
-  expect(boxTag()).toBe("Edit at 0:11");
-  expect(Object.keys(useUiStore.getState().savedDrafts)).toEqual([]);
-  // The × on the tag does the reverse: the message becomes a new edit, with the edit still open.
-  await act(async () => composer.props!.onClearTarget!());
+  expect(aimLine()).toBe("Starting a new edit");
+  expect(container.querySelector(".simple-target button")).toBeNull();
   expect(boxNow()).toEqual(["Make the captions smaller", "whole", JSON.stringify([PRJ, null])]);
-  expect(aimLine()).toEqual(["Starting a new edit", false, "Move here"]);
-  expect(boxTag()).toBeUndefined();
   expect(editPanel()).not.toBeNull();
 });
 
@@ -7371,7 +7358,7 @@ it("keeps the box where it was while the editor speaks into it, and follows what
     finishedAt: undefined, summary: null, changeIds: [], question: "Smaller by how much?", context: { changeId: "chg_approved_2", message: "Carry on" } }] }));
   expect(threadWith("chg_approved_2").question?.id).toBe("task_asking");
   expect([boxTag(), useUiStore.getState().draftOwner]).toEqual([undefined, newEdit]);
-  expect(aimLine()).toEqual(["Starting a new edit", false, "Move here"]);
+  expect(aimLine()).toBe("Starting a new edit");
   // Opening an edit while they speak leaves it there too, as it does a message being typed.
   await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
   await act(async () => {});
@@ -7390,7 +7377,7 @@ it("keeps the box where it was while the editor speaks into it, and follows what
   expect(boxTag()).toBe("Answer");
 });
 
-it("leaves a spoken message where it was said: Move here, the tag's × and words typed and sent meanwhile wait until it is out", async () => {
+it("leaves a spoken message where it was said: the tag's × and words typed and sent meanwhile wait until it is out", async () => {
   appliedEdits();
   // Scarlet hasn't asked anything, so with nothing open the box starts a new edit.
   data = { ...data, tasks: data.tasks.map(t => t.state === "waiting_for_user" ? { ...t, state: "done" as const, question: null } : t) };
@@ -7405,10 +7392,8 @@ it("leaves a spoken message where it was said: Move here, the tag's × and words
   await press("Escape");
   expect(editPanel()).toBeNull();
   expect([boxTag(), useUiStore.getState().draftOwner]).toEqual(["Edit at 0:00", onEdit]);
-  // The line still says where the message goes, but its button can't bring a recording along: building the box again
-  // would drop it. The tag's × can't take the box elsewhere either.
-  expect(aimLine()).toEqual(["Revising “captions” at 0:00", false, "New edit instead"]);
-  expect(container.querySelector<HTMLButtonElement>(".simple-target button")!.disabled).toBe(true);
+  // The tag's × can't take the box elsewhere: building the box again would drop the recording.
+  expect(aimLine()).toBe("Revising “captions” at 0:00");
   await act(async () => composer.props!.onClearTarget!());
   expect([boxTag(), useUiStore.getState().draftOwner]).toEqual(["Edit at 0:00", onEdit]);
   // Words typed and sent while it records don't free the box: the recording is still in it.
@@ -7430,13 +7415,12 @@ it("takes the box off a suggestion when its card closes after Revise, as off a c
   // Revise (R) aims the box at the suggestion on the card. That is what's open, so the line naming it is for screen readers.
   await press("r");
   expect([boxTag(), useUiStore.getState().agentContext]).toMatchObject(["Whole edit", { changeId: "chg_ready", label: "Suggestion" }]);
-  expect(aimLine()).toEqual(["Revising this suggestion", true, undefined]);
+  expect(aimLine()).toBe("Revising this suggestion");
   // Esc closes the card, and the empty box goes back to Scarlet's question.
   await press("Escape");
   expect(container.querySelector('[aria-label="Suggestion"]')).toBeNull();
   expect([boxTag(), useUiStore.getState().agentContext]).toEqual(["Answer", null]);
-  expect(aimLine()?.slice(1)).toEqual([true, undefined]);
-  // A message written to the suggestion stays aimed at it when the card closes, and the line offers to bring it along.
+  // A message written to the suggestion stays aimed at it when the card closes.
   await click(suggestion("chg_ready"));
   await act(async () => {});
   await press("r");
@@ -7444,7 +7428,7 @@ it("takes the box off a suggestion when its card closes after Revise, as off a c
   await press("Escape");
   expect(container.querySelector('[aria-label="Suggestion"]')).toBeNull();
   expect([boxTag(), useUiStore.getState().agentContext]).toMatchObject(["Whole edit", { changeId: "chg_ready", label: "Suggestion" }]);
-  expect(aimLine()).toEqual(["Revising this suggestion", false, "Move here"]);
+  expect(aimLine()).toBe("Revising this suggestion");
 });
 
 it("lets a box that holds only a space follow the edit that opens, as an empty box does", async () => {
@@ -7462,7 +7446,7 @@ it("lets a box that holds only a space follow the edit that opens, as an empty b
   // The box is on the edit that's open now: its tag says so, and no line offers to move anything.
   expect(boxTag()).toBe("Edit at 0:11");
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_approved_2", editIndex: 2 });
-  expect(aimLine()).toEqual(["Revising “wrap” at 0:11", true, undefined]);
+  expect(aimLine()).toBe("Revising “wrap” at 0:11");
 });
 
 it("keeps the message box on an edit that's opened again while it's open", async () => {
@@ -7472,7 +7456,7 @@ it("keeps the message box on an edit that's opened again while it's open", async
   await click(need());
   await act(async () => {});
   const aimed = aimLine();
-  expect(aimed?.[0]).toContain("Revising “wrap”");
+  expect(aimed).toContain("Revising “wrap”");
   expect(boxTag()).toBe("Edit at 0:11");
   // Its own row pressed again, as a press on its dot on the timeline is: the edit stays open and the box stays on it.
   await click(turnFor("chg_approved_2").querySelector('.simple-edit[aria-current="true"]')!);
@@ -7502,7 +7486,7 @@ it("brings a message kept for a request back aimed as it was, not at what's open
   await click(edits()[2]!);
   await act(async () => {});
   expect(boxNow()).toMatchObject(["Make the captions smaller", { changeId: "chg_approved_2", editIndex: 1 }, JSON.stringify([PRJ, threadWith("chg_approved_2").id])]);
-  expect(aimLine()).toEqual(["Revising “captions”", false, "Move here"]);
+  expect(aimLine()).toBe("Revising “captions”");
 });
 
 it("says Queued on the card of a cut sent back until Scarlet starts on it, and steps through it with the arrows", async () => {
@@ -8927,20 +8911,20 @@ it("aims words chosen in the transcript with a call open at that call when they'
   expect(boxTag()).toBe("Cut 1");
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_ready", cutIndex: 0, version: data.project.head, time: expect.closeTo(2.3, 1), end: expect.closeTo(2.5, 1), label: "“I”" });
   expect(useUiStore.getState().agentDraft).toBe("Keep this word");
-  expect(aimLine()).toEqual(["Revising the cut at 0:02", true, undefined]);
+  expect(aimLine()).toBe("Revising the cut at 0:02");
   // "is", at 14.2 s, is in no cut: the words start a new edit, as they do with nothing open, and the message comes along.
   await askAboutWord(30);
   expect(boxTag()).toBeUndefined();
   expect(boxNow()).toEqual(["Keep this word", { version: data.project.head, time: expect.closeTo(14.2, 1), end: expect.closeTo(14.5, 1), clipIds: expect.any(Array), label: "“is”" }, JSON.stringify([PRJ, null])]);
-  expect(aimLine()).toEqual(["Starting a new edit", false, "Move here"]);
+  expect(aimLine()).toBe("Starting a new edit");
   // So do words in another call's cut: "useful" is in the second call's, 6 s to 7 s.
   await askAboutWord(13);
   expect(boxTag()).toBeUndefined();
   expect(useUiStore.getState().agentContext).toMatchObject({ time: expect.closeTo(6, 1), end: expect.closeTo(6.5, 1), label: "“useful”" });
   expect(useUiStore.getState().agentContext).not.toHaveProperty("changeId");
-  // The call is still open, and Move here brings the message back to it.
+  // The call is still open. Words chosen in its passage bring the message back to it.
   expect(call().querySelector(".edit-card-title")?.textContent).toBe("A clean retake.");
-  await click(buttonIn(container.querySelector(".simple-target")!, "Move here")!);
+  await askAboutWord(4);
   expect(boxTag()).toBe("Cut 1");
   expect(useUiStore.getState().agentDraft).toBe("Keep this word");
 });
@@ -8963,7 +8947,6 @@ it("keeps words chosen in the transcript with a call open on an empty box, for t
   expect(boxNow()).toEqual(["Cut this", expect.objectContaining({ label: "“is”", time: expect.closeTo(14.2, 1) }), JSON.stringify([PRJ, null])]);
   // Words inside the call, with nothing typed: the box is that call's, about those words, never the whole pass.
   await act(async () => useUiStore.getState().setAgentDraft(""));
-  await click(buttonIn(container.querySelector(".simple-target")!, "Move here")!);
   await askAboutWord(4);
   expect(boxTag()).toBe("Cut 1");
   expect(useUiStore.getState().agentContext).toMatchObject({ changeId: "chg_ready", cutIndex: 0, label: "“I”", time: expect.closeTo(2.3, 1) });
@@ -11211,12 +11194,11 @@ it("aims an emptied box at the edit that's open now, not the one its deleted mes
   await press("ArrowDown");
   await act(async () => {});
   expect(rows()[2]!.getAttribute("aria-current")).toBe("true");
-  expect([boxTag(), aimLine()?.[2]]).toEqual([first, "Move here"]);
+  expect(boxTag()).toBe(first);
   // They delete it instead. Nothing is being written any more, so the box talks to the edit on screen: the next note
   // typed must not revise the edit they left.
   await act(async () => useUiStore.getState().setAgentDraft(""));
   expect(boxTag()).not.toBe(first);
-  expect(aimLine()?.slice(1)).toEqual([true, undefined]);
 });
 
 it("leaves the box where it is on Revise and Answer while a message is being spoken into it", async () => {
