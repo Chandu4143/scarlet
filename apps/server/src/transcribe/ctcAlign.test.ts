@@ -173,6 +173,24 @@ describe("word timing", () => {
     expect(spoken!.score).toBeCloseTo(0.9);
   });
 
+  it("finds a word on the take it was last said in, when the transcript tidied the earlier takes away", () => {
+    // "which… n-, ow, if I had, now even if", written "which... Now, even if": the path spells "Now," across the
+    // restart, and the take that runs on into "even" is said less clearly than the restart's letters.
+    const frames = `_WHICH_|${"_".repeat(20)}N${"_".repeat(30)}OW_|_IF_|_I_|_HAD_|___NOW_|_EVEN_|_`;
+    const lp = emissions(frames);
+    const kept = frames.lastIndexOf("NOW");
+    for (let t = kept; t < kept + 3; t++) {
+      for (let c = 0; c < CLASSES; c++) lp[t * CLASSES + c] = Math.log(0.5 / (CLASSES - 1));
+      lp[t * CLASSES + id(frames[t]!)] = Math.log(0.5);
+    }
+    const words = [{ text: "which...", start: 0, end: 0.1 }, { text: "Now,", start: 0.16, end: 0.5 }, { text: "even", start: 0.5, end: 0.8 }];
+    const [, now, even] = alignGroup({ logProbs: lp, frames: frames.length, origin: 0 }, words, 0, frames.length * 0.02);
+    expect(now!.start).toBeCloseTo(kept * 0.02 - 0.02);
+    expect(now!.end).toBeLessThanOrEqual(even!.start);
+    expect(now!.score).toBeCloseTo(0.5);
+    expect(even!.start).toBeCloseTo(frames.indexOf("EVEN") * 0.02 - 0.02);
+  });
+
   it("scores words the audio does not contain near zero", () => {
     const [word] = alignGroup(em("__HI__|___", 0), [{ text: "zoo", start: 0, end: 0 }], 0, 0.2);
     expect(word!.score).toBeLessThan(0.01);
