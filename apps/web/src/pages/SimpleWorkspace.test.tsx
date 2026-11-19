@@ -3167,7 +3167,9 @@ const runningPass = (cuts: Staged[] = STAGED) => {
  * place of is marked.
  */
 const event = (apply: (d: ProjectData) => ProjectData) => act(async () => { data = apply(useProjectStore.getState().current!); useProjectStore.setState({ current: data }); });
-const nextPart = async (over: Partial<ProjectData["changes"][number]>, applied?: Staged[]) => {
+const nextPart = async (over: Partial<ProjectData["changes"][number]>, applied?: Staged[], { whilePlaying = false } = {}) => {
+  // A part saved while a call plays waits until the video stops (`holdPass`). Unless the test says so, the editor has paused.
+  if (!whilePlaying) await pauses();
   const old = data.changes.find(c => c.id === "chg_ready")!;
   if (applied) {
     const part = { ...old, id: "chg_part2_applied", intent: "requested" as const, appliedOnto: old.fromVersion, toVersion: "ver_part2", appliedVersion: "ver_part2",
@@ -3654,6 +3656,41 @@ it("keeps staged cuts a frame apart as two cuts while the cut list is on its way
   expect(passCard().querySelector(".simple-pass-need")?.getAttribute("title")).toBe("4 need you");
 });
 
+it("plays a call straight through while the pass saves its next parts, and takes them up once the video stops", async () => {
+  runningPass();
+  const listen = vi.spyOn(player, "audition");
+  const drafts = vi.spyOn(api, "cutReviewDraft");
+  await show();
+  await act(async () => {});
+  await openCall("Repeated aside.");
+  expect(usePlayerStore.getState().playing).toBe(true);
+  expect(onVideo()).toBe("Showing cut at 0:11 · 3 of 3 · After");
+  const listens = listen.mock.calls.length;
+  const head = useShownCutStore.getState().head;
+  const video = container.querySelector("video");
+  // While the call plays, the next part applies a 1.5 s cut ahead of it and stages one more: a new working cut and a new
+  // proposal on it. Neither reaches the card or the player yet, so the listen plays on as it began.
+  await nextPart({ cutReasons: [STAGED[0]!, { start: 3.3, end: 3.6, reason: "A second try at the line." }, { ...STAGED[1]!, start: 4.5, end: 5.5 },
+    { ...STAGED[2]!, start: 9.5, end: 10.5 }] }, [{ start: 4, end: 5.5, reason: "Dead air." }], { whilePlaying: true });
+  await act(async () => {});
+  expect(useShownCutStore.getState().head).toBe(head);
+  expect(onVideo()).toBe("Showing cut at 0:11 · 3 of 3 · After");
+  expect(call().querySelector(".edit-card-title")?.textContent).toBe("Repeated aside.");
+  expect(listen).toHaveBeenCalledTimes(listens);
+  expect(container.querySelector("video")).toBe(video);
+  expect(container.querySelector(".caught-up-notice")?.textContent).toContain("New edits ready");
+  // Nothing is drafted or prepared on the newer working cut meanwhile: the listen's own version stays as it is.
+  expect(drafts.mock.calls.map(call => call[2])).not.toContain("ver_part2");
+  // Paused, the card goes onto the newest part, on the same cut, now the fourth and 1.5 s earlier. The listen isn't
+  // started again: it is taken up where it is, paused.
+  await pauses();
+  await act(async () => {});
+  expect(useShownCutStore.getState().head).toBe("ver_part2");
+  expect(onVideo()).toBe("Showing cut at 0:09 · 4 of 4 · After");
+  expect(call().querySelector(".edit-card-title")?.textContent).toBe("Repeated aside.");
+  expect(listen.mock.calls.slice(listens).every(call => call[2] === true)).toBe(true);
+});
+
 it("follows the call's cut, and a revision aimed at it, when the next part's confident cuts move it earlier", async () => {
   const { save, hold, release } = runningPass();
   const listen = vi.spyOn(player, "audition");
@@ -3715,8 +3752,12 @@ const callDots = () => {
   return [...container.querySelectorAll<HTMLElement>('.simple-timeline-mark[data-state="check"]')].map(d => Math.round(parseFloat(d.style.left) * duration) / 100);
 };
 /** A request in the pass's own thread (an undo, a revision of an applied cut) changes the edit while the pass's calls wait. The pass stays on its version. */
-const workingCutMoves = (start: number, end: number) => event(d => ({ ...d, project: { ...d.project, head: "ver_moved" },
-  timeline: { ...applyOps(d.timeline!, [{ op: "rippleDelete" as const, start, end }]), version: "ver_moved" } }));
+/** Another request moves the working cut on. A call that plays holds its working cut until it stops, so the editor has paused. */
+const workingCutMoves = async (start: number, end: number) => {
+  await pauses();
+  await event(d => ({ ...d, project: { ...d.project, head: "ver_moved" },
+    timeline: { ...applyOps(d.timeline!, [{ op: "rippleDelete" as const, start, end }]), version: "ver_moved" } }));
+};
 /**
  * Opens the open call's transcript, and says which footage its words are read from: the recording and the stretch of
  * it that the passage asks other takes for. Nothing when the row only waits, with no timeline to read on.
@@ -5785,6 +5826,7 @@ it("uses the reviewed footage and preview for a call revised on a newer timeline
   expect(listen).toHaveBeenLastCalledWith({ start: 6, end: 12, skips: [] }, expect.any(Number));
   await click(transcriptLink());
   expect(call().querySelector(".edit-passage-cut")?.textContent).toBe("2.0 s");
+  await pauses();
   await event(d => ({ ...d, project: { ...d.project, head: "newer" }, timeline: { ...d.timeline!, version: "newer" } }));
   expect(load).toHaveBeenCalledWith(PRJ, before.version);
   expect(onVideo()).toBe("Showing cut at 0:08 · 1 of 3 · Before · As reviewed");
@@ -11530,9 +11572,12 @@ it("keeps the call the editor is on, and the list of calls, when another call's 
   await event(d => ({ ...d, tasks: d.tasks.map(t => t.id === "task_note1" ? { ...t, changeIds: [revised.id] } : t) }));
   await act(async () => {});
   asItWas();
-  // Scarlet moves on to the last call. Nothing changes for the one that's open.
+  // Scarlet moves on to the last call. Nothing changes for the one that's open. The list takes up the revision once the
+  // open call's listen stops: until then the pass it plays on holds.
   await runPasses("task_note1", "task_note2");
   await act(async () => {});
+  asItWas();
+  await pauses();
   expect(call()?.querySelector(".edit-card-title")?.textContent).toContain("Breath before the price.");
   expect(passRows().map(r => r.querySelector(".simple-pass-label")?.textContent)).toEqual(["Starts in the pause.", "Breath before the price.", "Repeated aside."]);
 });

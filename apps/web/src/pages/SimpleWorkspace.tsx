@@ -61,7 +61,7 @@ import { aboutOne, aimOf, closingReply, lastAttempt, laterAttempts, notesStillAs
 import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut, isDialoguePass, isOpenPass, keepGoesTo, noRevisions, openPass, passRevision, reviewCalls, revisedCall, revisedFrom, revisionCut, savedChoices, waitsToPlay,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
 import { canPreviewMedia } from "../lib/upload";
-import { followEveryWorkingCut, showingWorkingCut, useShownCut } from "../stores/shownCut";
+import { showingWorkingCut, useShownCut } from "../stores/shownCut";
 import { useProjectStore } from "../stores/project";
 import { useSkillsStore } from "../stores/skills";
 import { messageTimestamps, type MessageClock } from "../lib/messageTimestamps";
@@ -1439,7 +1439,20 @@ export function SimpleWorkspace() {
   const [reviewId, setReviewId] = useState<string>();
   const pendingPass = useMemo(() => ordered.map(t => openPass(t, tasks)).findLast(c => !!c), [ordered, tasks]);
   const played = changes.find(c => c.id === reviewId && c.state === "ready");
-  const pass = played && isOpenPass(played, tasks) ? played : pendingPass;
+  const livePass = played && isOpenPass(played, tasks) ? played : pendingPass;
+  // The call open on the card, by the pass it was opened on. `listening` follows it onto each new part of the pass.
+  const [listenedTo, setListening] = useState<Listening>();
+  // While a call plays, the part of the pass it plays on holds, as the working cut on screen does (`useShownCut`). A pass
+  // that's still running saves a part every few hundred milliseconds, each a new proposal on the newest working cut, and
+  // following each put up a new player before the last had played a frame. Once the video stops, the call goes onto the
+  // newest part, as it does whenever a part arrives while it's paused.
+  const passPlaying = usePlayerStore(s => s.playing) && !!listenedTo;
+  const heldPass = useRef<Change>(undefined);
+  const held = heldPass.current;
+  const holdPass = passPlaying && !!livePass && !!held && held.id !== livePass.id && held.fromVersion === head &&
+    !!threads.find(t => t.changes.some(c => c.id === livePass.id))?.changes.some(c => c.id === held.id);
+  if (!holdPass) heldPass.current = livePass;
+  const pass = holdPass ? held : livePass;
   const passThread = pass && threads.find(t => t.changes.some(c => c.id === pass.id));
   const passFocused = !!firstCuts?.size || (!!passThread && passThread.id === focusThread?.id);
   const threadTimeline = useThreadTimeline(current.id, head, focusThread, firstCuts, passFocused);
@@ -1555,7 +1568,6 @@ export function SimpleWorkspace() {
     const { [cutIndex]: _revised, ...kept } = choicesOf(previous);
     if (Object.keys(kept).length) void saveChoices(pass, kept);
   }, [pass?.id, tasks]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [listenedTo, setListening] = useState<Listening>();
   const carrying = useMemo(() => carryingVersions(pass, passThread?.changes ?? [], changes), [pass, passThread, changes]);
   const footage = useCarryingFootage(current.id, timeline, carrying, fps);
   const passIndex = (task: Task) => pass && callNow(pass, revisionCut(task), passThread?.changes ?? [], changes, tasks, footage);
@@ -1675,7 +1687,10 @@ export function SimpleWorkspace() {
     made && head && made.version !== head && before !== head ? { version: head, removed: undefined } : made;
   const editPlaybackKey = (edit: ThreadEdit, after?: string) => JSON.stringify([current.id, firstKey(edit), edit.beforeCut?.version, after,
     edit.beforeCut?.removed.start, edit.beforeCut?.removed.end]);
-  const reviewContext = useMemo(() => fullRenderContext(current.project), [current.project]);
+  // Cuts are prepared and drafted on the working cut on screen: one saved under a playing listen waits with it, so the
+  // listen's own version isn't thrown away and asked for again with each save.
+  const shownProject = useMemo(() => head && head !== current.project.head ? { ...current.project, head } : current.project, [current.project, head]);
+  const reviewContext = useMemo(() => fullRenderContext(shownProject), [shownProject]);
   const draftCache = useMemo<SingleCutDrafts>(() => new Map(),
     [reviewContext, pass?.id, pass?.toVersion, current.renderSettingsRevision]);
   const preparedCandidates = useMemo(() => new Map<string, PreparedCut>(), [draftCache]);
@@ -1870,12 +1885,6 @@ export function SimpleWorkspace() {
       return again ? player.audition(listen, fps, true) : player.audition(listen, fps);
     });
   }, [audition, playedAudition, fps, listenPending, listenJoined?.version]); // eslint-disable-line react-hooks/exhaustive-deps
-  // An open call follows every new working cut, as its pass does (`followEveryWorkingCut`).
-  const callOpen = !!listening;
-  useLayoutEffect(() => {
-    followEveryWorkingCut(callOpen);
-    return () => followEveryWorkingCut(false);
-  }, [callOpen]);
   const listenSide = (side: Side) => {
     player.pause();
     if (listening && visit?.side === "before" && side === "after") setCallVisit({ ...visit, take: listening.take + 1, side: "after", at: visit.end });
@@ -3002,7 +3011,7 @@ export function SimpleWorkspace() {
   const openCut = !activeReview ? undefined : beforeCut ?? (openCall && openVersion && heard ? { version: openVersion, removed: heard } : undefined);
   const openPlaybackKey = reviewingEdit ? editPlaybackKey(reviewingEdit, appliedAfterVersion)
     : listening && beforeVersion ? callPlaybackKey(listening.index, beforeVersion) : undefined;
-  const nextCutPlayback = usePrepareReviewCuts(current.project, current.renderSettingsRevision, reviewQueue, draftCache, preparedCandidates,
+  const nextCutPlayback = usePrepareReviewCuts(shownProject, current.renderSettingsRevision, reviewQueue, draftCache, preparedCandidates,
     openCut && { ...openCut, key: openPlaybackKey });
 
   function keepShown() {
