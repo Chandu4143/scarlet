@@ -355,6 +355,11 @@ export function cutKindRow(kind: keyof typeof KIND_ROWS | undefined) {
   return kind && KIND_ROWS[kind];
 }
 
+/** The kind of footage a row names when it was read from the cut's kind (`cutKindRow`), else undefined. */
+export function cutKindOfRow(row: string) {
+  return (Object.keys(KIND_ROWS) as (keyof typeof KIND_ROWS)[]).find(kind => KIND_ROWS[kind] === row);
+}
+
 /** Each review spot's row by what kind of footage it took out, for cuts saved without a summary. */
 export function reviewKindRows(change: Pick<Change, "cutReasons">, cuts: ReviewSpots) {
   if (!change.cutReasons?.some(cut => cut.kind)) return cuts.map(() => undefined);
