@@ -331,7 +331,6 @@ export function PictureMarkTools({ projectId, enabled, onStart }: { projectId: s
     onPointerLeave: () => setHovered(cur => cur?.id === item.id ? undefined : cur),
   });
   const focusProps = (item: MarkToolTip) => ({
-    "aria-describedby": tip?.id === item.id ? tipId : undefined,
     onFocus: () => setFocused(item),
     onBlur: () => setFocused(cur => cur?.id === item.id ? undefined : cur),
   });
@@ -342,17 +341,19 @@ export function PictureMarkTools({ projectId, enabled, onStart }: { projectId: s
         const item: MarkToolTip = { id: t.tool, label: t.label, key: t.key, description: t.description };
         return <span key={t.tool} {...wrap(item)}>
           <button type="button" className="picture-mark-tool" aria-pressed={marking && tool === t.tool} disabled={!enabled}
-            aria-label={t.label} {...focusProps(item)}
+            aria-label={t.label} aria-describedby={tip?.id === item.id ? tipId : undefined} {...focusProps(item)}
             onClick={e => { if (e.detail) e.currentTarget.blur(); pick(t.tool); }}><Icon name={t.icon} size={15} /></button>
         </span>;
       })}
       <i className="picture-mark-sep" aria-hidden="true" />
       <span {...wrap(ACTIONS.undo)}>
-        <button type="button" className="picture-mark-tool" aria-label="Undo" disabled={!count} {...focusProps(ACTIONS.undo)}
+        <button type="button" className="picture-mark-tool" aria-label="Undo" disabled={!count}
+          aria-describedby={tip?.id === ACTIONS.undo.id ? tipId : undefined} {...focusProps(ACTIONS.undo)}
           onClick={e => { if (e.detail) e.currentTarget.blur(); store.undo(projectId); }}><Icon name="undo" size={15} /></button>
       </span>
       <span {...wrap(ACTIONS.clear)}>
-        <button type="button" className="picture-mark-tool" aria-label="Clear marks" disabled={!count} {...focusProps(ACTIONS.clear)}
+        <button type="button" className="picture-mark-tool" aria-label="Clear marks" disabled={!count}
+          aria-describedby={tip?.id === ACTIONS.clear.id ? tipId : undefined} {...focusProps(ACTIONS.clear)}
           onClick={e => { if (e.detail) e.currentTarget.blur(); store.clear(projectId); }}><Icon name="x" size={15} /></button>
       </span>
     </div>
