@@ -430,6 +430,12 @@ export function cancelTask(ctx: Ctx, task: Task): Task {
   ctx.log(`[task] ${task.id} cancelled while ${task.state}${ran ? ` after ${ran}` : ""}`);
   ctx.db.afterCommit(() => ctx.transcriptions.get(task.id)?.controller.abort());
   skillEditEnded(ctx, saved);
+  // A request taken back before it started is words withdrawn, as reworded ones are: a check still reading them stops.
+  if (task.state === "queued" && task.kind !== "learning_check") {
+    for (const check of ctx.repos.tasks.select("project_id = ? AND kind = 'learning_check' AND json_extract(json, '$.context.checksTaskId') = ?", [task.projectId, task.id])) {
+      if (!FINISHED_TASK.has(check.state)) cancelTask(ctx, check);
+    }
+  }
   ctx.bus.taskQueued({ taskId: saved.id, projectId: saved.projectId });
   return saved;
 }
