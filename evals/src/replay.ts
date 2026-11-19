@@ -1,6 +1,6 @@
 /**
  * Replay regression: run a stored dialogue_apply_cuts plan through the CURRENT planning code offline —
- * the same planDialogueCuts (packages/mcp/src/dialogue-plan.ts) the tool calls — and compare edges and decisions with what the run produced, or with an earlier replay.
+ * the same planDialogueBatch (packages/mcp/src/dialogue-plan.ts) the tool calls, set-aside rounds included — and compare edges and decisions with what the run produced, or with an earlier replay.
  *
  *   tsx evals/src/replay.ts --case <id> [--plan plan.json] [--fingerprint <prefix>] [--baseline <replay.json>]
  *
@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DialogueEvidence } from "../../packages/mcp/src/dialogue-decisions.ts";
-import { dialogueGate, dialogueScanPage, planDialogueCuts, resolveCutRange, type DialogueCutInput, type DialoguePlanSources, type GateLine } from "../../packages/mcp/src/dialogue-plan.ts";
+import { dialogueGate, dialogueScanPage, planDialogueBatch, resolveCutRange, type DialogueCutInput, type DialoguePlanSources, type GateLine } from "../../packages/mcp/src/dialogue-plan.ts";
 import { gapSound, speakingLevel, type GapLevels } from "../../packages/mcp/src/gap-sound.ts";
 import { cutAnchorOn } from "../../packages/shared/src/cutScope.ts";
 import { taskDialogueOperation } from "../../packages/shared/src/threads.ts";
@@ -21,6 +21,7 @@ import { loadCase, type LoadedCase } from "./case.ts";
 import { artifactsFromCase, evaluateCaseOrigin } from "./evaluate.ts";
 import { windowKey, type ScanCapture, type ScanWaveforms } from "./evidence.ts";
 import { overlap, subtract, type Range } from "./intervals.ts";
+import type { LeftEdit } from "./moments.ts";
 import { DEFAULT_EDGE_OPTIONS, classifyEdges, joinEdges, summarizeEdges, type EdgeReport, type EdgeSummary, type Kept, submittedPlans, type SubmittedPlan } from "./metrics.ts";
 import { readJson, REPO_ROOT, resultsDir, timestamp, writeJson, writeText } from "./paths.ts";
 import { keptSource, sourceSpan, type MediaInfo, type SourceRange } from "./timeline.ts";
@@ -39,6 +40,8 @@ type Tier = "applied" | "review" | "kept";
 
 interface ReplayedCut {
   index: number;
+  /** The recording the range sits in, on its source clock. */
+  mediaId?: string;
   kind?: string;
   decision?: string;
   submitted: Range;
@@ -61,6 +64,8 @@ export interface ReplayResult {
   dropQuotes: boolean;
   /** A disputed quote or repeated join goes back to the model before anything is saved. */
   outcome: "ready" | "preserved" | "needsRevision" | "rejected";
+  /** Submitted cuts, by index, a dispute set aside so the rest of the batch could be saved, as the tool does. */
+  setAside?: number[];
   error?: string;
   disputedEdges?: Array<Partial<Range> & { reason: string }>;
   /** Share of submitted ranges whose replayed tier and edges (±1 ms) match the run, per scan-window set tried. */
@@ -72,6 +77,8 @@ export interface ReplayResult {
   edges: { replay: { applied: EdgeSummary; review: EdgeSummary; appliedOnFrames?: EdgeSummary }; original?: { applied: EdgeSummary; review: EdgeSummary } };
   /** Each applied edge, on whole frames, that the recording is at speaking level at: where to listen first. Source seconds. */
   appliedOnSpeech?: EdgeReport[];
+  /** What the replayed plan leaves of each recording (applied removals on whole frames) and the cuts it stages for the editor. */
+  left: LeftEdit;
   cuts: ReplayedCut[];
 }
 
@@ -153,7 +160,7 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
     const sources: DialoguePlanSources = {
       evidence, pages: () => evidence.scans, project: async () => project,
       words: async mediaId => (loaded.evidence.get(mediaId)?.words as TranscriptWord[] | undefined) ?? null,
-      measure: async () => {}, crossfadeFrames: plan.crossfadeFrames,
+      measure: async () => {}, crossfadeFrames: plan.crossfadeFrames, ...(plan.pace && { pace: plan.pace }),
       sound: async (mediaId, range, betweenWords) => {
         const page = levels.get(mediaId)?.find(p => p.from <= range.start && p.to >= range.end);
         return page && gapSound(page, range, speakingLevel(page), betweenWords ? undefined : 0);
@@ -163,9 +170,12 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
       const { productionQuote, resumeWith, ...rest } = c as typeof c & { resumeWith?: string };
       return { ...rest, reason: c.reason ?? "", ...(!opts.dropQuotes && { productionQuote, resumeWith }) };
     }) as DialogueCutInput[];
-    let planned: Awaited<ReturnType<typeof planDialogueCuts>>, error: string | undefined;
+    let planned: Awaited<ReturnType<typeof planDialogueBatch>>["plan"], setAside: number[] | undefined, error: string | undefined;
     try {
-      planned = await planDialogueCuts({ tl, cuts: cutsIn, range: plan.range, only: plan.only as DialogueCutInput["kind"] | undefined, localPauses, anchor }, sources);
+      // As the tool saves a batch: cuts a dispute names are set aside and the rest are saved.
+      const batch = await planDialogueBatch({ tl, cuts: cutsIn, range: plan.range, only: plan.only as DialogueCutInput["kind"] | undefined, localPauses, anchor, unsureJoins: plan.unsureJoins }, sources);
+      planned = batch.plan;
+      setAside = batch.setAside?.cuts;
     } catch (err) {
       error = (err as Error).message;
       planned = { outcome: "preserved" };
@@ -191,19 +201,19 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
       const replayed = mine && toSource(mine);
       const line = gate.decisions.find(l => l.cut === index);
       cuts.push({
-        index, kind: c.kind, decision: c.decision, submitted: { start: range.start, end: range.end }, ...(line && { gate: line }),
+        index, ...(span && { mediaId: span.mediaId }), kind: c.kind, decision: c.decision, submitted: { start: range.start, end: range.end }, ...(line && { gate: line }),
         replay: mine && replayed ? { tier: mine.tier, start: replayed.start, end: replayed.end, reason: mine.reason } : { tier: "kept", start: span?.start ?? range.start, end: span?.end ?? range.end },
         original: theirs ? { tier: theirs.tier, start: theirs.start, end: theirs.end } : { tier: "kept", start: span?.start ?? range.start, end: span?.end ?? range.end },
       });
     }
     const same = cuts.filter(c => c.original!.tier === c.replay.tier && (c.replay.tier === "kept" || near(c.original!, c.replay))).length;
-    return { planned, error, decisions, gate, cuts, agreement: cuts.length ? same / cuts.length : 0 };
+    return { planned, setAside, error, decisions, gate, cuts, agreement: cuts.length ? same / cuts.length : 0 };
   };
 
   const tried: Array<{ fp: string; result: Awaited<ReturnType<typeof run>> }> = [];
   for (const fp of candidates) tried.push({ fp, result: await run(fp) });
   const best = [...tried].sort((a, b) => b.result.agreement - a.result.agreement)[0]!;
-  const { planned, error, decisions, gate, cuts } = best.result;
+  const { planned, setAside, error, decisions, gate, cuts } = best.result;
 
   const changed: Record<string, number> = {}, transitions: Record<string, number> = {};
   for (const line of gate.decisions) changed[`${line.asked}→${line.outcome}`] = (changed[`${line.asked}→${line.outcome}`] ?? 0) + 1;
@@ -226,6 +236,8 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
   // The engine saves each removal on whole frames, rounded inward. The edges that play are those, not the planner's.
   const kF = without(kS, decisions.filter(d => !d.review).map(d => frameAligned(d, loaded.file.fps)));
   const kR = without(kA, decisions.filter(d => d.review));
+  const staged = decisions.filter(d => d.review).flatMap(d => toSource(d) ?? []);
+  const left: LeftEdit = { kept: Object.fromEntries([...kF].map(([id, list]) => [id, [...list]])), removed: Object.fromEntries([...kS].map(([id, list]) => [id, subtract(list, [...(kF.get(id) ?? [])])])), staged };
   const summarize = (before: Kept, after: Kept) => summarizeEdges(classifyEdges(joinEdges(before, after), loaded.evidence, DEFAULT_EDGE_OPTIONS));
   let originalEdges: ReplayResult["edges"]["original"];
   try {
@@ -236,14 +248,14 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
   return {
     schema: 3, kind: "replay", generatedAt: new Date().toISOString(), caseId: loaded.file.id, taskId: origin.task.id, planVersion: plan.version,
     code: gitState(), crossfadeFrames: plan.crossfadeFrames ?? 0, dropQuotes: !!opts.dropQuotes, fingerprint: best.fp,
-    outcome: error ? "rejected" : planned.outcome, ...(error && { error }),
+    outcome: error ? "rejected" : planned.outcome, ...(error && { error }), ...(setAside?.length && { setAside }),
     ...(planned.outcome === "needsRevision" && { disputedEdges: planned.disputedEdges }),
     agreement: Object.fromEntries(tried.map(t => [t.fp.slice(0, 12), Math.round(t.result.agreement * 1000) / 1000])),
     gate: { changed, moved: gate.decisions.filter(l => l.from).length, unchanged: gate.unchangedCuts },
     transitions,
     edges: { replay: { applied: summarize(kS, kA), review: summarize(kA, kR), appliedOnFrames: summarize(kS, kF) }, original: originalEdges },
     appliedOnSpeech: classifyEdges(joinEdges(kS, kF), loaded.evidence, DEFAULT_EDGE_OPTIONS).filter(e => e.class === "speech"),
-    cuts,
+    left, cuts,
   };
 }
 

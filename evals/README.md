@@ -23,6 +23,12 @@ node_modules/.bin/vitest run --config evals/vitest.config.ts
 node_modules/.bin/tsc -p evals/tsconfig.json
 ```
 
+## The dialogue ledger
+
+Every mistake the editor reports in a dialogue cut is an entry with a check, and every change to dialogue cutting is
+run against all of them: [DIALOGUE.md](DIALOGUE.md) says how. `ledger.ts check` runs the free checks (unit tests, and
+replays of the model's real requests through today's code) and compares with the last recorded run.
+
 ## What it measures
 
 Times are seconds on the dialogue recording's source clock, so runs from different versions can be compared.

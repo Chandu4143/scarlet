@@ -9,6 +9,7 @@
     "typecheck": "../node_modules/.bin/tsc -p tsconfig.json",
     "dataset": "../node_modules/.bin/tsx src/dataset.ts",
     "run": "../node_modules/.bin/tsx src/run.ts",
-    "replay": "../node_modules/.bin/tsx src/replay.ts"
+    "replay": "../node_modules/.bin/tsx src/replay.ts",
+    "ledger": "../node_modules/.bin/tsx src/ledger.ts"
   }
 }

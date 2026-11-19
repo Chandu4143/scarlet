@@ -471,6 +471,30 @@ const owners = (removals: ResolvedCut[], at: TimeRange) =>
 const phrase = (s: string) => s.trim().split(/\s+/u).map(normalizeTranscriptToken).join(" ");
 const r2 = (t: number) => Math.round(t * 100) / 100;
 
+type DisputedEdge = Extract<DialoguePlan, { outcome: "needsRevision" }>["disputedEdges"][number];
+
+/**
+ * A batch as dialogue_apply_cuts saves it, shared with offline replay. A dispute names the cuts whose edges make it,
+ * and the rest of the batch is saved without them, so a pass resubmits only what was disputed instead of the whole
+ * batch: a refused batch cost a pass a turn and every cut again, five to seven times a pass (2026-11-16). A cut Scarlet
+ * could not place is named before any edge is measured, so the rest can raise a dispute of its own once it is set
+ * aside. Each round sets aside what the last one named.
+ */
+export async function planDialogueBatch(req: DialoguePlanRequest, sources: DialoguePlanSources): Promise<{ plan: DialoguePlan; setAside?: { cuts: number[]; disputedEdges: DisputedEdge[] } }> {
+  const plan = await planDialogueCuts(req, sources);
+  if (plan.outcome !== "needsRevision") return { plan };
+  const disputed = new Set<number>(), edges = [...plan.disputedEdges];
+  let rest: DialoguePlan | undefined = plan;
+  for (let round = 0; round < 3 && rest?.outcome === "needsRevision"; round++) {
+    const named: number[] = rest.disputedEdges.flatMap(d => d.cuts).filter(i => !disputed.has(i));
+    if (round) edges.push(...rest.disputedEdges);
+    for (const i of named) disputed.add(i);
+    rest = named.length && req.cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
+      ? await planDialogueCuts({ ...req, setAside: disputed }, sources).catch(() => undefined) : undefined;
+  }
+  return rest?.outcome === "ready" ? { plan: rest, setAside: { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: edges } } : { plan };
+}
+
 /** Everything dialogue_apply_cuts decides before it sends the plan to the engine. Throws on an invalid plan. */
 export async function planDialogueCuts(req: DialoguePlanRequest, sources: DialoguePlanSources): Promise<DialoguePlan> {
   const { tl, cuts: requested, range, only, localPauses } = req;
