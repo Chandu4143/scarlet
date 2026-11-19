@@ -246,6 +246,18 @@ function playedOnce(clips: readonly MediaClip[], word: TranscriptWord, what: str
   return playing[0];
 }
 
+/**
+ * The scan's own word-for-word reading of a stretch of a recording, from the page that holds most of it. The scan read
+ * every page of a pass with a prompt in hesitant speech, so it has the false starts a transcript tidies away.
+ */
+function scanWords(evidence: DialogueEvidence, mediaId: string, from: number, to: number): TranscriptWord[] {
+  const pages = evidence.scans.filter(s => s.mediaId === mediaId && s.segments?.length && s.start < to && s.end > from);
+  const held = (s: TimeRange) => Math.min(to, s.end) - Math.max(from, s.start);
+  const page = pages.sort((a, b) => held(b) - held(a))[0];
+  if (!page) return [];
+  return page.segments!.flatMap(s => s.words).filter(w => w.text.trim() && w.end > from && w.start < to).sort((a, b) => a.start - b.start);
+}
+
 /** Seconds read either side of a pause's two words when the pause holds speech, so the reading has the words around it. */
 const HEARD_CONTEXT = 0.5;
 /** How far past that reading the transcript's words are compared with it: heardOnlyVerbatim's reach for one word. */
@@ -317,9 +329,21 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
   // the restart; each trim took only the quiet between two of the takes, held no sound, and the pass left all three in
   // as one sentence it had tightened (2026-11-18). Sound in the rest of that stretch is read too, and words the
   // transcript doesn't have there are a decision about words, as sound in the trim itself is.
+  // The scan read this stretch word for word before the pass asked for the trim, and what it has there that the
+  // transcript doesn't is words, whether or not they reach speaking level: “And it just feel, uh, let's see. It just feels
+  // like” was in the transcript as “And it [3.8 s] just feels like”, the abandoned words trailed off under that level,
+  // and a trim of the “pause” after “it” took out “let's see” and left the false start playing (2026-11-19).
+  const asWordAt = (w: { text: string; start: number; end: number }, index: number) => ({ mediaId: ref.mediaId, index, text: w.text.trim(), start: w.start, end: w.end });
+  const scanned = scanWords(sources.evidence, ref.mediaId, before.start - HEARD_REACH - 1, after.end + HEARD_REACH + 1);
+  const unwritten = scanned.length ? heardOnlyVerbatim(listed.flatMap((w, i) => w.end >= before.start - 2 * HEARD_REACH - 1 && w.start <= after.end + 2 * HEARD_REACH + 1 ? [asWordAt(w, i)] : []),
+    scanned.map(asWordAt), w => w).filter(r => r.source.end > before.end && r.source.start < after.start) : [];
+  if (unwritten.length) notes.push(`The transcript has nothing between ${said} for ${(after.start - before.end).toFixed(2)} s, ` +
+    `but the scan read ${unwritten.map(r => `“${r.text}” at ${r.source.start.toFixed(2)}–${r.source.end.toFixed(2)} s in ${ref.mediaId} (${
+      on(r.source.start).toFixed(2)}–${on(r.source.end).toFixed(2)} s on version ${tl.version})`).join(" and ")} there, in “${unwritten[0]!.context}”. ` +
+    `A trim would cut through those words or leave them playing.`);
   const around = notes.length ? undefined
     : await sources.sound?.(ref.mediaId, { start: before.end, end: after.start }, true).catch(() => undefined);
-  const read = notes.length || around?.runs.length ? await readAround() : undefined;
+  const read = !unwritten.length && (notes.length || around?.runs.length) ? await readAround() : undefined;
   // A note says only that sound is there, and the agent can't hear it. Read on its own, the stretch from the word before
   // to the word after says what it is: Whisper had written “great. I'm” where the recording says “great, but it hasn't all
   // been great. I'm”, a restart it smoothed away, and a pass that couldn't trim the pause left both takes in (2026-11-16).
@@ -333,7 +357,8 @@ async function resolvePauseCut(tl: Timeline, ref: { mediaId: string; afterWord: 
       `A trim would take out only the quiet beside those words and leave them playing.`);
   }
   let heard: string | undefined;
-  if (notes.length && read?.said) heard = `Read on its own, ${read.from.toFixed(2)}–${read.to.toFixed(2)} s in ${ref.mediaId} (${on(read.from).toFixed(2)}–${
+  if (unwritten.length) heard = `The scan reads “${scanned.filter(w => w.end > before.start - 1 && w.start < after.end + 1).map(w => w.text.trim()).join(" ")}” there, where the transcript has “${before.text.trim()} ${after.text.trim()}”.`;
+  else if (notes.length && read?.said) heard = `Read on its own, ${read.from.toFixed(2)}–${read.to.toFixed(2)} s in ${ref.mediaId} (${on(read.from).toFixed(2)}–${
     on(read.to).toFixed(2)} s on version ${tl.version}) says “${read.said}”, where the transcript has “${before.text.trim()} ${after.text.trim()}”.`;
   async function readAround() {
     if (!sources.readKeptWords) return undefined;

@@ -50,6 +50,32 @@ function partialWordFixture() {
 }
 
 describe("dialogue plan", () => {
+  it("refuses a pause trim where the scan read words the transcript doesn't have, though they never reach speaking level", async () => {
+    // Said: “And it just feel, uh, let's see. It just feels like”. The transcript has “And it [3.8 s] just feels like”,
+    // and the abandoned words trail off quietly, so no sound at speaking level sits in the “pause” (2026-11-19).
+    const stored = [{ text: "And", start: .5, end: .75 }, { text: "it", start: 1.1, end: 1.5 }, { text: "just", start: 5.3, end: 5.6 },
+      { text: "feels", start: 5.6, end: 5.9 }, { text: "like", start: 5.9, end: 6.1 }];
+    const read = [{ text: "And", start: .5, end: .7 }, { text: "it", start: .7, end: .8 }, { text: "just", start: .95, end: 1.3 }, { text: "feel,", start: 1.4, end: 1.75 },
+      { text: "uh,", start: 1.75, end: 2.3 }, { text: "let's", start: 3.4, end: 3.6 }, { text: "see.", start: 3.6, end: 3.9 }, { text: "It", start: 5.2, end: 5.3 },
+      { text: "just", start: 5.3, end: 5.6 }, { text: "feels", start: 5.6, end: 5.9 }, { text: "like", start: 5.9, end: 6.1 }];
+    const loud = [{ start: .5, end: 1.75 }, { start: 5.2, end: 6.1 }];
+    const rms = Array.from({ length: 400 }, (_, i) => loud.some(v => v.start <= i / 50 && i / 50 < v.end) ? .12 : .001);
+    const { tl, sources } = laidOut([take(0, 8, 0)]);
+    const scanned: JoinPage = { mediaId: "mic", start: 0, end: 8, edges: joinEvidence(stored, { from: 0, to: 8, peaks: rms, rms, speechActivity: loud }) };
+    sources.pages = () => [scanned];
+    sources.words = async () => stored;
+    const trim = { tl, localPauses: false, cuts: [cut({ kind: "pause", mediaId: "mic", afterWord: 1, leave: .1 })] };
+    // Without the scan's reading there is nothing to say the pause holds words, and the trim saves.
+    expect((await planDialogueCuts(trim, sources)).outcome).toBe("ready");
+    sources.evidence.scans.push({ ...scanned, segments: [{ id: "s", start: .5, end: 6.1, text: read.map(w => w.text).join(" "), words: read }] });
+    const plan = await planDialogueCuts(trim, sources);
+    expect(plan.outcome).toBe("needsRevision");
+    const [dispute] = plan.outcome === "needsRevision" ? plan.disputedEdges : [];
+    expect(dispute!.reason).toContain("The transcript has nothing between “it” and “just” (#1, #2) for 3.80 s, but the scan read “just feel, uh, let's see. It” at 0.95–5.30 s in mic");
+    expect(dispute!.reason).toContain("A pause trim removes quiet only, so this one was not saved. The scan reads “And it just feel, uh, let's see. It just feels like” there, where the transcript has “it just”.");
+    expect(dispute!.reason).toContain("give the range in timeline seconds as the kind of cut it is");
+  });
+
   it("keeps short named words inside a removal when the only quiet is on their far sides", async () => {
     const { tl, sources } = fixture();
     const said = [

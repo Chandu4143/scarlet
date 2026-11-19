@@ -5,8 +5,8 @@
 import { z } from "zod/v3";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ScarletApiError, type ProjectDetail, type ScarletClient, type ScarletToolName, type WaveformResponse } from "@scarlet/shared";
-import { timelineDuration, type Project, type Timeline, type TranscriptWord } from "@scarlet/timeline";
-import { auditJoin, formatTimelineTranscript, heardOnlyVerbatim, joinTook, newJoins, timelineJoins, timelineWords, type JoinAudit, type TimelineJoin, type TimelineWord } from "./timeline-perception.js";
+import { timelineDuration, type Project, type Timeline, type TimeRange, type TranscriptWord } from "@scarlet/timeline";
+import { auditJoin, formatTimelineTranscript, heardOnlyVerbatim, joinTook, newJoins, timelineJoins, timelineWords, type HeardOnly, type JoinAudit, type TimelineJoin, type TimelineWord } from "./timeline-perception.js";
 import { pictureEntranceReader } from "./picture-entrance.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, noteEvidenceMiss, text } from "./tool-result.js";
@@ -434,6 +434,12 @@ export function registerPerception(deps: PerceptionDeps) {
     motionOn,
     besideOn,
     cutsOn,
+    /** Words the scan's saved word-for-word reading plays on `tl` in `range` that the transcript doesn't have. */
+    async heardOnlyOn(tl: Timeline, range: TimeRange): Promise<HeardOnly[]> {
+      const { project } = await deps.getProject();
+      const transcripts = await wordsFor(tl, project);
+      return transcripts.size ? heardOnly(tl, transcripts, timelineWords(tl, transcripts, range)) : [];
+    },
     /**
      * Audit the join a cut left at timeline time `at` on a version (e.g. a staged cut's join on its
      * toVersion). A crossfade counts when `at` falls inside its overlap. Without a join, `noJoin` says
