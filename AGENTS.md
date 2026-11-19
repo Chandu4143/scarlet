@@ -54,7 +54,7 @@ Apply requested edits to the working timeline. Keep review and follow-up replies
 
 Read `docs/AI-AGENTS.md` before changing the prompt, skills, MCP tools, perception, agent hosts or editor preferences. Use [the skill and tool ownership guide](docs/skills-and-tools.md) to decide where new behavior belongs and how to test it.
 
-When the editor reports a mistake in a dialogue cut, or before any change to how Scarlet cuts dialogue, follow `evals/DIALOGUE.md`: read the history of every earlier report and fix first, add the mistake to the ledger with a check, and ship only when every free check passes. Model passes cost the editor tokens: ask before starting one.
+When the editor reports a mistake in a dialogue cut, or before any change to how Scarlet cuts dialogue, follow `evals/DIALOGUE.md`: read the history of every earlier report and fix first, add the mistake to the ledger with a check, and ship only when every free check passes. A change to what the model reads (a skill, the prompt, a tool's description or result) also ships with its dialogue scorecard beside main's, on the recordings that have a published video: the editor asked for every dialogue cut change to be measured against it (2026-11-18). That standard run is two passes a recording; say what it cost. Ask before starting any larger run of model passes.
 
 - The model makes editorial decisions, the harness (Claude Code, Codex) runs the agent loop, and Scarlet measures the footage, applies edits safely and gives the editor control. Keep them separate so a better model or harness improves Scarlet without changes here.
 - Speed is measured from the editor's request to a moment they can judge. Keep tools fast and cached, and render only what changed.

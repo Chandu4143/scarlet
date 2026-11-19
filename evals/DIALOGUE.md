@@ -72,10 +72,10 @@ speech). A change ships only when:
 - any whole-pass movement is explained. A fix for one spot that moves dozens of edges in other passes needs a look at
   those edges before it ships.
 
-**Model passes cost the editor tokens. Never start one without asking.** Ask only when the change alters what the
-model reads (prompt, skills, tool descriptions or results) or the entry's cause is `model`, and propose the smallest
-run that can answer: a clone of the reported project cut down to the minute around the spot, 4 passes an arm, against
-4 on main. Say the expected cost when you ask.
+**Model passes cost the editor tokens.** The standard scorecard run in step 5 is the one he has asked for on every
+change to what the model reads. Anything beyond it needs his yes: propose the smallest run that can answer (a clone of
+the reported project cut down to the minute around the spot, 4 passes an arm against 4 on main) and say the expected
+cost when you ask.
 
 ## 5. Score it against the published video
 
@@ -111,8 +111,14 @@ node_modules/.bin/tsx evals/src/scorecard.ts <main's run> <the change's run> --l
 ```
 
 A scorecard costs nothing: it reads what `run.ts` already scored, and every run writes its own `scorecard.md`. Only the
-passes cost tokens, so the rule above holds: ask first, and run them when the change alters what the model reads.
-A change that alters only placement or the transcript is judged by the ledger and replays.
+passes cost tokens.
+
+**Every change to what the model reads ships with its scorecard beside main's** (the editor's rule, 2026-11-18): a
+skill, the prompt, a tool's description or what a tool returns. The standard run is two passes on each recording that
+has a published video, with the change, against the latest recorded run of main on the same recordings
+(`history.md` names it and the library to run in). Run main again only when it has moved since. Report the card, what
+moved outside the spread and what the run cost. A larger run needs the editor's yes first. A change that alters only
+placement or the transcript is judged by the ledger and replays, and by a scorecard when a replay can't show it.
 
 Reading it:
 
