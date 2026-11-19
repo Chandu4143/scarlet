@@ -93,8 +93,8 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     expect(setup.state).toBe("approved");
     expect(setup.reason).toBe(assembly.reason);
     const edit = await call("dialogue_apply_cuts", { version: setup.toVersion, description: "Review two pauses", cuts: [
-      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action." },
-      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?" },
+      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action.", summary: "Shortened the pause before the click." },
+      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?", summary: "Shortened the pause after the reaction." },
     ] });
     // While the editor auditions the first cut, the second undecided passage stays in the draft.
     const { draft } = await client.cutReview(edit.changes[0].id, [1]);
