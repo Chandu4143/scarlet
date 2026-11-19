@@ -28,7 +28,7 @@ async function launch() {
   });
   try {
     const [native, view] = await Promise.all([desktop.info(), opening]);
-    const { platform, updates, customOpenaiModels, customClaudeModels, editorModel } = native;
+    const { platform, updates, customOpenaiModels, customClaudeModels, customGeminiModels, editorModel } = native;
     if (platform !== "macos" && platform !== "windows" && platform !== "linux") {
       view.render(desktopOnly);
       return;
@@ -43,9 +43,13 @@ async function launch() {
     const [{ App }, { restoreAgentSelection }, hosts] = await Promise.all([
       import("./App"),
       import("./stores/ui"),
-      customOpenaiModels?.length || customClaudeModels?.length ? import("./stores/hosts") : undefined,
+      customOpenaiModels?.length || customClaudeModels?.length || customGeminiModels?.length ? import("./stores/hosts") : undefined,
     ]);
-    hosts?.useHostsStore.setState({ customOpenaiModels: customOpenaiModels ?? [], customClaudeModels: customClaudeModels ?? [] });
+    hosts?.useHostsStore.setState({
+      customOpenaiModels: customOpenaiModels ?? [],
+      customClaudeModels: customClaudeModels ?? [],
+      customGeminiModels: customGeminiModels ?? [],
+    });
     restoreAgentSelection(editorModel);
     view.render(<StrictMode>
       {updates ? <UpdateButton /> : __SCARLET_RELEASE_CHANNEL__ && <ReleaseUpdateNotice channel={__SCARLET_RELEASE_CHANNEL__} />}

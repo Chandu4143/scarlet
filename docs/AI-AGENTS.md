@@ -16,7 +16,7 @@ Every rule below serves one of these goals:
 | Layer | Owns | Examples |
 |---|---|---|
 | **Model** | Editorial judgment | Which words go, which take survives, how long a pause should be, what a reason says to the editor |
-| **Harness** (Claude Code, Codex CLI; a Gemini CLI runner remains for existing setups) | The agent loop | Tool calling, context and compaction, sessions and resume, permissions, sandboxing |
+| **Harness** (Claude Code, Codex CLI, Antigravity CLI for Gemini) | The agent loop | Tool calling, context and compaction, sessions and resume, permissions, sandboxing |
 | **Scarlet** | Context, safe editing, the editor's interface | Measuring the footage, resolving exact cut points, versioning every edit, enforcing safety rules and the editor's preferences, review and playback |
 
 Scarlet is an interface for editors and a way for AI to read the timeline and media. It is not an agent framework and not an editor with taste of its own. When code in Scarlet starts deciding what belongs in the video, or starts running the agent's loop, it is in the wrong layer.

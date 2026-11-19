@@ -166,6 +166,11 @@ impl Paths {
         self.custom_models("custom-claude-models.json")
     }
 
+    /// Gemini model IDs the CLI accepts but leaves out of its picker catalog (early-access models).
+    pub fn custom_gemini_models(&self) -> Vec<String> {
+        self.custom_models("custom-gemini-models.json")
+    }
+
     fn custom_models(&self, file: &str) -> Vec<String> {
         let path = self.config_file.with_file_name(file);
         let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };

@@ -4,7 +4,7 @@
  *
  *   scarlet-agent connect --server URL [--token-file PATH] [--name NAME]
  *   scarlet-agent start                      run the daemon
- *   scarlet-agent auth claude|codex          sign the CLI in with your subscription (opens the browser)
+ *   scarlet-agent auth claude|codex|gemini   sign the CLI in with your subscription (opens the browser)
  *   scarlet-agent status                     show detected CLIs
  *   scarlet-agent run --project ID --agent claude|codex|gemini [--model M] "instruction"
  *
@@ -60,7 +60,7 @@ const USAGE = `scarlet-agent <command>
   connect --server URL [--token-file PATH] [--name NAME]
                                    use the destination engine's private token file or SCARLET_TOKEN
   start                            run the host daemon (claims tasks, runs your CLIs)
-  auth    claude|codex             sign in with your Claude or ChatGPT subscription (opens the browser)
+  auth    claude|codex|gemini      sign in with your Claude, ChatGPT or Google account (opens the browser)
   status                           show detected agent CLIs
   run     --project ID --agent claude|codex|gemini [--model M] "instruction"
                                    one-shot run against a project (no server task)
@@ -93,18 +93,19 @@ async function cmdConnect(flags: Record<string, string>): Promise<void> {
 }
 
 
-/** Subscription sign-in commands; each CLI opens the browser itself. */
-export const SIGN_IN: Record<string, { bin: string; args: string[]; label: string }> = {
-  claude: { bin: "claude", args: ["auth", "login", "--claudeai"], label: "Claude Pro/Max subscription" },
-  codex: { bin: "codex", args: ["login"], label: "ChatGPT plan" },
+/** Subscription sign-in commands; each CLI opens the browser or prints a sign-in link. */
+export const SIGN_IN: Record<string, { bin: string; args: string[]; label: string; installHint: string }> = {
+  claude: { bin: "claude", args: ["auth", "login", "--claudeai"], label: "Claude Pro/Max subscription", installHint: "npm i -g @anthropic-ai/claude-code" },
+  codex: { bin: "codex", args: ["login"], label: "ChatGPT plan", installHint: "npm i -g @openai/codex" },
+  gemini: { bin: "agy", args: ["acp", "--login"], label: "Google account", installHint: "curl -fsSL https://antigravity.google/cli/install.sh | bash" },
 };
 
 async function cmdAuth(positional: string[]): Promise<void> {
   const agent = positional[0] ?? "claude";
   const sign = SIGN_IN[agent];
-  if (!sign) throw new Error(`usage: scarlet-agent auth claude|codex`);
+  if (!sign) throw new Error(`usage: scarlet-agent auth claude|codex|gemini`);
   const bin = await findOnPath(sign.bin);
-  if (!bin) throw new Error(`${sign.bin} is not installed (npm i -g ${agent === "claude" ? "@anthropic-ai/claude-code" : "@openai/codex"})`);
+  if (!bin) throw new Error(`${sign.bin} is not installed (${sign.installHint})`);
   console.log(`Signing in to ${agent} with your ${sign.label}. A browser window will open…`);
   // An API key in the environment would make the CLI skip the subscription flow.
   const env = stripVars(process.env, apiKeyVars(agent));

@@ -100,7 +100,7 @@ describe("scarlet-agent", { timeout: 30_000 }, () => {
     await saveConfig({ server: "http://localhost:4000", token: "agent-token" }, { SCARLET_HOME: dir });
     await expect(main(["run", "cut it"])).rejects.toThrow("--project is required");
     await expect(main(["run", "--project", "p", "  "])).rejects.toThrow("instruction is required");
-    await expect(main(["auth", "gemini"])).rejects.toThrow("usage: scarlet-agent auth claude|codex");
+    await expect(main(["auth", "other"])).rejects.toThrow("usage: scarlet-agent auth claude|codex|gemini");
   });
 
   it.skipIf(process.platform === "win32")("names the package to install when the CLI to sign in to is missing", async () => {
@@ -109,6 +109,7 @@ describe("scarlet-agent", { timeout: 30_000 }, () => {
     output();
     await expect(main(["auth"])).rejects.toThrow("claude is not installed (npm i -g @anthropic-ai/claude-code)");
     await expect(main(["auth", "codex"])).rejects.toThrow("codex is not installed (npm i -g @openai/codex)");
+    await expect(main(["auth", "gemini"])).rejects.toThrow("agy is not installed (curl -fsSL https://antigravity.google/cli/install.sh | bash)");
   });
 
   it.skipIf(process.platform === "win32")("status lists every agent and where the host is connected", async () => {

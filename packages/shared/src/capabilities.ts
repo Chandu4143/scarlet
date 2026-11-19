@@ -52,7 +52,7 @@ const KNOWN: Record<string, AgentCapabilities> = {
   // codex exec has a writable workspace; MCP audio blocks are not forwarded to the model.
   // Plan: Codex 0.166 has update_plan only with tools.update_plan.enabled, and reports it as `todo_list` items.
   codex: { images: true, audio: false, files: true, plan: false, toolWaitSeconds: 240 },
-  // gemini runs with tools.core = [] (no file tools); audio forwarding from MCP is unverified. Its runner reads no plan.
+  // agy acp runs with Scarlet's permission handler allowing only Scarlet MCP tools (no file tools); audio forwarding from MCP is unverified. Its runner reads no plan.
   gemini: { images: true, audio: false, files: false, plan: false },
 };
 

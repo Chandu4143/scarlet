@@ -242,7 +242,7 @@ export function buildDb(chatLayouts = false): MockDb {
 
   const agentClaude = { type: "agent" as const, id: "claude", name: "Claude Code", model: "opus" };
   const agentCodex = { type: "agent" as const, id: "codex", name: "Codex", model: "gpt-5-codex" };
-  const agentGemini = { type: "agent" as const, id: "gemini", name: "Gemini CLI", model: "gemini-2.5-pro" };
+  const agentGemini = { type: "agent" as const, id: "gemini", name: "Gemini", model: "gemini-2.5-pro" };
   const editor = { type: "human" as const, id: me.id, name: me.name };
 
   const versions: VersionSummary[] = [

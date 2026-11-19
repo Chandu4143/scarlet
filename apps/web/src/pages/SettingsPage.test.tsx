@@ -528,14 +528,14 @@ it("says on Models what is true signed in or not: no models until Claude Code or
     expect(signedIn.agents[0]).toMatchObject({ id: "claude", installed: true, loggedIn: true });
     useHostsStore.setState({ status: "ready", error: null, hosts: [{ ...signedIn, online: false }] });
     await open("/settings#models");
-    expect(said()).toBe("Models appear when Claude Code or Codex is online. Manage sign-in");
+    expect(said()).toBe("Models appear when Claude Code, Codex or Gemini is online. Manage sign-in");
     // The same under the reason, when the list of computers couldn't be read.
     await act(async () => useHostsStore.setState({ status: "error", error: "Engine unreachable", hosts: [] }));
     expect(el.querySelector('[role="alert"]')?.textContent).toBe("Engine unreachable");
-    expect(said()).toBe("Models appear when Claude Code or Codex is online. Manage sign-in");
+    expect(said()).toBe("Models appear when Claude Code, Codex or Gemini is online. Manage sign-in");
     // And with nobody signed in, where the link beside it is the way on.
     await act(async () => useHostsStore.setState({ status: "ready", error: null, hosts: [] }));
-    expect(said()).toBe("Models appear when Claude Code or Codex is online. Manage sign-in");
+    expect(said()).toBe("Models appear when Claude Code, Codex or Gemini is online. Manage sign-in");
     expect(el.querySelector('.settings-page section.card p a')?.getAttribute("href")).toBe("/settings#hosts");
   } finally {
     await act(async () => useHostsStore.setState(hosts, true));

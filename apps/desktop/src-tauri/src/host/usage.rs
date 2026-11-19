@@ -100,8 +100,20 @@ fn normalize_codex_usage(raw: Option<&Value>, model: Option<&str>, keys: [&str; 
     })
 }
 
-/// Gemini `result.stats`: `input_tokens` includes `cached`; `input` (newer CLIs) is the uncached part.
+/// Gemini usage: ACP `PromptResponse.usage` (camelCase) or legacy `result.stats` (snake_case).
 pub fn gemini_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsage> {
+    if let Some(s) = counts(raw, &["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens"]) {
+        let cached = token_count(s.get("cachedReadTokens"));
+        let written = token_count(s.get("cachedWriteTokens"));
+        return Some(AgentUsage {
+            model: model_name(model),
+            input_tokens: token_count(s.get("inputTokens")).saturating_sub(cached).saturating_sub(written),
+            output_tokens: token_count(s.get("outputTokens")),
+            cache_read_tokens: cached,
+            cache_write_tokens: written,
+            reasoning_tokens: token_count(s.get("thoughtTokens")),
+        });
+    }
     let s = counts(raw, &["input_tokens", "output_tokens", "input", "cached"])?;
     let cached = token_count(s.get("cached"));
     let input = if s.get("input").is_some_and(Value::is_number) {
@@ -137,6 +149,22 @@ mod tests {
         let gemini = gemini_usage(Some(&json!({"input_tokens": 1200, "output_tokens": 300, "cached": 1000, "input": 200})), Some("gemini-3-pro"));
         assert_eq!(gemini, Some(AgentUsage { model: Some("gemini-3-pro".into()), input_tokens: 200, output_tokens: 300, cache_read_tokens: 1000, ..Default::default() }));
         assert_eq!(gemini_usage(Some(&json!({"input_tokens": 1200, "cached": 1000})), None).map(|u| u.input_tokens), Some(200));
+
+        let gemini_acp = gemini_usage(
+            Some(&json!({"inputTokens": 1500, "outputTokens": 250, "cachedReadTokens": 900, "cachedWriteTokens": 100, "thoughtTokens": 80})),
+            Some("gemini-3.1-pro"),
+        );
+        assert_eq!(
+            gemini_acp,
+            Some(AgentUsage {
+                model: Some("gemini-3.1-pro".into()),
+                input_tokens: 500,
+                output_tokens: 250,
+                cache_read_tokens: 900,
+                cache_write_tokens: 100,
+                reasoning_tokens: 80,
+            })
+        );
     }
 
     #[test]

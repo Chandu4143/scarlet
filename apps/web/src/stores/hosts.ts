@@ -8,6 +8,7 @@ interface HostsState {
   hosts: AgentHost[];
   customOpenaiModels: string[];
   customClaudeModels: string[];
+  customGeminiModels: string[];
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;
   refreshingModels: boolean;
@@ -31,6 +32,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   hosts: [],
   customOpenaiModels: [],
   customClaudeModels: [],
+  customGeminiModels: [],
   status: "idle",
   error: null,
   refreshingModels: false,
@@ -64,8 +66,12 @@ export const useHostsStore = create<HostsState>((set, get) => ({
       if (!IS_MOCK) {
         const host = await desktop.hostRefreshAgents();
         hostError = host.error;
-        const { customOpenaiModels, customClaudeModels } = await desktop.info();
-        set({ customOpenaiModels: customOpenaiModels ?? [], customClaudeModels: customClaudeModels ?? [] });
+        const { customOpenaiModels, customClaudeModels, customGeminiModels } = await desktop.info();
+        set({
+          customOpenaiModels: customOpenaiModels ?? [],
+          customClaudeModels: customClaudeModels ?? [],
+          customGeminiModels: customGeminiModels ?? [],
+        });
       }
       // A provider can fail while other providers publish new models.
       await get().load();
@@ -96,7 +102,12 @@ export interface OnlineAgent {
 export const isConfiguredAgent = (agent: AgentAvailability) => agent.id !== "api" && agent.installed && agent.loggedIn !== false;
 
 /** Agents that are installed and logged in on at least one online host. */
-export function onlineAgents(hosts: AgentHost[], customOpenaiModels: readonly string[] = [], customClaudeModels: readonly string[] = []): OnlineAgent[] {
+export function onlineAgents(
+  hosts: AgentHost[],
+  customOpenaiModels: readonly string[] = [],
+  customClaudeModels: readonly string[] = [],
+  customGeminiModels: readonly string[] = [],
+): OnlineAgent[] {
   // Every model a CLI offers is listed, including ones its own picker hides.
   const map = new Map<AgentId, OnlineAgent>();
   for (const h of hosts) {
@@ -106,7 +117,10 @@ export function onlineAgents(hosts: AgentHost[], customOpenaiModels: readonly st
       const cur: OnlineAgent = map.get(a.id) ?? { id: a.id, models: [], modelLabels: Object.create(null), modelOptions: Object.create(null), hostNames: [] };
       for (const id of a.models ?? []) {
         const label = a.modelLabels?.[id] ?? id;
-        const custom = (a.id === "codex" && customOpenaiModels.includes(id)) || (a.id === "claude" && customClaudeModels.includes(id));
+        const custom =
+          (a.id === "codex" && customOpenaiModels.includes(id))
+          || (a.id === "claude" && customClaudeModels.includes(id))
+          || (a.id === "gemini" && customGeminiModels.includes(id));
         if (!cur.models.includes(id)) cur.models.push(id);
         cur.modelLabels[id] ??= { name: label, custom };
         (cur.modelOptions[id] ??= []).push(a.modelOptions?.[id]);

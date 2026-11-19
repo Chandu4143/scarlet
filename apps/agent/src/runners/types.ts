@@ -81,16 +81,17 @@ export const COMPACTED = { type: "log", text: "Context compacted", data: { kind:
 /** Five times the longest silence measured across real editing runs (1.9 minutes). */
 export const DEFAULT_STALL_MS = 10 * 60 * 1000;
 
-/** Matches the Scarlet question tool however the CLI namespaces it (mcp__scarlet__task_question, scarlet__task_question, task_question). */
+/** Matches the Scarlet question tool however the CLI namespaces it (mcp__scarlet__task_question, scarlet__task_question, scarlet:task_question, task_question). */
 export function isQuestionTool(name: string | undefined): boolean {
-  return name === "mcp_scarlet_task_question" || (!!name && /(^|__|\.|\/)task_question$/.test(name));
+  return name === "mcp_scarlet_task_question" || (!!name && /(^|__|\.|\/|:)task_question$/.test(name));
 }
 
 /** Strip the MCP namespace prefix for display: mcp__scarlet__timeline_get -> scarlet.timeline_get */
 export function prettyToolName(name: string): string {
   const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(name);
   if (m) return `${m[1]}.${m[2]}`;
-  return name.replace(/^scarlet__/, "scarlet.");
+  if (name.startsWith("mcp_scarlet_")) return `scarlet.${name.slice("mcp_scarlet_".length)}`;
+  return name.replace(/^scarlet(?:__|\/|:)/, "scarlet.");
 }
 
 export function briefInput(input: unknown, max = 160): string {
