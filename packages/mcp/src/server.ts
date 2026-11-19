@@ -12,7 +12,7 @@ import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
  * propose changes. Everything goes through a `ScarletClient`; the server can
  * be run over stdio (see cli.ts) or embedded in-process.
  */
-import { audibleSourcePoints, cutReading, cutsReach, dialogueGate, dialogueScanPage, joinPlays, NOTE_QUOTE_REACH, planDialogueCuts, quotesAwayFromCut, resolveCutRange, SPEECH_BESIDE_EDGE, timelineWordsNear, type DialoguePlanSources } from "./dialogue-plan.js";
+import { audibleSourcePoints, cutReading, cutsReach, dialogueGate, dialogueScanPage, joinPlays, NOTE_QUOTE_REACH, planDialogueBatch, quotesAwayFromCut, resolveCutRange, SPEECH_BESIDE_EDGE, timelineWordsNear, type DialoguePlanSources } from "./dialogue-plan.js";
 import { inspectDialogueSuggestion, MAX_WHOLE_PICTURE_SHEETS, type DialogueInspection } from "./dialogue-review.js";
 import { Lanes, ReviewInspections, urgencyRank, type InspectionRequest } from "./review-prep.js";
 import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, DIP_DBFS, LEAST_VOICE_IN, PAUSE_BEAT, checkKeptWords, checkDialogueJoin, dialogueJoinChecker, NoCachedSpeech, checkResumeQuote, clipEdgeSound, dialogueAudioStream, dialogueClips, dialogueCutPreview, dialogueJoinWords, joinAudio, joinEvidence, quietFrameNote, type JoinPage } from "./dialogue-join.js";
@@ -2401,29 +2401,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const anchor = await cutAnchor(tl);
       const scope = range || localPauses || selectedRange(anchor) ? cutScope(tl, anchor, range, localPauses) : undefined;
       const request = { tl, cuts, range: scope, only, localPauses, anchor, unsureJoins };
-      let plan = await planDialogueCuts(request, { ...planSources, crossfadeFrames, pace });
-      // A dispute names the cuts whose edges make it. The rest of the batch is saved without them, so a pass resubmits
-      // only what was disputed instead of the whole batch: a refused batch cost a pass a turn and every cut again, five to
-      // seven times a pass (2026-11-16).
-      let setAside: { cuts: number[]; disputedEdges: unknown[]; next: string } | undefined;
-      if (plan.outcome === "needsRevision") {
-        // A cut Scarlet could not place is named before any edge is measured, so the rest can raise a dispute of its
-        // own once it is set aside. Each round sets aside what the last one named.
-        const disputed = new Set<number>(), edges = [...plan.disputedEdges];
-        let rest: Awaited<ReturnType<typeof planDialogueCuts>> | undefined = plan;
-        for (let round = 0; round < 3 && rest?.outcome === "needsRevision"; round++) {
-          const named: number[] = rest.disputedEdges.flatMap(d => d.cuts).filter(i => !disputed.has(i));
-          if (round) edges.push(...rest.disputedEdges);
-          for (const i of named) disputed.add(i);
-          rest = named.length && cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
-            ? await planDialogueCuts({ ...request, setAside: disputed }, { ...planSources, crossfadeFrames, pace }).catch(() => undefined) : undefined;
-        }
-        if (rest?.outcome === "ready") {
-          setAside = { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: edges.map(({ cuts: _cuts, ...edge }) => edge),
-            next: `These cuts were not saved; the rest of the batch was. ${refusalNext(edges)} Resubmit only these on continueFrom.` };
-          plan = rest;
-        }
-      }
+      // A dispute sets aside only the cuts it names; the rest of the batch is saved (planDialogueBatch).
+      const batch = await planDialogueBatch(request, { ...planSources, crossfadeFrames, pace });
+      const plan = batch.plan;
+      const setAside = batch.setAside && {
+        cuts: batch.setAside.cuts, disputedEdges: batch.setAside.disputedEdges.map(({ cuts: _cuts, ...edge }) => edge),
+        next: `These cuts were not saved; the rest of the batch was. ${refusalNext(batch.setAside.disputedEdges)} Resubmit only these on continueFrom.`,
+      };
       const recordKept = (ranges: TimeRange[]) => ranges.length && ctx.taskId
         ? postEvent({ type: "log", text: "", data: { kind: "dialogue_preserved", version: tl.version, ranges } }) : undefined;
       if (plan.outcome === "preserved") {
