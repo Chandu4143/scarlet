@@ -16,6 +16,8 @@ export const PAUSE_SECONDS = 0.4;
 export const STUTTER_SECONDS = 1;
 /** A run of this many words or more that one cut plays and the other doesn't is one a viewer would notice. */
 export const NOTICED_WORDS = 2;
+/** A run of this many words or more that Scarlet left in and the editor cut is a clear missed removal, not a brief tightening. */
+export const LONG_MISSED_WORDS = 6;
 
 /** Consecutive in-scope words one cut removed and the other kept: `words` long, from `start` to `end`. */
 export interface Disagreement extends Range { words: number; text: string }
