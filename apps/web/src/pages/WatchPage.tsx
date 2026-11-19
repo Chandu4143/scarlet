@@ -740,6 +740,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   return (
     <section ref={stage} className="cut-preview" aria-label={view} data-expanded={expanded || undefined}>
       <AmbientLight stage={stage} monitor={monitor} />
+      {simple.onPick && (source || cut || change || draftVersion) && <PictureMarkTools projectId={current.id} enabled={canMark && !playingBefore && !framing} onStart={markFrame} />}
       <div className="watch-viewport">
         <div ref={monitor} className="watch-monitor" data-landscape={pictureAspect > 1 || undefined}
           style={{ "--picture-aspect": pictureAspect } as CSSProperties}
@@ -777,7 +778,6 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
           <TemplateOnPicture />
           {!playingBefore && !framing && <PictureMarks projectId={current.id} version={source ? undefined : rangeVersion} mediaId={source?.id} fps={fps} />}
-          {simple.onPick && (source || cut || change || draftVersion) && <PictureMarkTools projectId={current.id} enabled={canMark && !playingBefore && !framing} onStart={markFrame} />}
           {/* The edits saved while the video played come in as it stops, with a word that they did. */}
           {!source && <CaughtUpOnMonitor />}
           {cutLoadError && <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-black/75 p-2 text-sm">

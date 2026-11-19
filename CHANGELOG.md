@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 18, 2026
 
+- The drawing tools sit in a row above the video instead of over the picture.
+
 - The drawing tools now stay over the top left of the picture, so a press on one pauses the video and starts marking; the pen beside full screen is gone.
 
 - A dialogue pass leaves your own short pauses in and cuts only the ones that play as dead air, about a second or more, so cuts no longer land one after another.
