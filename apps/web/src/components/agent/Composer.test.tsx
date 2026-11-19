@@ -8,6 +8,8 @@ import { api } from "../../lib/client";
 import { buildDb, PRJ, sampleTemplates } from "../../lib/mock/fixtures";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore } from "../../stores/attachments";
+import { usePictureMarksStore } from "../../stores/pictureMarks";
+import * as markedFrame from "../../lib/markedFrame";
 import { useTemplatesStore } from "../../stores/templates";
 import { buildThreads } from "../../lib/threads";
 import { useHostsStore } from "../../stores/hosts";
@@ -50,6 +52,7 @@ afterEach(async () => {
   useSkillsStore.setState(stores[4], true);
   useTemplatesStore.setState(stores[5], true);
   useAttachmentsStore.setState(stores[6], true);
+  usePictureMarksStore.setState({ marking: null, byProject: {} });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -1627,6 +1630,45 @@ it("says why a file couldn't be attached", async () => {
   await show();
   await act(async () => dropTargets.get(container.querySelector(".composer-dock")!)!.drop(["/Users/me/huge.mov"]));
   expect(container.querySelector(".composer-file.is-failed")?.textContent).toContain("The file is too large.");
+});
+
+it("carries the frame the editor drew on with the next message: its picture as a file, and the marks", async () => {
+  const picture = new Blob(["png"], { type: "image/png" });
+  const draw = vi.spyOn(markedFrame, "markedFramePicture").mockResolvedValue(picture);
+  const upload = vi.spyOn(api, "uploadAttachment").mockResolvedValue({ attachment: { id: "att_frame", name: "Marked frame 0.07.png", size: 3, mime: "image/png" } });
+  const ring = { kind: "draw" as const, box: { x: 0.55, y: 0.4, w: 0.1, h: 0.2 }, points: [[0.55, 0.5], [0.6, 0.4], [0.65, 0.5], [0.6, 0.6]] as [number, number][] };
+  const point = { kind: "point" as const, box: { x: 0.7, y: 0.3, w: 0, h: 0 } };
+  usePictureMarksStore.setState({ marking: null, byProject: { [PRJ]: { time: 7, version: project.head!, picture: "frame://7", marks: [ring, point] } } });
+  await show();
+  // The marked frame is a row of the line on top of the box, with its picture, and a × that takes it off.
+  const row = container.querySelector(".composer-files .composer-file.is-marked-frame")!;
+  expect(row.querySelector(".composer-file-name")?.textContent).toBe("Marked frame 0:07");
+  expect(row.querySelector(".composer-file-state")?.textContent).toBe("2 marks");
+  expect(row.querySelector("img")?.getAttribute("src")).toBe("frame://7");
+  await type("Blur 1 and swap 2 for the new logo");
+  await submit();
+  expect(draw).toHaveBeenCalledWith("frame://7", [ring, point]);
+  expect(upload).toHaveBeenCalledWith(PRJ, expect.any(File));
+  expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    instruction: "Blur 1 and swap 2 for the new logo",
+    context: expect.objectContaining({
+      attachments: [{ id: "att_frame", name: "Marked frame 0.07.png", size: 3, mime: "image/png" }],
+      pictureMarks: { attachmentId: "att_frame", time: 7, version: project.head, marks: [ring, point] },
+    }),
+  }));
+  // Sent, the marks leave the box.
+  expect(usePictureMarksStore.getState().byProject[PRJ]).toBeUndefined();
+  expect(container.querySelector(".composer-files")).toBeNull();
+});
+
+it("takes the marked frame off the message with its ×", async () => {
+  usePictureMarksStore.setState({ marking: null, byProject: { [PRJ]: { time: 7, version: project.head!, picture: "frame://7", marks: [{ kind: "box", box: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }] } } });
+  await show();
+  const remove = container.querySelector<HTMLButtonElement>(".composer-file.is-marked-frame .composer-file-remove")!;
+  expect(remove.getAttribute("aria-label")).toBe("Remove Marked frame 0:07");
+  await act(async () => remove.click());
+  expect(usePictureMarksStore.getState().byProject[PRJ]).toBeUndefined();
+  expect(container.querySelector(".composer-files")).toBeNull();
 });
 
 it("sends a message about a moment that carries files as a request about that moment, since a note takes none", async () => {

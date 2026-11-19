@@ -57,6 +57,11 @@ export function taskRoutes(ctx: Ctx) {
     }
     // Each attached file must be one the editor attached in this project; the stored name and size are what the agent is told.
     const attachments = await checkAttachments(ctx, project.id, body.context?.attachments);
+    // The picture of a marked frame is one of the message's own files.
+    const drawn = body.context?.pictureMarks;
+    if (drawn && !attachments?.some(a => a.id === drawn.attachmentId)) {
+      throw badRequest("unknown_attachment", "The marked frame's picture isn't attached to this message. Mark the frame again.");
+    }
     const user = c.var.user;
     const threadId = body.context?.threadId;
     const { changeId, cutIndex } = body.context ?? {};

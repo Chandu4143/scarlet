@@ -81,6 +81,21 @@ describe("attachments", () => {
     expect(await refused.text()).toContain("attached in this project");
   });
 
+  it("keeps the marks drawn on a frame with the request, tells the model what and where they are, and wants their picture attached", async () => {
+    const frame = await attach("Marked frame 0.07.png", "png", "image/png");
+    const marks = [{ kind: "box", box: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } }];
+    const created = await api("POST", `/projects/${project.id}/tasks`, { agent: "claude", instruction: "blur this",
+      context: { attachments: [frame], pictureMarks: { attachmentId: frame.id, time: 7, marks } } });
+    expect(created.status).toBe(201);
+    const { task } = await created.json() as { task: Task };
+    expect(task.context.pictureMarks).toEqual({ attachmentId: frame.id, time: 7, marks });
+    expect(await prompt(task)).toContain(`- The editor drew a mark on the picture at timeline 7.00 s (0:07.00), in fractions of the frame from its top left: a box over 0.10–0.40 across and 0.20–0.60 down. The frame with the marks drawn on it is attachment ${frame.id} ("Marked frame 0.07.png").`);
+    const unattached = await api("POST", `/projects/${project.id}/tasks`, { agent: "claude", instruction: "blur this",
+      context: { pictureMarks: { attachmentId: frame.id, time: 7, marks } } });
+    expect(unattached.status).toBe(400);
+    expect(await unattached.text()).toContain("Mark the frame again");
+  });
+
   it("reads a text attachment back, and goes when its project is removed for good", async () => {
     const note = await attach("notes.txt", "Accent #E11D48");
     const read = await api("POST", `/projects/${project.id}/documents/read`, { attachmentId: note.id });

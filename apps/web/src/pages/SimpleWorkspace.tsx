@@ -41,6 +41,7 @@ import { Drawer, Icon, Loading } from "../components/ui/primitives";
 import { api, errorMessage } from "../lib/client";
 import { readTimeline } from "../lib/timelineCache";
 import { appLog } from "../lib/appLog";
+import { markedFrameUrl } from "../lib/markedFramePictures";
 import { clock as clockLabel, clockRange, lengthLabel, plural, removedSeconds } from "../lib/format";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
 import { listMoments, momentRange, type Moment } from "../lib/editMoments";
@@ -1220,7 +1221,7 @@ function Turn({ projectId, thread, actions, pinned, pinHost, list: passList, rep
           if (markable) actions.mark!(thread.id);
           actions.fitTimeline?.();
         } : undefined}><span className="simple-who">You</span>
-        <Said lead={(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>} text={request.text} />
+        <Said lead={<>{(about ?? tag) && <span className="simple-revising">{about ?? tag}</span>}<MarkedFrameOnRequest projectId={projectId} task={task} /></>} text={request.text} />
         <span className="unit-state">{standing}</span>{headingEnd}</div>}
       {bundle}
       {learnedIn(run).map(l => <LearnedLine key={l.id} learning={l} onReview={actions.reviewLearning} />)}
@@ -3797,4 +3798,13 @@ export function SimpleWorkspace() {
 /** The passage Scarlet asks the editor to check, as the clock reads it: one time for a moment, from and to for a stretch. */
 function checkSpan({ start, end }: TimeRange) {
   return end - start < 0.05 ? clockLabel(start) : clockRange(start, end);
+}
+
+/** The frame the editor drew on for a request, with their marks, before their words in its band. */
+function MarkedFrameOnRequest({ projectId, task }: { projectId: string; task: Task }) {
+  const drawn = task.context.pictureMarks;
+  if (!drawn) return null;
+  const count = drawn.marks.length;
+  return <img className="unit-marked-frame" src={markedFrameUrl(projectId, drawn.attachmentId)} alt=""
+    title={`Marked frame ${clockLabel(drawn.time)} · ${count === 1 ? "1 mark" : `${count} marks`}`} />;
 }
