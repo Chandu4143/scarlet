@@ -1932,9 +1932,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       : await getTranscript(mediaId, { from, to, granularity: "word" }, false);
     const observed = firstCutEvidence(transcript, wf);
     // Use measured words only. The saved transcript's synthesized search timings can
-    // differ from this scan. Keep the preceding page's non-overlapping tail on resume.
+    // differ from this scan. Keep the preceding page's non-overlapping tail on resume. A word goes with the side its
+    // middle is on, as a page keeps its words, so one said across the seam is in one of them.
     const timedWords = (segments: DialogueDetections["segments"], start: number, end: number) =>
-      segments.flatMap(s => s.words.filter(w => w.start >= start && w.end <= end && w.end > w.start)
+      segments.flatMap(s => s.words.filter(w => w.end > w.start && (w.start + w.end) / 2 >= start && (w.start + w.end) / 2 < end)
         .map(w => w.speaker || !s.speaker ? w : { ...w, speaker: s.speaker })).sort((a, b) => a.start - b.start);
     const scopeStart = scanScopes.get(JSON.stringify([mediaId, end])) ?? from;
     const previous = evidence.scans.find(s => s.mediaId === mediaId && s.start >= scopeStart && Math.abs(s.start + 58 - from) < 1e-6);
