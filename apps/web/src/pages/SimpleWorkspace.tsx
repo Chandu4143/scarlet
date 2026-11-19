@@ -8,7 +8,7 @@ import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
 import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { closingCheckFailed, isAsideTask, fullRenderContext, isProjectEditTask, matchesEdit, queueOrder, queueWaits, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
-import { EditBadge, editGroups, EditVersion, SaveAsTemplate, ThreadAction, ThreadEdits, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
+import { EditBadge, editGroups, EditVersion, RejectEdit, SaveAsTemplate, ThreadAction, ThreadEdits, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
 import { useNearView } from "../lib/useNearView";
 import { needNumbers } from "../lib/needNumbers";
@@ -2990,6 +2990,10 @@ export function SimpleWorkspace() {
     // An edit made in several places is kept in all of them: it is one edit, on one row.
     const row = editsByRow[shownRow] ?? [reviewingEdit];
     if (keepEdits(current.id, focusThread.id, row, head ?? undefined)) recordEditReview(current.id, threadTimeline.selectedTarget, "keep");
+    moveOnFromShown();
+  }
+  // Keep and Reject edit go on to the same place: the next edit or call that still waits, else the card closes.
+  function moveOnFromShown() {
     if (nextEditAfterKeep) actions.playEdit(nextEditAfterKeep, openOnItsOwn(nextEditAfterKeep));
     else if (nextCallAfterKeep) actions.listen(pass!, nextCallAfterKeep);
     else closeEdit();
@@ -3126,10 +3130,10 @@ export function SimpleWorkspace() {
   // The transcript stays folded away. Its icon on the card opens it for this edit only.
   const scriptKey = reviewingEdit && beforeCut ? editKey(reviewingEdit) : undefined;
   const scriptOpen = !!scriptKey && scriptFor === scriptKey;
-  // Save as template is about the open edit, whatever the message box is aimed at just then: a message still being
-  // written may be about another one.
+  // Save as template and Reject edit are about the open edit, whatever the message box is aimed at just then: a message
+  // still being written may be about another one.
   const openTarget = reviewingEdit && shownChange && focusThread ? threadTimeline.selectedTarget : undefined;
-  // An edit another request made, open here because this request flagged it, is saved from here too.
+  // An edit another request made, open here because this request flagged it, is saved or rejected from here too.
   const appliedTarget = openTarget && focusChanges
     .some(c => c.id === openTarget.changeId && c.state === "approved") ? openTarget : undefined;
   // An edit sent back for revision has no card until its new version lands: its note and its decisions are about the
@@ -3137,6 +3141,9 @@ export function SimpleWorkspace() {
   // still aimed at it, ↑ ↓ step on and Esc closes it.
   const editOpen = !!reviewingEdit;
   const openEditKey = reviewingEdit && editKey(reviewingEdit);
+  // The edit that's open, for a rejection that lands after the editor stepped on: only the edit it was sent from moves on.
+  const openEditNow = useRef(openEditKey);
+  openEditNow.current = openEditKey;
   const playCheck = () => {
     if (!reviewRange) return;
     player.seek(editPlaybackRange(reviewRange, cutDuration ?? 0).start, true);
@@ -3175,10 +3182,17 @@ export function SimpleWorkspace() {
         {/* A graphic can be saved to use again, as a template the editor picks with $ in the message box. */}
         {appliedTarget && reviewingEdit.kind === "graphic" && <SaveAsTemplate key={`template ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget}
           onSent={() => { follow.current = true; }} />}
-        {/* There is no Undo edit: the editor never used it. "Undo this" in the message box, aimed at the open edit, asks
-            Scarlet to put it back. */}
         <ReviewActions revise={() => actions.revise(focusThread, shownChange)} approve={keepShown}
           approveLabel={shownMarker ? "Done" : "Keep"} approveKey={shownMarker ? "D" : "K"} />
+        {/* Reject edit is a small × after Keep, as Skip is after a call's Approve: it asks Scarlet to put back just this
+            edit, or the moment that's open, and goes on as Keep does. A spot marked for the editor changed nothing, so
+            it has none. Each edit has its own: one on its way for the edit before doesn't hold this one's back. */}
+        {appliedTarget && !shownMarker && <RejectEdit key={`reject ${openEditKey}`} projectId={current.id} thread={focusThread} target={appliedTarget} onSent={() => {
+          follow.current = true;
+          appLog("action", "reject-edit", { edit: shownIndex + 1, of: threadEdits.length, change: reviewingEdit.changeId });
+          // An edit the editor stepped to meanwhile stays open: the rejection wasn't about it.
+          if (openEditNow.current === openEditKey) moveOnFromShown();
+        }} />}
       </span>
     </div>
     {/* A cut reads from the version before it. Until that arrives the mark stands alone and says the words are on their

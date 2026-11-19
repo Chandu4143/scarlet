@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { historyLineage } from "@scarlet/timeline";
 import { matchesEdit, threadEditList, threadRevision, isThreadDone, REVISED_CHECK, type EditRef, type Thread, type ThreadEdit, type VersionSummary } from "@scarlet/shared";
-import { requestPosition } from "../../lib/editReviews";
+import { recordEditReview, requestPosition } from "../../lib/editReviews";
 import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
 import { removedSeconds } from "../../lib/format";
@@ -14,6 +14,51 @@ import { Icon } from "../ui/primitives";
 import { useAgentAvailability } from "../agent/AgentChip";
 import { useHotkeys } from "../../lib/hotkeys";
 import type { AgentContext } from "../../stores/ui";
+
+/** What Scarlet is asked to do when the editor rejects one edit of a change that made several, or one moment of it. */
+export function rejectInstruction(target: Pick<AgentContext, "editNumber" | "label" | "momentEdits">) {
+  const which = [target.editNumber && `edit ${target.editNumber}`, target.label && `“${target.label}”`].filter(Boolean).join(", ");
+  const moment = !!target.momentEdits?.length;
+  return `The editor rejected ${which || "this edit"}${moment ? " and every other edit of its moment" : ""}. ` +
+    `Put back exactly what ${moment ? "they" : "it"} changed and leave every other edit as it is.`;
+}
+
+/**
+ * Reject an applied edit: a small × after Keep on its card, named "Reject edit" on hover, as a call's × skips it. The
+ * engine can only revert a whole change, so this sends Scarlet a request to put back just that edit (or the whole
+ * moment that's open), with the same agent and the same target as typing it would. The editor pressed the × and wrote
+ * nothing, so the request reads "Reject edit" under its edit's tag, in the chat and in the queue; what Scarlet is asked
+ * to do is the instruction, which is for the agent.
+ */
+export function RejectEdit({ projectId, thread, target, onSent }: { projectId: string; thread: Thread; target: AgentContext; onSent(): void }) {
+  const { effective, unavailableReason } = useAgentAvailability();
+  const createTask = useProjectStore(s => s.createTask);
+  const head = useProjectStore(s => s.current?.project.head ?? undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function reject() {
+    // One request per press: pressed again while the first is on its way, it sends nothing more.
+    if (busy) return;
+    if (!effective) { setError(unavailableReason); return; }
+    setBusy(true);
+    setError("");
+    try {
+      await createTask(projectId, { kind: "edit", ...effective, instruction: rejectInstruction(target),
+        context: { version: head, ...requestPosition(target), threadId: thread.id, message: "Reject edit" } });
+      recordEditReview(projectId, target, "undo");
+      onSent();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <>
+    {error && <span className="simple-error" role="alert">{error}</span>}
+    <button type="button" className="edit-card-icon edit-card-reject" data-log-control="reject-edit" aria-label="Reject edit" aria-busy={busy || undefined}
+      title={busy ? "Rejecting…" : "Reject edit"} disabled={busy} onClick={e => { if (e.detail) e.currentTarget.blur(); void reject(); }}><Icon name="x" size={12} /></button>
+  </>;
+}
 
 /** What Scarlet is asked to do when the editor saves a graphic from its card to use again. */
 export function saveTemplateInstruction(target: Pick<AgentContext, "editNumber" | "label">) {
