@@ -58,7 +58,7 @@ import { composeClocks, verifiedJoinClock, type JoinClock } from "../lib/joinClo
 import { buildThreads, firstCutDeliveries, isRedo, requestTarget, revisionTarget, stagedCuts, threadConversation, type Thread, type ThreadEntry } from "../lib/threads";
 import { runIsActive, spentLabel } from "../lib/taskRun";
 import { aboutOne, aimOf, closingReply, lastAttempt, laterAttempts, notesStillAsked, redoWords, requestRoots, stagingTask, takenFromQueue, threadRuns, waitingToStart, type Run } from "../lib/requestRuns";
-import { callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut, isDialoguePass, isOpenPass, keepGoesTo, noRevisions, openPass, passRevision, reviewCalls, revisedCall, revisedFrom, revisionCut, savedChoices, waitsToPlay,
+import { callGoesTo, callNow, callRevisions, carriedCall, carryingVersions, cutOnWorkingCut, isDialoguePass, isOpenPass, keepGoesTo, noRevisions, openPass, passRevision, reviewCalls, revisedCall, revisedFrom, revisionCut, savedChoices, waitsToPlay,
   type Call, type CutChoice, type Footage, type Revision } from "../lib/passCalls";
 import { canPreviewMedia } from "../lib/upload";
 import { showingWorkingCut, useShownCut } from "../stores/shownCut";
@@ -2080,28 +2080,31 @@ export function SimpleWorkspace() {
   useEffect(() => { setDecideError(""); }, [pass?.id]);
   useEffect(() => { setStripError(""); }, [suggestion?.id]);
   /**
-   * Approve or skip the call that's playing, then play the next call still waiting. The last call applies the pass,
-   * with Scarlet's picks for the rest, or schedules it for when Scarlet finishes checking.
+   * Approve or skip the call that's playing, then move on to the next item: the next call still waiting on For you,
+   * or the next item in the list (edit or call) when See all is open. The last call applies the pass, with Scarlet's
+   * picks for the rest, or schedules it for when Scarlet finishes checking.
    */
   async function decideCut(choice: CutChoice) {
     if (!pass || !listening || listening.changeId !== pass.id || deciding) return;
     const decidedNow = { ...choicesOf(pass), [listening.index]: choice };
     // A and S reach the log as a bare key: this says which call it decided and how many still wait.
     appLog("action", choice === approves(allCalls.find(a => a.index === listening.index)) ? "approve-call" : "skip-call", { change: pass.id, cut: listening.index, at: listening.cut.start, left: remainingCalls.length });
-    const next = nextCallAfterDecision;
+    const next = nextAfterCallDecision;
     player.pause();
-    setListening(next ? { changeId: pass.id, index: next.index, cut: { start: next.start, end: next.end }, side: "after", take: 0, key: `${pass.id}/${next.index}` } : undefined);
-    if (next) return void saveChoices(pass, decidedNow);
-    // The last call is made. For you counts the request's flagged edits with its calls, so while one of those
-    // still waits the first of them opens: the card doesn't close on a count above zero.
-    const flagged = passThread && passFlagged[0];
-    if (flagged) actions.openEdit(passThread, flagged);
-    // The revised cut comes back as a new call, so a pass under revision waits for it before applying.
-    // A queued revision of a cut isn't applied over either; the line's Apply stays available.
+    if (next && "call" in next) {
+      setListening({ changeId: pass.id, index: next.call.index, cut: { start: next.call.start, end: next.call.end }, side: "after", take: 0, key: `${pass.id}/${next.call.index}` });
+      return void saveChoices(pass, decidedNow);
+    }
+    const nextEdit = next && "edit" in next && passThread ? next.edit : undefined;
+    if (nextEdit) actions.openEdit(passThread!, nextEdit);
+    else setListening(undefined);
+    if (remainingCalls.length > 0) return void saveChoices(pass, decidedNow);
+    // The last call is made. The revised cut comes back as a new call, so a pass under revision waits for it before
+    // applying. A queued revision of a cut isn't applied over either; the line's Apply stays available.
     // A call changed after every call was made applies the pass as the last call does: nothing holds it back.
     if (revision || queuedCuts.size) return void saveChoices(pass, decidedNow);
     if (passRunning) return void saveChoices(pass, decidedNow, true);
-    await approveReview(pass, decidedNow, !!flagged);
+    await approveReview(pass, decidedNow, !!nextEdit);
   }
   /**
    * Apply one proposal: the pass, with the editor's calls and Scarlet's picks for the rest, or the suggestion on its card.
@@ -2906,29 +2909,50 @@ export function SimpleWorkspace() {
     appLog("action", "step", { to: "edit", edit: threadEdits.indexOf(next) + 1, of: threadEdits.length, change: next.changeId });
     actions.playEdit(next, openOnItsOwn(next));
   }
-  // Keep wraps through the flagged rows that still wait, then reaches the request’s first waiting call.
-  // An unflagged edit goes on to the next row of the list that hasn't been kept: an unflagged edit, a flagged one that
-  // still waits or a call that does, going past the ones that have and wrapping to earlier ones. The card closes once
-  // nothing is left to keep.
+  // On See all (and from any unflagged edit), Keep goes to the next row of the list that hasn't been kept: an
+  // unflagged edit, a flagged one that still waits or a call that does, going past the ones that have and wrapping to
+  // earlier ones. On For you, Keep wraps through the flagged rows that still wait, then reaches the request’s first
+  // waiting call. The card closes once nothing is left.
+  const seeAll = !!focusThread && lists[focusThread.id] === "all";
+  const passSeeAll = !!passThread && lists[passThread.id] === "all";
   const unkeptEdit = (e: ThreadEdit) => !e.check && !reviewed(e) && !revisingEdit(e);
   const rowAfterKeep = (still: (e: ThreadEdit) => boolean) => editsByRow.slice(shownRow + 1).find(row => row.some(still))
     ?? editsByRow.slice(0, Math.max(0, shownRow)).find(row => row.some(still));
   const callsToKeepTo = pass && passThread?.id === focusThread?.id ? waitingCalls : [];
-  const afterUnflaggedKeep = reviewingEdit && !reviewingEdit.check
+  const afterListKeep = reviewingEdit && (seeAll || !reviewingEdit.check)
     ? keepGoesTo(editsByRow, shownRow, e => unkeptEdit(e) || waitingEdit(e),
-      callsToKeepTo.map(call => ({ call, at: pass!.cutEdits?.find(c => c.index === call.index)?.range.start ?? call.start })))
+      callsToKeepTo.map(call => ({ call, at: listedAt.get(call.index) ?? call.start })))
     : undefined;
-  const nextRowAfterKeep = !reviewingEdit || !reviewingEdit.check ? undefined : rowAfterKeep(waitingEdit);
+  const nextRowAfterKeep = !reviewingEdit || seeAll || !reviewingEdit.check ? undefined : rowAfterKeep(waitingEdit);
   // Keep reaches a moment as ↑ ↓ do: whole, at the edit it is named for, however much of it is kept already. The
   // first of its edits still to keep would open alone and unfold the moment.
   const momentLead = (edit: ThreadEdit) => threadTimeline.moments ? editsByRow.find(row => row.includes(edit))?.[0] ?? edit : edit;
-  const nextEditAfterKeep = afterUnflaggedKeep && "edit" in afterUnflaggedKeep ? momentLead(afterUnflaggedKeep.edit)
+  const nextEditAfterKeep = afterListKeep && "edit" in afterListKeep ? momentLead(afterListKeep.edit)
     : nextRowAfterKeep && (nextRowAfterKeep.find(waitingEdit) ?? nextRowAfterKeep[0]);
-  const nextCallAfterKeep = afterUnflaggedKeep ? "call" in afterUnflaggedKeep ? afterUnflaggedKeep.call : undefined
-    : !nextEditAfterKeep && reviewingEdit?.check && passThread?.id === focusThread?.id ? waitingCalls[0] : undefined;
+  const nextCallAfterKeep = afterListKeep ? "call" in afterListKeep ? afterListKeep.call : undefined
+    : !nextEditAfterKeep && !seeAll && reviewingEdit?.check && passThread?.id === focusThread?.id ? waitingCalls[0] : undefined;
+  // On See all, approving or skipping a call moves on to the next item in the full list (edit or call), regardless of
+  // whether it is a For you item. On For you, it moves to the next waiting call, then the first flagged edit.
+  const passEditList = passThread?.id === focusThread?.id && threadTimeline.edits.length > 0 ? threadTimeline.edits : passEdits;
+  const passEditRows = useMemo(() => passThread?.id === focusThread?.id && threadTimeline.edits.length > 0 && threadTimeline.moments
+    ? threadTimeline.moments.map(m => m.edits) : listMoments(passEdits).map(m => m.edits),
+  [passThread?.id, focusThread?.id, threadTimeline.edits.length, threadTimeline.moments, passEdits]);
+  const afterSeeAllCall = listening && pass && passThread && passSeeAll
+    ? callGoesTo(passEditRows, e => !passReviewed(e) && !passRevising(e),
+      remainingCalls.map(call => ({ call, at: listedAt.get(call.index) ?? call.start, after: allCalls.indexOf(call) > currentIndex })),
+      listedAt.get(listening.index) ?? listening.cut.start)
+    : undefined;
+  const nextAfterCallDecision: { call: Call } | { edit: ThreadEdit } | undefined = !listening ? undefined
+    : passSeeAll
+      ? afterSeeAllCall && "edit" in afterSeeAllCall
+        ? { edit: passEditRows.find(row => row.includes(afterSeeAllCall.edit))?.[0] ?? afterSeeAllCall.edit }
+        : afterSeeAllCall
+      : nextCallAfterDecision ? { call: nextCallAfterDecision }
+      : passFlagged[0] ? { edit: passFlagged[0] } : undefined;
   const onCall = !!openCall && !openCallBack && !reviewingEdit;
-  const upcomingCall = onCall ? nextCallAfterDecision : nextCallAfterKeep;
-  const upcomingEdit = onCall && !upcomingCall ? passFlagged[0] : nextEditAfterKeep && waitingEdit(nextEditAfterKeep) ? nextEditAfterKeep : undefined;
+  const upcomingCall = onCall ? (nextAfterCallDecision && "call" in nextAfterCallDecision ? nextAfterCallDecision.call : undefined) : nextCallAfterKeep;
+  const upcomingEdit = onCall ? (nextAfterCallDecision && "edit" in nextAfterCallDecision ? nextAfterCallDecision.edit : undefined)
+    : nextEditAfterKeep && (seeAll || waitingEdit(nextEditAfterKeep)) ? nextEditAfterKeep : undefined;
   const editSentBack = !!reviewingEdit && !!revisingEdit(reviewingEdit);
   const activeReview = workspaceActive && !source && !editSentBack;
   const [priorityRow, setPriorityRow] = useState<HoveredReviewRow>();
@@ -2993,7 +3017,7 @@ export function SimpleWorkspace() {
       }
     }
     addCall(upcomingCall);
-    if (upcomingEdit) addEdit(upcomingEdit, onCall ? passThread : focusThread, onCall ? passEdits : threadEdits);
+    if (upcomingEdit) addEdit(upcomingEdit, onCall ? passThread : focusThread, onCall ? passEditList : threadEdits);
     // After the next one, the one before: the editor steps back less often than on.
     if (previousCall && !sentBack(previousCall.index)) addCall(previousCall);
     if (previousEdit && !revisingEdit(previousEdit)) addEdit(previousEdit, focusThread, threadEdits);
@@ -3005,7 +3029,7 @@ export function SimpleWorkspace() {
     if (visible) addEdit(visible, focusThread, threadEdits);
     return [...queue.values()];
   }, [activeReview, timeline, head, pass, review, liveReview, returningCall, placed, waitingOrder, flaggedOrder, openCall?.index, openCallBack, conflict, onCall, reviewingEdit, upcomingCall, upcomingEdit,
-    flaggedEdits, threadEdits, passEdits, passThread, focusThread, toWorkingCut, placing, priorityRow, listShown, onLatest, nextEditAfterKeep, previousEdit, previousCall,
+    flaggedEdits, threadEdits, passEditList, passEdits, passThread, focusThread, toWorkingCut, placing, priorityRow, listShown, onLatest, nextEditAfterKeep, previousEdit, previousCall,
     beforeTimeline, afterTimeline, appliedSide, madeBy, callTimeline, needsSingleCut, single.preview, listening?.side, versionAfter, savedAfter.timeline, !!preparedCall]); // eslint-disable-line react-hooks/exhaustive-deps
   const openVersion = versionBefore ?? head;
   const openCut = !activeReview ? undefined : beforeCut ?? (openCall && openVersion && heard ? { version: openVersion, removed: heard } : undefined);
