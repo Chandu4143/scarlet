@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- A cut no longer starts a few frames late on a quiet word it means to keep, and the pass no longer stalls when a word is too quiet to find.
 - The talking-head skill trims pauses the way a published cut does: a pause of about six tenths of a second or more comes out, shorter ones and beats held on purpose stay.
 
 ## November 18, 2026
