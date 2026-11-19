@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- Pause for media processing now appears only while files are actually being prepared, cached, or transcribed (and stays as Resume while paused).
 - An edit Scarlet was working on when you quit or restarted says “Picking up where it left off” when Scarlet reopens, and Restart to update says beforehand that the edit carries on.
 - Rejecting an edit no longer moves the timeline: its band fades where it is and the card says Rejected until you go on to another edit.
 - The × on a moment's card rejects only the edit the card is named for, not every edit of the moment.

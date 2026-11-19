@@ -1,13 +1,27 @@
 import { useRef, useState } from "react";
+import { isPreparingMedia } from "../../lib/upload";
 import { useProjectStore } from "../../stores/project";
+import { useSourceCaches } from "./sourceCaches";
 
 export function useMediaProcessing() {
   const projectId = useProjectStore(s => s.current?.id);
   const paused = useProjectStore(s => !!s.current?.project.mediaPaused);
+  const media = useProjectStore(s => s.current?.media);
+  const transcribing = useProjectStore(s => !!s.current?.tasks.some(t => t.kind === "transcribe" &&
+    (t.state === "queued" || t.state === "claimed" || t.state === "running")));
+  const { caches } = useSourceCaches();
+  const preparing = !!media?.some(isPreparingMedia);
+  const caching = !!media?.some(m => {
+    if (m.kind !== "video") return false;
+    const cache = caches.get(m.id);
+    return cache?.state === "caching" || !!cache?.queued;
+  });
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const label = paused ? "Resume" : "Pause";
+  const working = !paused && (preparing || caching || transcribing);
+  const available = paused || working || busy;
 
   async function toggle(): Promise<boolean> {
     if (!projectId || pending.current) return false;
@@ -26,5 +40,5 @@ export function useMediaProcessing() {
     }
   }
 
-  return { label, description: `${label} media processing`, icon: paused ? "play" as const : "pause" as const, busy, error, toggle };
+  return { label, description: `${label} media processing`, icon: paused ? "play" as const : "pause" as const, available, busy, error, toggle };
 }

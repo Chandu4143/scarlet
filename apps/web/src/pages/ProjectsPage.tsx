@@ -122,10 +122,12 @@ function ProjectActions({ project }: { project: ProjectSummary }) {
         {close => <>
           <MenuItem onClick={() => { close(); setName(project.name); setError(""); setDialog("rename"); }}>Rename</MenuItem>
           <MenuItem onClick={() => { close(); void save({ archived: !project.archived }); }}>{project.archived ? "Unarchive" : "Archive"}</MenuItem>
-          <MenuItem disabled={busy} title={project.mediaPaused ? "Resume media processing" : "Pause media processing"}
-            onClick={() => { close(); void save({ mediaPaused: !project.mediaPaused }); }}>
-            {project.mediaPaused ? "Resume" : "Pause"}
-          </MenuItem>
+          {(project.mediaPaused || project.activity?.some(a => a.kind !== "editing")) && (
+            <MenuItem disabled={busy} title={project.mediaPaused ? "Resume media processing" : "Pause media processing"}
+              onClick={() => { close(); void save({ mediaPaused: !project.mediaPaused }); }}>
+              {project.mediaPaused ? "Resume" : "Pause"}
+            </MenuItem>
+          )}
           <MenuItem danger onClick={() => { close(); setError(""); setDialog("trash"); }}>Move to Trash</MenuItem>
         </>}
       </Dropdown>
