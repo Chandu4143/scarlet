@@ -64,8 +64,8 @@ export interface Spot {
   sharedSeconds?: number;
   /** Their sound didn't confirm the two clips start on the same words: the editor's may start a little off. */
   editorApprox?: true;
-  /** The editor cut all around the spot: their clip is where their video picks up, not the same words. */
-  editorElsewhere?: true;
+  /** The editor cut the whole stretch around the spot: their video has nothing to compare, so there is no clip of it. */
+  editorCut?: true;
   /** How long the passage plays in Scarlet's clip, for a run it left in. */
   runSeconds?: number;
 }
@@ -113,6 +113,7 @@ export function clockOf(kept: readonly Range[], t: number): number {
   return clock;
 }
 
+const tokenOf = (text: string) => text.trim().toLowerCase().replace(/[^\p{L}\p{N}']+/gu, "");
 const plays = (w: Range, kept: readonly Range[]) => kept.some(r => r.start <= w.start + 0.02 && w.end - 0.02 <= r.end);
 
 /**
@@ -176,6 +177,12 @@ function envelope(file: string, start: number, seconds: number): Float64Array {
  * no lag matches well.
  */
 export function alignBySound(recording: string, source: number, published: string, guess: number, seconds = 2, search = 1): number | undefined {
+  const found = matchSound(recording, source, published, guess, seconds, search);
+  return found && found.r >= 0.6 ? found.at : undefined;
+}
+
+/** The best lag of `alignBySound`, with how well it matches (a correlation, 1 for the same sound). */
+export function matchSound(recording: string, source: number, published: string, guess: number, seconds = 2, search = 1): { at: number; r: number } | undefined {
   const a = envelope(recording, source, seconds), b = envelope(published, guess - search, seconds + 2 * search);
   const n = a.length;
   if (n < 200 || b.length < n) return undefined;
@@ -190,7 +197,7 @@ export function alignBySound(recording: string, source: number, published: strin
     const r = dot / Math.sqrt(normA * normB || 1);
     if (r > best) { best = r; at = lag; }
   }
-  return best >= 0.6 ? guess - search + at / 1000 : undefined;
+  return { at: guess - search + at / 1000, r: best };
 }
 
 function clip(source: string, ranges: readonly Range[], out: string) {
@@ -286,19 +293,36 @@ export function buildSheet(paths: readonly string[], out: string, opts: { roots:
       const ranges = from !== undefined ? playedAround(scarletKept, from, 0, seconds) : playedAround(scarletKept, p.at, offset, seconds - offset);
       clip(recording, endBetweenWords(ranges, words), join(out, scarlet));
       let editor: string | undefined, editorOffset: number | undefined;
-      const landing = publishedAt(published.pieces, mediaId, p.at);
-      // The word match places the shared word to a few tenths of a second; its sound places it exactly.
+          // The word match places the shared word to a few tenths of a second; its sound places it exactly.
       const guess = shared ? finalAt(shared.start) : undefined;
       // The words both play from the start of the lead-in to its last word are the same sound in both files.
       const sharedSeconds = lead ? lead.last.end - lead.first.start : 0;
       const heard = shared && publishedFile && guess !== undefined && sharedSeconds >= 0.6
         ? alignBySound(recording, shared.start, publishedFile, guess, Math.min(3, sharedSeconds)) : undefined;
-      const editorFrom = shared ? heard ?? guess : landing !== undefined ? landing - 3 : undefined;
+      // Where the word match tied none of the stretch to the published video, its own words may still be there: a line
+      // said over and over loses the matcher (2026-11-20). Look for Scarlet's lead-in words in the published words, and
+      // keep the place whose sound matches. Only where neither is found did the editor cut the stretch: then no clip,
+      // since one of other words was taken for the same moment.
+      let found: number | undefined;
+      if (!shared && publishedFile && anchor) {
+        const solo = sharedLeadIn(words, scarletKept, undefined, p.at, () => true, (a, b) => rangeOf(scarletKept, a) === rangeOf(scarletKept, b));
+        const said = solo ? words.filter(w => w.start >= solo.first.start && w.end <= solo.last.end).map(w => tokenOf(w.text)).filter(Boolean) : [];
+        const heardWords = publishedWords.map(w => tokenOf(w.text));
+        const seconds = solo ? Math.min(3, solo.last.end - solo.first.start) : 0;
+        if (said.length >= 4 && seconds >= 0.6) {
+          const best = heardWords.flatMap((_, i) => said.slice(0, 4).every((t, k) => heardWords[i + k] === t) ? [publishedWords[i]!.start] : [])
+            .slice(0, 8).map(c => matchSound(recording, solo!.first.start, publishedFile, c, seconds, 0.5)).filter(x => !!x)
+            .sort((x, y) => y!.r - x!.r)[0];
+          if (best && best.r >= 0.6) found = best.at;
+        }
+      }
+      const editorFrom = shared ? heard ?? guess : found;
       if (publishedFile && editorFrom !== undefined) {
         editor = `clips/${id}-editor.m4a`;
-        const start = Math.max(0, shared ? editorFrom - 0.12 : editorFrom);
+        const start = Math.max(0, editorFrom - 0.12);
         // Where the editor's video reaches the same point: the spot itself when it plays it, else where its cut lands.
-        const reached = shared && guess !== undefined && editorFrom !== undefined && finalAt(p.at) !== undefined
+        // Found by its words and sound, the editor's video plays the same lead-in, so the spot is as far in as in Scarlet's.
+        const reached = found !== undefined ? start + offset : shared && guess !== undefined && finalAt(p.at) !== undefined
           ? finalAt(p.at)! + (editorFrom - guess) : finalAt(p.at) ?? publishedAt(published.pieces, mediaId, p.at);
         editorOffset = reached !== undefined && reached >= start ? reached - start : undefined;
         const span = Math.min(30, (editorOffset ?? offset) + (p.kind === "wrong" ? p.end - p.at + 4 : 4));
@@ -307,7 +331,7 @@ export function buildSheet(paths: readonly string[], out: string, opts: { roots:
       }
       spots.push({ id, kind: p.kind, caseId, mediaId, at: p.at, end: p.end, text: p.text, scarlet, editor,
         offset: Math.round(offset * 10) / 10, ...(lead && { sharedSeconds: Math.round((lead.last.end - lead.first.start) * 10) / 10 }), ...(editorOffset !== undefined && { editorOffset: Math.round(editorOffset * 10) / 10 }),
-        ...(editor && !shared && { editorElsewhere: true as const }),
+        ...(!shared && found === undefined && { editorCut: true as const }),
         ...(editor && shared && heard === undefined && { editorApprox: true as const }),
         ...(runSeconds !== undefined && { runSeconds: Math.round(runSeconds * 10) / 10 }) });
     }
@@ -355,9 +379,8 @@ function sheetHtml(spots: readonly Spot[], src: (path: string) => string = p => 
   <p class="q">${where(s)}</p>
   ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">“${esc(s.text.slice(0, 220))}${s.text.length > 220 ? "…" : ""}”</p>`}
   <div class="clips">${player("Scarlet", s.scarlet, s.offset)}
-  ${s.editor ? player(s.editorElsewhere ? "Your editor cut this part: where their video picks up"
-      : s.editorApprox ? "Your editor, around the same words (couldn't line up exactly)" : "Your editor, same words first", s.editor, s.editorOffset)
-    : `<div class="clip"><span>No clip of your editor's version here</span></div>`}</div>
+  ${s.editor ? player(s.editorApprox ? "Your editor, around the same words (couldn't line up exactly)" : "Your editor, same words first", s.editor, s.editorOffset)
+    : `<div class="clip"><span>${s.editorCut ? "Your editor cut this whole stretch, so there's nothing of theirs to compare. Judge Scarlet's clip on its own." : "No clip of your editor's version here."}</span></div>`}</div>
   <div class="answer" role="radiogroup">
     <button data-v="real">Yes, a real mistake</button><button data-v="fine">No, it's fine</button><button data-v="unsure">Not sure</button>
   </div>
