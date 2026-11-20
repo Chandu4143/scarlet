@@ -17,7 +17,9 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   directory = mkdtempSync(join(tmpdir(), "scarlet-background-test-"));
   const said: string[] = lines = [];
-  workspace = createApp({ dataDir: directory, skillsSeedDir: join(directory, "empty-seed"), env: {}, log: line => said.push(line) });
+  // The stall watch measures real time between its faked ticks, so a slow runner can log a stall between two of a
+  // test's steps. That is the watch working, not the housekeeping these tests check.
+  workspace = createApp({ dataDir: directory, skillsSeedDir: join(directory, "empty-seed"), env: {}, log: line => { if (!line.startsWith("[stall]")) said.push(line); } });
 });
 const settle = async () => { while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]); };
 afterEach(async () => {

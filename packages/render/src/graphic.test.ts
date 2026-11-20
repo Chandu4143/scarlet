@@ -181,7 +181,8 @@ describe.skipIf(!hasChrome())("drawing a graphic", () => {
     const profile = await fs.mkdtemp(path.join(os.tmpdir(), "scarlet-print-"));
     try {
       await new Promise<void>((resolve, reject) => execFile(findChrome(), ["--headless=new", "--no-pdf-header-footer", `--user-data-dir=${profile}`, `--print-to-pdf=${pdf}`, html], error => error ? reject(error) : resolve()));
-    } finally { await fs.rm(profile, { recursive: true, force: true }); }
+    // On Windows Chrome's helpers can hold its log a moment after it exits.
+    } finally { await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined); }
     expect(pdfPageCount(await fs.readFile(pdf))).toBe(2);
     const { pageCount, pages } = await renderPdfDocument(pdf, [3, 2, 1, 1], { width: 400 });
     expect(pageCount).toBe(2);

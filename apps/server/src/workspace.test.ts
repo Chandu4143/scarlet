@@ -703,7 +703,8 @@ it("resumes the remaining alignment turn when the library reopens", async () => 
   });
   try {
     expect((await api("POST", "/media/speech/transcribe", {})).status).toBe(202);
-    await vi.waitFor(() => expect(turns).toBe(2));
+    // The transcription starts in the background: a busy runner takes more than waitFor's default second to reach it.
+    await vi.waitFor(() => expect(turns).toBe(2), { timeout: 10_000 });
     const id = t.linked()!.id;
     expect(t.linked()).toMatchObject({ aligning: { through: 10.5 }, segments: [{ words: [{ start: 10.1 }] }, { words: [{ start: 400 }] }] });
     await t.ctx.close();
