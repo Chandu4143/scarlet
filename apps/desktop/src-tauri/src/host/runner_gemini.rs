@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use super::runner::{cut_short, exit_error, report_usage, write_files, EventSink, RunOptions, RunnerCommand, UsageSink};
+use super::runner::{cut_short, exit_error, report_usage, EventSink, RunOptions, RunnerCommand, UsageSink};
 use super::spawn::{resolve_cli, spawn_interactive, SpawnLinesOptions};
 use super::types::{
     brief, brief_input, is_question_tool, plan_event, pretty_tool_name, tail_summary, McpSpec, PlanStep, RunResult,
@@ -21,6 +21,8 @@ use super::usage::{gemini_usage, AgentUsage};
 use crate::util::env_get;
 
 const STOP_GRACE: Duration = Duration::from_secs(2);
+/// How many times a run carries on after agy ended Gemini's turn on a tool Scarlet refused.
+const MAX_CARRY_ONS: u32 = 4;
 
 #[derive(Debug, Default, Clone)]
 pub struct GeminiState {
@@ -382,15 +384,30 @@ pub fn acp_mcp_server(mcp: &McpSpec) -> Value {
     })
 }
 
-pub fn build_gemini_command(system_prompt: &str, cwd: &Path, bin: &str) -> RunnerCommand {
-    let mut files = BTreeMap::new();
-    files.insert(cwd.join("GEMINI.md"), system_prompt.to_string());
+/// agy reads Scarlet's prompt from the session's own system prompt, not a `GEMINI.md`: it cuts a rule file off at
+/// 24,000 bytes, and a pass's prompt with the editor's skill runs past that (28.5 KB on 2026-11-19, losing the skill's
+/// pace, demo and punch-in sections).
+pub fn build_gemini_command(bin: &str) -> RunnerCommand {
     RunnerCommand {
         file: bin.to_string(),
         args: vec!["acp".into(), "--sandbox".into(), "--disable-telemetry".into()],
         stdin: None,
-        files,
+        files: BTreeMap::new(),
     }
+}
+
+/// `session/new` and `session/resume` meta that appends Scarlet's prompt to agy's system prompt, which agy's
+/// `initialize` offers as `_meta.antigravity.systemPrompt.append`.
+pub fn system_prompt_meta(system_prompt: &str) -> Value {
+    json!({ "antigravity": { "systemPrompt": { "append": system_prompt } } })
+}
+
+/// The name of the tool a permission request is for.
+fn permission_tool(params: &Value) -> String {
+    params
+        .get("toolCall")
+        .map(extract_tool_name)
+        .unwrap_or_else(|| "tool".to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,6 +468,10 @@ struct AcpSession {
     effort_override: Option<String>,
     resume_session: Option<String>,
     instruction: String,
+    system_prompt: String,
+    /// Tools Scarlet refused during the turn under way. agy ends Gemini's turn on a refusal.
+    refused: Vec<String>,
+    carry_ons: u32,
     config_options: Vec<Value>,
     has_legacy_models: bool,
     st: GeminiState,
@@ -514,29 +535,71 @@ impl AcpSession {
     fn send_open_session(&mut self) {
         self.step = Step::SessionOpen;
         let mcp_servers = vec![self.mcp_server.clone()];
+        let meta = system_prompt_meta(&self.system_prompt);
         if let Some(ref resume_id) = self.resume_session {
             self.send_request(
                 "session/resume",
-                json!({ "sessionId": resume_id, "cwd": self.cwd, "mcpServers": mcp_servers }),
+                json!({ "sessionId": resume_id, "cwd": self.cwd, "mcpServers": mcp_servers, "_meta": meta }),
             );
         } else {
-            self.send_request("session/new", json!({ "cwd": self.cwd, "mcpServers": mcp_servers }));
+            self.send_request(
+                "session/new",
+                json!({ "cwd": self.cwd, "mcpServers": mcp_servers, "_meta": meta }),
+            );
         }
     }
 
     fn send_prompt(&mut self) {
+        let text = self.instruction.clone();
+        self.send_turn(text);
+    }
+
+    fn send_turn(&mut self, text: String) {
         let Some(session_id) = self.st.session_id.clone() else {
             self.fail_session("Gemini session returned no sessionId");
             return;
         };
         self.step = Step::Prompt;
+        self.refused.clear();
         self.send_request(
             "session/prompt",
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": self.instruction }],
+                "prompt": [{ "type": "text", "text": text }],
             }),
         );
+    }
+
+    /// agy ends Gemini's turn as soon as Scarlet refuses one of its tools, before the model hears why, and reports the
+    /// turn ended as if it were finished. Tell the model what was refused and let it carry on.
+    fn carry_on_after_refusal(&mut self) -> bool {
+        if self.refused.is_empty() {
+            return false;
+        }
+        let mut names: Vec<String> = Vec::new();
+        for name in self.refused.drain(..) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let names = names.join(", ");
+        if self.carry_ons >= MAX_CARRY_ONS {
+            self.fail_session(format!(
+                "Gemini stopped after Scarlet refused {names}, a tool that doesn't run in Scarlet, {} times.",
+                self.carry_ons + 1
+            ));
+            return true;
+        }
+        self.carry_ons += 1;
+        (self.on_event)(RunnerEvent::with(
+            "log",
+            format!("Scarlet refused {names}: only Scarlet's tools run here. Gemini carries on."),
+            json!({ "kind": "tool_refused", "harnessTool": names }),
+        ));
+        self.send_turn(format!(
+            "Scarlet refused {names}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools."
+        ));
+        true
     }
 
     fn maybe_set_effort_then_prompt(&mut self) {
@@ -578,6 +641,9 @@ impl AcpSession {
                 if method == "session/request_permission" {
                     let params = msg.get("params").unwrap_or(&Value::Null);
                     let allow = is_scarlet_mcp_permission(params);
+                    if !allow {
+                        self.refused.push(permission_tool(params));
+                    }
                     self.send(json!({
                         "id": id,
                         "result": { "outcome": permission_outcome(params, allow) }
@@ -726,6 +792,9 @@ impl AcpSession {
                     self.stop_session();
                     return true;
                 }
+                if stop_reason == "end_turn" && self.carry_on_after_refusal() {
+                    return self.step == Step::Done;
+                }
                 if matches!(stop_reason, "end_turn" | "max_tokens" | "stop_sequence") {
                     self.st.completed = true;
                     let summary = {
@@ -754,10 +823,7 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         Ok(b) => b,
         Err(e) => return RunResult::failed(e.to_string()),
     };
-    let cmd = build_gemini_command(&opts.system_prompt, &opts.cwd, &bin);
-    if let Err(e) = write_files(&cmd.files).await {
-        return RunResult::failed(e.to_string());
-    }
+    let cmd = build_gemini_command(&bin);
 
     let (input, lines) = mpsc::unbounded_channel();
     let has_api_key = env_get(&opts.env, "GEMINI_API_KEY").is_some_and(|v| !v.is_empty())
@@ -777,6 +843,9 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         effort_override: opts.effort.clone(),
         resume_session: opts.resume_session.clone(),
         instruction: opts.instruction.clone(),
+        system_prompt: opts.system_prompt.clone(),
+        refused: Vec::new(),
+        carry_ons: 0,
         config_options: Vec::new(),
         has_legacy_models: false,
         st: GeminiState::default(),
@@ -954,14 +1023,18 @@ mod tests {
     }
 
     #[test]
-    fn builds_acp_command_gemini_md_and_mcp_server_entry() {
+    fn builds_acp_command_prompt_meta_and_mcp_server_entry() {
         let mcp = mcp();
-        let cmd = build_gemini_command("SYS", Path::new("/w"), "agy");
+        let cmd = build_gemini_command("agy");
         assert_eq!(cmd.file, "agy");
         assert_eq!(cmd.args, ["acp", "--sandbox", "--disable-telemetry"]);
         assert_eq!(cmd.stdin, None);
-        let (_, md) = cmd.files.iter().find(|(k, _)| k.ends_with("GEMINI.md")).unwrap();
-        assert_eq!(md, "SYS");
+        // No GEMINI.md: agy cuts a rule file off at 24,000 bytes.
+        assert!(cmd.files.is_empty());
+        assert_eq!(
+            system_prompt_meta("SYS"),
+            json!({ "antigravity": { "systemPrompt": { "append": "SYS" } } })
+        );
 
         let server = acp_mcp_server(&mcp);
         assert_eq!(server["name"], json!("scarlet"));
@@ -977,18 +1050,21 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn runs_acp_session_with_model_effort_permissions_and_usage() {
+
+    /// A fake `agy acp` that logs what it is sent. Its first turn asks to run a shell command, which Scarlet refuses,
+    /// and ends there, as agy does. Unless `refuses_always`, the turn after says what it did.
+    fn fake_agy(dir: &Path, refuses_always: bool) -> (std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("requests.jsonl");
-        let script = dir.path().join("fake-agy");
+        let log_path = dir.join("requests.jsonl");
+        let script = dir.join("fake-agy");
+        let carry_on = if refuses_always { "never-sent" } else { "Scarlet refused" };
         std::fs::write(
             &script,
             format!(
                 r#"#!/bin/sh
 while IFS= read -r line; do
   printf '%s\n' "$line" >> '{}'
+  id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
   case "$line" in
     *'"method":"initialize"'*)
       echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}'
@@ -1002,25 +1078,36 @@ while IFS= read -r line; do
     *'"method":"session/set_config_option"'*'"configId":"thought_level"'*)
       echo '{{"jsonrpc":"2.0","id":4,"result":{{}}}}'
       ;;
+    *'"method":"session/prompt"'*'{}'*)
+      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"Trimmed clip."}}}}}} }}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\",\"usage\":{{\"inputTokens\":500,\"outputTokens\":100,\"cachedReadTokens\":200}}}}}}"
+      ;;
     *'"method":"session/prompt"'*)
       echo '{{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{{"toolCall":{{"name":"mcp__scarlet__timeline_get"}},"options":[{{"optionId":"yes","kind":"allow_once"}},{{"optionId":"no","kind":"reject_once"}}]}} }}'
       echo '{{"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{{"toolCall":{{"name":"run_shell_command"}},"options":[{{"optionId":"yes","kind":"allow_once"}},{{"optionId":"no","kind":"reject_once"}}]}} }}'
-      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"Trimmed clip."}}}}}} }}'
-      echo '{{"jsonrpc":"2.0","id":5,"result":{{"stopReason":"end_turn","usage":{{"inputTokens":500,"outputTokens":100,"cachedReadTokens":200}}}}}}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\"}}}}"
       ;;
   esac
 done
 "#,
-                log_path.display()
+                log_path.display(),
+                carry_on
             ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script, log_path)
+    }
 
+    #[tokio::test]
+    async fn runs_acp_session_with_model_effort_permissions_and_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, log_path) = fake_agy(dir.path(), false);
         let (mut opts, events) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
         opts.model = Some("gemini-3.1-pro".into());
         opts.effort = Some("high".into());
         opts.instruction = "Trim the clip".into();
+        opts.system_prompt = "You are editing a video in Scarlet".into();
 
         let res = run_gemini(opts).await;
         assert!(res.ok, "unexpected error: {:?}", res.error);
@@ -1031,12 +1118,37 @@ done
         assert_eq!(u.model.as_deref(), Some("gemini-3.1-pro"));
 
         let sent = std::fs::read_to_string(&log_path).unwrap();
+        assert!(sent.contains(r#""systemPrompt":{"append":"You are editing a video in Scarlet"}"#));
+        assert!(!dir.path().join("GEMINI.md").exists());
         assert!(sent.contains(r#""configId":"model""#));
         assert!(sent.contains(r#""value":"gemini-3.1-pro""#));
         assert!(sent.contains(r#""configId":"thought_level""#));
         assert!(sent.contains(r#""value":"high""#));
         assert!(sent.contains(r#""id":99"#) && sent.contains(r#""optionId":"yes""#));
         assert!(sent.contains(r#""id":100"#) && sent.contains(r#""optionId":"no""#));
-        assert!(events.lock().unwrap().iter().any(|e| e.kind == "result"));
+        // agy ended the first turn on the refused shell command: the run carried on, and was told why.
+        assert_eq!(sent.matches(r#""method":"session/prompt""#).count(), 2);
+        assert!(sent.contains("Scarlet refused run_shell_command: only Scarlet's own tools"));
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|e| e.kind == "log"
+            && e.data.as_ref().is_some_and(|d| d["kind"] == "tool_refused" && d["harnessTool"] == "run_shell_command")));
+        assert_eq!(events.iter().filter(|e| e.kind == "result").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn stops_a_run_whose_turns_keep_ending_on_refused_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, log_path) = fake_agy(dir.path(), true);
+        let (opts, events) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+
+        let res = run_gemini(opts).await;
+        assert!(!res.ok);
+        assert_eq!(
+            res.error.as_deref(),
+            Some("Gemini stopped after Scarlet refused run_shell_command, a tool that doesn't run in Scarlet, 5 times.")
+        );
+        let sent = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(sent.matches(r#""method":"session/prompt""#).count(), 5);
+        assert!(!events.lock().unwrap().iter().any(|e| e.kind == "result"));
     }
 }

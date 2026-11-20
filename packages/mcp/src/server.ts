@@ -32,6 +32,7 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { listToolsBriefly } from "./brief-tools.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
@@ -3832,6 +3833,7 @@ ${OPS_DOC}`,
     );
   }
 
+  if (caps.briefTools) listToolsBriefly(server);
   return server;
 }
 
