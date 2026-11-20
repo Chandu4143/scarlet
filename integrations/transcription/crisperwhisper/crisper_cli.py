@@ -11,13 +11,20 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
+import time
 import unicodedata
 
 
 # Upstream word_timing groups these languages at Unicode token boundaries.
 SPACELESS_LANGUAGES = {"zh", "ja", "th", "lo", "my", "yue"}
 TAG = re.compile(r"\[(UH|UM|breath|cough|crying|fart|laughter|lipsmack|noise|scream|sigh|sneeze|sniff|throatclearing|yawn|(?:verbatim|intended)_\d+)\]", re.I)
+
+GIB = 1024**3
+# Leave margin above the observed ~19 GiB peak of a long CrisperWhisper decode.
+ASR_WORKER_BUDGET = 22 * GIB
+ASR_MIN_HEADROOM = 8 * GIB
 
 
 def key(text):
@@ -190,6 +197,66 @@ def preferred_device(torch):
     return "cpu"
 
 
+def macos_asr_headroom(physical_memory):
+    pressure = subprocess.check_output(
+        ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"], text=True)
+    if int(pressure) != 1:
+        return 0
+    stats = subprocess.check_output(["/usr/bin/vm_stat"], text=True, env={**os.environ, "LC_ALL": "C"})
+    pages = dict(re.findall(r"^([^:\n]+):\s+(\d+)\.$", stats, re.MULTILINE))
+    # File-backed cache can be reclaimed for inference. Anonymous, wired and compressed pages still count.
+    occupied = sum(int(pages[key]) for key in ("Anonymous pages", "Pages wired down", "Pages occupied by compressor"))
+    return physical_memory - occupied * os.sysconf("SC_PAGE_SIZE")
+
+
+def claim_local_asr_slot(directory, slot_count, worker_budget, reserve, physical_memory):
+    import fcntl
+
+    with (directory / "local-asr-admission.lock").open("a") as admission:
+        fcntl.flock(admission, fcntl.LOCK_EX)
+        free_slots = []
+        try:
+            for index in range(slot_count):
+                name = "local-asr.lock" if index == 0 else f"local-asr-{index + 1}.lock"
+                fd = os.open(directory / name, os.O_CREAT | os.O_RDWR, 0o600)
+                free_slots.append(fd)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(free_slots.pop())
+            if free_slots:
+                # Reserve the full estimate for every admitted worker. Some may still be loading weights.
+                occupied_slots = slot_count - len(free_slots)
+                needed = reserve + (occupied_slots + 1) * worker_budget
+                if macos_asr_headroom(physical_memory) >= needed:
+                    return free_slots.pop(0)
+        finally:
+            for fd in free_slots:
+                os.close(fd)
+
+
+def wait_for_local_asr_slot():
+    if sys.platform != "darwin":
+        return
+
+    # Metal and CPU share memory. Allow extra workers only within half the Mac's RAM.
+    physical_memory = int(subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True))
+    reserve = min(ASR_MIN_HEADROOM, physical_memory // 8)
+    if physical_memory < ASR_WORKER_BUDGET + reserve:
+        raise SystemExit("This Mac has too little memory for CrisperWhisper. Choose bundled Whisper in Scarlet.")
+    slot_count = max(1, physical_memory // 2 // ASR_WORKER_BUDGET)
+    directory = Path.home() / "Library/Application Support/com.forwardfuture.scarlet"
+    directory.mkdir(parents=True, exist_ok=True)
+    # A successful claim's non-inheritable descriptor stays open until the worker exits.
+    if claim_local_asr_slot(directory, slot_count, ASR_WORKER_BUDGET, reserve, physical_memory) is not None:
+        return
+    print("local transcription waiting for memory", file=sys.stderr, flush=True)
+    while True:
+        time.sleep(1)
+        if claim_local_asr_slot(directory, slot_count, ASR_WORKER_BUDGET, reserve, physical_memory) is not None:
+            return
+
+
 def recognize(pcm, model, cache, language, device):
     import torch
     from crisperwhisper import CrisperWhisperModel
@@ -254,6 +321,7 @@ def main():
         parser.error(f"Input audio does not exist: {args.f}")
     if not args.of.parent.is_dir():
         parser.error(f"Output folder does not exist: {args.of.parent}")
+    wait_for_local_asr_slot()
     cache = model.parent.parent / "cache"
     cache.mkdir(exist_ok=True)
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1",
