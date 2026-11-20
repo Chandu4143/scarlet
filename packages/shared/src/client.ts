@@ -494,6 +494,17 @@ export class ScarletClient {
   otioUrl(projectId: string, version: string) {
     return this.fileUrl(`/projects/${projectId}/versions/${version}/export.otio`);
   }
+  srtUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }) {
+    return this.captionUrl(projectId, version, "srt", opts);
+  }
+  vttUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }) {
+    return this.captionUrl(projectId, version, "vtt", opts);
+  }
+  private captionUrl(projectId: string, version: string, format: "srt" | "vtt", opts?: { trackId?: string; start?: number; end?: number }) {
+    const url = this.fileUrl(`/projects/${projectId}/versions/${version}/export.${format}`);
+    const params = query({ trackId: opts?.trackId, start: opts?.start, end: opts?.end });
+    return params ? `${url}${url.includes("?") ? "&" : "?"}${params}` : url;
+  }
 
   // Changes
   submitDialogueCuts(projectId: string, body: DialogueCutsRequest) {

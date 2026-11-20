@@ -8,7 +8,7 @@ import { extname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   captionTracks, exactRate, handoffFileNames, handoffLosses, handoffRateWarnings, handoffReadMe, isDropFrameRate,
-  parseColor, timecodeFrames, toFcpxml, toOtio, toSrt, usedMedia, type HandoffSource, type Project, type Timeline,
+  parseColor, timecodeFrames, timelineToSrt, toFcpxml, toOtio, usedMedia, type HandoffSource, type Project, type Timeline,
 } from "@scarlet/timeline";
 import type { HandoffFile } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
@@ -128,8 +128,8 @@ export async function buildHandoff(ctx: Ctx, project: Project, timeline: Timelin
   const captions = captionTracks(timeline);
   const captionFiles = handoffFileNames(captions.map(({ track }) =>
     captions.length > 1 ? `${base} captions (${safeFileName(track.name)}).srt` : `${base} captions.srt`));
-  for (const [i, { cues }] of captions.entries()) {
-    files.push({ path: captionFiles[i]!, text: toSrt(cues) });
+  for (const [i, { track }] of captions.entries()) {
+    files.push({ path: captionFiles[i]!, text: timelineToSrt(timeline, { trackId: track.id }) });
   }
   files.push({ path: "Read me.txt", text: handoffReadMe({
     projectName: project.name, timelineFiles: { fcpxml, otio }, captionFiles,

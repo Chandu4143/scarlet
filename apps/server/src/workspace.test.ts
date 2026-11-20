@@ -4604,6 +4604,59 @@ it("keeps a call with the editor, and its number, after their revision leaves it
   expect(workspace.ctx.repos.changes.get(two.review.id)?.cutAssessments?.map(a => [a.index, a.askOrder])).toEqual([[0, 2], [1, 1]]);
 });
 
+it.each(["cancel", "complete"])("leaves the other unchecked cuts with the editor when they keep one through Revise (pass ended by %s)", async end => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit, choose } = dialoguePassInParts();
+  const { review } = await submit(base, [staged(2, 3), staged(8, 10), staged(14, 16)]);
+  expect((await api("POST", `/tasks/${task.id}/${end}`, end === "complete" ? { state: "done" } : {})).status).toBe(200);
+  const { task: request } = await (await api("POST", `/changes/${review.id}/revise`, { text: "Keep this.",
+    position: { version: base, time: 8, end: 10, clipIds: [], cutIndex: 1 } })).json();
+  const keep = () => api("POST", `/changes/${review.id}/staged-cuts/1`, { taskId: request.id, start: 8, end: 10,
+    keep: true, reason: "Kept the take as asked." });
+  const res = await keep();
+  expect(res.status).toBe(201);
+  const { change: kept } = await res.json() as { change: Change };
+  // Scarlet never checked the other two cuts: they stay the editor's calls, beside the one they sent back.
+  expect(kept.cutAssessments).toEqual([{ index: 1, start: 8, end: 10, verdict: "ask", reason: "Kept the take as asked.", revised: true, proposes: "keep" }]);
+  expect(kept.cutChoices ?? []).toEqual([]);
+  expect(kept.applyWhenDone).toBeUndefined();
+  expect((await (await keep()).json()).change).toEqual(kept);
+  expect((await api("POST", `/tasks/${request.id}/complete`, { state: "done" })).status).toBe(200);
+  expect(ensureHead(ctx, project.id).head).toBe(base);
+  // The editor's call on this one alone doesn't put the other two in, even asked to apply once every cut is called.
+  expect((await choose(kept, [{ index: 1, choice: "keep" }], true)).status).toBe(200);
+  expect(ctx.repos.changes.get(kept.id)!.state).toBe("ready");
+  expect(ensureHead(ctx, project.id).head).toBe(base);
+  expect(timelineDuration(ensureHead(ctx, project.id).timeline)).toBeCloseTo(20);
+  // Their calls on the other two apply it.
+  expect((await choose(kept, [{ index: 0, choice: "keep" }, { index: 1, choice: "keep" }, { index: 2, choice: "cut" }], true)).status).toBe(200);
+  expect(ctx.repos.changes.get(kept.id)!.state).toBe("approved");
+  expect(timelineDuration(ensureHead(ctx, project.id).timeline)).toBeCloseTo(18);
+});
+
+it.each([
+  { cuts: [[2, 3], [8, 10], [14, 16]] as const, index: 1, called: [{ index: 0, choice: "cut" }, { index: 2, choice: "keep" }], length: 19 },
+  { cuts: [[8, 10]] as const, index: 0, called: [], length: 20 },
+])("applies an unchecked pass once the editor has called every cut, the one kept through Revise included ($cuts.length cuts)", async ({ cuts, index, called, length }) => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit, choose } = dialoguePassInParts();
+  const { review } = await submit(base, cuts.map(([start, end]) => staged(start, end)));
+  expect((await api("POST", `/tasks/${task.id}/cancel`, {})).status).toBe(200);
+  if (called.length) expect((await choose(review, called)).status).toBe(200);
+  const { task: request } = await (await api("POST", `/changes/${review.id}/revise`, { text: "Keep this.",
+    position: { version: base, time: 8, end: 10, clipIds: [], cutIndex: index } })).json();
+  const res = await api("POST", `/changes/${review.id}/staged-cuts/${index}`, { taskId: request.id, start: 8, end: 10,
+    keep: true, reason: "Kept the take as asked." });
+  expect(res.status).toBe(201);
+  const { change: kept } = await res.json() as { change: Change };
+  expect(kept.applyWhenDone).toBeUndefined();
+  expect((await api("POST", `/tasks/${request.id}/complete`, { state: "done" })).status).toBe(200);
+  expect(ctx.repos.changes.get(kept.id)!.state).toBe("ready");
+  expect((await choose(kept, [...called, { index, choice: "keep" }], true)).status).toBe(200);
+  expect(ctx.repos.changes.get(kept.id)!.state).toBe("approved");
+  expect(timelineDuration(ensureHead(ctx, project.id).timeline)).toBeCloseTo(length);
+});
+
 it.each([false, true])("keeps every unanswered call when a later batch repeats the cuts (revision queued: %s)", async queued => {
   const { ctx } = workspace;
   const { task, base, staged, submit, choose, assess } = dialoguePassInParts();

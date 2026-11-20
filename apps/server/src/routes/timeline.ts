@@ -1,14 +1,14 @@
 import { z } from "zod/v3";
 import { recordHistoryEdit, rejectEdits } from "../services/cutHistory.js";
 import { Hono } from "hono";
-import { clipById, describeDiff, diffTimelines, newId, toOtio, type Change } from "@scarlet/timeline";
+import { CaptionExportError, captionExportHttpStatus, captionExportRange, clipById, describeDiff, diffTimelines, newId, toCaptions, toOtio, type Change } from "@scarlet/timeline";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { now } from "../db.js";
-import { conflict, notFound } from "../errors.js";
+import { conflict, HttpError, notFound } from "../errors.js";
 import { ensureProjectHead, resolveTimeline } from "../services/timeline.js";
-import { jsonBody, requireProject, requireProjectHeader } from "./util.js";
+import { jsonBody, optionalNumberParam, requireProject, requireProjectHeader } from "./util.js";
 import { actorFor, logActivity, quote } from "../services/activity.js";
 import { applyChoicesWhenDone } from "../services/changes.js";
 import { buildHandoff } from "../services/handoff.js";
@@ -137,6 +137,32 @@ export function timelineRoutes(ctx: Ctx) {
     });
   });
 
+  for (const format of ["srt", "vtt"] as const) {
+    r.get(`/projects/:id/versions/:v/export.${format}`, (c) => {
+      requireProjectEditAttempt(ctx, requestAttempt(c.req.raw), c.req.param("id"));
+      const project = requireProject(ctx, c.req.param("id"));
+      const timeline = resolveTimeline(ctx, project, c.req.param("v"));
+      const start = optionalNumberParam(c.req.query("start"), "start");
+      const end = optionalNumberParam(c.req.query("end"), "end");
+      // captionExportRange checks the range, so the engine and the demo refuse the same intervals the same way.
+      const trackId = c.req.query("trackId") || undefined;
+      let body: string;
+      try {
+        body = toCaptions(timeline, format, { trackId, range: captionExportRange(start, end) });
+      } catch (err) {
+        if (!(err instanceof CaptionExportError)) throw err;
+        throw new HttpError(captionExportHttpStatus(err.code), err.code, err.message);
+      }
+      const safeName = project.name.replace(/[^a-zA-Z0-9-_]+/g, "_");
+      const type = format === "vtt" ? "text/vtt; charset=utf-8" : "application/x-subrip; charset=utf-8";
+      return new Response(body, {
+        headers: {
+          "Content-Type": type,
+          "Content-Disposition": `attachment; filename="${safeName}-${timeline.version}.${format}"`,
+        },
+      });
+    });
+  }
   r.post("/projects/:id/versions/:v/handoff", async (c) => {
     requireProjectEditAttempt(ctx, requestAttempt(c.req.raw), c.req.param("id"));
     const body = await jsonBody(c, z.object({ folder: z.string().min(1).max(4096) }));
