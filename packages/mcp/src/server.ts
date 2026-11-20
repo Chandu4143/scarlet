@@ -3205,7 +3205,7 @@ ${OPS_DOC}`,
         if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, await insetLayout(parsed.data)));
       }
       const result = await propose(body, before, frameChanges);
-      return insetNote ? { ...result, content: [{ type: "text" as const, text: insetNote }, ...result.content] } : result;
+      return insetNote ? { ...result, content: [...result.content, { type: "text" as const, text: insetNote }] } : result;
     },
   );
 
