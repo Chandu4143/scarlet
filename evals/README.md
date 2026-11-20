@@ -16,6 +16,12 @@ desktop engine publishes its loopback port and a per-launch token together in a 
 For another engine, set its own `SCARLET_ACCESS_TOKEN` and supply its URL with `--engine` or
 `SCARLET_ENGINE_URL`. Remote URLs require HTTPS. A loopback tunnel can use HTTP.
 
+On macOS, reuse prepared transcripts across trials when transcription is held constant. Use the guarded
+CrisperWhisper adapter in every local engine, including copies of an older benchmark library. If a
+standalone transcription script loads its own model, call `wait_for_local_asr_slot()` from the guarded
+adapter before importing the model runtime. Keep the model in a worker process that exits when its
+transcription work finishes so the operating system can reclaim its memory.
+
 ```sh
 TSX=node_modules/.bin/tsx                       # from the repository root
 $TSX evals/src/dataset.ts --help

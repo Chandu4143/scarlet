@@ -1,7 +1,11 @@
-from contextlib import redirect_stderr
+from contextlib import ExitStack, redirect_stderr
 from io import StringIO
 import json
+import os
 from pathlib import Path
+import select
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
@@ -15,6 +19,100 @@ def stamp(word, start, end):
 
 
 class AdapterTest(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "macOS model admission")
+    def test_admits_two_decoders_and_waits_for_memory_before_loading_a_third(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            wav = home / "input.wav"
+            wav.touch()
+            memory = home / "memory"
+
+            def set_memory(pressure, anonymous_pages):
+                pending = memory.with_suffix(".next")
+                pending.write_text(f"{pressure} {anonymous_pages}")
+                pending.replace(memory)
+
+            set_memory(1, 1000000)
+            adapter = Path(__file__).with_name("crisper_cli.py")
+            driver = """
+from pathlib import Path
+import runpy
+import subprocess
+import sys
+from types import SimpleNamespace
+
+memory = Path(sys.argv[1])
+physical_gib = int(sys.argv[2])
+def system_memory(command, **kwargs):
+    if command[-1] == "hw.memsize":
+        return str(physical_gib * 1024**3)
+    if command[-1] == "kern.memorystatus_vm_pressure_level":
+        return memory.read_text().split()[0]
+    if command == ["/usr/bin/vm_stat"]:
+        anonymous = memory.read_text().split()[1]
+        return f"Anonymous pages: {anonymous}.\\nPages wired down: 500000.\\nPages occupied by compressor: 0.\\n"
+    raise AssertionError(command)
+
+def start_model(threads):
+    print("model runtime started", flush=True)
+    sys.stdin.readline()
+
+subprocess.check_output = system_memory
+sys.modules["torch"] = SimpleNamespace(set_num_threads=start_model, set_num_interop_threads=lambda n: None)
+sys.modules["crisperwhisper.audio"] = SimpleNamespace(load_audio=lambda path: [])
+sys.argv = sys.argv[3:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+            def read_line(pipe):
+                self.assertTrue(select.select([pipe], [], [], 5)[0], "Timed out waiting for the decoder")
+                return pipe.readline().strip()
+
+            with ExitStack() as workers:
+                def start(library, physical_gib=96):
+                    model = home / library / "model/model.safetensors"
+                    model.parent.mkdir(parents=True)
+                    model.touch()
+                    output = model.parent / "words"
+                    decoder = workers.enter_context(subprocess.Popen(
+                        [sys.executable, "-I", "-B", "-c", driver, str(memory), str(physical_gib), str(adapter),
+                         "-m", str(model), "-f", str(wav), "-ojf", "-of", str(output)],
+                        env={**os.environ, "HOME": directory}, stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+                    workers.callback(lambda: decoder.kill() if decoder.poll() is None else None)
+                    return decoder, output.with_suffix(".json")
+
+                first, first_output = start("first-library")
+                self.assertEqual(read_line(first.stdout), "model runtime started")
+                second, _ = start("second-library")
+                self.assertEqual(read_line(second.stdout), "model runtime started")
+                third, third_output = start("third-library")
+                self.assertIn("waiting for memory", read_line(third.stderr))
+                self.assertFalse(select.select([third.stdout], [], [], 0)[0])
+
+                set_memory(2, 1000000)
+                first.communicate(input="\n", timeout=5)
+                self.assertEqual(first.returncode, 0)
+                self.assertTrue(first_output.exists())
+                self.assertFalse(select.select([third.stdout], [], [], 1.5)[0])
+                self.assertFalse(third_output.exists())
+
+                set_memory(1, (71 * 1024**3) // os.sysconf("SC_PAGE_SIZE"))
+                self.assertFalse(select.select([third.stdout], [], [], 1.5)[0])
+
+                set_memory(1, 1000000)
+                self.assertEqual(read_line(third.stdout), "model runtime started")
+                third.communicate(input="\n", timeout=5)
+                self.assertEqual(third.returncode, 0)
+                self.assertTrue(third_output.exists())
+
+                small, small_output = start("small-mac-library", physical_gib=16)
+                stdout, stderr = small.communicate(timeout=5)
+                self.assertEqual(small.returncode, 1)
+                self.assertIn("Choose bundled Whisper", stderr)
+                self.assertFalse(stdout)
+                self.assertFalse(small_output.exists())
+
     def test_device_follows_the_available_torch_backends(self):
         for mps, cuda, expected in [(True, False, "mps"), (False, True, "cuda"), (False, False, "cpu")]:
             with self.subTest(mps=mps, cuda=cuda):
