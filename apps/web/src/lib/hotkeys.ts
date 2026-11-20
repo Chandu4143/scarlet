@@ -113,7 +113,6 @@ export const SHORTCUTS: Array<{ keys: string[]; what: string; where: string }> =
   { keys: ["A"], what: "Apply the suggestion on screen", where: "Suggestion" },
   { keys: ["R"], what: "Revise what is on screen", where: "Edit, call or suggestion" },
   { keys: ["K"], what: "Keep the applied edit", where: "Edit card" },
-  { keys: ["U"], what: "Undo the applied edit", where: "Edit card" },
   { keys: ["A"], what: "Approve the call on screen", where: "Call card" },
   { keys: ["S"], what: "Skip the call on screen", where: "Call card" },
   { keys: [COMPARE_KEY], what: "Switch between Before and After", where: "Edit comparison" },

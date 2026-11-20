@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyOps, clipEnd, createProject, emptyTimeline, makeMediaClip, makeTrack, Transform, type MediaAsset, type MediaClip, type Timeline } from "@scarlet/timeline";
 import { boxInCorner, frameShown, framingOps, pictureBox, placeFrame, type Box } from "./framing.js";
+import { framingReport } from "./framing-report.js";
 
 const canvas = { width: 1920, height: 1080 };
 const source = { width: 3840, height: 2160 };
@@ -215,5 +216,33 @@ describe("framingOps", () => {
     expect(() => framingOps(tl, media, canvas, [{ at: 40, show: [0, 0, 1, 1], over: 1 }, { at: 50, show: [0.5, 0, 0.4, 1], over: 1 }], { mediaId: "screen" }))
       .toThrow(/framings\[1\]\.show needs right greater than left.*framings\[0\]\.at 40 s: screen doesn't play there.*framings\[1\]\.at 50 s/s);
     expect(() => framingOps(tl, media, canvas, [{ at: 1, show: [0, 0, 1, 1], over: 1 }], { mediaId: "nope" })).toThrow("not a picture in this project");
+  });
+
+  it("places a frame without crashing when two overlays occupy opposite corners", () => {
+    const covers: Box[] = [[0, 0, 0.25, 0.25], [0.75, 0.75, 1, 1]];
+    const placed = placeFrame([0.3, 0.3, 0.7, 0.7], undefined, covers, 1);
+    expect(placed.hidden).toBe(0);
+    expect(contains(placed.frame, [0.3, 0.3, 0.7, 0.7])).toBe(true);
+  });
+
+  it("samples keyframes in timeline-local time rather than multiplying by clip speed", () => {
+    const tl = emptyTimeline(createProject("Speed").id);
+    // A 10s timeline clip at 2x speed (20s of source) with a 1s zoom from timeline-local 7s to 8s.
+    tl.tracks[0]!.clips.push(makeMediaClip("screen", 0, 20, 0, {
+      id: "fast",
+      speed: 2,
+      keyframes: [
+        { time: 0, transform: Transform.parse({ scale: 1 }) },
+        { time: 7, transform: Transform.parse({ scale: 1 }) },
+        { time: 8, transform: Transform.parse({ scale: 2 }) },
+        { time: 10, transform: Transform.parse({ scale: 2 }) },
+      ],
+    }));
+    const stretches = framingReport(null, tl, media, canvas);
+    expect(stretches).toHaveLength(1);
+    // Timeline-local sampling places the move at 7..8s rather than speed-multiplied 3.5..4s.
+    expect(stretches[0]!.moves).toHaveLength(1);
+    expect(stretches[0]!.moves[0]!.from).toBeCloseTo(7, 0);
+    expect(stretches[0]!.moves[0]!.to).toBeCloseTo(8, 0);
   });
 });

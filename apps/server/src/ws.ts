@@ -42,25 +42,30 @@ export function attachWebSocket(server: Server, ctx: Ctx, otherUpgrade?: (req: I
       clients.add(client);
       ctx.log(`[ws] a client connected (${clients.size} open)`);
       ws.on("message", (data) => {
-        let msg: unknown;
+        // A read that throws here would otherwise stop the engine: an uncaught exception ends the process.
         try {
-          msg = JSON.parse(data.toString());
-        } catch {
-          return;
+          let msg: unknown;
+          try {
+            msg = JSON.parse(data.toString());
+          } catch {
+            return;
+          }
+          const parsed = WsClientMessage.safeParse(msg);
+          if (!parsed.success) return;
+          const m = parsed.data;
+          if (m.type === "subscribe") {
+            const found = !!ctx.repos.projects.header(m.projectId);
+            ctx.log(`[ws] a client ${found ? "follows" : "asked to follow an unknown project,"} ${m.projectId}`);
+            if (found) {
+              client.projects.add(m.projectId);
+              ws.send(JSON.stringify({ type: "media.speakerProgress", projectId: m.projectId, active: ctx.speakers.progressFor(m.projectId) } satisfies WsEvent));
+            } else ws.send(JSON.stringify({ type: "error", message: `no project ${m.projectId}` }));
+            ws.send(JSON.stringify({ type: "project.subscribed", projectId: m.projectId, found } satisfies WsEvent));
+          } else if (m.type === "unsubscribe") client.projects.delete(m.projectId);
+          else if (m.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
+        } catch (error) {
+          ctx.log(`[ws] couldn’t handle a client’s message: ${error instanceof Error ? error.message : String(error)}`);
         }
-        const parsed = WsClientMessage.safeParse(msg);
-        if (!parsed.success) return;
-        const m = parsed.data;
-        if (m.type === "subscribe") {
-          const found = !!ctx.repos.projects.header(m.projectId);
-          ctx.log(`[ws] a client ${found ? "follows" : "asked to follow an unknown project,"} ${m.projectId}`);
-          if (found) {
-            client.projects.add(m.projectId);
-            ws.send(JSON.stringify({ type: "media.speakerProgress", projectId: m.projectId, active: ctx.speakers.progressFor(m.projectId) } satisfies WsEvent));
-          } else ws.send(JSON.stringify({ type: "error", message: `no project ${m.projectId}` }));
-          ws.send(JSON.stringify({ type: "project.subscribed", projectId: m.projectId, found } satisfies WsEvent));
-        } else if (m.type === "unsubscribe") client.projects.delete(m.projectId);
-        else if (m.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
       });
       ws.on("pong", () => (client.alive = true));
       ws.on("close", (code) => {

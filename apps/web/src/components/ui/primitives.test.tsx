@@ -92,7 +92,7 @@ it("names every × in the app on hover", () => {
   const cross = /<button\b((?:(?!<[A-Za-z/])[\s\S])*?)>\s*<(?:CloseIcon|Icon name="x")[^>]*\/>\s*<\/button>/g;
   const found = Object.entries(sources).flatMap(([file, source]) => [...source.matchAll(cross)].map(match => ({ file, tag: match[1]! })));
   expect(found.length).toBeGreaterThan(0);
-  expect(found.filter(button => !/\btitle=/.test(button.tag)).map(button => button.file)).toEqual([]);
+  expect(found.filter(button => !/\b(?:title|aria-describedby)=/.test(button.tag)).map(button => button.file)).toEqual([]);
 });
 
 it("keeps a confirmation open while its action runs, and says there why it failed", async () => {

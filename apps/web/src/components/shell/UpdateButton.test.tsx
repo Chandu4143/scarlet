@@ -51,7 +51,7 @@ it("shows a build under way with how far along it is, then becomes the button th
     // The first build is ready. A new head starts updating while this window stays open.
     status.mockResolvedValue({ ready: commit, building: null });
     await poll();
-    expect(hint()).toEqual(["Build bbbbbbb is ready", on, "Restarting installs it and brings you back here."]);
+    expect(hint()).toEqual(["Build bbbbbbb is ready", on, "Restarting installs it and brings you back here. An edit Scarlet is working on picks up where it left off."]);
     const newer = { ...building, revision: "c".repeat(40), done: 0, stepStarted: Date.now() / 1000 + 5 };
     status.mockResolvedValue({ ready: commit, building: newer });
     await poll();
@@ -74,7 +74,7 @@ it("shows a build under way with how far along it is, then becomes the button th
     expect(button.textContent).toBe("Restart to update");
     expect(button.closest(".update-corner")).not.toBeNull();
     expect(container.querySelector("[role=status]")).toBeNull();
-    expect(hint()).toEqual(["Build ccccccc is ready", on, "Restarting installs it and brings you back here."]);
+    expect(hint()).toEqual(["Build ccccccc is ready", on, "Restarting installs it and brings you back here. An edit Scarlet is working on picks up where it left off."]);
     window.addEventListener("beforeunload", dirty);
     await act(async () => button.click());
     expect(restart).not.toHaveBeenCalled();

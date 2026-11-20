@@ -50,6 +50,32 @@ function partialWordFixture() {
 }
 
 describe("dialogue plan", () => {
+  it("refuses a pause trim where the scan read words the transcript doesn't have, though they never reach speaking level", async () => {
+    // Said: “And it just feel, uh, let's see. It just feels like”. The transcript has “And it [3.8 s] just feels like”,
+    // and the abandoned words trail off quietly, so no sound at speaking level sits in the “pause” (2026-11-19).
+    const stored = [{ text: "And", start: .5, end: .75 }, { text: "it", start: 1.1, end: 1.5 }, { text: "just", start: 5.3, end: 5.6 },
+      { text: "feels", start: 5.6, end: 5.9 }, { text: "like", start: 5.9, end: 6.1 }];
+    const read = [{ text: "And", start: .5, end: .7 }, { text: "it", start: .7, end: .8 }, { text: "just", start: .95, end: 1.3 }, { text: "feel,", start: 1.4, end: 1.75 },
+      { text: "uh,", start: 1.75, end: 2.3 }, { text: "let's", start: 3.4, end: 3.6 }, { text: "see.", start: 3.6, end: 3.9 }, { text: "It", start: 5.2, end: 5.3 },
+      { text: "just", start: 5.3, end: 5.6 }, { text: "feels", start: 5.6, end: 5.9 }, { text: "like", start: 5.9, end: 6.1 }];
+    const loud = [{ start: .5, end: 1.75 }, { start: 5.2, end: 6.1 }];
+    const rms = Array.from({ length: 400 }, (_, i) => loud.some(v => v.start <= i / 50 && i / 50 < v.end) ? .12 : .001);
+    const { tl, sources } = laidOut([take(0, 8, 0)]);
+    const scanned: JoinPage = { mediaId: "mic", start: 0, end: 8, edges: joinEvidence(stored, { from: 0, to: 8, peaks: rms, rms, speechActivity: loud }) };
+    sources.pages = () => [scanned];
+    sources.words = async () => stored;
+    const trim = { tl, localPauses: false, cuts: [cut({ kind: "pause", mediaId: "mic", afterWord: 1, leave: .1 })] };
+    // Without the scan's reading there is nothing to say the pause holds words, and the trim saves.
+    expect((await planDialogueCuts(trim, sources)).outcome).toBe("ready");
+    sources.evidence.scans.push({ ...scanned, segments: [{ id: "s", start: .5, end: 6.1, text: read.map(w => w.text).join(" "), words: read }] });
+    const plan = await planDialogueCuts(trim, sources);
+    expect(plan.outcome).toBe("needsRevision");
+    const [dispute] = plan.outcome === "needsRevision" ? plan.disputedEdges : [];
+    expect(dispute!.reason).toContain("The transcript has nothing between “it” and “just” (#1, #2) for 3.80 s, but the scan read “just feel, uh, let's see. It” at 0.95–5.30 s in mic");
+    expect(dispute!.reason).toContain("A pause trim removes quiet only, so this one was not saved. The scan reads “And it just feel, uh, let's see. It just feels like” there, where the transcript has “it just”.");
+    expect(dispute!.reason).toContain("give the range in timeline seconds as the kind of cut it is");
+  });
+
   it("keeps short named words inside a removal when the only quiet is on their far sides", async () => {
     const { tl, sources } = fixture();
     const said = [
@@ -63,7 +89,7 @@ describe("dialogue plan", () => {
     sources.words = async () => said;
     const plan = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ mediaId: "mic", fromWord: 1, toWord: 3 })] }, sources);
     expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: .9, end: 2.18, review: true }] });
-    if (plan.outcome === "ready") expect(plan.gate.get(0)?.evidence).toContain("No measured silence");
+    if (plan.outcome === "ready") expect(plan.gate.get(0)?.evidence).toContain("No pause on either side of “now start over”");
     // The held cut says what Scarlet measured, what the join plays and what keeping it plays, for the agent to settle.
     if (plan.outcome === "ready") expect(plan.decisions[0]!.held).toBe("The words named run on into the ones beside them at the start and end: no pause or low point where they part, a join in running speech. As placed the join plays “… ready ‖ again …”. Kept, it plays “… ready now start over again …”.");
   });
@@ -80,20 +106,22 @@ describe("dialogue plan", () => {
         : (t >= .4 && t < .9) || (i >= 130 && t < 3.3) ? -36 : -70;
       return 10 ** (db / 20);
     });
-    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.2, text: "time" },
-      { start: 1.2, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: "where" }, { start: 2.54, end: 2.7, text: "you" },
+    const said = [{ start: .62, end: .76, text: "there" }, { start: .76, end: .9, text: "was" }, { start: .9, end: .98, text: "a" }, { start: .98, end: 1.22, text: "time" },
+      { start: 1.22, end: 1.42, text: "where" }, { start: 1.42, end: 1.62, text: "would" }, { start: 2.34, end: 2.54, text: "where" }, { start: 2.54, end: 2.7, text: "you" },
       { start: 2.8, end: 3.3, text: "would" }];
     sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, rms, peaks: rms, speechActivity: [{ start: .4, end: 1.64 }, { start: 2.38, end: 3.3 }] }) }];
     sources.words = async () => said;
     const plan = await planDialogueCuts({ tl, localPauses: false, unsureJoins: "cut", cuts: [cut({ mediaId: "mic", fromWord: 4, toWord: 5 })] }, sources);
-    expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
+    expect(plan).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(36 / 30, 5), review: true }] });
     if (plan.outcome !== "ready") return;
+    // The engine lets no later cut of the pass take this one's place: it is the editor's to hear from here on.
+    expect(plan.decisions[0]!.unheard).toBe(true);
     expect(plan.decisions[0]!.held).toContain("it waits for the editor as a call: record ask on it. Nothing else is needed on this cut. " +
       "As placed the join plays “… there was a time ‖ where you would …”. Kept, it plays “… was a time where would where you would …”.");
     // Given as the repeated “would” alone, with the voice in right after the cut, the range leaves “where ‖ where”
     // playing: the cut takes the first “where” too.
     const repeat = await planDialogueCuts({ tl, localPauses: false, cuts: [cut({ start: 1.43, end: 2.37 })] }, sources);
-    expect(repeat).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(37 / 30, 5), review: true }] });
+    expect(repeat).toMatchObject({ outcome: "ready", decisions: [{ start: expect.closeTo(36 / 30, 5), review: true }] });
     if (repeat.outcome === "ready") expect(repeat.decisions[0]!.held).toContain("took out the first “where” too, which the range as given left playing twice");
   });
 
@@ -714,15 +742,13 @@ describe("dialogue plan", () => {
     // to watch the join is the agent's call, so Scarlet flags nothing itself.
     expect(dipped.decision.check).toBeUndefined();
     expect(dipped.gate.evidence).toContain("the removed sound starts 0.02 s after the cut");
-    // Spoken straight through, or with a dip no deeper than a sibilant's hiss, there is nowhere to cut, and the agent
-    // settles the held cut with what Scarlet measured and what the join plays.
+    // Spoken straight through, or with a dip no deeper than a sibilant's hiss, the words part where the transcript parts
+    // them: where an editor cuts running speech (2026-11-18). The cut applies there, and the gate says so.
     for (const level of [.12, .008]) {
       const through = await plan(level);
-      expect(through.decision!.review).toBe(true);
-      expect(through.gate!.evidence).toContain("No measured silence between “recognized” and “that”");
-      // What Scarlet measured is its own field. The reason stays the sentence the agent wrote for the editor.
-      expect(through.decision!.held).toBe("The words named run on into the ones beside them at the start: no pause or low point where they part, a join in running speech. As placed the join plays “… recognized ‖ that likely …”. Kept, it plays “… recognized that that likely …”.");
-      expect(through.decision!.reason).not.toContain("run on");
+      expect(through.decision).toMatchObject({ review: false, start: 1.4 });
+      expect(through.decision!.held).toBeUndefined();
+      expect(through.gate!.evidence).toContain("No pause or low point between “recognized” and “that”: they run together, and the start is where the transcript parts them.");
     }
   });
 

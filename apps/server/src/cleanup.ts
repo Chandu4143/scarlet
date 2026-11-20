@@ -3,11 +3,11 @@
  * editing instruction, keeping timestamps. Plain HTTP calls, no SDKs.
  * The editor enables cleanup and selects its provider in Settings.
  * Model: settings.noteCleanup.model, else SCARLET_CLEANUP_ANTHROPIC_MODEL /
- * SCARLET_CLEANUP_OPENAI_MODEL, else the defaults below.
+ * SCARLET_CLEANUP_OPENAI_MODEL / SCARLET_CLEANUP_GEMINI_MODEL, else the defaults below.
  */
 import type { Ctx } from "./context.js";
 
-const DEFAULT_MODEL = { anthropic: "claude-opus-5-5", openai: "gpt-4o-mini" };
+const DEFAULT_MODEL = { anthropic: "claude-opus-5-5", openai: "gpt-4o-mini", gemini: "gemini-2.5-flash" };
 // The note waits for its cleanup, so a provider that stops answering must not hold it for the HTTP client's five minutes.
 const CLEANUP_TIMEOUT_MS = 30_000;
 
@@ -25,7 +25,11 @@ export async function cleanupNote(
   const provider = cfg.provider;
   if (!cfg.enabled || provider === "none") return null;
   const env = ctx.options.env ?? process.env;
-  const model = cfg.model || (provider === "anthropic" ? env.SCARLET_CLEANUP_ANTHROPIC_MODEL : env.SCARLET_CLEANUP_OPENAI_MODEL) || DEFAULT_MODEL[provider];
+  const envModel =
+    provider === "anthropic" ? env.SCARLET_CLEANUP_ANTHROPIC_MODEL
+    : provider === "openai" ? env.SCARLET_CLEANUP_OPENAI_MODEL
+    : env.SCARLET_CLEANUP_GEMINI_MODEL;
+  const model = cfg.model || envModel || DEFAULT_MODEL[provider];
   const where = `at ${context.time.toFixed(2)}s${context.end !== undefined ? ` to ${context.end.toFixed(2)}s` : ""}` +
     (context.clipIds?.length ? ` on clip(s) ${context.clipIds.join(", ")}` : "");
   const user = `Playhead ${where}.\n\nSpoken note:\n"""${transcript}"""`;
@@ -59,6 +63,34 @@ export async function cleanupNote(
       };
       if (json.stop_reason === "refusal") return null;
       const text = (json.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+      return text || null;
+    }
+    if (provider === "gemini") {
+      if (!ctx.env.geminiKey) return null;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": ctx.env.geminiKey },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [{ role: "user", parts: [{ text: user }] }],
+          generationConfig: { maxOutputTokens: 1024 },
+        }),
+        signal: stop,
+      });
+      if (!res.ok) throw new Error(`gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const json = (await res.json()) as {
+        candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+      };
+      const candidate = json.candidates?.[0];
+      if (!candidate) return null;
+      if (candidate.finishReason && candidate.finishReason !== "STOP" && candidate.finishReason !== "MAX_TOKENS") {
+        return null;
+      }
+      const text = (candidate.content?.parts ?? [])
+        .filter((p) => !p.thought)
+        .map((p) => p.text ?? "")
+        .join("")
+        .trim();
       return text || null;
     }
     if (!ctx.env.openaiKey) return null;

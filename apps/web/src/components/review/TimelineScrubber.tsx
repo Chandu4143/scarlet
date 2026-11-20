@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type RefObject } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { createStore, useStore } from "zustand";
 import { filmstripBatches, type TimeRange } from "@scarlet/timeline";
 import { api } from "../../lib/client";
@@ -188,6 +188,8 @@ function MediaLanes({ start, duration, pictureAspect, frameAt, preview, waveform
 
 interface TimelineScrubberProps {
   activeShortcuts?: boolean;
+  /** Sits in the timeline's bottom row, between the clock and the zoom: what ⌘Z takes back. */
+  foot?: ReactNode;
   duration: number;
   start?: number;
   playhead?: number;
@@ -302,6 +304,8 @@ export interface TimelineDot {
   landed?: "cut" | "edit";
   /** When it was applied (ms, as Date.now()). A marker drawn again mid-moment picks the moment up where it is. */
   landedAt?: number;
+  /** The editor rejected the edit a moment ago: its marker shrinks away where it is. */
+  leaving?: boolean;
 }
 
 /** A marker shows its edit's number. Edits that share a marker show their run of numbers ("12–13"), or the lowest and a plus when they skip. */
@@ -544,7 +548,7 @@ export function TimelineScrubber(props: TimelineScrubberProps) {
   </HeldStillsContext.Provider>;
 }
 
-function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, subject, kept,
+function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, subject, kept, foot,
   pictureAspect = 16 / 9, frameAt, previewStrip, hoverVideo, onSeek, onSelectTime, onScrubStart, highlight, marks, typedTimes, gaps, skippedRanges, onGap, onBand, fit, range, onRange, fps = 30 }:
   TimelineScrubberProps & { subject: string; kept: RefObject<KeptView | undefined> }) {
   const litMark = useStore(useContext(EditHoverContext));
@@ -588,7 +592,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const highlightKey = highlightView ? `${highlightView.start}/${highlightView.end}` : "";
   // The timeline this one takes the place of, when all that changed is the working cut under it.
   const [carried] = useState(() => kept.current?.subject === subject && kept.current.highlight === highlightKey ? kept.current : undefined);
-  const { view: { from, span }, samples, target, blend, minSpan, zoomBy, fitRange, stopZoom } = useTimelineZoom(track, start, total, playhead, drag, undefined, undefined, carried?.view);
+  const { view: { from, span }, samples, target, blend, minSpan, zoomBy, fitRange, stopZoom } = useTimelineZoom(track, start, total, playhead, drag, carried?.view);
   const shownFrom = target?.from ?? from, shownSpan = target?.span ?? span;
   // A timeline that doesn't know the video's length yet has shown nothing to keep, and couldn't zoom to its change.
   useLayoutEffect(() => {
@@ -657,7 +661,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       const landed = !isNew ? undefined : arrived.some(dot => dot.landed === "cut") ? "cut" : "edit";
       const landedAt = Math.max(...arrived.map(dot => dot.landedAt ?? now));
       const delay = isNew ? elapsed(`${key}|${landedAt}`, landedAt) : 0;
-      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed}
+      const node = <i key={key} aria-hidden="true" data-state={dotState(dots)} data-landed={landed} data-leaving={dots.length === 1 && dots[0]!.leaving ? "" : undefined}
         className={`simple-timeline-mark ${label ? "is-numbered" : "is-dot"}${isPill(mark) ? " is-pill" : ""}${on ? " is-on" : ""}${hot ? " is-hot" : ""}`}
         style={{ left: `${at}%`, ...label && { width: size, marginLeft: -size / 2 },
           ...landed && delay > 0 && { animationDelay: `${(landed === "cut" ? 260 : 0) - delay}ms` } }}>
@@ -731,7 +735,6 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
     setAimed(false);
     open();
   };
-  const timeline = !waveform?.source && !waveform?.original ? waveform?.timeline : undefined;
   const intendedSpan = target?.span ?? span;
   const zoomPercent = span ? Math.round(total / span * 100) : 100;
   const handleZoomKey = (e: KeyboardEvent) => {
@@ -795,6 +798,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   const zoomValue = zoomRange && intendedSpan > 0 ? Math.round(Math.max(0, Math.min(1, Math.log(total / intendedSpan) / zoomRange)) * ZOOM_STEPS) : 0;
   const zoomFoot = <div className="timeline-foot">
     <TimelineClock playhead={playhead} start={start} end={end} total={total} />
+    {foot}
     <div className="timeline-zoom-row" role="group" aria-label="Timeline zoom" title="Scroll or pinch over the timeline to zoom">
       <button type="button" className="timeline-zoom-step" aria-label="Zoom out" aria-keyshortcuts="-" title="Zoom out (−)"
         disabled={intendedSpan >= total} onClick={() => zoomBy(.5)}>−</button>
@@ -860,7 +864,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         // Panned or zoomed out of view, the band draws nothing: clamped to the edge it would leave a sliver that reads as a mark there.
         ? highlight.band.end > from && highlight.band.start < to &&
           // Pointer only: the keyboard reaches Before with \.
-          <span aria-hidden="true" className={`simple-timeline-band${highlight.tone ? ` is-${highlight.tone}` : ""}${onBand ? " is-live" : ""}${aimLit ? " is-lit" : ""}`} style={{ left: `${Math.min(100, Math.max(0, percent(highlight.band.start)))}%`,
+          <span aria-hidden="true" className={`simple-timeline-band${highlight.tone ? ` is-${highlight.tone}` : ""}${onBand && !highlight.leaving ? " is-live" : ""}${aimLit ? " is-lit" : ""}${highlight.leaving ? " is-leaving" : ""}`} style={{ left: `${Math.min(100, Math.max(0, percent(highlight.band.start)))}%`,
             width: `${Math.max(0, Math.min(100, percent(highlight.band.end)) - Math.max(0, percent(highlight.band.start)))}%` }}
             onPointerDown={onBand ? e => {
               if (e.button !== 0 || !e.isPrimary || drag.current) return;
@@ -872,7 +876,7 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
             } : undefined}>
             {bandText && <span>{bandText}</span>}</span>
         : highlight.band.start >= from && highlight.band.start <= to &&
-          <span aria-hidden="true" className={`simple-timeline-cut${highlight.tone ? ` is-${highlight.tone}` : ""}`} style={{ left: `${percent(highlight.band.start)}%` }}>
+          <span aria-hidden="true" className={`simple-timeline-cut${highlight.tone ? ` is-${highlight.tone}` : ""}${highlight.leaving ? " is-leaving" : ""}`} style={{ left: `${percent(highlight.band.start)}%` }}>
             {highlight.bandLabel && <span>{highlight.bandLabel}</span>}</span>)}
       {gapNodes}
       {markLayout.length > 0 && <div aria-hidden="true" className={aimed ? "simple-timeline-hover is-aimed" : "simple-timeline-hover"}

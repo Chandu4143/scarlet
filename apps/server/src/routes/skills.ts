@@ -4,7 +4,7 @@ import { AgentId, ApproveLearningRequest, EditSkillRequest, ReviseLearningReques
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { requestAttempt, requireActiveAttempt } from "../services/taskAttempt.js";
-import { badRequest, conflict, forbidden, notFound } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import { assistantSkills, createSkill, deleteSkill, latestSkillEdit, reviseSkillContent, skillEdits, skillHistory, updateSkill } from "../services/skills.js";
 import { createTask, FINISHED_TASK, saveTask } from "../services/tasks.js";
 import { approveLearning, declineLearning, openLearnings, requireApprovedLearningEdit, reviseLearning, suggestLearning } from "../services/learnings.js";

@@ -570,15 +570,12 @@ export function ensureProjectSource(db: Db): void {
 }
 
 /**
- * Graphic templates and a project's style guide. Like the read indexes, they are installed by name rather than by a
- * migration number, so a checkout and a release sharing a library don't take each other's numbers.
+ * A project's style guide. Like the read indexes, it is installed by name rather than by a migration number, so a
+ * checkout and a release sharing a library don't take each other's numbers. A library from a build that had saved
+ * templates keeps its `graphic_templates` table, which nothing reads now.
  */
 export function ensureGraphics(db: Db): void {
   ensureColumn(db, "projects", "style_guide", "ALTER TABLE projects ADD COLUMN style_guide TEXT;");
-  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'graphic_templates'").get()) return;
-  db.exec(`CREATE TABLE IF NOT EXISTS graphic_templates (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-  );`);
 }
 
 /** These derived lookups can coexist with any library that has task events and transcripts.

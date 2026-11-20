@@ -24,7 +24,7 @@ pub mod usage;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -73,8 +73,8 @@ impl McpLauncher {
     }
 
     /// Use the same provider catalog protocol as a standalone Scarlet agent host.
-    /// `extra_claude` adds Claude IDs the CLI accepts but does not list, with the default entry's options.
-    async fn load_catalogs(&self, agents: &mut [AgentAvailability], env: &HashMap<String, String>, extra_claude: &[String]) {
+    /// `extra_claude` and `extra_gemini` add model IDs the CLI accepts but does not list, with the default entry's options.
+    async fn load_catalogs(&self, agents: &mut [AgentAvailability], env: &HashMap<String, String>, extra_claude: &[String], extra_gemini: &[String]) {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Catalog {
@@ -85,7 +85,7 @@ impl McpLauncher {
         }
 
         let probes = agents.iter().filter(|a| a.installed && a.logged_in != Some(false)).map(|a| async move {
-            let Some(file) = spawn::find_on_path(&a.id, env) else {
+            let Some(file) = spawn::find_on_path(detect::cli_binary(&a.id), env) else {
                 log::warn!("[host] model-catalog provider={} reason=cli_unavailable", a.id);
                 return None;
             };
@@ -107,13 +107,21 @@ impl McpLauncher {
             Some((a.id.clone(), catalog))
         });
         for (id, mut catalog) in futures_util::future::join_all(probes).await.into_iter().flatten() {
-            if id == "claude" {
-                for m in extra_claude.iter().filter(|m| !m.is_empty()) {
-                    if catalog.models.contains(m) { continue; }
-                    catalog.models.push(m.clone());
-                    catalog.model_labels.entry(m.clone()).or_insert_with(|| m.clone());
-                    if let Some(o) = catalog.model_options.get("").cloned() { catalog.model_options.entry(m.clone()).or_insert(o); }
-                }
+            let extras = match id.as_str() {
+                "claude" => extra_claude,
+                "gemini" => extra_gemini,
+                _ => &[],
+            };
+            let default_opts = catalog
+                .model_options
+                .get("")
+                .or_else(|| catalog.model.as_ref().and_then(|m| catalog.model_options.get(m)))
+                .cloned();
+            for m in extras.iter().filter(|m| !m.is_empty()) {
+                if catalog.models.contains(m) { continue; }
+                catalog.models.push(m.clone());
+                catalog.model_labels.entry(m.clone()).or_insert_with(|| m.clone());
+                if let Some(ref o) = default_opts { catalog.model_options.entry(m.clone()).or_insert_with(|| o.clone()); }
             }
             if let Some(a) = agents.iter_mut().find(|a| a.id == id) {
                 take_catalog(a, catalog.model, catalog.model_options, Some(catalog.models), catalog.model_labels);
@@ -285,14 +293,34 @@ impl Undelivered {
 /// Sends an event to the window. A closure, so the run loop can be tested without a window.
 type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
+static NEXT_RUN_SEQ: AtomicU64 = AtomicU64::new(1);
+
 struct RunningTask {
     project_id: String,
     agent: String,
     cancel: CancellationToken,
     /// For the run time in the completion log line.
     started: std::time::Instant,
+    /// Monotonic claim order so overlapping attempts in the same folder do not depend on timer resolution.
+    seq: u64,
+    /// Set when a newer claim for the same task id replaces this attempt in `running`.
+    superseded: AtomicBool,
     /// The folder it works in. Every attempt at one run shares it.
     run_dir: PathBuf,
+}
+
+impl RunningTask {
+    fn new(project_id: String, agent: String, cancel: CancellationToken, run_dir: PathBuf) -> Self {
+        Self {
+            project_id,
+            agent,
+            cancel,
+            started: std::time::Instant::now(),
+            seq: NEXT_RUN_SEQ.fetch_add(1, Ordering::SeqCst),
+            superseded: AtomicBool::new(false),
+            run_dir,
+        }
+    }
 }
 
 type RunningTasks = StdMutex<HashMap<String, Arc<RunningTask>>>;
@@ -307,9 +335,8 @@ async fn heartbeat_workers(api: &Api, host_id: &str, agents: &[AgentAvailability
     Ok(())
 }
 
-/// Show one event of a run in the window and save it with the engine.
-async fn send_event(api: &Api, emit: &Emit, task_id: &str, started_at: Option<&str>, ev: &TaskEvent) {
-    emit("host://task-event", json!({ "taskId": task_id, "event": ev }));
+/// Save one event of a run with the engine, which shows it in the window.
+async fn send_event(api: &Api, task_id: &str, started_at: Option<&str>, ev: &TaskEvent) {
     if let Err(e) = api.post_task_event(task_id, started_at, ev).await {
         log::warn!("task {task_id}: post event failed: {e}");
     }
@@ -391,7 +418,7 @@ impl HostRuntime {
     async fn detect_agents(&self, env: &HashMap<String, String>) -> Option<String> {
         let _detecting = self.detecting.lock().await;
         let mut found = detect::detect(env, &self.paths.home, &self.models).await;
-        self.mcp.load_catalogs(&mut found, env, &self.paths.custom_claude_models()).await;
+        self.mcp.load_catalogs(&mut found, env, &self.paths.custom_claude_models(), &self.paths.custom_gemini_models()).await;
         log::info!("assistants: {}", describe_agents(&found));
         let mut agents = self.agents.write().await;
         let mut failed = Vec::new();
@@ -401,7 +428,7 @@ impl HostRuntime {
                 take_catalog(agent, old.model.clone(), old.model_options.clone(), old.models.clone(), old.model_labels.clone());
             }
             failed.push(match agent.id.as_str() {
-                "claude" => "Claude Code", "codex" => "Codex", "gemini" => "Gemini CLI", id => id,
+                "claude" => "Claude Code", "codex" => "Codex", "gemini" => "Gemini", id => id,
             });
         }
         let error = (!failed.is_empty()).then(|| format!("Couldn't refresh models for {}. Try again.", failed.join(", ")));
@@ -492,7 +519,7 @@ impl HostRuntime {
         if asked.is_empty() {
             return false;
         }
-        self.mcp.load_catalogs(&mut asked, &child_env(&self.paths.home), &self.paths.custom_claude_models()).await;
+        self.mcp.load_catalogs(&mut asked, &child_env(&self.paths.home), &self.paths.custom_claude_models(), &self.paths.custom_gemini_models()).await;
         let (read, left, assistants) = {
             let mut agents = self.agents.write().await;
             let mut read = false;
@@ -669,14 +696,17 @@ impl HostRuntime {
 
     fn launch(self: Arc<Self>, task: Task) {
         let cancel = self.cancel.child_token();
-        let run = Arc::new(RunningTask { project_id: task.project_id.clone(), agent: task.agent.clone(), cancel: cancel.clone(), started: std::time::Instant::now(), run_dir: self.run_dir(&task) });
-        self.running.lock().unwrap().insert(task.id.clone(), run.clone());
+        let run = Arc::new(RunningTask::new(task.project_id.clone(), task.agent.clone(), cancel.clone(), self.run_dir(&task)));
+        if let Some(previous) = self.running.lock().unwrap().insert(task.id.clone(), run.clone()) {
+            previous.superseded.store(true, Ordering::SeqCst);
+            previous.cancel.cancel();
+        }
         self.subscriptions_changed.notify_one();
         self.emit_status();
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
             let id = task.id.clone();
-            me.run_task(task, cancel).await;
+            me.run_task_attempt(task, cancel, Some(run.clone())).await;
             // An immediate editor answer can launch the next claim before this run has returned.
             {
                 let mut running = me.running.lock().unwrap();
@@ -695,11 +725,11 @@ impl HostRuntime {
     async fn post_event(&self, task: &Task, kind: &str, text: String, data: Option<Value>) {
         let task_id = &task.id;
         let ev = TaskEvent { task_id: Some(task_id.to_string()), at: Some(now_iso()), kind: kind.to_string(), text, data };
-        send_event(&self.api, &self.emit, task_id, task.started_at.as_deref(), &ev).await;
+        send_event(&self.api, task_id, task.started_at.as_deref(), &ev).await;
     }
 
-    /// Where a run's events go: the sink its runner writes to, the task that sends them on in order to the window
-    /// and the engine, and a question the CLI's output carried.
+    /// Where a run's events go: the sink its runner writes to, the task that sends them on in order to the
+    /// engine, and a question the CLI's output carried.
     /// An event's time is taken as the CLI writes it, not when its turn to be sent comes. Behind a slow engine a
     /// backlog would otherwise carry the one instant it was sent at, later than events the engine saved meanwhile.
     fn forward_events(&self, task_id: &str, started_at: Option<String>) -> (runner::EventSink, tokio::task::JoinHandle<()>, Arc<StdMutex<Option<String>>>) {
@@ -707,7 +737,6 @@ impl HostRuntime {
         let question_seen: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
         let consumer = {
             let api = self.api.clone();
-            let emit = self.emit.clone();
             let task_id = task_id.to_string();
             let qs = question_seen.clone();
             tokio::spawn(async move {
@@ -720,7 +749,7 @@ impl HostRuntime {
                         continue; // summary goes in complete()
                     }
                     let tev = TaskEvent { task_id: Some(task_id.clone()), at: Some(at), kind: ev.kind.clone(), text: ev.text.clone(), data: ev.data.clone() };
-                    send_event(&api, &emit, &task_id, started_at.as_deref(), &tev).await;
+                    send_event(&api, &task_id, started_at.as_deref(), &tev).await;
                 }
             })
         };
@@ -730,12 +759,22 @@ impl HostRuntime {
         (sink, consumer, question_seen)
     }
 
+    #[cfg(test)]
     async fn complete(&self, task: &Task, state: &str, summary: Option<String>, error: Option<String>) {
-        self.finish(task, state, summary, error, false).await
+        self.finish_attempt(task, state, summary, error, false, None).await
+    }
+
+    #[cfg(test)]
+    async fn finish(&self, task: &Task, state: &str, summary: Option<String>, error: Option<String>, stopped: bool) {
+        self.finish_attempt(task, state, summary, error, stopped, None).await
+    }
+
+    async fn complete_attempt(&self, task: &Task, state: &str, summary: Option<String>, error: Option<String>, run: Option<&Arc<RunningTask>>) {
+        self.finish_attempt(task, state, summary, error, false, run).await
     }
 
     /// `stopped`: the host stopped the run before it finished. The editor can resume it from what it saved.
-    async fn finish(&self, task: &Task, state: &str, summary: Option<String>, error: Option<String>, stopped: bool) {
+    async fn finish_attempt(&self, task: &Task, state: &str, summary: Option<String>, error: Option<String>, stopped: bool, run: Option<&Arc<RunningTask>>) {
         let task_id = &task.id;
         let interrupted = stopped || (state == "cancelled" && self.cancel.is_cancelled());
         let body = CompleteTaskRequest { state: state.into(), if_started_at: task.started_at.clone(), summary, error, interrupted, engine_lost: interrupted && self.engine_lost.load(Ordering::SeqCst) };
@@ -764,7 +803,10 @@ impl HostRuntime {
         // this one couldn't, as the work of a lost worker: a run whose own work crashes the engine stops resuming after
         // a few tries. When Scarlet quits there is none, and the engine recovers the run at the next launch.
         let landed = ack.is_some();
-        let elapsed_ms = self.running.lock().unwrap().get(task_id).map(|run| run.started.elapsed().as_millis()).unwrap_or_default();
+        let elapsed_ms = run
+            .map(|r| r.started.elapsed().as_millis())
+            .or_else(|| self.running.lock().unwrap().get(task_id).map(|r| r.started.elapsed().as_millis()))
+            .unwrap_or_default();
         log_completion(task_id, &body, ack.as_ref(), elapsed_ms);
         let handover = (!landed && self.cancel.is_cancelled()).then_some(CompleteTaskRequest { engine_lost: true, ..body });
         let dir = self.run_dir(task);
@@ -772,7 +814,15 @@ impl HostRuntime {
         // the folder they share. The folder and its CLI session are then the newer attempt's, to clean when it ends.
         let newer = {
             let running = self.running.lock().unwrap();
-            running.get(task_id).is_some_and(|mine| running.values().any(|run| run.run_dir == dir && run.started > mine.started))
+            match run {
+                Some(mine) => {
+                    mine.superseded.load(Ordering::SeqCst)
+                        || running.values().any(|other| !Arc::ptr_eq(other, mine) && other.run_dir == dir && other.seq > mine.seq)
+                }
+                None => running
+                    .get(task_id)
+                    .is_some_and(|mine| running.values().any(|other| other.run_dir == dir && other.seq > mine.seq)),
+            }
         };
         if newer {
             log::info!("task {task_id}: left its folder to a newer attempt at the same run");
@@ -792,6 +842,13 @@ impl HostRuntime {
         if let Some(real) = real.filter(|_| landed && !interrupted && !child_env(&self.paths.home).contains_key("CLAUDE_CONFIG_DIR")) {
             if let Err(e) = remove_claude_sessions(&real, &self.paths.home) {
                 log::warn!("task {task_id}: could not remove its Claude sessions: {e}");
+            }
+        }
+        // A Codex run keeps its thread in a home beside the folder, on the same terms.
+        let codex_home = runner_codex::codex_home_dir(&dir);
+        if landed && !interrupted && std::fs::symlink_metadata(&codex_home).is_ok_and(|m| m.is_dir()) {
+            if let Err(e) = std::fs::remove_dir_all(&codex_home) {
+                log::warn!("task {task_id}: could not remove its Codex home: {e}");
             }
         }
         // Handed over once its folder is clean: the attempt that resumes the run works in the same folder.
@@ -824,6 +881,10 @@ impl HostRuntime {
     }
 
     pub async fn run_task(&self, task: Task, cancel: CancellationToken) {
+        self.run_task_attempt(task, cancel, None).await
+    }
+
+    async fn run_task_attempt(&self, task: Task, cancel: CancellationToken, run: Option<Arc<RunningTask>>) {
         log::info!(
             "task {} ({}, {}{})",
             task.id,
@@ -832,14 +893,14 @@ impl HostRuntime {
             task.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default()
         );
         if cancel.is_cancelled() {
-            return self.complete(&task, "cancelled", None, Some("host shutting down".into())).await;
+            return self.complete_attempt(&task, "cancelled", None, Some("host shutting down".into()), run.as_ref()).await;
         }
 
         let prepared = match self.prepare(&task, false).await {
             Ok(p) => p,
             Err(e) => {
                 self.post_event(&task, "error", format!("Could not prepare task: {e}"), None).await;
-                return self.complete(&task, "failed", None, Some(e.to_string())).await;
+                return self.complete_attempt(&task, "failed", None, Some(e.to_string()), run.as_ref()).await;
             }
         };
 
@@ -851,7 +912,7 @@ impl HostRuntime {
         // Persist the start before the CLI can have side effects. A dead desktop's unstarted claim can be resumed.
         let start = TaskEvent { task_id: Some(task.id.clone()), at: Some(now_iso()), kind: "log".into(), text: "Starting the editing agent.".into(), data: None };
         if let Err(e) = self.api.post_task_event(&task.id, task.started_at.as_deref(), &start).await {
-            return self.complete(&task, "failed", None, Some(e.to_string())).await;
+            return self.complete_attempt(&task, "failed", None, Some(e.to_string()), run.as_ref()).await;
         }
         // Tokens so far, sent to the engine while the agent works, for the count beside Stop.
         let live = LiveUsage::start(self.api.clone(), task.id.clone(), task.started_at.clone());
@@ -894,7 +955,7 @@ impl HostRuntime {
                     live.stop().await;
                     self.record_usage(&task, usage.as_ref()).await;
                     self.post_event(&task, "error", format!("Could not prepare task: {e}"), None).await;
-                    return self.complete(&task, "failed", None, Some(e.to_string())).await;
+                    return self.complete_attempt(&task, "failed", None, Some(e.to_string()), run.as_ref()).await;
                 }
             }
             usage = usage::add_usage(usage, result.usage.clone());
@@ -909,7 +970,7 @@ impl HostRuntime {
 
         let question_seen = question_seen.lock().unwrap().clone();
         match outcome(&result, cancel.is_cancelled(), question_seen, self.timeout, self.stall) {
-            Outcome::Cancelled { summary } => self.complete(&task, "cancelled", summary, Some("cancelled".into())).await,
+            Outcome::Cancelled { summary } => self.complete_attempt(&task, "cancelled", summary, Some("cancelled".into()), run.as_ref()).await,
             Outcome::Question(q) => {
                 // Confirm with the engine even when a provider reported tool success.
                 for attempt in 1..=3 {
@@ -926,16 +987,16 @@ impl HostRuntime {
                             let error = format!("Could not deliver the editor question: {e}");
                             log_question(&task, "undelivered");
                             log::warn!("task {}: {error}", task.id);
-                            return self.complete(&task, "failed", None, Some(error)).await;
+                            return self.complete_attempt(&task, "failed", None, Some(error), run.as_ref()).await;
                         }
                         Err(_) => tokio::time::sleep(Duration::from_millis(250 * attempt)).await,
                     }
                 }
             }
-            Outcome::Done { summary } => self.complete(&task, "done", Some(summary), None).await,
+            Outcome::Done { summary } => self.complete_attempt(&task, "done", Some(summary), None, run.as_ref()).await,
             Outcome::Failed { error, summary, stopped } => {
                 self.post_event(&task, "error", error.clone(), None).await;
-                self.finish(&task, "failed", summary, Some(error), stopped).await
+                self.finish_attempt(&task, "failed", summary, Some(error), stopped, run.as_ref()).await
             }
         }
     }
@@ -1223,7 +1284,10 @@ impl HostManager {
         if let Some(rt) = rt {
             rt.engine_lost.store(engine_lost, Ordering::SeqCst);
             rt.stop().await;
-            let _ = self.app.emit("host://status", &HostStatus { mcp_command: Some(rt.mcp.describe()), ..Default::default() });
+            // A host started for the next engine while this one wound down has already said how it stands.
+            if self.runtime.lock().await.is_none() {
+                let _ = self.app.emit("host://status", &HostStatus { mcp_command: Some(rt.mcp.describe()), ..Default::default() });
+            }
         }
     }
 
@@ -1251,7 +1315,7 @@ impl HostManager {
                 let models = self.config.lock().unwrap().models.clone();
                 let mut agents = detect::detect(&env, &self.paths.home, &models).await;
                 let mcp = self.mcp.lock().unwrap().clone();
-                if let Some(launcher) = &mcp { launcher.load_catalogs(&mut agents, &env, &self.paths.custom_claude_models()).await; }
+                if let Some(launcher) = &mcp { launcher.load_catalogs(&mut agents, &env, &self.paths.custom_claude_models(), &self.paths.custom_gemini_models()).await; }
                 HostStatus { agents, mcp_command: mcp.as_ref().map(|m| m.describe()), ..Default::default() }
             }
         };
@@ -1628,10 +1692,8 @@ mod tests {
         let resumed = Task { resume_root_id: Some("tsk_stopped".into()), ..task("tsk_resumed") };
         assert_eq!(rt.run_dir(&resumed), rt.run_dir(&stopped));
         for attempt in [&stopped, &resumed] {
-            let run = RunningTask { project_id: attempt.project_id.clone(), agent: attempt.agent.clone(), cancel: CancellationToken::new(), started: std::time::Instant::now(), run_dir: rt.run_dir(attempt) };
+            let run = RunningTask::new(attempt.project_id.clone(), attempt.agent.clone(), CancellationToken::new(), rt.run_dir(attempt));
             rt.running.lock().unwrap().insert(attempt.id.clone(), Arc::new(run));
-            // The second is claimed a moment after the first.
-            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         // The resumed attempt has written its control files, and carries on in the session the first one opened.
         let (folder, session) = claude_run_files(&rt, &resumed);
@@ -1645,6 +1707,34 @@ mod tests {
 
         // The folder is the newer attempt's to clean when it ends, whether or not the older one is still listed.
         rt.complete(&resumed, "done", Some("Cut two pauses.".into()), None).await;
+        assert!(!folder.join(".scarlet").exists() && session_gone(&session) && folder.join("artifacts").exists());
+    }
+
+    #[tokio::test]
+    async fn a_reclaimed_attempt_for_the_same_task_leaves_its_folder_to_the_newer_one() {
+        let engine = api::fake::engine(|_, _| (200, "{}".into())).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (rt, _) = runtime(&engine.url, dir.path());
+        let first = Task { started_at: Some("2026-04-01T10:00:00Z".into()), ..task("tsk_same") };
+        let second = Task { started_at: Some("2026-04-01T10:01:00Z".into()), ..task("tsk_same") };
+        let first_run = Arc::new(RunningTask::new(first.project_id.clone(), first.agent.clone(), CancellationToken::new(), rt.run_dir(&first)));
+        let second_run = Arc::new(RunningTask::new(second.project_id.clone(), second.agent.clone(), CancellationToken::new(), rt.run_dir(&second)));
+        // Simulate launch() inserting the second attempt for the same task id while the first is still winding down.
+        rt.running.lock().unwrap().insert(first.id.clone(), first_run.clone());
+        if let Some(previous) = rt.running.lock().unwrap().insert(second.id.clone(), second_run.clone()) {
+            previous.superseded.store(true, Ordering::SeqCst);
+            previous.cancel.cancel();
+        }
+        assert!(first_run.cancel.is_cancelled(), "replacing a running attempt cancels the prior one");
+        let (folder, session) = claude_run_files(&rt, &second);
+
+        // The superseded first attempt finishes and must not delete the second attempt's control files or session.
+        rt.complete_attempt(&first, "cancelled", None, Some("cancelled".into()), Some(&first_run)).await;
+        assert!(folder.join(".scarlet").join("mcp.json").exists(), "superseded attempt removed the newer attempt's control files");
+        assert!(session.exists(), "superseded attempt removed the newer attempt's Claude session");
+
+        // When the newer attempt finishes, it owns cleanup of the shared folder.
+        rt.complete_attempt(&second, "done", Some("Done.".into()), None, Some(&second_run)).await;
         assert!(!folder.join(".scarlet").exists() && session_gone(&session) && folder.join("artifacts").exists());
     }
 
@@ -1670,7 +1760,7 @@ mod tests {
             _ => (200, "{}".into()),
         }).await;
         let dir = tempfile::tempdir().unwrap();
-        let (rt, sent) = runtime(&engine.url, dir.path());
+        let (rt, _sent) = runtime(&engine.url, dir.path());
         let task = unrunnable("tsk_noprompt");
         rt.run_task(task.clone(), CancellationToken::new()).await;
         // The prompt was asked for with the run's own artifacts folder.
@@ -1681,10 +1771,6 @@ mod tests {
         assert_eq!((&event["type"], &event["text"]), (&json!("error"), &json!("Could not prepare task: The project is closed (conflict 409)")));
         let done = &engine.bodies("POST /api/tasks/tsk_noprompt/complete")[0];
         assert_eq!((&done["state"], &done["error"]), (&json!("failed"), &json!("The project is closed (conflict 409)")));
-        // The window got the same event.
-        let sent = sent.lock().unwrap();
-        let (_, payload) = sent.iter().find(|(event, _)| event == "host://task-event").unwrap();
-        assert_eq!((&payload["taskId"], &payload["event"]["type"]), (&json!("tsk_noprompt"), &json!("error")));
         // None of the CLI's control files is left in the folder made for it.
         let left = std::fs::read_dir(rt.run_dir(&task)).map(|dir| dir.flatten().filter(|e| e.file_name() != "artifacts").count()).unwrap_or(0);
         assert_eq!(left, 0);
@@ -1699,7 +1785,7 @@ mod tests {
             _ => (200, "{}".into()),
         }).await;
         let dir = tempfile::tempdir().unwrap();
-        let (rt, sent) = runtime(&engine.url, dir.path());
+        let (rt, _sent) = runtime(&engine.url, dir.path());
         rt.run_task(unrunnable("tsk_flow"), CancellationToken::new()).await;
         let routes: Vec<String> = engine.seen.lock().unwrap().iter().map(|(route, _)| route.split('?').next().unwrap().to_string()).collect();
         assert_eq!(routes, [
@@ -1714,8 +1800,6 @@ mod tests {
         assert_eq!((&events[1]["type"], &events[1]["text"]), (&json!("error"), &json!("no runner for agent \"storyboard\"")));
         let done = &engine.bodies("POST /api/tasks/tsk_flow/complete")[0];
         assert_eq!((&done["state"], &done["error"], &done["interrupted"]), (&json!("failed"), &json!("no runner for agent \"storyboard\""), &json!(false)));
-        // The window hears of the failure as it happens, not only through the engine.
-        assert!(sent.lock().unwrap().iter().any(|(event, payload)| event == "host://task-event" && payload["event"]["type"] == json!("error")));
         // Both ends of the run are in the log under the task's id.
         assert!(crate::util::test_log::find(&["task tsk_flow: storyboard ended (exit code None)"]).is_some());
         let (level, _) = crate::util::test_log::find(&["[host] completion task=tsk_flow", "requested=failed state=failed outcome=accepted"]).expect("no failure line");
@@ -1750,7 +1834,7 @@ mod tests {
             (200, "{}".into())
         }).await;
         let dir = tempfile::tempdir().unwrap();
-        let (rt, sent) = runtime(&engine.url, dir.path());
+        let (rt, _sent) = runtime(&engine.url, dir.path());
         let (sink, consumer, question) = rt.forward_events("tsk_late", Some("2026-11-08T10:00:00.000Z".into()));
         // The CLI writes two lines back to back, then asks its question and ends.
         let before = now_iso();
@@ -1770,9 +1854,6 @@ mod tests {
         // then, a backlog would bunch at one instant, later than events the engine saved meanwhile.
         let stamped: Vec<&str> = posted.iter().map(|event| event["at"].as_str().unwrap()).collect();
         assert!(stamped.iter().all(|at| before.as_str() <= *at && *at <= after.as_str()), "written between {before} and {after}, stamped {stamped:?}");
-        // The window is told the same times.
-        let shown: Vec<Value> = sent.lock().unwrap().iter().filter(|(event, _)| event == "host://task-event").map(|(_, payload)| payload["event"]["at"].clone()).collect();
-        assert_eq!(shown, posted.iter().map(|event| event["at"].clone()).collect::<Vec<_>>());
     }
 
     #[tokio::test]
@@ -1861,7 +1942,7 @@ mod tests {
         *rt.agents.write().await = vec![ready("claude"), ready("codex"), ready("cursor")];
         assert_eq!(rt.idle_agents().await, (vec!["claude".to_string(), "codex".to_string()], false));
         // One task per assistant here: claude is full, and the loop is told so it claims without a long wait.
-        let run = Arc::new(RunningTask { project_id: "prj_1".into(), agent: "claude".into(), cancel: CancellationToken::new(), started: std::time::Instant::now(), run_dir: PathBuf::new() });
+        let run = Arc::new(RunningTask::new("prj_1".into(), "claude".into(), CancellationToken::new(), PathBuf::new()));
         rt.running.lock().unwrap().insert("tsk_1".into(), run);
         assert_eq!(rt.idle_agents().await, (vec!["codex".to_string()], true));
     }
@@ -2075,7 +2156,7 @@ mod tests {
             let body = r#"{"cancelled":["stopped"]}"#;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         });
-        let worker = || Arc::new(RunningTask { project_id: "new".into(), agent: "codex".into(), cancel: CancellationToken::new(), started: std::time::Instant::now(), run_dir: PathBuf::new() });
+        let worker = || Arc::new(RunningTask::new("new".into(), "codex".into(), CancellationToken::new(), PathBuf::new()));
         let (stopped, active) = (worker(), worker());
         let running = StdMutex::new(HashMap::from([("stopped".into(), stopped.clone()), ("active".into(), active.clone())]));
         heartbeat_workers(&api, "host", &[], &running).await.unwrap();
@@ -2178,8 +2259,8 @@ mod tests {
         assert_eq!(cfg["mcpServers"]["scarlet"]["command"], json!("node"));
         assert_eq!(cfg["mcpServers"]["scarlet"]["args"][1], json!("mcp"));
         assert_eq!(cfg["mcpServers"]["scarlet"]["env"]["SCARLET_PROJECT"], json!("p"));
-        let gem: Value = serde_json::from_str(&runner_gemini::gemini_settings_json(&spec)).unwrap();
-        assert_eq!(gem["mcpServers"]["scarlet"]["args"], json!(spec.args));
+        let gem = runner_gemini::acp_mcp_server(&spec);
+        assert_eq!(gem["args"], json!(spec.args));
     }
 }
 

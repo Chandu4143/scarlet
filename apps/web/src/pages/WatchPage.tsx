@@ -17,6 +17,7 @@ import { usePlayerStore } from "../stores/player";
 import { selectRender, useProjectStore } from "../stores/project";
 import { useShownCut } from "../stores/shownCut";
 import { CaughtUpOnMonitor } from "../components/player/CaughtUp";
+import { PictureMarks, PictureMarkTools, toggleMarking } from "../components/player/PictureMarks";
 import { editTargetAt, markedRangeOf, useUiStore, type AgentContext, type MarkedRange } from "../stores/ui";
 import { Icon } from "../components/ui/primitives";
 import { CachedVideo } from "../components/player/CachedVideo";
@@ -38,9 +39,8 @@ import { useNotePositions } from "../lib/useNotePositions";
 import type { ProgressFocus } from "../components/player/SimpleProgress";
 import { editFocus } from "../lib/editKind";
 import { editPlaybackRange } from "../lib/editPlaybackRange";
+import { momentRange } from "../lib/editMoments";
 import { editKey } from "../lib/keptEdits";
-import { useTemplatesStore } from "../stores/templates";
-import { TransitionPicture } from "../components/agent/TemplateMenu";
 
 const noop = () => {};
 const documentVisible = () => !document.hidden;
@@ -54,10 +54,11 @@ interface ThreadTimelineView {
   threadId?: string;
   edits: ThreadEdit[];
   selected?: ThreadEdit;
+  /** The moment of a pass's list that's open, led by `selected`: it plays across all of its edits. */
+  selectedMoment?: { edits: ThreadEdit[] };
   originalChange?: Change;
   cutReview?: { cuts: ThreadEdit[] };
   framing?: { beforeVersion: string; cue?: number };
-  framingFor?(edit: ThreadEdit): ThreadTimelineView["framing"];
   request: number;
   loading?: boolean;
   error?: string;
@@ -231,11 +232,13 @@ interface PreviewProps {
     /** Changes each time the editor asks to see the whole timeline. */
     fit?: number;
     focus?: ProgressFocus; label?: string; compareHost?: HTMLElement | null; above?: ReactNode;
+    /** In the timeline's bottom row: what ⌘Z takes back. */
+    foot?: ReactNode;
     gaps?: TimelineGap[]; skippedRanges?: TimeRange[]; onGap?(gap: TimelineGap, time: number): void;
     /** A click inside the shaded passage, when the playing side steps over it. */
     onBand?(time: number): void;
     /** Timeline navigation offers the point to the composer. N attaches it explicitly. */
-    onPick?(point: AgentContext, how: "seek" | "n"): void;
+    onPick?(point: AgentContext, how: "seek" | "n" | "pause"): void;
     /** A stretch marked on the timeline's ruler for the message being written, or none once it is taken off there. */
     onRange?(range: MarkedRange | undefined, byKey?: boolean): void;
     /** The chosen edit is about to play on another version: don't start its passage on this one meanwhile. */
@@ -507,7 +510,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   useLayoutEffect(() => { setSelectedTime(undefined); }, [cacheVersion, source?.id]);
   const selectedFrameUrl = useMemo(() => selectedTime === undefined ? undefined
     : cutFrameUrl(current.project, displayedTimeline, selectedTime, true, true), [current.project, displayedTimeline, selectedTime]);
-  const selectTime = (time: number, how: "seek" | "n" = "seek") => {
+  const selectTime = (time: number, how: "seek" | "n" | "pause" = "seek") => {
     const at = Math.min(time, lastFrame);
     if (!source) setSelectedTime(at);
     // The point is on the timeline the player is on, which is the one before while the edit's new timeline is read.
@@ -545,8 +548,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   const framing = threadView?.framing;
   const cutReview = threadView?.cutReview;
   const selectedEdit = threadView?.selected;
+  // A moment of a pass's list plays across all of its edits, once.
+  const selectedMoment = threadView?.selectedMoment;
   const selectedPassage = selectedEdit && (!selectedEdit.beforeCut && selectedEdit.at === undefined
-    ? editPlaybackRange(selectedEdit.range, duration) : selectedEdit.range);
+    ? editPlaybackRange(selectedMoment ? momentRange(selectedMoment) : selectedEdit.range, duration) : selectedEdit.range);
   const originalChange = threadView?.originalChange;
   // A marker left for the editor changed nothing in the video, so it has no Before to read.
   const compared = selectedEdit?.marker ? undefined : selectedEdit;
@@ -562,6 +567,15 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   // The next edit can carry the same request number, so a stretch left behind would play as its passage.
   useLayoutEffect(() => { if (!selectedEdit) setReach(undefined); }, [selectedEdit]);
   const playingBefore = before && !framing;
+  // Marks drawn on the picture for the message in the box. M, or a tool over the picture, marks the frame under the
+  // playhead.
+  const canMark = !!simple.onPick && playable && !playingBefore && !framing;
+  const markFrame = () => {
+    if (!canMark) return;
+    const time = Math.min(usePlayerStore.getState().time, lastFrame);
+    const picture = source ? api.frameUrl(source.id, time, 1280) : cutFrameUrl(current.project, displayedTimeline, time, true, true);
+    toggleMarking(current.id, { time, version: source ? undefined : rangeVersion, mediaId: source?.id, picture });
+  };
   const reviewPassage = selectedEdit && simple.reviewRange && !playingBefore ? editPlaybackRange(simple.reviewRange, duration) : undefined;
   const passage = simple.holdPassage ? undefined : reached?.range ?? reviewPassage ?? selectedPassage;
   useLayoutEffect(() => { shownPassage.current = passage; }, [passage]);
@@ -661,7 +675,10 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       const target = Math.max(0, Math.min(lastFrame, arrowSeekTime(usePlayerStore.getState().time, e.key, e.shiftKey)));
       seekFull(target);
       selectTime(target);
-    } else if (e.key.toLowerCase() === "n" && simple) {
+    } else if (e.key.toLowerCase() === "m" && simple.onPick && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (!e.repeat) markFrame();
+    } else if (e.key.toLowerCase() === "n") {
       e.preventDefault();
       // Held down, N is one press too: it has already picked the moment and asked for the cursor.
       if (e.repeat) return;
@@ -670,6 +687,12 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       useUiStore.getState().focusComposer();
     }
   });
+  // A pause the editor makes writes its time into an empty message box, as if they had typed it.
+  const pickOnPause = useRef(() => {});
+  pickOnPause.current = () => {
+    if (simple.onPick && active && playable && duration > 0) selectTime(usePlayerStore.getState().time, "pause");
+  };
+  useEffect(() => player.onEditorPause(() => pickOnPause.current()), []);
   const preparing = current.media.find(isPreparingMedia);
 
   const stage = useRef<HTMLElement>(null);
@@ -703,7 +726,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
     previousChange.current = change?.id;
   }, [change?.id, expanded]);
   async function toggleFullscreen() {
-    if (document.fullscreenElement) await document.exitFullscreen();
+    if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
     else if (expanded) setExpanded(false);
     else if (document.fullscreenEnabled && stage.current?.requestFullscreen) {
       try { await stage.current.requestFullscreen(); } catch { setExpanded(true); }
@@ -714,6 +737,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
   return (
     <section ref={stage} className="cut-preview" aria-label={view} data-expanded={expanded || undefined}>
       <AmbientLight stage={stage} monitor={monitor} />
+      {simple.onPick && (source || cut || change || draftVersion) && <PictureMarkTools projectId={current.id} enabled={canMark} onStart={markFrame} />}
       <div className="watch-viewport">
         <div ref={monitor} className="watch-monitor" data-landscape={pictureAspect > 1 || undefined}
           style={{ "--picture-aspect": pictureAspect } as CSSProperties}
@@ -749,7 +773,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
           {atSelectedFrame && selectedTime !== undefined && selectedFrameUrl &&
             <SelectedCutFrame key={JSON.stringify([fullVideoUrl, selectedFrameUrl])} time={selectedTime} url={selectedFrameUrl} fps={fps} />}
           {simple.label && <div className="simple-on-video" role="status">{simple.label}</div>}
-          <TemplateOnPicture />
+          {!playingBefore && !framing && <PictureMarks projectId={current.id} version={source ? undefined : rangeVersion} mediaId={source?.id} fps={fps} />}
           {/* The edits saved while the video played come in as it stops, with a word that they did. */}
           {!source && <CaughtUpOnMonitor />}
           {cutLoadError && <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-black/75 p-2 text-sm">
@@ -782,7 +806,7 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
         </div>}
         {simple.above}
         <div>
-          <PlayerTimeline activeShortcuts={active} duration={duration} pictureAspect={pictureAspect} previewStrip={previewStrip} hoverVideo={hoverVideo}
+          <PlayerTimeline activeShortcuts={active} foot={simple.foot} duration={duration} pictureAspect={pictureAspect} previewStrip={previewStrip} hoverVideo={hoverVideo}
             waveform={{ media: current.media, mediaPaused: current.project.mediaPaused, source, timeline: displayedTimeline, ...sameClockBefore && {
               audioFrom: playingBefore ? sameClockBefore : undefined, scaleWith: playingBefore ? displayedTimeline : sameClockBefore } }} frameAt={frameAt} onSeek={seekFull} onSelectTime={selectTime} onScrubStart={scrubStart}
             range={simple.onRange ? shownRange : undefined} onRange={simple.onRange ? markRange : undefined} fps={fps}
@@ -792,11 +816,4 @@ export function CutPreview({ threadView, workingCache, draftVersion, draft, draf
       </div>}
     </section>
   );
-}
-
-/** The template lit in the message box's $ list, drawn over the picture as it would sit there, until the list closes. */
-function TemplateOnPicture() {
-  const lit = useTemplatesStore(s => s.lit);
-  if (lit?.transition) return <span className="template-on-picture" data-template={lit.id}><TransitionPicture transition={lit.transition} from={lit.from} to={lit.to} playing /></span>;
-  return lit ? <img key={lit.id} className="template-on-picture" src={lit.url} alt="" data-template={lit.id} /> : null;
 }

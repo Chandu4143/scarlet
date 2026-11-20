@@ -237,7 +237,7 @@ export const TimelineWaveform = memo(function TimelineWaveform({ timeline, sourc
       // After a wait the bars grow out of the line the ripple ran along.
       <svg className={arriving ? "is-arriving" : undefined} width="100%" height="100%" viewBox={`${x} 0 ${(count || 1) * scale} 100`} preserveAspectRatio="none">
         <path d={paths?.peak} stroke="currentColor" strokeWidth={0.7 * scale} opacity={paths?.rms ? ".83" : "1"} />
-        {paths?.rms && <path d={paths.rms} stroke="currentColor" strokeWidth=".7" />}
+        {paths?.rms && <path d={paths.rms} stroke="currentColor" strokeWidth={0.7 * scale} />}
         <line x2={count} y1="50" y2="50" stroke="currentColor" opacity=".3" vectorEffect="non-scaling-stroke" />
       </svg>}
   </div>;

@@ -34,6 +34,8 @@ const OVERLAY_KEYS = new Set(["opacity", "videoFadeIn", "videoFadeOut", "color"]
 const NEUTRAL_KEYS = new Set(["sourceIn", "sourceOut", "timelineIn", "timelineOut", "label", "enabled"]);
 /** A change this close to the old length kept it. */
 const SAME_LENGTH = 0.02;
+/** Two stretches that share less than this only touch: an agent's times and a clip's edge differ by rounding. */
+const TOUCH = 0.05;
 
 interface Clocks {
   before?: Timeline;
@@ -269,8 +271,14 @@ export function classifyEdits(change: Change, ranges: TimeRange[], clocks: Clock
     const placed = facets.filter((f): f is Placed & { range: TimeRange } => !!f.range);
     const candidates = intervalCandidates(placed, f => f.range.start, f => f.range.end + 0.5);
     found = ranges.map(range => {
-      const here = candidates(range.start, range.end + 0.5);
-      return here.length ? verdict(here) : unplaced;
+      const near = candidates(range.start, range.end + 0.5);
+      // The slack reaches a join or a marker at an edit's edge. A stretch that only touches the edit there belongs to
+      // the edit beside it: Scarlet names its edits end to end, and a punch-in that ended where a demo's picture began
+      // took the demo's overlay too and read as neither (2026-11-17).
+      const here = range.end - range.start > TOUCH ? near.filter(f => f.range.end - f.range.start <= TOUCH
+        || Math.min(f.range.end, range.end) - Math.max(f.range.start, range.start) > TOUCH) : near;
+      const own = here.length ? here : near;
+      return own.length ? verdict(own) : unplaced;
     });
   }
   return {

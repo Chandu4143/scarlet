@@ -309,11 +309,73 @@ function alignReading(em: Emissions, words: readonly AlignWord[], start: number,
     if (!letters) continue;
     // A letter is emitted shortly after its sound begins. The lead never reaches back past zero, where the caller's
     // audio starts: a transcript can't hold a negative time.
+    const lead = (frame: number) => Math.max(0, previousEnd, time(frame) - ONSET_LEAD);
+    // Spread over speech the transcript has no words for, the word is looked for again on its own, up to the next word.
+    const said = spread && lastSaid(em.logProbs, Math.max(from, Math.ceil((previousEnd - em.origin) / FRAME_SECONDS)),
+      k + 1 < tokens.length ? spans[k + 1]![0] : to, tokens.slice(first, k + 1), classes);
+    if (said) {
+      timings[word] = { start: lead(said.first), end: time(said.end), score: said.score };
+      previousEnd = time(said.end);
+      continue;
+    }
     const end = Math.min(spans[k]![1] + 1, spans[k - 1]![1] + 1 + MAX_TAIL_FRAMES);
-    timings[word] = { start: Math.max(0, previousEnd, time(spans[first]![0]) - ONSET_LEAD), end: time(end), score: spread ? 0 : total / letters };
+    timings[word] = { start: lead(spans[first]![0]), end: time(end), score: spread ? 0 : total / letters };
     previousEnd = time(end);
   }
   return { timings, path: found.score };
+}
+
+/**
+ * A word's best match inside frames [from, to), its letters (`labels`, ending on the separator) read with the frames
+ * either side free: the speech there needn't be explained by them. `apart` is where its letters still sit too far
+ * apart: the frames after the letter before that gap, and the first frame of the letter after it.
+ */
+type Spot = { first: number; end: number; score: number; least: number };
+
+function spotWord(logProbs: Float32Array, from: number, to: number, labels: readonly number[], classes: number):
+  Spot | { apart: readonly [number, number] } | null {
+  const T = to - from, wide = classes + 1, free = classes;
+  if (T < labels.length + 2) return null;
+  const local = new Float32Array(T * wide);
+  for (let t = 0; t < T; t++) local.set(logProbs.subarray((from + t) * classes, (from + t + 1) * classes), t * wide);
+  const found = ctcPath(local, 0, T, [free, ...labels, free], wide);
+  if (!found) return null;
+  const spans = found.spans.slice(1, -1).map(([a, b]) => [a + from, b + from] as [number, number]);
+  let total = 0, least = Infinity, letters = 0, firstLetter = -1, lastLetter = -1;
+  for (let k = 0; k < labels.length; k++) {
+    if (labels[k]! < 5) continue;
+    if (lastLetter >= 0 && spans[k]![0] - spans[lastLetter]![1] - 1 > MAX_LETTER_GAP_FRAMES) {
+      return { apart: [spans[lastLetter]![1] + 1, spans[k]![0]] as const };
+    }
+    const heard = peak(logProbs, labels[k]!, spans[k]!, classes);
+    total += heard;
+    least = Math.min(least, heard);
+    letters++;
+    if (firstLetter < 0) firstLetter = k;
+    lastLetter = k;
+  }
+  if (!letters) return null;
+  return { first: spans[firstLetter]![0], end: Math.min(spans.at(-1)![1] + 1, spans[lastLetter]![1] + 1 + MAX_TAIL_FRAMES), score: total / letters, least };
+}
+
+/**
+ * Where a word was last said inside frames [from, to), or null when nothing there scores as the word. Whisper writes
+ * what a speaker meant, so a restart it tidied away ("now, now, if I had, now even if" came out "Now, even if") leaves
+ * the transcript's word on the take that runs on into the words after it, the earlier takes' speech beside it
+ * unwritten. The forced path spelled such a "Now," across the takes, and left where Whisper put it, a cut of the
+ * speech before it took the "now" that was kept (2026-11-19).
+ */
+function lastSaid(logProbs: Float32Array, from: number, to: number, labels: readonly number[], classes: number,
+  budget = { spots: 64 }): Spot | null {
+  if (labels.includes(WILDCARD) || budget.spots-- <= 0) return null;
+  const found = spotWord(logProbs, from, to, labels, classes);
+  if (!found) return null;
+  // Letters found apart are two places: the later is looked in first.
+  if ("apart" in found) return lastSaid(logProbs, found.apart[0], to, labels, classes, budget)
+    ?? lastSaid(logProbs, from, found.apart[1], labels, classes, budget);
+  // Free to choose its place, the word must be heard there letter by letter: "thank" isn't the "hank" of other speech.
+  if (found.least < MIN_SCORE) return null;
+  return lastSaid(logProbs, found.end, to, labels, classes, budget) ?? found;
 }
 
 /**

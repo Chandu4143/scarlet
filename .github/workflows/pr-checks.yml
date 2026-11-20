@@ -28,6 +28,8 @@ jobs:
       # Workspace builds run tsc in dependency order. The renderer type-checks before Vite builds it.
       - name: Build and type-check the workspace
         run: pnpm -r build
+      - name: Check release version fields
+        run: node apps/desktop/scripts/release-version.mjs check
       - name: Smoke-test timeline edits and the project API
         run: |
           pnpm --filter @scarlet/timeline exec vitest run src/timeline.test.ts

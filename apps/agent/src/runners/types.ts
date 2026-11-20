@@ -15,7 +15,7 @@ export interface McpSpec {
 }
 
 export type CodexFallbackReason = "api_key" | "project_config" | "home_unavailable" | "auth_unavailable" | "isolation_unavailable" |
-  "initialize_failed" | "thread_start_failed" | "thread_policy_mismatch" | "app_server_unavailable";
+  "initialize_failed" | "thread_start_failed" | "thread_resume_failed" | "thread_policy_mismatch" | "app_server_unavailable";
 
 export interface RunAgentOptions {
   agent: AgentId;
@@ -75,19 +75,23 @@ export function planEvent(steps: PlanStep[]): RunnerEvent {
   return { type: "plan", text: planText(steps), data: { steps } };
 }
 
+/** The harness compacted the run's context. The engine logs it, with the task, and keeps it out of the chat. */
+export const COMPACTED = { type: "log", text: "Context compacted", data: { kind: "compaction" } } as const satisfies RunnerEvent;
+
 /** Five times the longest silence measured across real editing runs (1.9 minutes). */
 export const DEFAULT_STALL_MS = 10 * 60 * 1000;
 
-/** Matches the Scarlet question tool however the CLI namespaces it (mcp__scarlet__task_question, scarlet__task_question, task_question). */
+/** Matches the Scarlet question tool however the CLI namespaces it (mcp__scarlet__task_question, scarlet__task_question, scarlet:task_question, task_question). */
 export function isQuestionTool(name: string | undefined): boolean {
-  return name === "mcp_scarlet_task_question" || (!!name && /(^|__|\.|\/)task_question$/.test(name));
+  return name === "mcp_scarlet_task_question" || (!!name && /(^|__|\.|\/|:)task_question$/.test(name));
 }
 
 /** Strip the MCP namespace prefix for display: mcp__scarlet__timeline_get -> scarlet.timeline_get */
 export function prettyToolName(name: string): string {
   const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(name);
   if (m) return `${m[1]}.${m[2]}`;
-  return name.replace(/^scarlet__/, "scarlet.");
+  if (name.startsWith("mcp_scarlet_")) return `scarlet.${name.slice("mcp_scarlet_".length)}`;
+  return name.replace(/^scarlet(?:__|\/|:)/, "scarlet.");
 }
 
 export function briefInput(input: unknown, max = 160): string {

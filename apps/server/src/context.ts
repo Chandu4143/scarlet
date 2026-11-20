@@ -20,6 +20,7 @@ import { createTelemetry, type Telemetry } from "./telemetry/analytics.js";
 import { telemetryConfig } from "./telemetry/config.js";
 import { bundledWhisperCli, bundledWhisperGpu, LocalWhisperModel } from "./transcribe/localModel.js";
 import { hasCrisperWhisper } from "./transcribe/localRuntime.js";
+import { ModelPrices } from "./repo/modelPrices.js";
 
 /** Permission errors mean the owner may still be working in another desktop instance. */
 export function processIsAlive(pid: number): boolean {
@@ -142,6 +143,8 @@ export interface ServerOptions {
   prepareSourceProxies?: boolean;
   /** Move SQLite checkpoints off the serving thread while the engine is running. */
   backgroundCheckpoints?: boolean;
+  /** Look up prices for models the shipped price list doesn't have. */
+  modelPrices?: { fetch?: typeof fetch };
   telemetry?: {
     /** Default project token for the packaged engine. SCARLET_POSTHOG_KEY takes precedence. */
     posthogKey?: string;
@@ -159,7 +162,7 @@ export interface Ctx {
   render: RenderAdapter;
   renders: RenderQueue;
   settings(): ServerSettings;
-  env: { openaiKey?: string; anthropicKey?: string };
+  env: { openaiKey?: string; anthropicKey?: string; geminiKey?: string };
   options: ServerOptions;
   log(message: string): void;
   /** Anonymous usage reports. See docs/telemetry.md. */
@@ -209,7 +212,9 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
   // An agent at work asks for the helper's models again within a turn or two.
   const agentAtWork = db.prepare("SELECT 1 FROM tasks WHERE state IN ('claimed','running') AND kind != 'transcribe' LIMIT 1");
   audioWorker.wanted = () => { try { return !!agentAtWork.get(); } catch { return false; } };
-  const repos = createRepos(db, () => whisperCli || hasCrisperWhisper(paths.root) ? "whispercpp" : "none");
+  // Prices for models the shipped list doesn't have are fetched only by an engine that asks for it, never by tests or tools.
+  const prices = new ModelPrices({ file: join(paths.root, "model-prices.json"), fetch: options.modelPrices?.fetch, log: options.log ?? (m => console.log(m)) });
+  const repos = createRepos(db, () => whisperCli || hasCrisperWhisper(paths.root) ? "whispercpp" : "none", prices);
   const pending = new Set<Promise<unknown>>();
   const projectWork = new Map<string, number>();
   const shutdown = new AbortController();
@@ -232,7 +237,7 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
     bus: new Bus(db),
     render: options.render ?? defaultAdapter,
     settings: () => repos.settings.get(),
-    env: { openaiKey: env.OPENAI_API_KEY || undefined, anthropicKey: env.ANTHROPIC_API_KEY || undefined },
+    env: { openaiKey: env.OPENAI_API_KEY || undefined, anthropicKey: env.ANTHROPIC_API_KEY || undefined, geminiKey: env.GEMINI_API_KEY || undefined },
     options,
     log,
     telemetry: createTelemetry({
@@ -308,6 +313,15 @@ export function createContext(options: ServerOptions): Omit<Ctx, "renders"> {
         db.close();
       }
     },
+  };
+  // Runs Scarlet couldn't price show their cost once a fetched list has it.
+  prices.onUpdate = () => {
+    const recent = db.prepare(`SELECT task_id, project_id FROM task_usage GROUP BY task_id ORDER BY max(at) DESC LIMIT 200`)
+      .all() as { task_id: string; project_id: string }[];
+    for (const r of recent) {
+      const usage = repos.usage.taskTotals(r.task_id);
+      if (usage.estimatedApiCostUsd != null) ctx.bus.publish({ type: "task.usage", projectId: r.project_id, taskId: r.task_id, usage });
+    }
   };
   // Reads ctx.log when it happens, so a log set after startup still gets it.
   db.onEffectError = error => ctx.log(`[error] after-commit listener failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);

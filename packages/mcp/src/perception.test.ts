@@ -117,6 +117,19 @@ describe("join audit", () => {
     expect(audit.out).toMatchObject({ lastWord: "kept", lastWordEnd: 3.7, wordEndToJoin: .1, levelQuiet: .3 });
   });
 
+  it("measures the air after the last word from where its sound ends, with a breath after it in that air", () => {
+    // “kept” sounds to 3.6 s; the room, then a breath 24 dB under it to 3.8 s, the detector on to 3.9 s. The cut is at 3.7 s.
+    const out = reading(3, 4.3, [[3, 3.6]], .0004, [[3, 3.9]]), inn = reading(5.7, 7, [[6.12, 7]], .0004);
+    out.rms = out.rms!.map((r, i) => i >= 32 && i < 40 ? .006 : r);
+    out.peaks = out.rms.map(r => r * 2);
+    const at = { ...side, out: { ...side.out, source: 3.7 } };
+    expect(auditJoin(1, 4, at, out, inn).verdict).toContain("outgoing edge on speech");
+    // The breath is air, and no room tone to compare with the other side's.
+    const audit = auditJoin(1, 4, at, out, inn, { out: words([["kept", 3.2, 3.6]]) });
+    expect(audit.airAfter).toBeCloseTo(.1);
+    expect(audit.verdict).toBe("clean");
+  });
+
   it("calls an incoming edge on the first sound after a silence clean, and says how much of the recording came out", () => {
     // The recording is silent until 6 s, where the incoming clip starts and the word does: the word plays whole.
     const audit = auditJoin(1, 4, side, reading(3, 4.3, [[3, 3.8]]), reading(5.7, 7, [[6, 7]]));

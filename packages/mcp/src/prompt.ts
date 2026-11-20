@@ -4,7 +4,7 @@
  * provides context (timestamps, clip ids, notes, the change being revised)
  * and includes the applicable skills verbatim.
  */
-import { taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type Skill, type Task } from "@scarlet/shared";
+import { CHECK_IN_SHARE, taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type CheckIn, type PictureMark, type Skill, type Task } from "@scarlet/shared";
 import type { Change, Note, Project, Timeline, TimelineDiff } from "@scarlet/timeline";
 import { clipById, describeDiff, formatTimecode } from "@scarlet/timeline";
 import { summarizeProject } from "./analysis.js";
@@ -45,6 +45,8 @@ export interface PromptContext {
   learningCheck?: LearningCheckContext;
   /** What an area_check task looks at. Such a task edits no video, so its prompt is about one frame. */
   areaCheck?: { mediaId: string; at: number };
+  /** The editor's setting for how many of a pass's cuts they are asked to check. Omitted = balanced. */
+  checkIn?: CheckIn;
   /** Directory the agent may use for temp files; mentioned in the prompt. */
   workDir?: string;
   /** How long the host lets this run take, in minutes. Omitted when the host doesn't say. */
@@ -53,9 +55,6 @@ export interface PromptContext {
   capabilities?: AgentCapabilities;
   /** Files the editor attached to this request, where they are on disk. */
   attachments?: Array<{ id: string; name: string; size: number; mime?: string; path: string }>;
-  /** Saved templates the editor named with $name in their words, or that a skill they chose names (`skill`). */
-  pickedTemplates?: Array<{ id: string; name: string; title: string; fields: string[]; kind?: "graphic" | "transition";
-    transition?: { type: string; duration: number; direction?: string; color?: string }; skill?: string }>;
   /** The project's style guide: pasted text in full, or the file it is in. */
   styleGuide?: { name: string; text?: string; path?: string; mime?: string };
 }
@@ -98,15 +97,14 @@ The editor sets the brief. You decide what context to inspect, which tools to us
 - Use requested intent for authorized edits, suggestion for optional or preview-only changes, and alternative for competing options. Check the returned state when reporting what applied. When Scarlet adjusts a submitted edit, such as moving an edge onto measured silence, the result lists each adjustment with its evidence. An edit can name its individual ranges in \`timelineEdits\`. A revision can link to its prior change and spot with \`replaces\` and to feedback with \`noteIds\`.
 - \`task_log\` can show the current activity, a finding, or both. Attach a saved change ID and spot to the exact phrase the editor can select to see the change. \`task_question\` hands a decision to the editor and pauses the task; the answer comes back as your next message.
 - Scarlet renders project media. \`render_request\` supports a short range or an explicitly requested full delivery.
-- A motion graphic is an HTML/CSS page Scarlet draws into a video with alpha (\`graphic_render\`), from your page or a saved template (\`template_list\`). It goes over the picture on a track of its own with \`timeline_propose\`, as an edit like any other. A project has one style guide, saved with \`style_guide_save\` when the editor gives you one.
-- A $name in the editor's words or in a skill is a saved template (\`template_list\`): a graphic, or a transition, which \`timeline_transition\` puts on the joins it names.
+- A motion graphic is an HTML/CSS page Scarlet draws into a video with alpha (\`graphic_render\`). It goes over the picture on a track of its own with \`timeline_propose\`, as an edit like any other. A project has one style guide, saved with \`style_guide_save\` when the editor gives you one.
 
 ## Writing for the editor
 
 - Before your first tool call, say in one sentence what the request will come to when you are done, such as “I’ll take the retakes, false starts and dead air out of the interview and bring you any cut I’m unsure of.” Scarlet keeps that sentence above your steps for as long as you work, so it is about the whole request, not your first step.
 - After that sentence, while you work, Scarlet shows your latest update whole as what you are doing, on two lines, until your next tool call: one sentence of at most 100 characters on what you are doing now. A longer update is cut off there.
 - Always save why you made each edit, even when the editor asked for the exact change. Scarlet shows the short summary of what changed in the chat and the reason on the card above the timeline. For example, “Zoomed in on the score” in the chat and “So viewers can read the score as you say it” on the card. Ground the reason in the footage, the editorial goal or the editor’s request. For an exact request, a short reference to that request is enough. Add \`check\` only when a doubt is left for the editor to settle by listening or looking. Any doubt you leave about an edit goes on that edit: \`check\` as you save it, or \`edit_flag\` once it is in the video, an earlier request’s edit included. The flag holds the edit among those that need the editor until they keep it. A doubt about something you leave in, such as a restart that may not be meant, reaches the editor the same way, as an edit they can approve or skip: in a dialogue pass, a cut staged for review.
-- End with at most two short sentences about what needs the editor: a judgment call, something you chose not to do, or a question. Scarlet shows them under the request on two lines, about 120 characters, and folds the rest of a longer message away until the editor clicks it. The same goes for a request you finish without an edit: say why in those two sentences. Don’t restate the edits; refer to them by number, such as “edit 4”. When nothing needs the editor, one short sentence is enough.
+- End with one or two short, plain sentences that sum up at the highest level what you did to the video, as you would tell the editor in person, such as “Tightened the talk to 10:29 and punched in on each demo.” Scarlet shows them first under the request, on two lines of about 120 characters, and folds the rest away until the editor clicks. Nothing you want the editor to look at, listen to or decide goes in them: they reach what needs them from For you, which lists edits only, so each doubt goes on its edit (\`check\` or \`edit_flag\`) and a decision you need goes to \`task_question\`. No times, edit numbers or lists. A request you finish without an edit says why in those sentences.
 - Give times as m:ss.t on the timeline the editor will watch. Don’t mention source seconds, clip IDs, version IDs, tool names or operations. Say “edit” for a change, and “cut” only for an edit that removes footage.`;
 
 /** Earlier question/answer pairs, for a run that starts again after the editor answered. */
@@ -206,6 +204,20 @@ export const PLAN_STEPS = `# Your steps
 
 Right after the sentence on what the request will come to, and before your first Scarlet tool call, lay out the steps you will take with your to-do tool, one short line each. Mark each step as you start it and as you finish it. Scarlet shows the editor that list while you work, so keep it as you first wrote it unless the work truly changes.`;
 
+/** How many clips a prompt lists one by one before it lists only those near the request's position. */
+const PROMPT_CLIPS = 40;
+
+/** The timeline seconds a request points at: the stretch marked, or the position or range given with it. */
+function requestRange(task: PromptContext["task"]): { start: number; end: number } | undefined {
+  const c = task?.context;
+  if (!c) return undefined;
+  const points = [
+    ...(c.markedRange && !c.markedRange.mediaId ? [c.markedRange.start, c.markedRange.end] : []),
+    ...(!c.mediaId && c.time !== undefined ? [c.time, c.end ?? c.time] : []),
+  ];
+  return points.length ? { start: Math.min(...points), end: Math.max(...points) } : undefined;
+}
+
 export function buildSystemPrompt(ctx: PromptContext): string {
   if (ctx.task?.kind === "skill_from_change") {
     const { skillName, changeId, version } = ctx.task.context;
@@ -233,8 +245,8 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     parts.push(`This harness prefixes Scarlet’s tool names with \`${caps.toolPrefix}\`. For example, call \`${caps.toolPrefix}project_get\` when a skill names \`project_get\`.`);
   }
 
-  // Project summary
-  const summary = typeof ctx.project === "string" ? ctx.project : summarizeProject(ctx.project.project, ctx.project.timeline);
+  // Project summary. A long timeline lists only the clips near where the request points, if it points anywhere.
+  const summary = typeof ctx.project === "string" ? ctx.project : summarizeProject(ctx.project.project, ctx.project.timeline, { most: PROMPT_CLIPS, near: requestRange(ctx.task) });
   parts.push(`# Project\n\n${summary}`);
 
   // Task
@@ -257,8 +269,16 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       ctxLines.push("- The editor chose local pause tightening. Only pause removals within this passage are in scope.");
       if (c.dialogueRange) ctxLines.push(`- Local passage: ${c.dialogueRange.start}–${c.dialogueRange.end} s on ${c.dialogueRange.version}.`);
     }
-    if (operation === "first-cut" && c.cutIndex === undefined && c.editIndex === undefined)
+    if (operation === "first-cut" && c.cutIndex === undefined && c.editIndex === undefined) {
       ctxLines.push("- The editor chose a dialogue first cut. Check the resulting playback for repeats within the requested scope.");
+      // A pass names no doubt of its own: asked how sure it was of each cut, one called all twelve certain, two of them
+      // mistakes the editor had reported on that footage. It is not unsure of those cuts, so the question finds nothing.
+      // Asked to order its cuts by how likely each is to be wrong, it leaves the plain false starts at the bottom: on
+      // 4.5 minutes of that recording, three passes flagged 2 or 3 of about ten word cuts at one in four, one of the two
+      // mistakes among them in two passes, and a pass at half flagged five, both among them (2026-11-18). So the order
+      // is the model's, and how far down it the editor is asked to look is their setting.
+      ctxLines.push(`- Before the pass is done, read back what the video plays where your cuts took words out, and order those cuts from the most likely to be wrong to the least: a cut is wrong when the editor, hearing the result, would put words back, take more out or choose the other delivery. The editor asked to check ${CHECK_IN_SHARE[ctx.checkIn ?? "balanced"]} of them: flag that many from the top of your order, each with what could be wrong. A cut you already flagged or staged for them counts.`);
+    }
     if (c.version) ctxLines.push(`- Timeline version the editor was looking at: ${c.version}`);
     if (t.cutConflict) {
       const { version, range } = t.cutConflict;
@@ -280,6 +300,12 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     if (marked && !(marked.start === c.time && marked.end === c.end)) {
       ctxLines.push(`- Stretch the editor marked on the ${marked.mediaId ? "source" : "timeline"}: ${marked.start.toFixed(2)} s (${formatTimecode(marked.start, fps)}) to ${marked.end.toFixed(2)} s (${formatTimecode(marked.end, fps)})${marked.version ? ` on version ${marked.version}` : ""}`);
     }
+    // The editor paused the video with the cut or edit open, and wrote while stopped there: the frame is on the timeline
+    // the player showed them, which may not be the edit's version.
+    const stopped = c.messageTime;
+    if (stopped && c.changeId) {
+      ctxLines.push(`- Where the editor stopped the video as they wrote this: ${stopped.mediaId ? "source" : "timeline"} ${stopped.time.toFixed(2)} s (${formatTimecode(stopped.time, fps)})${stopped.version ? ` on version ${stopped.version}` : ""}`);
+    }
     if (c.clipIds?.length) ctxLines.push(`- Clip ids under the playhead: ${c.clipIds.join(", ")}`);
     if (c.noteIds?.length) ctxLines.push(`- Note ids to address: ${c.noteIds.join(", ")} (pass them as noteIds when proposing)`);
     if (c.changeId) ctxLines.push(`- Change being revised: ${c.changeId}`);
@@ -291,6 +317,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       if (about?.summary?.trim()) ctxLines.push(`- What you told the editor this edit did: "${about.summary.trim()}"`);
       if (about?.reason?.trim()) ctxLines.push(`- Why you made this edit: "${about.reason.trim()}"`);
       if (about?.check?.trim()) ctxLines.push(`- What you asked the editor to check on this edit: "${about.check.trim()}"`);
+    }
+    // The editor looked at a moment of the list, where edits that overlap play as one change, and wrote about all of it.
+    if (c.momentEdits?.length) {
+      const others = c.momentEdits.map(e => `edit index ${e.spot} of ${e.changeId}${e.label?.trim() ? ` ("${e.label.trim()}")` : ""}`).join("; ");
+      ctxLines.push(`- The editor's words are about the whole moment this edit is in, which plays as one change and also has: ${others}. Which of them the words mean is for you to work out.`);
     }
     if (c.changeId && c.cutIndex !== undefined) ctxLines.push(`- Staged cut being revised: index ${c.cutIndex} of ${c.changeId}. \`dialogue_revise_cut\` saves its new range.`);
     if (c.changeId && c.cutIndex !== undefined && ctx.replacedPass) ctxLines.push(`- The request names this cut in ${ctx.replacedPass}, the pass as the editor saw it. A revision or a later part of the pass replaced that pass since with ${c.changeId}, where the cut is index ${c.cutIndex} and may have moved.`);
@@ -307,11 +338,13 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     for (const file of ctx.attachments ?? []) {
       ctxLines.push(`- File the editor attached: "${file.name}" (${fileKind(file.mime, file.name)}, ${fileSize(file.size)}), attachment ${file.id}, at ${file.path}`);
     }
-    for (const t of ctx.pickedTemplates ?? []) {
-      const who = t.skill ? `The skill ${t.skill} names` : "The editor picked";
-      ctxLines.push(t.kind === "transition"
-        ? `- ${who} the transition template $${t.name}: "${t.title}" (template ${t.id}), a ${t.transition?.type ?? "transition"} over ${t.transition?.duration ?? "?"} s.`
-        : `- ${who} the graphic template $${t.name}: "${t.title}" (template ${t.id}), with the fields ${t.fields.map(f => `"${f}"`).join(", ") || "none"}.`);
+    // What the editor drew on the picture. What the marks are for is in their words, for the model to read.
+    const drawn = c.pictureMarks;
+    if (drawn) {
+      const picture = ctx.attachments?.find(a => a.id === drawn.attachmentId);
+      const where = `${drawn.mediaId ? "source" : "timeline"} ${drawn.time.toFixed(2)} s (${formatTimecode(drawn.time, fps)})${drawn.version ? ` on version ${drawn.version}` : ""}`;
+      ctxLines.push(`- The editor drew ${drawn.marks.length === 1 ? "a mark" : `${drawn.marks.length} numbered marks`} on the picture at ${where}, in fractions of the frame from its top left: ${drawn.marks.map((m, i) => pictureMarkLine(m, i + 1, drawn.marks.length > 1)).join("; ")}.` +
+        (picture ? ` The frame with the marks drawn on it is attachment ${picture.id} ("${picture.name}").` : ""));
     }
     if (ctxLines.length) {
       lines.push("");
@@ -346,7 +379,8 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       `From version ${change.fromVersion} to ${change.toVersion}`,
       `Affected ranges: ${change.ranges.map((r) => `${r.start.toFixed(2)}–${r.end.toFixed(2)} s`).join(", ") || "none"}`,
     ];
-    if (desc.length) lines.push("Diff:", ...desc.map((d) => `- ${d}`));
+    // A request about one staged cut has that cut's range above: the whole pass's diff is not what it is about.
+    if (desc.length && ctx.task?.context?.cutIndex === undefined) lines.push("Diff:", ...desc.map((d) => `- ${d}`));
     lines.push(
       "",
       ctx.task?.context?.cutIndex !== undefined
@@ -378,4 +412,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 export function stripFrontmatter(md: string): string {
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(md);
   return m ? md.slice(m[0].length) : md;
+}
+
+const fraction = (n: number) => n.toFixed(2);
+/** One mark the editor drew, as the prompt says it: what it is and the stretch of the frame it covers. */
+function pictureMarkLine(mark: PictureMark, n: number, numbered: boolean): string {
+  const { x, y, w, h } = mark.box;
+  const name = numbered ? `mark ${n}, ` : "";
+  if (mark.kind === "point") return `${name}a point at ${fraction(x)} across, ${fraction(y)} down`;
+  const span = `${fraction(x)}–${fraction(x + w)} across and ${fraction(y)}–${fraction(y + h)} down`;
+  return mark.kind === "box" ? `${name}a box over ${span}` : `${name}a line drawn by hand over ${span}`;
 }

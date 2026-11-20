@@ -1,7 +1,7 @@
 /**
- * One-click sign-in for Claude Code and Codex with the user's own subscription
- * (Claude Pro/Max, ChatGPT plan). Desktop only: the app runs the CLI's login
- * flow, the CLI opens the browser, and the agent list refreshes when it's done.
+ * One-click sign-in for Claude Code, Codex, and Gemini with the user's own subscription
+ * (Claude Pro/Max, ChatGPT plan, Google AI). Desktop only: the app runs the CLI's login
+ * flow, opens the browser, and refreshes the agent list when it's done.
  * In a plain browser the row explains the terminal command instead.
  */
 import { useEffect, useState } from "react";
@@ -11,15 +11,16 @@ import { errorMessage, IS_MOCK } from "../../lib/client";
 import { AGENT_LABEL } from "../../stores/hosts";
 import { InlineError, Spinner } from "../ui/primitives";
 
-type SignInAgent = "claude" | "codex";
+type SignInAgent = "claude" | "codex" | "gemini";
 
 const SIGN_IN: Record<SignInAgent, { button: string; plan: string }> = {
   claude: { button: "Sign in with Claude", plan: "Claude Pro or Max" },
   codex: { button: "Sign in with ChatGPT", plan: "ChatGPT" },
+  gemini: { button: "Sign in with Google", plan: "Google AI" },
 };
 
 export function canSignIn(id: string): id is SignInAgent {
-  return id === "claude" || id === "codex";
+  return id === "claude" || id === "codex" || id === "gemini";
 }
 
 /** What the agent is signed in with, in words. */
@@ -69,7 +70,7 @@ function useAgentLogin(agent: SignInAgent) {
     async start() {
       setError(null);
       try {
-        setStatus({ agent, state: "waiting", acceptsCode: agent === "claude" });
+        setStatus({ agent, state: "waiting", acceptsCode: agent === "claude" || agent === "gemini" });
         await desktop.agentLoginStart(agent);
       } catch (e) {
         setStatus(null);
@@ -137,7 +138,7 @@ export function AgentSignIn({ agent, compact = false }: { agent: AgentAvailabili
   const id = agent.id as SignInAgent;
   const login = useAgentLogin(id);
   const [code, setCode] = useState("");
-  const [showCode, setShowCode] = useState(false);
+  const [showCode, setShowCode] = useState(id === "gemini");
 
   if (!agent.installed) {
     return compact || !isDesktop() || IS_MOCK ? null : <InstallAgent agent={id} />;
@@ -149,7 +150,7 @@ export function AgentSignIn({ agent, compact = false }: { agent: AgentAvailabili
   }
 
   const start = () => {
-    setShowCode(false);
+    setShowCode(id === "gemini");
     setCode("");
     void login.start();
   };
@@ -169,7 +170,7 @@ export function AgentSignIn({ agent, compact = false }: { agent: AgentAvailabili
             Cancel
           </button>
         </div>
-        {!compact && login.status?.acceptsCode && (
+        {(!compact || id === "gemini") && login.status?.acceptsCode && (
           showCode ? (
             <form
               className="flex items-center gap-2"

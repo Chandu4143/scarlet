@@ -1,4 +1,5 @@
 export * from "./api.js";
+export * from "./checkIn.js";
 export * from "./telemetry.js";
 export * from "./storage.js";
 export * from "./importFilename.js";

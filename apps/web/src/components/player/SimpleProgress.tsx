@@ -11,6 +11,8 @@ export interface ProgressFocus {
    * plays it and it’s only outlined. `added`: footage an edit put back.
    */
   tone?: "kept" | "added" | "check";
+  /** The editor rejected the edit a moment ago: its band fades where it is, and takes no press meanwhile. */
+  leaving?: boolean;
 }
 
 /** Above this share of the video a band says nothing about where the change is, so the line stays whole. */

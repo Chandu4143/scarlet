@@ -2,7 +2,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writePrivateFile } from "../private-files.js";
-import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
+import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, claudeUsage, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
@@ -135,6 +135,11 @@ export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent
       if (scarlet && scarlet.status !== "connected") {
         events.push({ type: "error", text: `Scarlet MCP server status: ${scarlet.status}` });
       }
+    } else if (msg.subtype === "compact_boundary") {
+      // Claude Code compacted the session's context. The engine logs it and keeps it out of the chat.
+      const meta = (msg.compact_metadata ?? {}) as { trigger?: unknown; pre_tokens?: unknown; post_tokens?: unknown };
+      events.push({ ...COMPACTED, data: { ...COMPACTED.data, ...(typeof meta.trigger === "string" && { trigger: meta.trigger }),
+        ...(typeof meta.pre_tokens === "number" && { preTokens: meta.pre_tokens }), ...(typeof meta.post_tokens === "number" && { postTokens: meta.post_tokens }) } });
     }
     return events;
   }

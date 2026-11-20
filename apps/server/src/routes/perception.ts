@@ -7,6 +7,8 @@ import type { Ctx } from "../context.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { measuredLoudness } from "../render/loudness.js";
 import { faces } from "../services/faces.js";
+import { pictureCuts } from "../services/pictureCuts.js";
+import { screenMotion } from "../services/screenMotion.js";
 import { screenText } from "../services/screenText.js";
 import { askAreas, editShowAreas, showArea, type ShowAreaEdit } from "../services/showArea.js";
 import { optionalNumberParam, requireMedia } from "./util.js";
@@ -69,6 +71,12 @@ export function perceptionRoutes(ctx: Ctx) {
   r.get("/projects/:projectId/media/:mediaId/screen-text", readPicture("screen text", (media, range, opts, c) =>
     screenText(ctx, media, range, { ...opts, query: c.req.query("q") || undefined })));
 
+  // Where a video's picture changes in a range, second by second, read once and kept as screen text is.
+  r.get("/projects/:projectId/media/:mediaId/screen-motion", readPicture("screen motion", (media, range, opts) => screenMotion(ctx, media, range, opts)));
+
+  // Where a video's picture cuts in a range: much of it changing at once and holding either side. Read once and kept.
+  r.get("/projects/:projectId/media/:mediaId/picture-cuts", readPicture("picture cuts", (media, range, opts) => pictureCuts(ctx, media, range, opts)));
+
   // Where the faces are in a range of a video, found once and kept. A range not read yet is read now, as screen text is.
   r.get("/projects/:projectId/media/:mediaId/faces", readPicture("faces", (media, range, opts) => faces(ctx, media, range, opts)));
 
@@ -85,7 +93,8 @@ export function perceptionRoutes(ctx: Ctx) {
   r.post("/projects/:projectId/media/:mediaId/show-area", async c => {
     const media = videoFor(c);
     const body = await c.req.json().catch(() => null) as ShowAreaEdit | null;
-    if (!body || (body.set !== undefined && !Array.isArray(body.set)) || (body.remove !== undefined && !Array.isArray(body.remove))) {
+    const listOf = (value: unknown, fits: (item: any) => boolean) => value === undefined || (Array.isArray(value) && value.every(fits));
+    if (!body || !listOf(body.set, item => typeof item?.at === "number" && Array.isArray(item.area)) || !listOf(body.remove, at => typeof at === "number")) {
       throw badRequest("bad_request", "Send set: [{ at, area }] and/or remove: [at].");
     }
     await editShowAreas(ctx, media, body);

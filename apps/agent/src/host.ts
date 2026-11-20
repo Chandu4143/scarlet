@@ -15,6 +15,7 @@ import { privateDirectory } from "./private-files.js";
 import type { AgentConfig } from "./config.js";
 import { CLI_AGENTS, detect as detectAgents, runnerEnv } from "./detect.js";
 import { runAgent as defaultRunAgent } from "./runners/index.js";
+import { codexHomeDir } from "./runners/codex.js";
 import { addUsage } from "./runners/usage.js";
 import { mcpEnv, nodeExecutable, resolveMcpCliPath } from "./runners/spawn.js";
 import { DEFAULT_STALL_MS, type McpSpec, type RunAgentFn, type RunAgentResult, type RunnerEvent } from "./runners/types.js";
@@ -77,6 +78,7 @@ export class AgentHost {
   /** Running task count per runtime; each may run up to maxParallel at once. */
   private busy = new Map<AgentId, number>();
   private stopped = false;
+  private stopController = new AbortController();
   private wakeResolve: (() => void) | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private ws: WebSocket | null = null;
@@ -102,6 +104,7 @@ export class AgentHost {
   /** Register, start heartbeats, WS and the claim loop. Resolves when the loop ends (after stop()). */
   async start(): Promise<void> {
     this.stopped = false;
+    this.stopController = new AbortController();
     // An old folder's Claude sessions go with it, unless Claude Code was told to keep its files somewhere other than the home.
     const home = (this.opts.env ?? process.env).CLAUDE_CONFIG_DIR ? undefined : homedir();
     const [agents] = await Promise.all([
@@ -120,6 +123,7 @@ export class AgentHost {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopController.abort();
     this.wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.wsTimer) clearTimeout(this.wsTimer);
@@ -254,7 +258,12 @@ export class AgentHost {
       try {
         // `wait` makes the server hold the request until a task is queued (long-poll);
         // `agents` restricts the claim to runtimes that are idle here.
-        const res = await this.client.post<{ task: Task | null }>(`/hosts/${this.config.hostId}/claim?wait=${wait}`, { agents: idle });
+        const res = await this.client.request<{ task: Task | null }>(
+          "POST",
+          `/hosts/${this.config.hostId}/claim?wait=${wait}`,
+          { agents: idle },
+          { signal: this.stopController.signal },
+        );
         task = res?.task ?? null;
       } catch (err) {
         if (this.stopped) break;
@@ -378,6 +387,10 @@ export class AgentHost {
         const interrupted = (state === "cancelled" && this.stopped) || stopped;
         if (real && landed && !interrupted && !(this.opts.env ?? process.env).CLAUDE_CONFIG_DIR) {
           await removeClaudeSessions(real).catch((err) => this.log(`could not remove Claude sessions: ${errMsg(err)}`));
+        }
+        // A Codex run keeps its thread in a home beside the folder, on the same terms.
+        if (task.agent === "codex" && landed && !interrupted) {
+          await rm(codexHomeDir(cwd), { recursive: true, force: true }).catch((err) => this.log(`could not remove the Codex home: ${errMsg(err)}`));
         }
       }
     };

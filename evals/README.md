@@ -23,6 +23,23 @@ node_modules/.bin/vitest run --config evals/vitest.config.ts
 node_modules/.bin/tsc -p evals/tsconfig.json
 ```
 
+## The dialogue ledger
+
+Every mistake the editor reports in a dialogue cut is an entry with a check, and every change to dialogue cutting is
+run against all of them: [DIALOGUE.md](DIALOGUE.md) says how. `ledger.ts check` runs the free checks (unit tests, and
+replays of the model's real requests through today's code) and compares with the last recorded run.
+
+## The dialogue scorecard
+
+`scorecard.ts` turns manifest-eligible `dialogue-playable-v2` passes into **Watchability** (four craft-bug factors
+scored by rate per 10 finished minutes: mid-word cuts, wrong cuts, long missed removals, and stutter cuts), **Editorial
+match** (cut decisions, take choice, lines kept, same cuts, pauses, dead air, cut count, space at a cut, restarts left
+in, known mistakes), a combined **Overall** (geometric mean of Watchability and Editorial match, withheld when required
+evidence is missing), and a count of automated flags vs. short editorial tightenings left in, read against the published
+video decision by decision (`cutDetail.ts`). Use `--point recommended` (default) or `--point automatic` to grade each
+playable cut separately, and `rescore.ts` to regrade saved runs offline without model tokens. See
+[DIALOGUE.md](DIALOGUE.md).
+
 ## What it measures
 
 Times are seconds on the dialogue recording's source clock, so runs from different versions can be compared.
@@ -102,7 +119,9 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 
 **Trace.** This section covers the agent's process:
 
-- Active time, which excludes time spent waiting for the editor's answer.
+- Time to finish: from the request to the task's end on the wall clock, queue and the editor's answers included.
+- Active time, which excludes time spent waiting for the editor's answer. A task claimed again after a restart keeps
+  only its latest start, so active time and the times below count from its first event when that is earlier.
 - Time to the first change.
 - Time to the first call for the editor: when the first staged cut reached Needs your call. This is how soon
   the editor can start deciding. Also the time to the agent's first saved recommendation.
@@ -110,8 +129,45 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 - Listening calls (`source_audio`, or `includeAudio` on a check, inspect, or review), visual inspections,
   and level reads.
 - `task.usage` token counts when the engine records them.
+- Estimated cost: the engine's `estimatedApiCostUsd`, each run priced at its model's API list price and speed. Runs use
+  the editor's subscription, so this compares configurations; it isn't a bill. A model the engine has no price for
+  leaves the run without a cost and is named instead.
 - The submitted plan by kind and decision.
 - The share of edged cuts whose edges were checked with `dialogue_check_join`.
+
+## Known moments, and how far trials agree
+
+Two trials of one configuration never make the same cut, so one rerun can't show whether a change fixed anything.
+`moments.ts` reads finished trials and answers the two questions a change has to pass.
+
+**Known moments.** A place where a cut has gone wrong before: a restart left in, the wrong take kept, a line dropped.
+The case folder's `moments.json` says what the finished edit should play there:
+
+```json
+{ "schema": 1, "moments": [
+  { "id": "broken-first-take", "mediaId": "med_…", "start": 770.7, "end": 775.0,
+    "plays": "I remember there was a time where you would occasionally see",
+    "note": "Broken first take, then the whole one." } ] }
+```
+
+`start` and `end` are the recording's seconds, wide enough to hold every delivery of the line. `plays` is compared as
+words (case and punctuation don't count), so either of two matching words can be the one cut; give a list when
+several readings are right. Each trial comes out `right`, `asked` (a staged cut waits for the editor there, with what
+approving it plays) or `wrong` (with what it played). A trial's `evaluation.json` carries them as `score.moments` and
+counts them in the headline. Moments are the editor's words: keep the file with the case, never in the repository.
+
+**Agreement.** For the trials of one arm: the F1 of each pair's removed words, the words every trial removed, the
+words they split on and how many places those fall in. With a published reference it also says how often the editor
+removed a word every trial removed, and one they split on. A difference between two arms smaller than the
+disagreement inside one arm is not a result.
+
+```sh
+# Arms are labelled sets of runs: folder names under results/runs, or paths.
+$TSX evals/src/moments.ts --case my-case --runs main=2026-…-aaaa,2026-…-bbbb --runs branch=2026-…-cccc
+```
+
+It prints each arm's headline numbers with their spread, a row per moment and the agreement table. Run at least four
+trials an arm. Results saved before a trial stored what it left (`score.left`) are read from their applied cuts.
 
 ## Build a case
 

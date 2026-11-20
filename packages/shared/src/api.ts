@@ -92,16 +92,9 @@
  *  Skills
  *   GET    /skills?projectId=&taskId=&view=              → { skills: Skill[] }
  *
- *  Graphic templates (library-wide, like skills; the editor picks one with $name in the message box)
- *   GET    /templates                                    → { templates: GraphicTemplateSummary[] }
- *   GET    /templates/:templateId/preview                → image/png (the template drawn with its sample fields, transparent)
- *   DELETE /templates/:templateId                        → {}
- *   GET    /templates/:templateId                        → { template: GraphicTemplate }   (id or name; its page and sample values)
- *   POST   /templates               SaveTemplateRequest  → { template: GraphicTemplate }   (saving a name that exists replaces it)
- *
  *  Graphics and the style guide
  *   POST   /projects/:id/graphics   multipart (options: GraphicRenderRequest, html?, asset*) → GraphicRenderResponse
- *   GET    /projects/:id/graphics/:mediaId               → { html, source, width, height, fps, duration, template?, fields? }
+ *   GET    /projects/:id/graphics/:mediaId               → { html, source, width, height, fps, duration }
  *   PUT    /projects/:id/style-guide SaveStyleGuideRequest → { styleGuide: StyleGuide }   (replaces the project's guide)
  *   DELETE /projects/:id/style-guide                     → {}
  *   GET    /projects/:id/attachments/:attachmentId       → the file (for reading an attachment or the guide)
@@ -136,6 +129,7 @@
  *   WS     /ws?token=<token>        server pushes WsEvent; client may send { type: "subscribe", projectId }
  */
 import { z } from "zod/v3";
+import { CheckIn } from "./checkIn.js";
 import {
   Author,
   Change,
@@ -155,7 +149,6 @@ import {
   WritableTimeline,
   TimelineOp,
   TimeRange,
-  Transition,
 } from "@scarlet/timeline";
 
 // ---------------------------------------------------------------------------
@@ -339,7 +332,11 @@ export const DialogueCutsRequest = ProposeChangeRequest.pick({ description: true
     /** A doubt the editor must settle by listening or looking. Marks an applied cut as needing them until they keep it. */
     check: z.string().trim().min(1).max(120).optional(),
     /** Why Scarlet held a cut the agent sent to apply: what it measured. Kept apart from the agent's reason. */
-    held: z.string().trim().min(1).max(800).optional() })
+    held: z.string().trim().min(1).max(800).optional(),
+    /** Scarlet staged this cut because nothing it measures can settle its join: only the editor's ear can. No later cut takes its place. */
+    unheard: z.literal(true).optional(),
+    /** Scarlet held this cut for how its join measured, and it applies as placed only because the agent sent it with unsureJoins cut. */
+    appliedAsPlaced: z.literal(true).optional() })
     .refine(c => !c.originalRange || (c.review && c.originalRange.start <= c.start && c.end <= c.originalRange.end),
       "A repaired range must be staged inside its originally proposed removal.")).min(1),
 });
@@ -395,6 +392,36 @@ export const AgentEffort = AgentOptionId;
 /** A stretch of the timeline the editor marked on its ruler, in seconds on `version`, or of `mediaId`'s own footage. */
 export const MarkedRange = z.object({ version: Id.optional(), mediaId: Id.optional(), start: Seconds, end: Seconds });
 export type MarkedRange = z.infer<typeof MarkedRange>;
+/**
+ * The frame the editor paused the video on while writing to a cut or an edit, in seconds on `version` (or of `mediaId`'s
+ * own footage): the timeline the player showed, not necessarily the edit's.
+ */
+export const MessageTime = z.object({ version: Id.optional(), mediaId: Id.optional(), time: Seconds });
+export type MessageTime = z.infer<typeof MessageTime>;
+
+/** A point on the picture, as fractions of the frame's width and height from its top left. */
+const FramePoint = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);
+export const PictureMarkKind = z.enum(["draw", "box", "point"]);
+export type PictureMarkKind = z.infer<typeof PictureMarkKind>;
+/** A mark the editor drew on the picture: a freehand line, a box or a point, in fractions of the frame. */
+export const PictureMark = z.object({
+  kind: PictureMarkKind,
+  /** The stretch of the frame it covers. A point's is its spot. */
+  box: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), w: z.number().min(0).max(1), h: z.number().min(0).max(1) }),
+  /** A freehand line's path, thinned. */
+  points: z.array(FramePoint).max(200).optional(),
+});
+export type PictureMark = z.infer<typeof PictureMark>;
+/** Marks the editor drew on one frame for a request, and the picture of that frame with them drawn on it. */
+export const PictureMarks = z.object({
+  /** The picture of the frame with the marks on it, an attachment of the same request. */
+  attachmentId: Id,
+  time: Seconds,
+  version: Id.optional(),
+  mediaId: Id.optional(),
+  marks: z.array(PictureMark).min(1).max(20),
+});
+export type PictureMarks = z.infer<typeof PictureMarks>;
 
 export const ModelTuning = z.object({
   effort: AgentEffort.optional(),
@@ -405,7 +432,9 @@ export const ReviseRequest = ModelTuning.extend({
   skillIds: z.array(Id).optional(),
   position: Note.pick({ time: true, end: true, clipIds: true }).extend({ version: Id.optional(), mediaId: Id.optional(), cutIndex: z.number().int().nonnegative().optional(),
     /** A stretch the editor marked on the timeline for this request, besides the cut or edit it is about. */
-    markedRange: MarkedRange.optional() }).optional(),
+    markedRange: MarkedRange.optional(),
+    /** The frame the editor paused on while writing to this cut or edit. */
+    messageTime: MessageTime.optional() }).optional(),
   text: z.string().min(1),
   voiceTranscript: z.string().optional(),
   /** Agent to send the revision to. Defaults to the change's author. */
@@ -436,6 +465,12 @@ export const KeepEditsRequest = z.object({
     label: z.string().trim().min(1).max(180).optional(), check: z.string().trim().min(1).max(120).optional(), range: TimeRange.optional() })).min(1).max(500),
 });
 export type KeepEditsRequest = z.infer<typeof KeepEditsRequest>;
+/** Keeps the editor took back with ⌘Z, named as they were recorded. The edits wait on the editor again. */
+export const UnkeepEditsRequest = z.object({
+  threadId: Id,
+  edits: z.array(z.object({ changeId: Id, spot: z.number().int().nonnegative(), recheck: z.string().max(64).optional() })).min(1).max(500),
+});
+export type UnkeepEditsRequest = z.infer<typeof UnkeepEditsRequest>;
 /** An edit the editor kept, as a run of its request hears of it. */
 export interface KeptEdit { changeId: string; spot: number; label: string; check?: string; at: string; place?: { version: string; range: TimeRange } }
 
@@ -614,7 +649,7 @@ export type AgentId = z.infer<typeof AgentId>;
 export const AGENT_LABEL: Record<AgentId, string> = {
   claude: "Claude Code",
   codex: "Codex",
-  gemini: "Gemini CLI",
+  gemini: "Gemini",
   api: "API",
 };
 
@@ -747,6 +782,11 @@ export const Task = z.object({
       editIndex: z.number().int().nonnegative().optional(),
       /** The selected edit's number in the editor's list, which is how they and Scarlet's replies refer to it. */
       editNumber: z.number().int().positive().optional(),
+      /**
+       * The other edits in the moment the editor's words are about, when they were looking at a moment of the list and
+       * not one edit: edits whose stretches overlap and play as one change. `time` and `end` span the whole moment.
+       */
+      momentEdits: z.array(z.object({ changeId: Id, spot: z.number().int().nonnegative(), label: z.string().max(400).optional() })).max(50).optional(),
       /** Slug authorized by the editor when requesting a skill from an approved change. */
       skillName: SkillSlug.optional(),
       /** The skill the editor asked Scarlet to revise. */
@@ -762,6 +802,8 @@ export const Task = z.object({
       clipIds: z.array(Id).optional(),
       /** A stretch the editor marked on the timeline for this request. `time` and `end` stay those of the cut or edit it is about. */
       markedRange: MarkedRange.optional(),
+      /** The frame the editor paused on while writing to the cut or edit `time` is about. */
+      messageTime: MessageTime.optional(),
       reviewAllCuts: z.boolean().optional(),
       /** Product shortcut chosen by the editor, independent of the guides pinned to this task. */
       dialogueOperation: z.enum(["none", "first-cut", "local-pauses"]).optional(),
@@ -777,6 +819,8 @@ export const Task = z.object({
       message: z.string().optional(),
       /** Files the editor attached to this message. The engine gives the agent their paths. */
       attachments: z.array(TaskAttachment).max(20).optional(),
+      /** Marks the editor drew on the picture for this message. Their picture is one of its attachments. */
+      pictureMarks: PictureMarks.optional(),
       /** What such a request asked of the agent, without the thread's history. Its name alone doesn't say which edit, so the thread's later requests are told this. */
       asked: z.string().optional(),
       /**
@@ -805,6 +849,8 @@ export const Task = z.object({
     /** Every audible passage in scope was checked and there were no repeats or joins to review. */
     noFindings: z.boolean().optional(),
     unavailable: z.array(z.string()).optional(), returns: z.number().int().nonnegative().default(0),
+    /** The pass had finished and the check it went back for couldn't run: why. The pass stands; Retry runs the check. */
+    failed: z.string().optional(),
   }).optional(),
   /** Change(s) produced. */
   changeIds: z.array(Id).default([]),
@@ -896,7 +942,15 @@ export function taskNeedsTranscripts(task: Task): boolean {
 export function taskRecoveryAction(task: Task, hasLinkedChange: boolean): "resume" | "retry" | undefined {
   if (task.kind === "transcribe" || task.resultSkillId) return;
   if (task.state === "cancelled" || taskWasStopped(task) || taskNeedsTranscripts(task)) return "resume";
+  if (closingCheckFailed(task)) return "retry";
   if (canRetryTask(task) && !hasLinkedChange) return task.resumeRootId ? "resume" : "retry";
+  // A run that failed after saving picks up where it left off, keeping what it saved.
+  if (task.state === "failed") return "resume";
+}
+
+/** A finished pass whose closing check for repeats couldn't run. The pass stands; Retry runs the check again. */
+export function closingCheckFailed(task: Task): boolean {
+  return task.state === "done" && !!task.repeatAudit?.failed;
 }
 
 /** The editor-selected destination available to a live skill authoring task. */
@@ -1001,7 +1055,6 @@ export const EditSkillRequest = RunChoice.extend({
   prompt: z.string().trim().min(1).max(8000),
 });
 
-/** Source seconds in a dialogue scan. A page has no "to" until the scanner finishes it. */
 /**
  * A standing rule Scarlet picked up from a request, for one of the editor's skills. It changes nothing until the
  * editor approves it; approving it has an agent work it into the skill.
@@ -1057,6 +1110,7 @@ export type ApproveLearningRequest = z.infer<typeof ApproveLearningRequest>;
 export const ReviseLearningRequest = z.object({ rule: LearningRule });
 export type ReviseLearningRequest = z.infer<typeof ReviseLearningRequest>;
 
+/** Source seconds in a dialogue scan. A page has no "to" until the scanner finishes it. */
 export const DialogueScanPage = z.object({
   mediaId: Id,
   from: z.number().finite().nonnegative(),
@@ -1182,6 +1236,8 @@ export const UsageTotals = z.object({
   totalTokens: z.number().int().nonnegative(),
   /** Standard API list-price equivalent for the task's reported usage. Null if any reported tokens cannot be priced. */
   estimatedApiCostUsd: z.number().nonnegative().nullable().optional(),
+  /** What couldn't be priced, by model and any speed other than standard ("gpt-6.2-sol at Fast speed"). */
+  unpricedModels: z.array(z.string()).optional(),
   firstAt: z.string().nullable(),
   lastAt: z.string().nullable(),
 });
@@ -1197,88 +1253,12 @@ export type UsageResponse = z.infer<typeof UsageResponse>;
 // Skills
 // ---------------------------------------------------------------------------
 
-/** Template names are what the editor types after $, so they follow the same rule as skill names. */
-export const TemplateSlug = SkillSlug;
-
-/** What a template makes: a graphic over the picture, or a transition between two clips. */
-export const TemplateKind = z.enum(["graphic", "transition"]);
-export type TemplateKind = z.infer<typeof TemplateKind>;
-
-/** A transition template: how the picture moves at a join, without the name of the template it is. */
-export const TransitionStyle = Transition.omit({ template: true });
-export type TransitionStyle = z.infer<typeof TransitionStyle>;
-
 /**
- * Something the editor can reuse by typing its name after $. A graphic is an HTML/CSS page with named fields that
- * Scarlet fills in and renders over the picture; a transition is how the picture moves from one clip to the next.
- * Saved library-wide, like skills.
- */
-export const GraphicTemplateSummary = z.object({
-  id: Id,
-  kind: TemplateKind.default("graphic"),
-  /** A transition template's movement. */
-  transition: TransitionStyle.optional(),
-  /** What follows $ in a message, e.g. "lower-third". */
-  name: TemplateSlug,
-  /** How the list names it, e.g. "Lower third". */
-  title: z.string().min(1).max(120),
-  description: z.string().max(2000).default(""),
-  /** The fields that change from use to use, in order, as the editor reads them ("Name", "Title"). */
-  fields: z.array(z.string().min(1).max(60)).max(20),
-  /** Changes whenever the preview is drawn again, so the renderer can cache the image by it. */
-  previewVersion: z.string(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-});
-export type GraphicTemplateSummary = z.infer<typeof GraphicTemplateSummary>;
-
-/** Values for a template's fields, by field name. */
-export const TemplateFields = z.record(z.string().max(2000));
-
-/** A saved template as the agent reads it: its page with `{{Field}}` placeholders and what it was drawn with. */
-export const GraphicTemplate = GraphicTemplateSummary.extend({
-  /** The page, with a `{{Field}}` placeholder wherever a field's value goes. Empty for a transition. */
-  html: z.string().max(500_000),
-  /** The values its preview is drawn with. */
-  sample: TemplateFields,
-  /** The frame it was designed in. A use renders at the project's size. */
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  /** Seconds a use lasts unless the agent says otherwise. */
-  duration: z.number().positive(),
-  /** The moment of the graphic the preview shows, in seconds. */
-  previewAt: z.number().nonnegative(),
-});
-export type GraphicTemplate = z.infer<typeof GraphicTemplate>;
-
-/** POST /templates: save a template, or replace the one with the same name. A transition sends `transition` and no page. */
-export const SaveTemplateRequest = z.object({
-  name: TemplateSlug.max(64),
-  title: z.string().trim().min(1).max(120),
-  description: z.string().max(2000).default(""),
-  fields: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
-  html: z.string().min(1).max(500_000).optional(),
-  sample: TemplateFields.default({}),
-  transition: TransitionStyle.optional(),
-  /** A graphic of this project whose files (fonts, pictures) the page links to. */
-  projectId: Id.optional(),
-  basedOn: Id.optional(),
-  width: z.number().int().positive().max(8192).optional(),
-  height: z.number().int().positive().max(8192).optional(),
-  duration: z.number().positive().max(600).optional(),
-  previewAt: z.number().nonnegative().optional(),
-});
-export type SaveTemplateRequest = z.infer<typeof SaveTemplateRequest>;
-
-/**
- * POST /projects/:id/graphics, the `options` field of the multipart form; the page is the `html` file field, or the
- * template's, and any `asset` file fields are files it links to by relative path (the part's filename).
+ * POST /projects/:id/graphics, the `options` field of the multipart form; the page is the `html` file field,
+ * and any `asset` file fields are files it links to by relative path (the part's filename).
  */
 export const GraphicRenderRequest = z.object({
-  /** Fill this template instead of sending a page. Its id or name. */
-  template: z.string().min(1).optional(),
-  fields: TemplateFields.optional(),
-  /** The graphic this one revises: its files come along, and so does the template it was made from. */
+  /** The graphic this one revises: its files come along. */
   basedOn: Id.optional(),
   duration: z.number().positive().max(600).optional(),
   width: z.number().int().positive().max(8192).optional(),
@@ -1452,7 +1432,7 @@ export const ServerSettings = z.object({
   /** Small-model "note cleanup" (voice transcript → precise instruction). */
   noteCleanup: z.object({
     enabled: z.boolean().default(false),
-    provider: z.enum(["anthropic", "openai", "none"]).default("none"),
+    provider: z.enum(["anthropic", "openai", "gemini", "none"]).default("none"),
     model: z.string().optional(),
   }),
   render: z.object({
@@ -1464,6 +1444,8 @@ export const ServerSettings = z.object({
   }),
   /** Default agent for new tasks when the UI doesn't pick one. */
   defaultAgent: AgentId.default("claude"),
+  /** How many of a pass's cuts, the ones Scarlet thinks most likely to be wrong, the editor is asked to check. */
+  checkIn: CheckIn.default("balanced"),
 });
 export type ServerSettings = z.infer<typeof ServerSettings>;
 

@@ -2,6 +2,7 @@ import { newRequestId, REQUEST_ID_HEADER } from "@scarlet/shared";
 import { isPlayableMedia, type MediaAsset } from "@scarlet/timeline";
 import { api, IS_MOCK, mockClient } from "./client";
 import { appLog, logPath } from "./appLog";
+import { isLink } from "./pendingImports";
 
 const importChecks = new Map<string, (fraction: number) => void>();
 
@@ -13,7 +14,7 @@ export async function importLocalFile(projectId: string, path: string, onCheck: 
   importChecks.set(importId, onCheck);
   try {
     // A link downloads; a path is copied and reports its progress.
-    const source = /^https?:\/\//i.test(path) ? { url: path, importId } : { path, importId };
+    const source = isLink(path) ? { url: path, importId } : { path, importId };
     const request = { ...source, ...(deferFormat && { deferFormat }) };
     return (await (signal ? api.importMedia(projectId, request, signal) : api.importMedia(projectId, request))).media;
   } finally {

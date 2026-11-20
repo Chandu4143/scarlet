@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import type { TranscriptSegment, TranscriptWord } from "@scarlet/timeline";
+import { alignerHeard } from "./ctcAlign.js";
 import { fillTranscriptHoles, heardInHoles, transcriptHoles, wavLevels, withHoleWords, withoutUnheardSegments, wordsOnSound, writeHoleAudio } from "./transcriptHoles.js";
 
 const RATE = 16000;
@@ -102,6 +103,15 @@ it("reads the holes once, places what it heard, and returns the transcript uncha
     expect(filled.map(s => s.text)).toEqual(["it uses Blender", "which includes", "that matters", "next"]);
     expect(filled[1]!.words[0]!.start).toBeCloseTo(5.01, 2);
     expect(log.at(-1)).toContain("found 2 words");
+    // A word the aligner didn't hear in the stretch, as Whisper writes over a cough or a laugh, stays out.
+    const heardOnly = await fillTranscriptHoles({ ...base, read: async () => [seg(["which", 1.3, 1.9], ["includes", 2, 2.8])],
+      align: async found => found.map(s => ({ ...s, words: s.words.map(w => {
+        const out = { ...w };
+        alignerHeard.set(out, w.text === "which");
+        return out;
+      }) })) });
+    expect(heardOnly.map(s => s.text)).toEqual(["it uses Blender", "which", "that matters", "next"]);
+    expect(log.at(-1)).toContain("found 1 words in 1 of them, leaving out 1 the aligner didn't hear");
     expect(await fillTranscriptHoles({ ...base, read: async () => [seg(["(coughs)", 1.3, 1.9])], align: async f => f })).toBe(transcript);
     // A transcript with a word on every sound never runs Whisper again.
     const whole = [...transcript, seg(["which", 5, 5.6], ["includes", 5.7, 6.5])];

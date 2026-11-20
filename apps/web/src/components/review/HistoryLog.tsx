@@ -15,7 +15,8 @@ const FILTERS: Array<{ id: string; label: string; match: (type: string) => boole
 function dayLabel(iso: string): string {
   const d = new Date(iso);
   const today = new Date();
-  const yesterday = new Date(Date.now() - 86_400_000);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
   if (d.toDateString() === today.toDateString()) return "Today";
   if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
   return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });

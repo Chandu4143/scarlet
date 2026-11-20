@@ -37,7 +37,6 @@ import { foldStrandedPasses, recordLeftOutFootage, retireLeftoverPasses, wireCha
 import { RenderQueue } from "./services/renderQueue.js";
 import { migrateQuickActions } from "./services/migrateQuickActions.js";
 import { retireMergedSkills, migrateGlobalSkills, seedSkillList, seedSkills } from "./services/skills.js";
-import { seedStockTransitions } from "./services/graphics.js";
 import { migrateDialogueSettings } from "./services/migrateDialogueSettings.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
 import { featureForRequest } from "@scarlet/shared";
@@ -186,8 +185,6 @@ export function createApp(options: ServerOptions): ScarletApp {
   retireMergedSkills(ctx);
   migrateDialogueOperations(ctx);
   if (seeded) ctx.log(`[skills] seeded ${seeded} skill(s) from ${options.skillsSeedDir ?? "the bundled set"}`);
-  const transitions = seedStockTransitions(ctx);
-  if (transitions) ctx.log(`[templates] added ${transitions} stock transition(s)`);
   if (ctx.telemetry.active) {
     const { projectCount } = ctx.db.prepare("SELECT count(*) AS projectCount FROM projects WHERE deleted_at IS NULL").get() as { projectCount: number };
     ctx.telemetry.record("server.boot.heartbeat", { projectCount });

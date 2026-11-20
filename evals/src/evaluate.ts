@@ -1,10 +1,12 @@
 /** Gather a finished task's artifacts from the engine (read-only) and score them. */
+import { createHash } from "node:crypto";
 import type { Change, MediaAsset, Timeline } from "../../packages/timeline/src/index.ts";
 import type { LoadedCase } from "./case.ts";
 import { reviewDecisions, reviewExport } from "./decisions.ts";
 import type { Engine, ReviewChangeExport, TaskRecord } from "./engine.ts";
 import { mediaEvidence, type StoredEvidence } from "./evidence.ts";
-import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type LabeledRange, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
+import { loadMoments } from "./moments.ts";
+import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
 import { scoreRun, type Score } from "./score.ts";
 import { audibleMediaIds, type MediaInfo } from "./timeline.ts";
 
@@ -93,6 +95,9 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
   // Versions the run checked joins on, to compare those checks with later parts. A case may not store them.
   const checked = events.flatMap(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "dialogue_check_join"
     && typeof (e.data?.input as { version?: unknown } | undefined)?.version === "string" ? [(e.data!.input as { version: string }).version] : []);
+  // And the versions it flagged edits on, to place each flag in the recordings.
+  checked.push(...events.flatMap(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "edit_flag"
+    && typeof (e.data?.input as { version?: unknown } | undefined)?.version === "string" ? [(e.data!.input as { version: string }).version] : []));
   for (const v of new Set(checked)) if (!timelines.has(v)) await timeline(v).catch(() => undefined);
   let reviewExport: ReviewChangeExport | undefined, reviewSource: Artifacts["reviewSource"] = "none";
   if (review && !(partial && (!timelines.has(review.fromVersion) || !timelines.has(review.toVersion)))) {
@@ -143,6 +148,7 @@ export async function artifactsFromCase(loaded: LoadedCase, opts: { partial?: bo
 }
 
 export interface Evaluation {
+  gradingSha256?: string;
   schema: 1;
   kind: "task";
   generatedAt: string;
@@ -192,6 +198,7 @@ type ReferenceInput = NonNullable<Parameters<typeof scoreRun>[0]["reference"]>;
 
 function evaluateArtifacts(a: Artifacts, evidence: ReadonlyMap<string, MediaEvidence>, reference: ReferenceInput | undefined, opts: EvaluateOptions = {}): Evaluation {
   const edgeOptions = opts.edgeOptions ?? DEFAULT_EDGE_OPTIONS;
+  const moments = opts.loaded?.dir ? loadMoments(opts.loaded.dir) : undefined;
   const score = scoreRun({
     media: a.media,
     timelines: { source: a.timelines.get(a.versions.source)!, applied: a.timelines.get(a.versions.applied)!, proposed: a.timelines.get(a.versions.proposed)!,
@@ -202,8 +209,10 @@ function evaluateArtifacts(a: Artifacts, evidence: ReadonlyMap<string, MediaEvid
     plans: a.plans?.map(plan => ({ plan, timeline: a.timelines.get(plan.version)! })),
     timelineAt: v => a.timelines.get(v),
     evidence, reference, task: a.task, events: a.events, edgeOptions,
+    moments,
   });
   return {
+    gradingSha256: createHash("sha256").update(JSON.stringify([a.versions.source, edgeOptions, reference, moments, [...evidence].sort(([first], [second]) => first.localeCompare(second))])).digest("hex"),
     schema: 1, kind: "task", generatedAt: new Date().toISOString(), taskId: a.task.id, projectId: a.projectId, caseId: opts.loaded?.file.id,
     config: { agent: a.task.agent, model: a.task.model, effort: a.task.effort },
     instruction: String(a.task.context.message ?? a.task.instruction).slice(0, 500),

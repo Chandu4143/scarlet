@@ -6,9 +6,7 @@ import { buildThreads, threadEditList, type VersionSummary } from "@scarlet/shar
 import { api } from "../../lib/client";
 import { buildDb, PRJ } from "../../lib/mock/fixtures";
 import { useProjectStore, type ProjectData } from "../../stores/project";
-import { NO_AGENT_REASON } from "../agent/AgentChip";
-import { useHostsStore } from "../../stores/hosts";
-import { ThreadAction, useThreadEdits } from "./ThreadEdits";
+import { rejectInstruction, ThreadAction, useThreadEdits } from "./ThreadEdits";
 import type { Thread, ThreadEdit } from "@scarlet/shared";
 
 let root: Root;
@@ -132,4 +130,10 @@ it("reads a request's edits again for a new working cut only while they are need
   const changed = { ...thread, changes: thread.changes.map((c, i) => i ? c : { ...c, appliedVersion: "ver_5" }) };
   await act(async () => root.render(<Probe thread={changed} needed={false} />));
   expect(read).toHaveBeenCalledTimes(4);
+});
+
+it("words the request to reject one edit by its number and name", () => {
+  expect(rejectInstruction({ editNumber: 2, label: "captions" })).toBe("The editor rejected edit 2, “captions”. Put back exactly what it changed and leave every other edit as it is.");
+  expect(rejectInstruction({ label: "captions" })).toMatch(/^The editor rejected “captions”\. /);
+  expect(rejectInstruction({})).toMatch(/^The editor rejected this edit\. /);
 });

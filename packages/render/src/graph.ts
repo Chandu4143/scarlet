@@ -745,7 +745,7 @@ async function writeFilterGraph(
           hardware && accelerate && opts.decoder !== "cuda" ? ["-hwaccel", "videotoolbox"] : []),
         ...(start > 0 ? ["-ss", fnum(start)] : []), "-t", fnum(duration),
       ], input);
-      const pictureDelay = Math.max(0, firstPicture - srcStart) / speed;
+      const pictureDelay = still ? 0 : Math.max(0, firstPicture - srcStart) / speed;
       if (wantVideo && pictureDelay < p.vis) {
         const visible = pictureDelay > 0 ? { ...p, local0: p.local0 + pictureDelay, pos: p.pos + pictureDelay, vis: p.vis - pictureDelay } : p;
         const pictureSeek = Math.max(seek, firstPicture);

@@ -93,10 +93,10 @@ describe("scoring a synthetic run", () => {
     expect(score.headline).toMatchObject({ gapsLeft: 8, looseJoins: 1, repeatsLeft: 0, heldByScarlet: 0 });
   });
 
-  it("scores each operating point against the reference", () => {
+  it("does not apply a decided proposal a second time", () => {
     const { applied: a, recommended, proposed } = score.reference!.operatingPoints;
     expect(proposed.cut!.words.f1).toBe(1);
-    expect(recommended.cut!.time.f1).toBe(1);
+    expect(recommended).toEqual(a);
     expect(a.cut!.words).toMatchObject({ tp: 2, fn: 2, recall: 0.5 });
     expect(score.headline).toMatchObject({ appliedCuts: 1, reviewCuts: 1, wordF1: 1, edgeF1At20ms: 1, requiredLinesMissing: 0 });
   });
@@ -129,10 +129,25 @@ describe("what a task left, with staged cuts still waiting", () => {
   });
 
   it("counts staged cuts from an earlier version in what the editor gets", () => {
+    expect(score.playable.automatic).toMatchObject({ seconds: 16, edges: { total: 4 } });
+    expect(score.playable.recommended).toMatchObject({ seconds: 14, edges: { total: 6 } });
     expect(score.headline).toMatchObject({ stagedWaiting: 2, needsYourCall: 1 });
     // Accepting the picks takes line 5 out of the edit the task left: exactly the editor's cut.
     expect(score.reference!.operatingPoints.recommended.cut!.words.f1).toBe(1);
     expect(score.reference!.operatingPoints.proposed.cut!.words.precision).toBeLessThan(1);
     expect(score.pacing.recommended!.joins).toBe(score.pacing.final!.joins + 1);
+  });
+  it("excludes keep, ask and skipped cuts even when their proposed edges clip speech", () => {
+    const suggestion = { ...staged, cuts: staged.cuts.map(c => ({ ...c, assessment: { ...c.assessment!, verdict: "keep" as const }, sources: [{ mediaId: MIC, start: 2.8, end: 4.8 }] })) };
+    const scored = scoreRun({ media: [media(MIC)], timelines: { source: S, applied: A, proposed: editor },
+      waiting: [suggestion, { ...staged, cuts: staged.cuts.map(c => ({ ...c, decision: "skipped" as const })) }], evidence: new Map([[MIC, lines(MIC, 10)]]) });
+    expect(scored.playable.recommended).toEqual(scored.playable.automatic);
+    expect(scored.headline.clippedWordsOnSound).toBe(0);
+  });
+  it("counts program time once for simultaneous dialogue tracks", () => {
+    const multi = { ...S, tracks: [...S.tracks, { ...S.tracks[1]!, id: "second", clips: cut("x", "other", [[0, 20]]).tracks[1]!.clips }] };
+    const scored = scoreRun({ media: [media(MIC), media("other")], timelines: { source: multi, applied: multi, proposed: multi }, evidence: new Map() });
+    expect(Object.keys(scored.playable.automatic.kept)).toHaveLength(2);
+    expect(scored.playable.automatic.seconds).toBe(20);
   });
 });
