@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import * as exec from "./exec.js";
 import { resolveFfmpeg, runCapture, spawnStats } from "./exec.js";
-import { audition, contactSheet, packSheet, pictureActivity, qualityEvents, reviewWindow, sampleTimes } from "./inspection.js";
+import { UNLABELLED_SHEET, audition, contactSheet, packSheet, pictureActivity, qualityEvents, reviewWindow, sampleTimes } from "./inspection.js";
+import { soundPicture } from "./soundPicture.js";
 import { extractFrame } from "./frame.js";
 import { isStoredAsShown, storedAsShown } from "./probe.js";
 
@@ -260,4 +261,44 @@ it("keeps a file whose frames need turning on the CPU when the GPU is asked for,
       expect(await runs(() => contactSheet(rotated, range, { ...opts, decoder: "cuda" }))).toEqual(plain);
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// A shell script stands in for an FFmpeg built without libfreetype: real FFmpeg on PATH, refusing drawtext.
+it.skipIf(process.platform === "win32")("draws sheets without time labels and says why when FFmpeg can't draw text, and refuses pictures that need text", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scarlet-no-text-"));
+  try {
+    const file = join(dir, "clip.mp4");
+    await runCapture(resolveFfmpeg(), ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=2", "-f", "lavfi", "-i", "sine=d=2",
+      "-c:v", "libx264", "-threads", "1", "-c:a", "aac", file]);
+    const opts = { origin: 0, fps: 25, count: 4, mode: "uniform" as const };
+    const labelled = await contactSheet(file, { start: 0, end: 2 }, opts);
+    expect(labelled).not.toHaveProperty("note");
+    const bin = join(dir, "ffmpeg-no-text");
+    await writeFile(bin, [
+      "#!/bin/sh",
+      "for a; do",
+      "  if [ \"$a\" = -filters ]; then ffmpeg \"$@\" | grep -v ' drawtext '; exit 0; fi",
+      "  case \"$a\" in *drawtext*) echo \"No such filter: 'drawtext'\" >&2; exit 8;; esac",
+      "done",
+      "exec ffmpeg \"$@\"",
+    ].join("\n") + "\n", { mode: 0o755 });
+    vi.stubEnv("SCARLET_FFMPEG", bin);
+    const sheet = await contactSheet(file, { start: 0, end: 2 }, opts);
+    expect(sheet).toMatchObject({ timestamps: labelled.timestamps, columns: labelled.columns, note: UNLABELLED_SHEET });
+    expect(sheet.jpeg).not.toBe(labelled.jpeg);
+    const tile = (await runCapture(resolveFfmpeg(), ["-v", "error", "-i", file, "-frames:v", "1", "-vf", "scale=320:180", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])).stdout;
+    expect(await packSheet([tile], [0], true)).toMatchObject({ timestamps: [0], note: UNLABELLED_SHEET });
+    expect(await reviewWindow(file, { start: 0, end: 1 }, { origin: 0, fps: 25, count: 3, tempDir: dir })).toMatchObject({ note: UNLABELLED_SHEET });
+    // A grid can't be read without its percents, and a sound picture without its words: each says why, with no path.
+    const grid = extractFrame(file, 0.5, { width: 320, grid: { width: 320, height: 180 } });
+    await expect(grid).rejects.toBeInstanceOf(exec.MissingFilterError);
+    await expect(grid).rejects.toThrow(/^This copy of FFmpeg can’t draw text, so Scarlet can’t label the grid’s lines/);
+    expect((await extractFrame(file, 0.5, { width: 320 })).subarray(0, 2)).toEqual(Buffer.from([255, 216]));
+    const sound = soundPicture(file, { range: { start: 0, end: 1 } });
+    await expect(sound).rejects.toBeInstanceOf(exec.MissingFilterError);
+    await expect(sound).rejects.not.toThrow(dir);
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

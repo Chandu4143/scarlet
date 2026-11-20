@@ -66,7 +66,7 @@ export function inspectionRoutes(ctx: Ctx) {
   // One transcript attempt per source per pass, so a failing provider is not retried on every page.
   const transcribing = new Set<string>();
   const pictures = inspectionPictures(ctx);
-  type Analysis = Pick<InspectionWindow, "jpeg" | "columns" | "timestamps" | "events" | "wav">;
+  type Analysis = Pick<InspectionWindow, "jpeg" | "columns" | "timestamps" | "events" | "wav" | "note">;
   const cache = new AnalysisCache<Analysis>(a =>
     a.jpeg.length + (a.wav?.length ?? 0) + (a.events?.length ?? 0) * 64 + a.timestamps.length * 8, 24 * 1024 * 1024);
 

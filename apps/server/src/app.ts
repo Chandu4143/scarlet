@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { matchedRoutes } from "hono/route";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ZodError } from "zod/v3";
+import { MissingFilterError } from "@scarlet/render";
 import { OpError, TimelinePlanningError } from "@scarlet/timeline";
 import { authMiddleware, type AppEnv } from "./auth.js";
 import { createContext, noteEngineStart, type Ctx, type ServerOptions } from "./context.js";
@@ -196,6 +197,10 @@ export function createApp(options: ServerOptions): ScarletApp {
   app.onError((err, c) => {
     if (err instanceof HttpError) {
       return c.json({ error: { code: err.code, message: err.message, details: err.details } }, err.status as ContentfulStatusCode);
+    }
+    // The FFmpeg in use can't do what was asked. The message says what to install; no path, no FFmpeg output.
+    if (err instanceof MissingFilterError) {
+      return c.json({ error: { code: "ffmpeg_missing_filter", message: err.message, details: { filter: err.filter } } }, 422);
     }
     if (err instanceof TimelinePlanningError) {
       return c.json({ error: { code: "timeline_limit", message: err.message } }, 422);

@@ -5,7 +5,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { TimeRange } from "@scarlet/timeline";
 import { escapeFilterPath } from "./effects.js";
-import { LOCAL_MEDIA_INPUT, SOURCE_AUDIO_CLOCK, failureReason, ffSeconds, resolveFfmpeg, runCapture } from "./exec.js";
+import { LOCAL_MEDIA_INPUT, SOURCE_AUDIO_CLOCK, failureReason, ffSeconds, hasDrawtext, resolveFfmpeg, runCapture } from "./exec.js";
 import { resolveFontFile } from "./fonts.js";
 import { isStoredAsShown } from "./probe.js";
 import { waveformFromPcm } from "./waveform.js";
@@ -69,24 +69,30 @@ export const PREVIEW_COPY_ACTIVITY_THRESHOLD = 22;
 const activityFilterAt = (threshold: number) => `scale=192:108,format=gray,tblend=all_mode=difference,bbox=min_val=${threshold}`;
 export const activityFilter = activityFilterAt(ACTIVITY_THRESHOLD);
 
-function tileSheet(count: number) {
+/** Said with a sheet drawn without its time labels, because the FFmpeg in use can't draw text. */
+export const UNLABELLED_SHEET = "The pictures have no time labels because this copy of FFmpeg can’t draw text: `timestamps` gives each picture’s time, "
+  + "left to right and top to bottom. Installing FFmpeg with Scarlet’s setup instructions and restarting Scarlet brings the labels back.";
+
+/** Each picture with its time under it; without `labels`, the same layout with the strip left blank. */
+function tileSheet(count: number, labels: boolean) {
   const columns = Math.min(3, count);
   const rows = Math.ceil(count / columns);
   const font = resolveFontFile("Arial");
   const labelFont = font ? `fontfile=${escapeFilterPath(font.file)}` : "font=sans";
   return [sheetScale, "pad=320:204:(ow-iw)/2:(180-ih)/2", "setsar=1",
-    `drawtext=${labelFont}:text='%{pts\\:flt} s':fontsize=16:fontcolor=white:x=6:y=183`,
+    ...labels ? [`drawtext=${labelFont}:text='%{pts\\:flt} s':fontsize=16:fontcolor=white:x=6:y=183`] : [],
     `tile=${columns}x${rows}:nb_frames=${count}:padding=2:color=black`].join(",");
 }
 
 export async function packSheet(frames: Buffer[], timestamps: number[], raw: boolean, signal?: AbortSignal) {
   const input = raw ? ["-f", "rawvideo", "-pixel_format", "yuv420p", "-video_size", "320x180"] : ["-f", "image2pipe", "-c:v", "mjpeg"];
   const pts = timestamps.map((t, i) => `eq(N,${i})*${Math.round(t * 1e6)}`).join("+");
+  const labels = await hasDrawtext();
   const { stdout } = await runCapture(resolveFfmpeg(), ["-nostdin", "-v", "error", ...input, "-i", "pipe:0",
-    "-vf", `settb=AVTB,setpts='${pts}',${tileSheet(frames.length)}`, "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe", "pipe:1"],
+    "-vf", `settb=AVTB,setpts='${pts}',${tileSheet(frames.length, labels)}`, "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe", "pipe:1"],
     { stdin: Buffer.concat(frames), signal, maxStdout: 2 * 1024 * 1024 });
   if (!stdout.length) throw new Error("No contact sheet produced.");
-  return { timestamps, columns: Math.min(3, frames.length), jpeg: stdout.toString("base64") };
+  return { timestamps, columns: Math.min(3, frames.length), jpeg: stdout.toString("base64"), ...!labels && { note: UNLABELLED_SHEET } };
 }
 
 interface SheetOptions {
@@ -159,22 +165,23 @@ async function readSheet(file: string, range: TimeRange, opts: SheetOptions, ret
   }
   const times = sampleTimes(duration, opts.fps, opts.count, changes ?? scenes,
     opts.focus === undefined ? undefined : opts.focus - origin);
-  const graph = selectedSheet(duration, times, origin);
+  const labels = await hasDrawtext(bin);
+  const graph = selectedSheet(duration, times, origin, labels);
   const selectedInput = pictures
     ? ["-hide_banner", "-nostdin", "-nostats", "-copyts", "-color_range", "pc", "-f", "nut", "-i", "pipe:0"] : args;
   const { stdout, stderr } = await runCapture(bin, [...selectedInput, "-map", "0:v:0", "-an", "-vf", pictures ? graph : shrinkFirst(opts.decoder, sheetSize, graph),
     "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe", "-"], { ...optsIO, stdin: pictures });
-  return { ...sheetResult(stdout, stderr, times.length), changedFrames: changes?.length };
+  return { ...sheetResult(stdout, stderr, times.length), changedFrames: changes?.length, ...!labels && { note: UNLABELLED_SHEET } };
 }
 
 /** Select the first displayed frame crossing each target and report its actual PTS. */
-function selectedSheet(duration: number, times: number[], origin: number) {
+function selectedSheet(duration: number, times: number[], origin: number, labels: boolean) {
   const select = ["isnan(prev_t)", ...times.slice(1).map(t => {
     const threshold = Math.max(0, t - 0.00001).toFixed(6);
     return `lt(prev_t,${threshold})*gte(t,${threshold})`;
   })].join("+");
   return [`trim=duration=${duration}`, `select='${select}'`, "settb=AVTB",
-    `setpts=PTS+${origin}/TB`, "showinfo=checksum=0", tileSheet(times.length)].join(",");
+    `setpts=PTS+${origin}/TB`, "showinfo=checksum=0", tileSheet(times.length, labels)].join(",");
 }
 
 function sheetResult(picture: Buffer, log: string, count: number) {
@@ -288,8 +295,9 @@ export async function reviewWindow(file: string, range: TimeRange,
   const picture = scratch + ".jpg";
   // An audition fills the requested time with silence after a microphone ends. Level readings use the actual samples.
   const audio = opts.includeAudio ? scratch + ".pcm" : undefined;
+  const labels = await hasDrawtext();
   try {
-    const sheet = ["-map", "0:v:0", "-an", "-vf", selectedSheet(duration, times, start),
+    const sheet = ["-map", "0:v:0", "-an", "-vf", selectedSheet(duration, times, start, labels),
       "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2", "-update", "1", picture,
       ...(audio ? pcmOutput(0, auditionFilter(range), audio) : [])];
     const { stdout, stderr } = await readReview(file, range, opts.signal, sheet);
@@ -297,7 +305,7 @@ export async function reviewWindow(file: string, range: TimeRange,
     const sheetPicture = readFile(picture).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? Buffer.alloc(0) : Promise.reject(error));
     const [jpeg, audition] = await Promise.all([sheetPicture, audio && readFile(audio)]);
     return { ...sheetResult(jpeg, stderr, times.length), events: reviewEvents(stderr, stdout, range, opts.origin),
-      wav: audition ? wavFromPcm(audition) : undefined };
+      wav: audition ? wavFromPcm(audition) : undefined, ...!labels && { note: UNLABELLED_SHEET } };
   } finally { await Promise.all([rm(picture, { force: true }), audio && rm(audio, { force: true })]); }
 }
 

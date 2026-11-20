@@ -47,6 +47,21 @@ import {
   wrapText,
 } from "./index.js";
 
+/** Stands in for an FFmpeg built without libfreetype: real FFmpeg on PATH, without drawtext, which it refuses as such a build does. */
+async function ffmpegWithoutText(dir: string): Promise<string> {
+  const bin = path.join(dir, "ffmpeg-no-text");
+  await fs.writeFile(bin, [
+    "#!/bin/sh",
+    "for a; do",
+    "  if [ \"$a\" = -filters ]; then ffmpeg \"$@\" | grep -v ' drawtext '; exit 0; fi",
+    "  case \"$a\" in *drawtext*) refuse=1;; *.txt) [ -f \"$a\" ] && grep -q drawtext \"$a\" && refuse=1;; esac",
+    "done",
+    "if [ -n \"$refuse\" ]; then echo \"[AVFilterGraph @ 0x1] No such filter: 'drawtext'\" >&2; echo 'Error : Filter not found' >&2; exit 8; fi",
+    "exec ffmpeg \"$@\"",
+  ].join("\n") + "\n", { mode: 0o755 });
+  return bin;
+}
+
 let dir: string;
 let src: string;
 let logo: string;
@@ -186,6 +201,24 @@ it("exports a resized frame range with optional captions and an equally long aud
     return (await runCapture("ffmpeg", ["-v", "error", "-ss", "0.5", "-i", file, "-frames:v", "1", "-f", "md5", "-"])).stdout.toString();
   };
   expect(await saved(true)).not.toBe(await saved(false));
+});
+
+it.skipIf(process.platform === "win32")("says before encoding that an FFmpeg without drawtext can't draw captions, and exports without them", async () => {
+  const { project, timeline } = fixture();
+  const ffmpegPath = await ffmpegWithoutText(dir);
+  const cache = path.join(dir, "no-text-cache");
+  const options = { mediaRoot: dir, quality: "delivery" as const, hwaccel: "none" as const, exportHeight: 90,
+    exportRange: { start: 1, end: 2 }, segmentSeconds: 1, ffmpegPath };
+  const file = path.join(dir, "no-text-captions.mp4");
+  const refused = renderFullCached(project, timeline, cache, file, options);
+  await expect(refused).rejects.toBeInstanceOf(ffmpeg.MissingFilterError);
+  await expect(refused).rejects.toThrow(ffmpeg.missingTextFilterMessage("draw the video’s captions"));
+  expect(syncFs.existsSync(file)).toBe(false);
+  // Nothing was encoded before the check.
+  expect(syncFs.existsSync(cache) ? await fs.readdir(cache) : []).toEqual([]);
+  const plain = path.join(dir, "no-text-plain.mp4");
+  await renderFullCached(project, timeline, cache, plain, { ...options, omitCaptions: true });
+  expect((await probeMedia(plain)).duration).toBeCloseTo(1, 1);
 });
 
 describe("ffmpeg", () => {

@@ -98,16 +98,43 @@ export function resolveFfprobe(explicit?: string): string {
   return explicit ?? process.env.SCARLET_FFPROBE ?? process.env.FFPROBE_PATH ?? findBinary("ffprobe") ?? "ffprobe";
 }
 
+/** How to install the FFmpeg Scarlet supports on this platform, as one sentence. */
+function installFfmpeg(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32"
+    ? "In PowerShell, run winget install --id Gyan.FFmpeg.Essentials --exact."
+    : platform === "darwin"
+      ? "Run the FFmpeg setup helper linked in the Scarlet download instructions."
+      : "Install the FFmpeg package from your system’s package manager.";
+}
+
 /** Show the prerequisite at the import or render that needs it. Other launch errors keep their diagnostics. */
 export function mediaToolLaunchError(bin: string, error: NodeJS.ErrnoException, fallback: string): string {
   if (error.code !== "ENOENT" || !/^ff(mpeg|probe)(\.exe)?$/i.test(basename(bin))) return fallback;
-  const install = process.platform === "win32"
-    ? "In PowerShell, run winget install --id Gyan.FFmpeg.Essentials --exact."
-    : process.platform === "darwin"
-      ? "Run the FFmpeg setup helper linked in the Scarlet download instructions."
-      : "Install the FFmpeg package from your system’s package manager.";
-  return `${fallback}. ${install} Then restart Scarlet and retry.`;
+  return `${fallback}. ${installFfmpeg()} Then restart Scarlet and retry.`;
 }
+
+/**
+ * Why Scarlet can't draw text with the FFmpeg it found, and what to do: some builds leave out the filter that draws
+ * text (drawtext), which captions and the labels on Scarlet's pictures need. `need` says what that stops, such as
+ * "draw the video’s captions". No path: the editor and the model read this.
+ */
+export function missingTextFilterMessage(need: string, platform: NodeJS.Platform = process.platform): string {
+  const install = platform === "linux"
+    ? "Install an FFmpeg package built with text drawing (libfreetype) from your system’s package manager."
+    : installFfmpeg(platform);
+  return `This copy of FFmpeg can’t draw text, so Scarlet can’t ${need}. ${install} Then restart Scarlet and try again.`;
+}
+
+/** The FFmpeg in use lacks a filter a render needs. Its message is a sentence for the editor; see `missingTextFilterMessage`. */
+export class MissingFilterError extends Error {
+  constructor(public readonly filter: string, message: string) {
+    super(message);
+    this.name = "MissingFilterError";
+  }
+}
+
+/** FFmpeg's own words when a graph names a filter its build doesn't have. */
+export const NO_DRAWTEXT = /No such filter: '?drawtext'?|Filter not found[^\n]*drawtext/i;
 
 export class FfmpegError extends Error {
   constructor(
@@ -402,6 +429,46 @@ export function ffmpegEncoders(ffmpegPath?: string): Promise<Set<string>> {
     forgetFailure(encoderCache, bin, p);
   }
   return p;
+}
+
+let filterCache: Map<string, Promise<Set<string>>> | undefined;
+
+/** Names in `ffmpeg -filters` output. Each filter's line reads " TSC drawtext   V->V   Draw text ..." (older builds
+ * have two flag columns); the legend above the list reads " T.. = Timeline support" and has no arrow. */
+export function parseFilterList(text: string): Set<string> {
+  const names = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*[T.]?[S.]?[C.]?\s+([A-Za-z0-9_]+)\s+\S*->\S*(?:\s|$)/.exec(line);
+    if (m?.[1]) names.add(m[1]);
+  }
+  return names;
+}
+
+/** Names of filters this ffmpeg build lists (`ffmpeg -filters`). Cached per binary. */
+export function ffmpegFilters(ffmpegPath?: string): Promise<Set<string>> {
+  const bin = resolveFfmpeg(ffmpegPath);
+  filterCache ??= new Map();
+  let p = filterCache.get(bin);
+  if (!p) {
+    p = runCapture(bin, ["-hide_banner", "-filters"]).then((r) => parseFilterList(r.stdout.toString("utf8")));
+    filterCache.set(bin, p);
+    forgetFailure(filterCache, bin, p);
+  }
+  return p;
+}
+
+/**
+ * Whether this ffmpeg build can draw text. A build that can't be asked counts as able, so whatever stops it from
+ * running is the error the render reports.
+ */
+export async function hasDrawtext(ffmpegPath?: string): Promise<boolean> {
+  try { return (await ffmpegFilters(ffmpegPath)).has("drawtext"); }
+  catch { return true; }
+}
+
+/** Throw `MissingFilterError` before any work when this ffmpeg can't draw text that `need` requires. */
+export async function requireDrawtext(need: string, ffmpegPath?: string): Promise<void> {
+  if (!await hasDrawtext(ffmpegPath)) throw new MissingFilterError("drawtext", missingTextFilterMessage(need));
 }
 
 /** Format a number for ffmpeg expressions/options: fixed precision, no exponent notation. */
