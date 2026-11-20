@@ -10,7 +10,8 @@ import { mediaEvidence, type StoredEvidence } from "./evidence.ts";
 import { loadMoments } from "./moments.ts";
 import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
 import { scoreRun, type Score } from "./score.ts";
-import { audibleMediaIds, type MediaInfo } from "./timeline.ts";
+import { subtract, total } from "./intervals.ts";
+import { audibleMediaIds, keptSource, type MediaInfo } from "./timeline.ts";
 
 export interface Artifacts {
   task: TaskRecord;
@@ -49,9 +50,20 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
   const submitted = submittedPlans(events);
   // Some runs assemble the raw footage themselves. Grade the cut from that assembly.
   const first = requested.find(c => c.cutReasons?.length);
-  const source = first?.appliedOnto ?? first?.fromVersion ?? submitted[0]?.version ?? reviews[0]?.fromVersion
+  let source = first?.appliedOnto ?? first?.fromVersion ?? submitted[0]?.version ?? reviews[0]?.fromVersion
     ?? requested[0]?.appliedOnto ?? requested[0]?.fromVersion ?? task.context.version;
   if (!source) throw new Error(`Task ${task.id} produced no dialogue cut to evaluate and names no source version.`);
+  // A pass that cut with an ordinary edit before its first dialogue submission is graded from where it was asked to
+  // start, or that cut counts as the recording: one pass's "Removed the opening setup and retakes" went unscored, and its
+  // two trials were graded from different sources (2026-11-20). Only a pass that added footage is graded from its assembly.
+  const requestedOn = task.context.version;
+  if (requestedOn && requestedOn !== source) {
+    const [from, at] = await Promise.all([load(requestedOn), load(source)]).catch(() => [undefined, undefined]);
+    if (from && at) {
+      const asked = keptSource(from, project.media);
+      if (![...keptSource(at, project.media)].some(([id, rs]) => total(subtract(rs, asked.get(id) ?? [])) > 0.05)) source = requestedOn;
+    }
+  }
   // A normal timeline edit can polish the pass after its last dialogue submission.
   let appliedVersion = source;
   const parts: Change[] = [];
