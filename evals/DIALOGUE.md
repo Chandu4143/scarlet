@@ -89,7 +89,7 @@ behind high editorial averages).
 |---|---|---|
 | No mid-word cuts | Watchability | no join cuts into a sounding word (50% at 4/10 min) |
 | No wrong cuts | Watchability | no run of 2+ words cut that the editor kept (50% at 3/10 min) |
-| No long misses | Watchability | no run of 6+ words left in that the editor cut (50% at 3/10 min) |
+| No missed retakes | Watchability | no line plays twice: no run of 6+ words left in that the editor cut for another take Scarlet plays too (50% at 3/10 min) |
 | No stutter cuts | Watchability | no piece under 1 s between two cuts (50% at 2/10 min) |
 | Cut decisions | Editorial match | every removal the editor made, Scarlet made, and no others; a removal counts once, long or short |
 | Take choice | Editorial match | where a line was said twice, Scarlet kept the take the editor kept, and only that one |
@@ -104,15 +104,19 @@ behind high editorial averages).
 | Known mistakes | Editorial match | every spot that went wrong before comes out right, or is asked about |
 
 Under the card is the count it is easiest to feel: **automated flags per 10 finished min** (runs of 2+ words Scarlet
-cut that the editor kept, long passages of 6+ words Scarlet left in that the editor cut, sounding words a cut lands
-inside, and stutter cuts under 1 s). Shorter 2–5 word phrases Scarlet left in that the editor trimmed (`"kind of"`,
-`"And so"`) are counted separately as **short tightenings left in**. Where Scarlet and the editor played the same words
-from different sayings of them (“it is a very good model. It is a very good model”), or Scarlet took out a repeat the
-editor left in, the viewer hears the line either way: that run counts as **same words, another take**, in neither of the
-counts above. All automated counts are flags rather than confirmed defects until someone listens to the actual
-rendered audio timeline.
+cut that the editor kept, retakes left in, sounding words a cut lands inside, and stutter cuts under 1 s). Taste is
+counted apart: **content left in** (passages of 6+ words the editor cut that are said only once, such as a sponsor read
+or a tangent) and **short tightenings left in** (2–5 word phrases the editor trimmed, `"kind of"`, `"And so"`). A long
+Where Scarlet and the editor played the same words from different sayings of them (“it is a very good model. It is a
+very good model”), or Scarlet took out a repeat the editor left in, the viewer hears the line either way: that run counts
+as **same words, another take**, in none of the counts above. A retake left in that Scarlet staged or flagged for the
+editor reached them: it counts as **left for your call**, not as a miss. (Of 72 long left-in runs holding a restart over
+the 40 long-form passes, 50 overlapped a cut Scarlet staged or flagged, 2026-11-20.)
+Words the published video plays where its matcher found no recording are left unscored: the reference would otherwise
+say the editor cut them. All automated counts are flags rather than confirmed defects until someone listens:
+`calibrate.ts` (see `README.md`) builds the listening sheet that says how many of each are real.
 
-Every scored pass records two separate playable cuts under rubric `dialogue-playable-v3`:
+Every scored pass records two separate playable cuts under rubric `dialogue-playable-v4`:
 - `recommended` (default): what plays after accepting Scarlet's recommended staged cuts.
 - `automatic`: what plays from applied cuts alone, without accepting any staged proposals.
 
@@ -122,8 +126,12 @@ require matching rubric, operating point, recordings, and frozen grading inputs 
 ```sh
 # One run, or one pass: its card, and for a single pass what each figure is made of.
 node_modules/.bin/tsx evals/src/scorecard.ts <run folder | evaluation.json> [--point automatic|recommended]
-# Main against a change: each factor side by side, and which differences are inside the spread between passes.
+# Main against a change: each factor side by side with its ±, which changes are more than luck, and on how many recordings.
 node_modules/.bin/tsx evals/src/scorecard.ts <main's run> <the change's run> --point recommended --labels main,change --ledger
+# A side made of one run per recording: join them with commas.
+node_modules/.bin/tsx evals/src/scorecard.ts <run a>,<run b> <run c>,<run d> --labels main,change
+# Bring saved runs up to the current rules (no engine, no model tokens). It refuses a trial its case no longer reproduces.
+node_modules/.bin/tsx evals/src/regrade.ts <saved run> <new output dir> [--data <eval data root>]
 # Re-score an existing run offline against its original local SQLite library (no model tokens):
 node_modules/.bin/tsx evals/src/rescore.ts <original run> <original scarlet.db> <new output dir>
 ```
@@ -142,9 +150,15 @@ placement or the transcript is judged by the ledger and replays, and by a scorec
 
 Reading it:
 
-- **Passes disagree.** Two passes of the same code differ by a few points on most factors. Run 4 a side, and treat a
-  difference marked "within the spread" as no result. A change ships on the scorecard when the overall goes up and no
-  factor falls clear of the spread.
+- **Passes disagree, and the ± says by how much.** Two passes of the same code land a few points apart, so every figure
+  carries a ±, from how much this run's passes of the same recording disagree: the same code run again lands within it
+  about 95 times in 100. On the five long-form recordings at two passes a side, the overall's ± for a difference is about
+  2 points, and a factor's is 3–8. A difference marked "could be luck" is no result, and the recordings it went up or
+  down on say whether one video carried it. A change ships on the scorecard when the overall rises by more than its ±
+  and no factor falls by more than its own. A recording with one pass gives no ±: run at least two.
+- **The rules don't change under a comparison.** Both sides must be scored under the same rubric. When the rules
+  change, bump `RUBRIC` in `score.ts`, extend `regrade.ts` to rebuild what changed, and regrade the saved runs the
+  comparison needs, rather than running passes again.
 - **Recordings count once each.** A side's figure is the mean over recordings of the mean over that recording's passes.
   With fewer than three recordings the card describes those videos more than the cutting: add a case for every
   recording the editor supplies with its published video (`dataset.ts build … --published-media`, see `README.md`).

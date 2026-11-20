@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pacing } from "../src/metrics.ts";
-import { comparePublishedJoinSpacing, publishedReference } from "../src/published.ts";
+import { comparePublishedJoinSpacing, publishedReference, unmatchedPassages } from "../src/published.ts";
 import { scoreRun } from "../src/score.ts";
 import { playedWords } from "../src/timeline.ts";
 import { cut, media, recording } from "./fixtures.ts";
@@ -67,5 +67,15 @@ describe("a published video as the reference", () => {
     const extra = { text: "extra", start: 7.72, end: 7.79, mediaId: "published", piece: 0 };
     const withExtra = { ...ref, played: [...ref.played, extra] };
     expect(comparePublishedJoinSpacing(withExtra, candidate)).toMatchObject({ referenceJoins: 1, eligible: 0, shared: 0, unedited: 0 });
+  });
+});
+
+describe("unmatchedPassages", () => {
+  it("finds the published words outside every matched stretch by time, though the matcher gave them a piece", () => {
+    const played = ["we", "have", "OS", "World", "which", "tests", "the", "model", "coming", "in"]
+      .map((text, i) => ({ text, start: i, end: i + 0.8, mediaId: "published", piece: 0 }));
+    const pieces = [{ mediaId: "m", finalStart: 0, finalEnd: 3.8, sourceStart: 100, sourceEnd: 103.8, rate: 1 },
+      { mediaId: "m", finalStart: 8, finalEnd: 9.8, sourceStart: 112, sourceEnd: 113.8, rate: 1 }];
+    expect(unmatchedPassages({ played, pieces })).toEqual([["which", "tests", "the", "model"]]);
   });
 });

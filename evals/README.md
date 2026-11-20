@@ -37,13 +37,16 @@ replays of the model's real requests through today's code) and compares with the
 
 ## The dialogue scorecard
 
-`scorecard.ts` turns manifest-eligible `dialogue-playable-v3` passes into **Watchability** (four craft-bug factors
-scored by rate per 10 finished minutes: mid-word cuts, wrong cuts, long missed removals, and stutter cuts), **Editorial
+`scorecard.ts` turns manifest-eligible `dialogue-playable-v4` passes into **Watchability** (four craft-bug factors
+scored by rate per 10 finished minutes: mid-word cuts, wrong cuts, missed retakes, and stutter cuts), **Editorial
 match** (cut decisions, take choice, lines kept, same cuts, pauses, dead air, cut count, space at a cut, restarts left
 in, known mistakes), a combined **Overall** (geometric mean of Watchability and Editorial match, withheld when required
-evidence is missing), and a count of automated flags vs. short editorial tightenings left in, read against the published
-video decision by decision (`cutDetail.ts`). Use `--point recommended` (default) or `--point automatic` to grade each
-playable cut separately, and `rescore.ts` to regrade saved runs offline without model tokens. See
+evidence is missing), and counts of automated flags, content left in and short tightenings left in, read against the
+published video decision by decision (`cutDetail.ts`). Every figure carries a **±**: how far luck alone moves it, from
+how much passes of the same recording disagree. A comparison says which changes are more than their ± and on how many
+recordings each went that way. Use `--point recommended` (default) or `--point automatic` to grade each playable cut
+separately. Join several runs into one side with commas (one run per recording). `regrade.ts` brings saved runs up to
+the current rules offline, and `rescore.ts` rescores them from their original library; neither spends model tokens. See
 [DIALOGUE.md](DIALOGUE.md).
 
 ## What it measures
@@ -174,6 +177,19 @@ $TSX evals/src/moments.ts --case my-case --runs main=2026-…-aaaa,2026-…-bbbb
 
 It prints each arm's headline numbers with their spread, a row per moment and the agreement table. Run at least four
 trials an arm. Results saved before a trial stored what it left (`score.left`) are read from their applied cuts.
+
+## Check the flags by ear
+
+The flags are counted from transcripts and levels, never heard. `calibrate.ts sheet` takes one pass per recording,
+picks a few spots of each kind of flag plus some joins nothing flagged (mixed in blind with the mid-word cuts), cuts a
+clip of Scarlet's cut and of the published video at each, and writes a page to open from disk. Answer each spot, press
+Save answers, then `calibrate.ts score answers.json` says how many spots of each kind were real: the share of each count
+worth believing. Clips are rebuilt from the cut's kept ranges with a 10 ms fade, not rendered by Scarlet.
+
+```sh
+$TSX evals/src/calibrate.ts sheet <scored run or config folder,...> --out "$SCARLET_EVAL_DATA/calibration/<date>" [--data <root>]
+$TSX evals/src/calibrate.ts score "$SCARLET_EVAL_DATA/calibration/<date>/answers.json"
+```
 
 ## Build a case
 
@@ -360,6 +376,12 @@ $TSX evals/src/run.ts --cases my-case --configs codex:<model>:medium,claude:<mod
 # Launch (billed agent tasks).
 $TSX evals/src/run.ts --cases my-case --configs … --trials 3 --yes
 ```
+
+`--yes` refuses a case with no published video attached (`reference.published`): its scorecard would fill only 2 of 15
+lines, as 24 passes on 2026-11-19 did. An audio map alone feeds the published-word figures, not the card. Attach the
+published video (`dataset.ts build … --published-media`), or pass `--partial-score` when the other figures are what the
+run is for. A case frozen with its own grading transcript (`gradingEvidence`) is scored on that transcript, whatever
+transcript the trial cut from, so a transcriber comparison keeps one measuring stick.
 
 Each trial follows these steps:
 

@@ -1,4 +1,6 @@
 /** Gather a finished task's artifacts from the engine (read-only) and score them. */
+import { publishedGradingInputs } from "./gradingEvidence.ts";
+import { readJson } from "./paths.ts";
 import { createHash } from "node:crypto";
 import type { Change, MediaAsset, Timeline } from "../../packages/timeline/src/index.ts";
 import type { LoadedCase } from "./case.ts";
@@ -175,6 +177,12 @@ export async function evaluateTask(engine: Engine, taskId: string, opts: Evaluat
   const evidence = new Map<string, MediaEvidence>();
   for (const id of audibleMediaIds(a.timelines.get(a.versions.source)!, a.media)) {
     evidence.set(id, opts.loaded?.evidence.get(id) ?? await mediaEvidence(engine, a.projectId, a.media.find(m => m.id === id)!, opts.refreshEvidence));
+  }
+  if (opts.loaded?.file.gradingEvidence) {
+    const grading = publishedGradingInputs(opts.loaded);
+    if (!grading) throw new Error("Fixed grading evidence requires a verified published reference.");
+    const mediaId = opts.loaded.file.gradingEvidence.mediaId;
+    evidence.set(mediaId, readJson<StoredEvidence>(grading.evidence));
   }
   let reference: ReferenceInput | undefined;
   if (opts.referenceVersion) {

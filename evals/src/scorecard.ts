@@ -22,13 +22,14 @@ import { RUBRIC, type Score, type OperatingPoint } from "./score.ts";
 const USAGE = `Usage:
   tsx evals/src/scorecard.ts <run dir | evaluation.json> [<another> ...] [--point automatic|recommended] [--labels a,b] [--ledger] [--json]
 
-Each path is one side: eligible completed trials from trials.json under it (or a standalone evaluation.json).
+Each path is one side: eligible completed trials from trials.json under it (or a standalone evaluation.json). Join
+several runs into one side with commas, such as one run per recording.
 --point selects which playable cut to score: recommended (default, after accepting AI cut picks) or automatic (applied cuts only).
 --ledger also runs the free ledger checks on this checkout and adds their pass rate (about a minute, no model tokens).`;
 
 export type FactorGroup = "watchability" | "editorial";
 
-export type FactorId = "wholeWords" | "noWrongCuts" | "noLongMisses" | "noStutter"
+export type FactorId = "wholeWords" | "noWrongCuts" | "noMissedRetakes" | "noStutter"
   | "cutDecisions" | "takeChoice" | "linesKept" | "sameCuts" | "pausesLeft" | "pausesTrimmed" | "deadAir"
   | "cutCount" | "spaceAtCut" | "nothingLeftIn" | "knownMoments";
 
@@ -47,7 +48,7 @@ export interface Factor {
 export const RATE_HALF_LIFE = {
   wholeWords: 4,
   noWrongCuts: 3,
-  noLongMisses: 3,
+  noMissedRetakes: 3,
   noStutter: 2,
 } as const;
 
@@ -59,7 +60,7 @@ export const RATE_HALF_LIFE = {
 export const FACTORS: readonly Factor[] = [
   { id: "wholeWords", group: "watchability", label: "No mid-word cuts", means: `no join cuts into a sounding word (50% at ${RATE_HALF_LIFE.wholeWords}/10 min)` },
   { id: "noWrongCuts", group: "watchability", label: "No wrong cuts", means: `no run of ${NOTICED_WORDS}+ words cut that the editor kept (50% at ${RATE_HALF_LIFE.noWrongCuts}/10 min)` },
-  { id: "noLongMisses", group: "watchability", label: "No long misses", means: `no run of ${LONG_MISSED_WORDS}+ words left in that the editor cut (50% at ${RATE_HALF_LIFE.noLongMisses}/10 min)` },
+  { id: "noMissedRetakes", group: "watchability", label: "No missed retakes", means: `no line plays twice unasked: no run of ${LONG_MISSED_WORDS}+ words left in that the editor cut for another take Scarlet plays too, and Scarlet didn't ask about (50% at ${RATE_HALF_LIFE.noMissedRetakes}/10 min)` },
   { id: "noStutter", group: "watchability", label: "No stutter cuts", means: `no piece under ${STUTTER_SECONDS} s between two cuts (50% at ${RATE_HALF_LIFE.noStutter}/10 min)` },
   { id: "cutDecisions", group: "editorial", label: "Cut decisions", means: "every removal the editor made, Scarlet made, and no others; a removal counts once, long or short" },
   { id: "takeChoice", group: "editorial", label: "Take choice", means: "where a line was said twice, Scarlet kept the take the editor kept, and only that one" },
@@ -87,6 +88,8 @@ export const SAME_SPACE_MS = 100;
 const heard = (runs: readonly Disagreement[]) => runs.filter(x => x.words >= NOTICED_WORDS && !x.otherTake);
 /** Runs of NOTICED_WORDS or more where the two cuts kept different sayings of the same words. */
 const otherTakes = (d: CutDetail) => [...d.wronglyCut, ...d.leftIn].filter(x => x.words >= NOTICED_WORDS && x.otherTake).length;
+/** Long runs left in that play a line twice, apart from those Scarlet asked the editor about. */
+const missedRetakes = (d: CutDetail) => d.leftIn.filter(x => x.words >= LONG_MISSED_WORDS && x.retake && !x.asked);
 
 const clamp = (v: number) => Math.max(0, Math.min(100, v));
 const r1 = (v: number) => Math.round(v * 10) / 10;
@@ -132,10 +135,13 @@ export function factors(score: Score, at: OperatingPoint = "recommended"): Facto
     : seconds <= 0 ? none("kept duration not recorded")
       : { pct: rateScore(wrongRuns!, seconds, RATE_HALF_LIFE.noWrongCuts), detail: `${wrongRuns} runs of ${NOTICED_WORDS}+ words cut that the editor kept (${per10(wrongRuns!)}/10 min)` };
 
-  const longMissRuns = detail ? heard(detail.leftIn).filter(x => x.words >= LONG_MISSED_WORDS).length : null;
-  const noLongMisses: FactorValue = !detail ? noDetail
+  // A long run said only once is content the editor chose to drop, and one the editor played from another take is a
+  // swap of takes: neither plays a line twice, so neither counts here.
+  // A retake Scarlet staged or flagged reached the editor: it is counted below the card as left for their call.
+  const retakeRuns = detail ? missedRetakes(detail).length : null;
+  const noMissedRetakes: FactorValue = !detail ? noDetail
     : seconds <= 0 ? none("kept duration not recorded")
-      : { pct: rateScore(longMissRuns!, seconds, RATE_HALF_LIFE.noLongMisses), detail: `${longMissRuns} runs of ${LONG_MISSED_WORDS}+ words left in that the editor cut (${per10(longMissRuns!)}/10 min)` };
+      : { pct: rateScore(retakeRuns!, seconds, RATE_HALF_LIFE.noMissedRetakes), detail: `${retakeRuns} runs of ${LONG_MISSED_WORDS}+ words left in that the editor cut for another take (${per10(retakeRuns!)}/10 min)` };
 
   const pc = detail?.pieces;
   const noStutter: FactorValue = !pc ? noDetail : !pc.total ? none("no cuts")
@@ -198,7 +204,7 @@ export function factors(score: Score, at: OperatingPoint = "recommended"): Facto
     : { pct: pctOf(ok, moments.length), detail: `${ok} of ${moments.length} play the expected words` };
 
   return {
-    wholeWords, noWrongCuts, noLongMisses, noStutter,
+    wholeWords, noWrongCuts, noMissedRetakes, noStutter,
     cutDecisions, takeChoice, linesKept, sameCuts, pausesLeft, pausesTrimmed, deadAir, cutCount, spaceAtCut, nothingLeftIn, knownMoments,
   };
 }
@@ -209,7 +215,14 @@ export function factors(score: Score, at: OperatingPoint = "recommended"): Facto
  */
 export interface Mistakes {
   wronglyCut: number;
+  /** Runs of LONG_MISSED_WORDS+ left in that the editor cut for another take of them: the line plays twice. */
   longMissed: number;
+  /** Runs of LONG_MISSED_WORDS+ left in that the editor cut and that are said only once: content, which is taste. */
+  contentLeftIn: number;
+  /** Retakes left in that Scarlet staged or flagged for the editor: their call, not a silent miss. */
+  askedRetakes: number;
+  /** Runs of NOTICED_WORDS+ words where Scarlet and the editor kept different sayings of the same words: not a mistake. */
+  otherTake: number;
   clippedWords: number;
   stutters: number;
   /** Objective craft bugs: wronglyCut + longMissed + clippedWords + stutters. */
@@ -218,24 +231,24 @@ export interface Mistakes {
   /** Short runs (NOTICED_WORDS .. LONG_MISSED_WORDS - 1) Scarlet left in that the editor trimmed. */
   styleLeftIn: number;
   stylePer10Min: number | null;
-  /** All left-in runs of NOTICED_WORDS+ words (longMissed + styleLeftIn). */
+  /** All left-in runs of NOTICED_WORDS+ words a viewer would hear differ (longMissed + askedRetakes + contentLeftIn + styleLeftIn). */
   leftIn: number;
-  /** Runs of NOTICED_WORDS+ words where Scarlet and the editor kept different sayings of the same words: not a mistake. */
-  otherTake: number;
 }
 
 /**
- * Hard bugs are: a run of 2+ words Scarlet cut that the editor kept, a long passage (6+ words) Scarlet left in that
- * the editor cut, a sounding word a join cuts into, and a stutter piece under 1 s. Short 2–5 word phrases the editor
- * trimmed ("kind of", "And so") are tracked separately as editorial tightenings, and single-word edge drift is ignored.
- * Where the two cuts kept different sayings of the same words, the viewer hears the line either way: that is counted
- * apart as another take, and in neither.
+ * Hard bugs are: a run of 2+ words Scarlet cut that the editor kept, a retake left in (6+ words the editor cut for
+ * another delivery of them), a sounding word a join cuts into, and a stutter piece under 1 s. Long passages the editor
+ * cut as content (a sponsor read, a tangent) and short 2–5 word phrases the editor trimmed ("kind of", "And so") are
+ * taste, counted separately; single-word edge drift is ignored.
  */
 export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mistakes | null {
   const { detail, seconds, edges } = score.playable[at];
   if (!detail || edges.unknown || seconds <= 0) return null;
   const wronglyCut = heard(detail.wronglyCut).length;
-  const longMissed = heard(detail.leftIn).filter(x => x.words >= LONG_MISSED_WORDS).length;
+  const longMissed = missedRetakes(detail).length;
+  const askedRetakes = detail.leftIn.filter(x => x.words >= LONG_MISSED_WORDS && x.retake && x.asked).length;
+  // A swap of takes plays the line once either way: Take choice reads it, not these counts.
+  const contentLeftIn = heard(detail.leftIn).filter(x => x.words >= LONG_MISSED_WORDS && !x.retake).length;
   const styleLeftIn = heard(detail.leftIn).filter(x => x.words < LONG_MISSED_WORDS).length;
   const clippedWords = edges.clippedOnSound;
   const stutters = detail.pieces.short;
@@ -243,18 +256,24 @@ export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mist
   return {
     wronglyCut,
     longMissed,
+    contentLeftIn,
+    askedRetakes,
+    otherTake: otherTakes(detail),
     clippedWords,
     stutters,
     total,
     per10Min: seconds > 0 ? r1(total / (seconds / 600)) : null,
     styleLeftIn,
     stylePer10Min: seconds > 0 ? r1(styleLeftIn / (seconds / 600)) : null,
-    leftIn: longMissed + styleLeftIn,
-    otherTake: otherTakes(detail),
+    leftIn: longMissed + askedRetakes + contentLeftIn + styleLeftIn,
   };
 }
 
-export interface Stat { mean: number; min: number; max: number; n: number }
+/** A figure over passes. `variance` is the passes' sample variance, when there are two or more. */
+export interface Stat { mean: number; min: number; max: number; n: number; variance?: number }
+type Summary = "overall" | "watchability" | "editorial";
+const COUNT_KEYS = ["wronglyCut", "longMissed", "askedRetakes", "contentLeftIn", "clippedWords", "stutters", "styleLeftIn", "leftIn", "otherTake"] as const;
+type CountKey = (typeof COUNT_KEYS)[number];
 export interface Card {
   point: OperatingPoint;
   rubric: typeof RUBRIC;
@@ -274,15 +293,23 @@ export interface Card {
   mistakesPer10Min: Stat | null;
   /** Short 2–5 word editorial tightenings left in per ten minutes: reported separately from hard bugs. */
   stylePer10Min: Stat | null;
-  mistakeCounts: Record<"wronglyCut" | "longMissed" | "clippedWords" | "stutters" | "styleLeftIn" | "leftIn" | "otherTake", Stat | null>;
+  mistakeCounts: Record<CountKey, Stat | null>;
   byCase: Record<string, Record<FactorId, Stat | null>>;
+  /** Each recording's passes as Overall, Watchability and Editorial figures: what the ± on those rows is read from. */
+  summaryByCase: Record<string, Record<Summary, Stat | null>>;
+  /** Each recording's passes' counts below the card, per 10 minutes and in the whole video. */
+  countsByCase: Record<string, Record<CountKey | "per10Min" | "stylePer10Min", Stat | null>>;
   /** Not scored: for the editor's eye. */
   facts: { asks: Stat | null; tokens: Stat | null; minutes: Stat | null; finishMinutes: Stat | null; cents: Stat | null };
 }
 export interface Trial { caseId?: string; gradingSha256?: string; score: Score }
 
-const stat = (values: number[]): Stat | null => values.length
-  ? { mean: r1(values.reduce((a, b) => a + b, 0) / values.length), min: Math.min(...values), max: Math.max(...values), n: values.length } : null;
+const stat = (values: number[]): Stat | null => {
+  if (!values.length) return null;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  return { mean: r1(mean), min: Math.min(...values), max: Math.max(...values), n: values.length,
+    ...(values.length > 1 && { variance: values.reduce((a, v) => a + (v - mean) ** 2, 0) / (values.length - 1) }) };
+};
 const numbers = (values: Array<number | null | undefined>) => values.filter((v): v is number => typeof v === "number");
 /** Recordings count equally; the spread is over every trial. */
 const acrossCases = (perCase: Array<Stat | null>): Stat | null => {
@@ -297,7 +324,8 @@ export function card(label: string, trials: readonly Trial[], at: OperatingPoint
   for (const t of trials) groups.set(t.caseId ?? "(no case)", [...(groups.get(t.caseId ?? "(no case)") ?? []), t]);
   const byCase: Card["byCase"] = {};
   const gradingByCase: Record<string, string> = {};
-  const mistakesByCase: Array<Record<keyof Mistakes, Stat | null>> = [];
+  const countsByCase: Card["countsByCase"] = {};
+  const perTrial = new Map<string, Factors[]>();
   for (const [id, ts] of groups) {
     const hashes = new Set(ts.map(t => t.gradingSha256).filter((h): h is string => !!h));
     if (hashes.size > 1 || (hashes.size === 1 && ts.some(t => !t.gradingSha256))) {
@@ -305,19 +333,28 @@ export function card(label: string, trials: readonly Trial[], at: OperatingPoint
     }
     if (hashes.size === 1) gradingByCase[id] = [...hashes][0]!;
     const fs = ts.map(t => factors(t.score, at));
+    perTrial.set(id, fs);
     byCase[id] = Object.fromEntries(FACTORS.map(f => [f.id, fs.every(x => x[f.id].pct !== null) ? stat(numbers(fs.map(x => x[f.id].pct))) : null])) as Record<FactorId, Stat | null>;
     const ms = ts.map(t => mistakes(t.score, at)).filter((m): m is Mistakes => m !== null);
-    mistakesByCase.push(Object.fromEntries((["wronglyCut", "longMissed", "clippedWords", "stutters", "total", "per10Min", "styleLeftIn", "stylePer10Min", "leftIn", "otherTake"] as const)
-      .map(k => [k, ms.length === ts.length ? stat(numbers(ms.map(m => m[k]))) : null])) as Record<keyof Mistakes, Stat | null>);
+    countsByCase[id] = Object.fromEntries(([...COUNT_KEYS, "per10Min", "stylePer10Min"] as const)
+      .map(k => [k, ms.length === ts.length ? stat(numbers(ms.map(m => m[k]))) : null])) as Card["countsByCase"][string];
   }
   const all = Object.fromEntries(FACTORS.map(f => [f.id, acrossCases(Object.values(byCase).map(c => c[f.id]))])) as Record<FactorId, Stat | null>;
+  // Each pass's own Overall, Watchability and Editorial figures, over the factors this side has, for the ± on those rows.
+  const have = FACTORS.map(f => f.id).filter(id => all[id]);
+  const summaryByCase: Card["summaryByCase"] = {};
+  for (const [id, fs] of perTrial) {
+    const of = (f: Factors) => Object.fromEntries(have.map(k => [k, f[k].pct === null ? null : { mean: f[k].pct, min: f[k].pct, max: f[k].pct, n: 1 }])) as Record<FactorId, Stat | null>;
+    const pick = (ids: readonly FactorId[]) => stat(numbers(fs.map(f => overallOf(of(f), ids.filter(k => have.includes(k))))));
+    summaryByCase[id] = { overall: pick(FACTORS.map(f => f.id)), watchability: pick(WATCHABILITY_IDS), editorial: pick(EDITORIAL_IDS) };
+  }
   const headline = (k: string) => stat(numbers(trials.map(t => t.score.headline[k])));
   // What reached the editor to decide or check: calls, and applied edits the pass flagged.
   const asks = () => stat(numbers(trials.map(t => {
     const calls = t.score.headline.needsYourCall, flags = t.score.headline.flaggedForYou;
     return calls == null && flags == null ? null : (calls ?? 0) + (flags ?? 0);
   })));
-  const count = (k: keyof Mistakes) => acrossCases(mistakesByCase.map(m => m[k]));
+  const count = (k: CountKey | "per10Min" | "stylePer10Min") => acrossCases(Object.values(countsByCase).map(m => m[k]));
   const watchability = meanOf(all, WATCHABILITY_IDS);
   const editorial = meanOf(all, EDITORIAL_IDS);
   return {
@@ -329,18 +366,10 @@ export function card(label: string, trials: readonly Trial[], at: OperatingPoint
     watchability,
     editorial,
     overall: overallOf(all, FACTORS.map(f => f.id)),
-    byCase,
+    byCase, summaryByCase, countsByCase,
     mistakesPer10Min: count("per10Min"),
     stylePer10Min: count("stylePer10Min"),
-    mistakeCounts: {
-      wronglyCut: count("wronglyCut"),
-      longMissed: count("longMissed"),
-      clippedWords: count("clippedWords"),
-      stutters: count("stutters"),
-      styleLeftIn: count("styleLeftIn"),
-      leftIn: count("leftIn"),
-      otherTake: count("otherTake"),
-    },
+    mistakeCounts: Object.fromEntries(COUNT_KEYS.map(k => [k, count(k)])) as Record<CountKey, Stat | null>,
     facts: { asks: asks(), tokens: headline("tokens"), minutes: headline("activeMinutes"), finishMinutes: headline("finishMinutes"),
       // In cents, so the one-decimal mean keeps a cheap pass's cost.
       cents: stat(numbers(trials.map(t => t.score.headline.costUsd)).map(v => v * 100)) },
@@ -377,7 +406,44 @@ export function ledgerPct(results: ReadonlyArray<{ verdict: Verdict }>): { pct: 
 
 const show = (s: Stat | null) => !s ? "–" : s.n > 1 && s.max - s.min >= 0.1 ? `${s.mean}% (${s.min}–${s.max})` : `${s.mean}%`;
 
-/** The cards as a table. With two sides a column says which way each factor moved, and whether the sides' trials overlap. `details` spells out one trial's figures. */
+/**
+ * The standard error of a side's figure: how far it moves from one set of passes to the next by luck alone. It comes
+ * from how much passes of the same recording disagree, pooled over every recording with two passes or more (over
+ * `pooledFrom`, both sides' recordings when comparing), and shrinks with the passes each recording has. The recordings
+ * themselves don't add to it: both sides cut the same ones, so their differences cancel. Null with one pass a recording.
+ */
+export function standardError(perCase: ReadonlyArray<Stat | null>, pooledFrom: ReadonlyArray<Stat | null> = perCase): number | null {
+  const spread = pooledFrom.filter((x): x is Stat => !!x && x.variance !== undefined);
+  const df = spread.reduce((sum, x) => sum + x.n - 1, 0);
+  const have = perCase.filter((x): x is Stat => !!x);
+  if (!df || !have.length) return null;
+  const pooled = spread.reduce((sum, x) => sum + (x.n - 1) * x.variance!, 0) / df;
+  return Math.sqrt(have.reduce((sum, x) => sum + pooled / x.n, 0)) / have.length;
+}
+
+/** Two standard errors: a figure from the same code lands within this of the last about 95 times in 100. */
+const band = (se: number | null) => se === null ? null : r1(2 * se);
+
+/**
+ * One side against another on one figure: the change, its ± (luck alone moves a difference this far about one time in
+ * twenty), whether it is more than luck, and on how many recordings it went the same way.
+ */
+export function compareFigure(a: Record<string, Stat | null>, b: Record<string, Stat | null>, delta: number | null, lowerIsBetter = false) {
+  if (delta === null) return { text: "–", real: false, band: null as number | null };
+  const ids = Object.keys(a).filter(id => a[id] && b[id]);
+  const pooled = [...Object.values(a), ...Object.values(b)];
+  const sa = standardError(ids.map(id => a[id]!), pooled), sb = standardError(ids.map(id => b[id]!), pooled);
+  const width = sa === null || sb === null ? null : band(Math.sqrt(sa ** 2 + sb ** 2));
+  const d = r1(delta);
+  const real = width !== null && Math.abs(d) > width;
+  const up = ids.filter(id => b[id]!.mean - a[id]!.mean > 0.05).length, down = ids.filter(id => b[id]!.mean - a[id]!.mean < -0.05).length;
+  const moved = Math.abs(d) < 0.05 ? "same" : real ? `**${d > 0 ? "+" : ""}${d}**` : `${d > 0 ? "+" : ""}${d}`;
+  const verdict = width === null ? "no ±" : real ? `±${width}, ${(d < 0) === lowerIsBetter ? "better" : "worse"}` : `±${width}, could be luck`;
+  const where = ids.length > 1 && Math.abs(d) >= 0.05 ? ` · ${d > 0 ? `up on ${up}` : `down on ${down}`} of ${ids.length} recordings` : "";
+  return { text: `${moved} (${verdict})${where}`, real, band: width };
+}
+
+/** The cards as a table: each figure with its ±, and with two sides the change, whether it is more than luck, and on how many recordings it went that way. `details` spells out one trial's figures. */
 export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: string; pct: number | null; pass: number; checked: number }, details?: Factors): string {
   const [a, b] = cards, two = cards.length === 2;
   const common = FACTORS.map(f => f.id).filter(id => cards.every(c => c.factors[id]));
@@ -392,67 +458,70 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
       throw new Error(`Sides were graded on different frozen inputs for ${id}.`);
     }
   }
-  const lines = ["# Dialogue scorecard", "", `Rubric: ${RUBRIC}. Cut: ${a?.point}. Ranges are observed min–max, not confidence intervals.`, "",
+  const lines = ["# Dialogue scorecard", "", `Rubric: ${RUBRIC}. Cut: ${a?.point}.`, "",
     cards.map(c => `**${c.label}**: ${c.trials} pass${c.trials === 1 ? "" : "es"} on ${c.cases.join(", ")}`).join(" · "), "",
     `| Factor | ${cards.map(c => c.label).join(" | ")} |${two ? " Change |" : ""} 100% means |`,
     `|---|${cards.map(() => "---").join("|")}|${two ? "---|" : ""}---|`];
-  const moved = (x: Stat | null, y: Stat | null) => {
-    if (!x || !y) return "–";
-    const d = r1(y.mean - x.mean), sign = d > 0 ? "+" : "";
-    // Trials of one side disagree with each other; a difference inside that disagreement is not a result.
-    const apart = y.min > x.max || y.max < x.min;
-    return Math.abs(d) < 0.05 ? "same" : `${sign}${d}${apart ? "" : " (within the spread)"}`;
+  let missingBand = false;
+  const pm = (perCase: Record<string, Stat | null>) => {
+    const width = band(standardError(Object.values(perCase)));
+    if (width === null) missingBand = true;
+    return width === null ? "" : ` ±${width}`;
   };
-  const summaryRow = (label: string, pick: (c: Card) => number | null, means: string) => {
-    const cell = (c: Card) => pick(c) === null ? "–" : `**${pick(c)}%**`;
-    const delta = two
-      ? ` ${pick(a!) !== null && pick(b!) !== null ? `**${r1(pick(b!)! - pick(a!)!) > 0 ? "+" : ""}${r1(pick(b!)! - pick(a!)!)}**` : "–"} |`
-      : "";
-    lines.push(`| **${label}** | ${cards.map(cell).join(" | ")} |${delta} ${means} |`);
+  const perCaseOf = (c: Card, id: FactorId) => Object.fromEntries(Object.entries(c.byCase).map(([k, v]) => [k, v[id]]));
+  const factorRow = (f: Factor) => {
+    const cells = cards.map(c => c.factors[f.id] ? `${c.factors[f.id]!.mean}%${pm(perCaseOf(c, f.id))}` : "–");
+    const change = two ? ` ${compareFigure(perCaseOf(a!, f.id), perCaseOf(b!, f.id), a!.factors[f.id] && b!.factors[f.id] ? b!.factors[f.id]!.mean - a!.factors[f.id]!.mean : null).text} |` : "";
+    lines.push(`| ${f.label} | ${cells.join(" | ")} |${change} ${f.means} |`);
+  };
+  const summaryRow = (label: string, key: Summary, pick: (c: Card) => number | null, means: string) => {
+    const perCase = (c: Card) => Object.fromEntries(Object.entries(c.summaryByCase).map(([k, v]) => [k, v[key]]));
+    const cell = (c: Card) => pick(c) === null ? "–" : `**${pick(c)}%**${pm(perCase(c))}`;
+    const change = two ? ` ${compareFigure(perCase(a!), perCase(b!), pick(a!) !== null && pick(b!) !== null ? pick(b!)! - pick(a!)! : null).text} |` : "";
+    lines.push(`| **${label}** | ${cards.map(cell).join(" | ")} |${change} ${means} |`);
   };
   const overallDesc = commonWatch.length && commonEdit.length
     ? `geometric mean of Watchability (${commonWatch.length}) and Editorial match (${commonEdit.length})`
     : `the mean of the ${common.length} factors every side has`;
-  summaryRow("Overall", c => c.overall === null || !WATCHABILITY_IDS.every(id => common.includes(id)) || !common.includes("linesKept") ? null : overallOf(c.factors, common), overallDesc);
-  if (commonWatch.length) {
-    summaryRow("Watchability", c => overallOf(c.factors, commonWatch), `craft quality across ${commonWatch.length} rate-based bug factors`);
-  }
-  for (const f of FACTORS.filter(f => f.group === "watchability")) {
-    lines.push(`| ${f.label} | ${cards.map(c => show(c.factors[f.id])).join(" | ")} |${two ? ` ${moved(a!.factors[f.id], b!.factors[f.id])} |` : ""} ${f.means} |`);
-  }
-  if (commonEdit.length) {
-    summaryRow("Editorial match", c => overallOf(c.factors, commonEdit), `alignment with the editor across ${commonEdit.length} decision and pacing factors`);
-  }
-  for (const f of FACTORS.filter(f => f.group === "editorial")) {
-    lines.push(`| ${f.label} | ${cards.map(c => show(c.factors[f.id])).join(" | ")} |${two ? ` ${moved(a!.factors[f.id], b!.factors[f.id])} |` : ""} ${f.means} |`);
-  }
+  summaryRow("Overall", "overall", c => c.overall === null || !WATCHABILITY_IDS.every(id => common.includes(id)) || !common.includes("linesKept") ? null : overallOf(c.factors, common), overallDesc);
+  if (commonWatch.length) summaryRow("Watchability", "watchability", c => overallOf(c.factors, commonWatch), `craft quality across ${commonWatch.length} rate-based bug factors`);
+  for (const f of FACTORS.filter(f => f.group === "watchability")) factorRow(f);
+  if (commonEdit.length) summaryRow("Editorial match", "editorial", c => overallOf(c.factors, commonEdit), `alignment with the editor across ${commonEdit.length} decision and pacing factors`);
+  for (const f of FACTORS.filter(f => f.group === "editorial")) factorRow(f);
   if (cards.some(c => c.mistakesPer10Min)) {
-    const n = (s: Stat | null) => !s ? "–" : s.n > 1 && s.max - s.min >= 0.1 ? `${s.mean} (${s.min}–${s.max})` : `${s.mean}`;
-    // Fewer is better here, so the same spread rule reads the other way round.
-    const fewer = (x: Stat | null, y: Stat | null) => {
-      if (!x || !y) return "–";
-      const d = r1(y.mean - x.mean), apart = y.min > x.max || y.max < x.min;
-      return Math.abs(d) < 0.05 ? "same" : `${d > 0 ? "+" : ""}${d}${apart ? "" : " (within the spread)"}`;
+    const n = (x: Stat | null) => !x ? "–" : `${x.mean}`;
+    type Count = keyof Card["countsByCase"][string];
+    const perCase = (c: Card, k: Count) => Object.fromEntries(Object.entries(c.countsByCase).map(([id, v]) => [id, v[k]]));
+    const total = (c: Card, k: Count) => k === "per10Min" ? c.mistakesPer10Min : k === "stylePer10Min" ? c.stylePer10Min : c.mistakeCounts[k];
+    const row = (label: string, k: Count, means: string) => {
+      const cells = cards.map(c => total(c, k) ? `${n(total(c, k))}${pm(perCase(c, k)).replace(/^ ±/, " ±")}` : "–");
+      const x = two ? total(a!, k) : null, y = two ? total(b!, k) : null;
+      // Fewer is better here.
+      const change = two ? ` ${compareFigure(perCase(a!, k), perCase(b!, k), x && y ? y.mean - x.mean : null, true).text} |` : "";
+      return `| ${label} | ${cells.join(" | ")} |${change} ${means} |`;
     };
-    const row = (label: string, pick: (c: Card) => Stat | null, means: string) =>
-      `| ${label} | ${cards.map(c => n(pick(c))).join(" | ")} |${two ? ` ${fewer(pick(a!), pick(b!))} |` : ""} ${means} |`;
     lines.push("", "Counted, not scored as a percentage. Fewer is better.", "",
       `| Automated flags | ${cards.map(c => c.label).join(" | ")} |${two ? " Change |" : ""} What is counted |`, `|---|${cards.map(() => "---").join("|")}|${two ? "---|" : ""}---|`,
-      row("**Flags per 10 finished min**", c => c.mistakesPer10Min, "the four counts below; not confirmed defects"),
-      row("Cut, and the editor kept it", c => c.mistakeCounts.wronglyCut, `runs of ${NOTICED_WORDS} words or more, in the whole video`),
-      row("Long passage left in", c => c.mistakeCounts.longMissed, `runs of ${LONG_MISSED_WORDS} words or more the editor cut, in the whole video`),
-      row("Words a cut lands inside", c => c.mistakeCounts.clippedWords, "in the whole video"),
-      row("Stutter cuts", c => c.mistakeCounts.stutters, `pieces under ${STUTTER_SECONDS} s between two cuts`),
-      row("Short tightenings left in (per 10 min)", c => c.stylePer10Min, `${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} word runs the editor trimmed (taste/tightness, separate from hard mistakes)`),
-      row("Short tightenings left in", c => c.mistakeCounts.styleLeftIn, `runs of ${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} words, in the whole video`),
-      row("Same words, another take", c => c.mistakeCounts.otherTake, `runs of ${NOTICED_WORDS} words or more Scarlet and the editor each played from a different saying, in the whole video; not a mistake`));
+      row("**Flags per 10 finished min**", "per10Min", "the four craft counts below; not confirmed defects"),
+      row("Cut, and the editor kept it", "wronglyCut", `runs of ${NOTICED_WORDS} words or more, in the whole video`),
+      row("Retake left in", "longMissed", `runs of ${LONG_MISSED_WORDS} words or more that play a line twice, the editor cut, and Scarlet didn't ask about, in the whole video`),
+      row("Words a cut lands inside", "clippedWords", "in the whole video"),
+      row("Stutter cuts", "stutters", `pieces under ${STUTTER_SECONDS} s between two cuts`),
+      row("Retake left for your call", "askedRetakes", `retakes left in that Scarlet staged or flagged for the editor, in the whole video; not counted above`),
+      row("Content the editor cut, left in", "contentLeftIn", `runs of ${LONG_MISSED_WORDS} words or more the editor dropped with no other take kept (taste: a sponsor read, a tangent)`),
+      row("Short tightenings left in (per 10 min)", "stylePer10Min", `${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} word runs the editor trimmed (taste/tightness, separate from hard mistakes)`),
+      row("Short tightenings left in", "styleLeftIn", `runs of ${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} words, in the whole video`),
+      row("Same words, another take", "otherTake", `runs of ${NOTICED_WORDS} words or more Scarlet and the editor each played from a different saying, in the whole video; not a mistake`));
   }
   if (ledger) lines.push(`| Past mistakes | ${cards.map((_, i) => i === cards.length - 1 ? (ledger.pct === null ? "–" : `${ledger.pct}%`) : "").join(" | ")} |${two ? " |" : ""} every reported mistake with a free check still passes (${ledger.pass} of ${ledger.checked}, ${ledger.label}) |`);
-  const fact = (s: Stat | null, digits = 1, scale = 1) => s ? (s.mean / scale).toFixed(digits) : "–";
+  const fact = (x: Stat | null, digits = 1, scale = 1) => x ? (x.mean / scale).toFixed(digits) : "–";
   lines.push("", "Not scored: " + cards.map(c => `${c.label}: ${fact(c.facts.asks)} calls and flags for the editor, ` +
     `${fact(c.facts.finishMinutes)} min to finish (${fact(c.facts.minutes)} active), ${fact(c.facts.tokens, 2, 1e6)}M tokens, ` +
     `${c.facts.cents ? `$${fact(c.facts.cents, 2, 100)}` : "no estimated cost"} a pass`).join(" · ") + ".");
-  if (cards.some(c => c.trials < 4)) lines.push("", "Fewer than 4 passes a side: two passes of the same code differ by a few points, so read small differences as noise.");
+  lines.push("", "± is how far a figure moves by luck alone: run the same code again and it lands within the ± about 95 times in 100. " +
+    "It comes from how much this run's passes of the same recording disagree. A change counts only when it moves more than its ±; " +
+    "“could be luck” marks one that doesn't, and the recordings it went up or down on say whether it was one video or all of them.");
+  if (missingBand) lines.push("", "No ± where a side has one pass on each recording: run at least two passes on a recording to measure the luck.");
   if (cards.some(c => c.cases.length < 3)) lines.push("", `Recordings: ${[...new Set(cards.flatMap(c => c.cases))].join(", ")}. With fewer than three, the figures describe these videos more than the cutting.`);
   if (cards.some(c => c.cases.length > 1)) {
     for (const c of cards) {
@@ -494,18 +563,17 @@ export function readTrial(file: string, row?: TrialRow): Evaluation {
     }
   }
   if (ev.score.trace?.state !== "done" || ev.score.rubric !== RUBRIC || !ev.score.playable?.automatic || !ev.score.playable?.recommended) {
-    throw new Error(`Not a completed ${RUBRIC} evaluation; re-score the saved task first: ${file}`);
+    throw new Error(`Not a completed ${RUBRIC} evaluation; bring it up to date with regrade.ts (offline, no model tokens): ` + file);
   }
   return ev;
 }
 
-export function loadSide(label: string, path: string, at: OperatingPoint = "recommended"): { card: Card; details?: Factors } {
+function trialsAt(path: string): Evaluation[] {
   const selected = resolve(path);
   if (!existsSync(selected)) throw new Error(`No such file or folder: ${path}`);
   const single = statSync(selected).isFile();
   let run = single ? dirname(selected) : selected;
   while (!existsSync(join(run, "trials.json")) && dirname(run) !== run) run = dirname(run);
-  let trials: Trial[];
   if (existsSync(join(run, "trials.json"))) {
     const entries = eligibleTrials(run).filter(({ file }) => {
       if (single) return file === selected;
@@ -513,10 +581,18 @@ export function loadSide(label: string, path: string, at: OperatingPoint = "reco
       return rel !== ".." && !rel.startsWith(".." + sep);
     });
     if (new Set(entries.map(entry => entry.row.config)).size > 1) throw new Error("Choose one configuration per side.");
-    trials = entries.map(({ file, row }) => readTrial(file, row));
-  } else if (single) trials = [readTrial(selected)];
-  else throw new Error("A run directory needs trials.json; use the exact file for a standalone evaluation.");
-  if (!trials.length) throw new Error("No eligible completed trials: " + selected);
+    return entries.map(({ file, row }) => readTrial(file, row));
+  }
+  if (single) return [readTrial(selected)];
+  throw new Error("A run directory needs trials.json; use the exact file for a standalone evaluation.");
+}
+
+/** One side of a scorecard: the eligible trials under each path (a run, a configuration's folder in it, or one evaluation.json). */
+export function loadSide(label: string, paths: string | readonly string[], at: OperatingPoint = "recommended"): { card: Card; details?: Factors } {
+  const list = typeof paths === "string" ? [paths] : paths;
+  const trials = list.flatMap(trialsAt);
+  if (!trials.length) throw new Error("No eligible completed trials: " + list.join(", "));
+  if (new Set(trials.map(t => `${t.config.agent}:${t.config.model}:${t.config.effort}`)).size > 1) throw new Error("Choose one configuration per side.");
   return { card: card(label, trials, at), ...(trials.length === 1 && { details: factors(trials[0]!.score, at) }) };
 }
 
@@ -525,7 +601,8 @@ async function scorecardCli(argv = process.argv.slice(2)) {
   const point = values.point ?? "recommended";
   if (!positionals.length || (point !== "automatic" && point !== "recommended")) throw new Error(USAGE);
   const labels = list(values.labels);
-  const sides = positionals.map((p, i) => loadSide(labels[i] ?? (positionals.length === 1 ? "This run" : p.replace(/\/+$/, "").split("/").at(-1)!), p, point));
+  // A side can join several runs, one per recording, with commas.
+  const sides = positionals.map((p, i) => loadSide(labels[i] ?? (positionals.length === 1 ? "This run" : p.replace(/\/+$/, "").split("/").at(-1)!), p.split(","), point));
   let ledger: Parameters<typeof scorecardMarkdown>[1];
   if (values.ledger) {
     const { results } = await runChecks(loadLedger().entries, line => console.error(line));

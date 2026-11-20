@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { runMarkdown, type TrialRow } from "../src/report.ts";
 import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
-import { branchName, positiveNumber, selectTrialSkills, trialTranscripts } from "../src/run.ts";
+import { branchName, positiveNumber, scorecardGap, selectTrialSkills, trialTranscripts } from "../src/run.ts";
 
 it("gives repeated trials distinct branches even with long case and model names", () => {
   const caseId = "long-project-name-".repeat(5), stamp = "2026-11-15T10-30-00Z";
@@ -61,4 +61,11 @@ it("keeps the original guide after a rename even if a new guide reuses its old n
   expect(() => selectTrialSkills([{ ...renamed, enabled: false }, replacement], wanted, { add: [] })).toThrow("disabled");
   expect(() => selectTrialSkills([renamed], { ...wanted, skillIds: ["original", "missing"],
     skillNames: ["dialogue-pass", "cutaway"] }, { add: [] })).toThrow("cutaway");
+});
+
+it("refuses to spend tokens on a case whose scorecard would come back mostly empty", () => {
+  expect(scorecardGap({ id: "carbon" })).toMatch(/no published video attached.*2 of 15 lines.*--partial-score/);
+  expect(scorecardGap({ id: "carbon", reference: { label: "editor", version: "v1" } })).toMatch(/no published video/);
+  const published = { rate: 1, finishedWords: 1, matchedWords: 1, addedPassages: 0, addedSeconds: 0, reordered: 0, kept: {}, played: [], pieces: [] };
+  expect(scorecardGap({ id: "carbon", reference: { label: "published", published } })).toBeUndefined();
 });

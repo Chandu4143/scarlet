@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cutDetail, type CutDetail } from "../src/cutDetail.ts";
+import { cutDetail, unmatchedInReference, type CutDetail } from "../src/cutDetail.ts";
 import type { PacingSummary } from "../src/metrics.ts";
 import { RUBRIC, type Score } from "../src/score.ts";
 import {
-  card, configSlug, EDITORIAL_IDS, eligibleTrials, factors as scoreFactors, FACTORS, ledgerPct, loadSide,
-  mistakes as scoreMistakes, overallOf, rateScore, ratio, readTrial, scorecardMarkdown, WATCHABILITY_IDS,
+  card, compareFigure, configSlug, EDITORIAL_IDS, eligibleTrials, factors as scoreFactors, FACTORS, ledgerPct, loadSide,
+  mistakes as scoreMistakes, overallOf, rateScore, ratio, readTrial, scorecardMarkdown, standardError, WATCHABILITY_IDS,
 } from "../src/scorecard.ts";
 
 const pace = (o: { dead: number; joins: number; restarts?: number }): PacingSummary => ({
@@ -40,12 +40,15 @@ function score(o: { missing?: number; clipped?: number; dead?: number; joins?: n
   } as unknown as Score;
 }
 
-const detail = (o: Partial<{ editor: number; scarlet: number; editorMatched: number; scarletMatched: number; wrong: number[]; left: number[]; short: number }> = {}): CutDetail => ({
+/** `left` are runs left in that the editor cut for another take of them; `content` are runs the editor dropped outright. */
+const detail = (o: Partial<{ editor: number; scarlet: number; editorMatched: number; scarletMatched: number; wrong: number[]; left: number[]; content: number[]; short: number }> = {}): CutDetail => ({
   decisions: { editor: o.editor ?? 20, scarlet: o.scarlet ?? 20, editorMatched: o.editorMatched ?? 20, scarletMatched: o.scarletMatched ?? 20 },
-  wronglyCut: (o.wrong ?? []).map(words => ({ start: 0, end: 1, words, text: "" })), leftIn: (o.left ?? []).map(words => ({ start: 0, end: 1, words, text: "" })),
+  wronglyCut: (o.wrong ?? []).map(words => ({ start: 0, end: 1, words, text: "" })),
+  leftIn: [...(o.left ?? []).map(words => ({ start: 0, end: 1, words, text: "", retake: true })), ...(o.content ?? []).map(words => ({ start: 0, end: 1, words, text: "", retake: false }))],
   pauses: { total: 100, editorTrimmed: 40, scarletTrimmed: 30, bothTrimmed: 20 },
   takes: { decided: 10, same: 8, other: 1, both: 1, neither: 0 },
   pieces: { total: 50, short: o.short ?? 0, editorTotal: 50, editorShort: 0 },
+  unscored: 0,
 });
 
 function withDetail(input: Score, detail?: CutDetail): Score {
@@ -78,7 +81,7 @@ describe("factors", () => {
     // 2 clipped words in 20 min = 1/10 min; half-life 4 -> 100 * 0.5^(1/4) = 84.1%.
     expect(f.wholeWords).toMatchObject({ pct: 84.1, detail: "2 of 100 cut edges land inside a sounding word (1/10 min)" });
     expect(f.noWrongCuts.pct).toBe(100);
-    expect(f.noLongMisses.pct).toBe(100);
+    expect(f.noMissedRetakes.pct).toBe(100);
     expect(f.noStutter.pct).toBe(100);
     expect(f.cutDecisions.pct).toBe(100);
     expect(f.takeChoice.pct).toBe(80);
@@ -96,14 +99,14 @@ describe("factors", () => {
 
   it("penalizes clipped words, wrong cuts, long misses, and stutters steeply by rate per 10 min", () => {
     // On a 20 min cut: 8 clipped = 4/10m (50%), 6 wrong cuts = 3/10m (50%), 6 long misses = 3/10m (50%), 4 stutters = 2/10m (50%).
-    // Short 2-5w leftIn runs do not penalize noLongMisses.
+    // Short 2-5w leftIn runs and long content the editor dropped outright do not penalize noMissedRetakes.
     const f = factors(
       score({ clipped: 8 }),
-      detail({ wrong: [1, 2, 2, 3, 4, 5, 6], left: [2, 3, 5, 6, 6, 7, 8, 9, 12], short: 4 }),
+      detail({ wrong: [1, 2, 2, 3, 4, 5, 6], left: [2, 3, 5, 6, 6, 7, 8, 9, 12], content: [20, 40], short: 4 }),
     );
     expect(f.wholeWords.pct).toBe(50);
     expect(f.noWrongCuts.pct).toBe(50);
-    expect(f.noLongMisses.pct).toBe(50);
+    expect(f.noMissedRetakes.pct).toBe(50);
     expect(f.noStutter.pct).toBe(50);
   });
 
@@ -131,7 +134,7 @@ describe("factors", () => {
     const noWords = factors(score());
     expect(noWords.cutDecisions.pct).toBeNull();
     expect(noWords.noWrongCuts.pct).toBeNull();
-    expect(noWords.noLongMisses.pct).toBeNull();
+    expect(noWords.noMissedRetakes.pct).toBeNull();
     expect(noWords.pausesTrimmed.pct).toBeNull();
     expect(noWords.linesKept.pct).toBe(100);
     const noVideo = factors(score({ reference: false }));
@@ -141,13 +144,13 @@ describe("factors", () => {
 });
 
 describe("mistakes", () => {
-  it("counts hard craft bugs separately from short 2–5 word style tightenings left in", () => {
-    const m = mistakes(score({ clipped: 4 }), detail({ wrong: [1, 2, 6], left: [1, 2, 5, 6, 12], short: 1 }));
-    // Hard bugs: 2 wrong (>=2w) + 2 longMissed (>=6w) + 4 clipped + 1 stutter = 9 in 20 min (4.5 / 10 min).
-    // Short tightenings: 2 (words 2 and 5) in 20 min (1 / 10 min). Total leftIn = 4.
+  it("counts hard craft bugs separately from content the editor dropped and short 2–5 word tightenings left in", () => {
+    const m = mistakes(score({ clipped: 4 }), detail({ wrong: [1, 2, 6], left: [1, 2, 5, 6, 12], content: [7], short: 1 }));
+    // Hard bugs: 2 wrong (>=2w) + 2 retakes left in (>=6w) + 4 clipped + 1 stutter = 9 in 20 min (4.5 / 10 min).
+    // Taste: 1 content run, and 2 short tightenings (words 2 and 5) in 20 min (1 / 10 min). Total leftIn = 5.
     expect(m).toMatchObject({
-      wronglyCut: 2, longMissed: 2, clippedWords: 4, stutters: 1, total: 9, per10Min: 4.5,
-      styleLeftIn: 2, stylePer10Min: 1, leftIn: 4,
+      wronglyCut: 2, longMissed: 2, contentLeftIn: 1, clippedWords: 4, stutters: 1, total: 9, per10Min: 4.5,
+      styleLeftIn: 2, stylePer10Min: 1, leftIn: 5,
     });
   });
 });
@@ -196,6 +199,54 @@ describe("cutDetail", () => {
     const d = cutDetail(words, base, [{ start: 0, end: 2 }, { start: 3, end: 3.8 }, { start: 5, end: 8 }], base);
     expect(d.pieces).toMatchObject({ total: 3, short: 1, editorTotal: 1, editorShort: 0 });
   });
+
+  // A take the editor dropped for a later one, then a passage the editor cut outright, at one word a second.
+  const said = (text: string, from = 0) => text.split(" ").map((t, i) => ({ text: t, start: from + i, end: from + i + 0.8 }));
+  const take = [...said("I want to show you the new model", 0), ...said("I want to show you the new model today", 10),
+    ...said("thanks to our sponsor for this video who makes great things", 30), ...said("and that is it", 50)];
+  const all = [{ start: 0, end: 60 }];
+
+  it("calls a long run left in a retake when the editor kept another delivery of it nearby, and content otherwise", () => {
+    const editor = [{ start: 10, end: 19 }, { start: 50, end: 54 }];
+    const d = cutDetail(take, all, all, editor);
+    expect(d.leftIn.map(x => [x.text.split(" ")[0], x.words, x.retake])).toEqual([["I", 8, true], ["thanks", 11, false]]);
+  });
+
+  it("calls it a swap of takes, not a retake, when Scarlet kept the first delivery and cut the editor's", () => {
+    const editor = [{ start: 10, end: 19 }, { start: 50, end: 54 }];
+    const scarlet = [{ start: 0, end: 9 }, { start: 30, end: 60 }];
+    const d = cutDetail(take, all, scarlet, editor);
+    const first = d.leftIn.find(x => x.text.startsWith("I want"))!;
+    expect([first.retake, first.otherTake]).toEqual([false, true]);
+  });
+
+  it("leaves a retake Scarlet asked the editor about for their call, not a silent miss", () => {
+    const stammer = said("but really it is quite but really it is quite but really it is quite comparable", 0);
+    const d = cutDetail(stammer, all, all, [{ start: 12, end: 16 }], { asked: [{ start: 2, end: 4 }] });
+    expect(d.leftIn.map(x => [x.retake, x.asked])).toEqual([[true, true]]);
+    const m = mistakes(score(), { ...detail(), leftIn: d.leftIn });
+    expect(m).toMatchObject({ longMissed: 0, askedRetakes: 1 });
+    expect(factors(score(), { ...detail(), leftIn: d.leftIn }).noMissedRetakes.pct).toBe(100);
+  });
+
+  it("calls a line restarted over and over a retake though the editor's kept delivery is short", () => {
+    const stammer = said("but really it is quite but really it is quite but really it is quite comparable", 0);
+    const d = cutDetail(stammer, all, all, [{ start: 12, end: 16 }]);
+    expect(d.leftIn.map(x => [x.words, x.retake])).toEqual([[12, true]]);
+  });
+
+  it("leaves unscored the words the published video plays where its matcher found no recording", () => {
+    const editor = [{ start: 10, end: 19 }, { start: 50, end: 54 }];
+    // The published video plays the sponsor read, but the matcher tied it to no recording.
+    const unscored = unmatchedInReference(take, editor, [["Thanks", "to", "our", "sponsor", "for", "this", "video"]]);
+    expect(unscored).toEqual([{ start: 30, end: 36.8 }]);
+    const d = cutDetail(take, all, all, editor, { unscored });
+    expect(d.unscored).toBe(7);
+    expect(d.leftIn.map(x => x.text)).toEqual(["I want to show you the new model", "who makes great things"]);
+    // A passage under five words, or one the editor's cut keeps, is scored as before.
+    expect(unmatchedInReference(take, editor, [["thanks", "to", "our", "sponsor"]])).toEqual([]);
+    expect(unmatchedInReference(take, editor, [["show", "you", "the", "new", "model", "today"]])).toEqual([]);
+  });
 });
 
 describe("card", () => {
@@ -227,12 +278,40 @@ describe("card", () => {
   });
 });
 
+describe("standardError", () => {
+  const st = (values: number[]) => {
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    return { mean, min: Math.min(...values), max: Math.max(...values), n: values.length,
+      ...(values.length > 1 && { variance: values.reduce((a, v) => a + (v - mean) ** 2, 0) / (values.length - 1) }) };
+  };
+
+  it("pools how much passes of one recording disagree, and shrinks with more passes and more recordings", () => {
+    // Two recordings, passes 2 apart on each: variance 2, so one recording of 2 passes has SE 1; two have SE 1/√2.
+    expect(standardError([st([10, 12])])).toBeCloseTo(1, 6);
+    expect(standardError([st([10, 12]), st([50, 52])])).toBeCloseTo(Math.SQRT1_2, 6);
+    // A recording with one pass borrows the spread the others measured.
+    expect(standardError([st([10]), st([50, 52])])).toBeCloseTo(Math.sqrt(2 / 1 + 2 / 2) / 2, 6);
+    expect(standardError([st([10]), st([50])])).toBeNull();
+  });
+
+  it("calls a change real only when it is more than its ±, and says on how many recordings it went that way", () => {
+    const a = { x: st([60, 62]), y: st([70, 72]), z: st([80, 82]) };
+    const up = { x: st([70, 72]), y: st([80, 82]), z: st([84, 86]) };
+    expect(compareFigure(a, up, 8)).toMatchObject({ real: true, text: "**+8** (±1.6, better) · up on 3 of 3 recordings" });
+    const near = { x: st([61, 63]), y: st([69, 71]), z: st([81, 83]) };
+    expect(compareFigure(a, near, 0.3)).toMatchObject({ real: false, text: "+0.3 (±1.6, could be luck) · up on 2 of 3 recordings" });
+    // Fewer is better for counts.
+    expect(compareFigure(a, up, 8, true).text).toContain("worse");
+  });
+});
+
 describe("scorecardMarkdown", () => {
-  it("says a difference is within the spread when the two sides' trials overlap", () => {
+  it("puts a ± on every figure and marks a change inside it as luck", () => {
     const side = (label: string, missing: number[]) => card(label, missing.map(m => ({ caseId: "a", score: score({ missing: m }) })));
     const main = side("main", [15, 10]);
-    expect(scorecardMarkdown([main, side("change", [11, 7])])).toContain("| Lines kept | 75% (70–80) | 82% (78–86) | +7 (within the spread) |");
-    expect(scorecardMarkdown([main, side("change", [5, 4])])).toContain("| Lines kept | 75% (70–80) | 91% (90–92) | +16 |");
+    // Passes of 70% and 80% on the one recording: SE 5, so ±10. Compared, both sides' passes give the spread.
+    expect(scorecardMarkdown([main, side("change", [11, 7])])).toContain("| Lines kept | 75% ±10 | 82% ±8 | +7 (±12.8, could be luck) |");
+    expect(scorecardMarkdown([main, side("change", [5, 4])])).toContain("| Lines kept | 75% ±10 | 91% ±2 | **+16** (±10.2, better) |");
   });
 
   it("splits hard craft mistakes from short editorial tightenings and warns on small sample sizes", () => {
@@ -242,10 +321,11 @@ describe("scorecardMarkdown", () => {
     expect(md).toContain("| **Watchability** |");
     expect(md).toContain("| **Editorial match** |");
     expect(md).toContain("| **Flags per 10 finished min** | 2 |");
-    expect(md).toContain("| Long passage left in | 1 |");
+    expect(md).toContain("| Retake left in | 1 |");
+    expect(md).toContain("| Content the editor cut, left in | 0 |");
     expect(md).toContain("| Short tightenings left in (per 10 min) | 1 |");
     expect(md).toContain("| Short tightenings left in | 2 |");
-    expect(md).toContain("Fewer than 4 passes a side");
+    expect(md).toContain("No ± where a side has one pass on each recording");
     expect(md).toContain("With fewer than three");
   });
 });
@@ -306,11 +386,11 @@ describe("scorecard guards and eligibility", () => {
   it("rejects stale rubrics, non-done trials, missing trials.json dirs, and multi-config dirs", () => withTmpRun(dir => {
     const stale = join(dir, "stale.json");
     writeFileSync(stale, JSON.stringify(mkEval({ taskId: "tsk_old", rubric: "old-v1" })));
-    expect(() => readTrial(stale)).toThrow(/dialogue-playable-v3/);
+    expect(() => readTrial(stale)).toThrow(/regrade/);
 
     const unfinished = join(dir, "running.json");
     writeFileSync(unfinished, JSON.stringify(mkEval({ taskId: "tsk_run", state: "running" })));
-    expect(() => readTrial(unfinished)).toThrow(/dialogue-playable-v3/);
+    expect(() => readTrial(unfinished)).toThrow(/regrade/);
 
     expect(() => loadSide("empty", dir)).toThrow(/trials\.json/);
     expect(() => loadSide("missing", join(dir, "does-not-exist"))).toThrow(/No such file or folder/);

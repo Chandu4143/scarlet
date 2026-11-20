@@ -3,7 +3,7 @@
  * are, how it compares with a reference cut, and what the agent did. Pure; evaluate.ts gathers inputs.
  */
 import { applyOps, type Change, type Timeline } from "../../packages/timeline/src/index.ts";
-import { cutDetail, addCutDetails, type CutDetail } from "./cutDetail.ts";
+import { cutDetail, addCutDetails, unmatchedInReference, type CutDetail } from "./cutDetail.ts";
 import type { ReviewChangeExport } from "./engine.ts";
 import { subtract, type Range } from "./intervals.ts";
 import {
@@ -15,7 +15,7 @@ import {
 import { pictureAt } from "./layout.ts";
 import { scoreMoments, type LeftEdit, type Moment, type MomentResult } from "./moments.ts";
 import { comparePicture, summarizePicture, type PictureComparison, type PictureSample, type PictureSummary } from "./picture.ts";
-import { comparePublishedJoinSpacing, type PublishedReference } from "./published.ts";
+import { comparePublishedJoinSpacing, unmatchedPassages, type PublishedReference } from "./published.ts";
 import { dividedJoins, keptSource, playedWords, sourceSpan, sourceToTimeline, timelineRangeToSource, type DividedJoin, type MediaInfo, type SourceRange } from "./timeline.ts";
 
 export interface ScoreInput {
@@ -89,7 +89,13 @@ interface PacingScore {
   /** The longest gaps of the edit the task left, when that is not the applied version. */
   finalGaps?: PacingGap[];
 }
-export const RUBRIC = "dialogue-playable-v3";
+/**
+ * The scoring rules. Scores of different rubrics are never compared: regrade.ts brings a saved run up to date offline.
+ * v3: the same words played from another saying are a take choice, not a line lost or left in.
+ * v4: words the published video plays where its matcher found no recording are unscored; a long run left in is a missed
+ * retake only when Scarlet's cut plays the line twice, and one Scarlet asked the editor about is left for their call.
+ */
+export const RUBRIC = "dialogue-playable-v4";
 export type OperatingPoint = "automatic" | "recommended";
 interface Playable {
   seconds: number; kept: Record<string, Range[]>; edges: EdgeSummary; pacing: PacingSummary;
@@ -175,6 +181,10 @@ function tier(version: string, before: Kept, after: Kept, cuts: Array<CutRecord 
 
 const duration = (tl: Timeline) => Math.max(0, ...tl.tracks.flatMap(t => t.clips.map(c =>
   c.kind === "media" ? c.timelineIn + (c.sourceOut - c.sourceIn) / (c.speed ?? 1) : c.timelineOut)));
+
+/** What a pass put in front of the editor in a recording: the cuts it staged and the edits it flagged, as source ranges. */
+export const askedOf = (left: Pick<LeftEdit, "staged" | "flagged">, mediaId: string) =>
+  [...left.staged, ...(left.flagged ?? [])].filter(r => r.mediaId === mediaId);
 
 export function scoreRun(input: ScoreInput): Score {
   const opts = input.edgeOptions ?? DEFAULT_EDGE_OPTIONS;
@@ -313,10 +323,13 @@ export function scoreRun(input: ScoreInput): Score {
     ...(flagged.length && { flagged }) };
   const moments = input.moments?.length ? scoreMoments(input.moments, evidence, leftEdit) : undefined;
   const momentCount = (outcome: MomentResult["outcome"]) => moments ? moments.filter(m => m.outcome === outcome).length : null;
+  const keys = [...kS.keys()];
+  const readable = !!published && keys.length > 0 && keys.every(id => evidence.get(id)?.words?.length && published.kept[id]);
+  const unscored = new Map(readable ? keys.map(id => [id, unmatchedInReference(evidence.get(id)!.words!, published!.kept[id]!, unmatchedPassages(published!))]) : []);
   const view = (tl: Timeline, kept: Kept, played: typeof leftWords, pace: PacingSummary, cut?: ScoredReference): Playable => {
-    const keys = [...kS.keys()];
-    const detail = published && keys.length && keys.every(id => evidence.get(id)?.words?.length && published.kept[id])
-      ? addCutDetails(keys.map(id => cutDetail(evidence.get(id)!.words!, kS.get(id)!, kept.get(id) ?? [], published.kept[id]!))) : undefined;
+    const detail = readable
+      ? addCutDetails(keys.map(id => cutDetail(evidence.get(id)!.words!, kS.get(id)!, kept.get(id) ?? [], published!.kept[id]!,
+        { unscored: unscored.get(id), asked: askedOf(leftEdit, id) }))) : undefined;
     const keptRanges = Object.fromEntries([...kept].map(([id, entries]) => [id, [...entries]]));
     return { seconds: duration(tl), kept: keptRanges, pacing: pace, cut, detail,
       edges: summarizeEdges(classifyEdges(joinEdges(kS, kept), evidence, opts), opts),
