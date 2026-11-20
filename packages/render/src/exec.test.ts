@@ -313,6 +313,10 @@ describe("what a build offers", () => {
       await expect(requireDrawtext("draw the video’s captions")).resolves.toBeUndefined();
       // Whatever stops a binary from running is the render's own error to report.
       expect(await hasDrawtext(join(dir, "missing"))).toBe(true);
+      // A list Scarlet can't read a filter from doesn't block captions.
+      const unreadable = join(dir, "ffmpeg-new-format");
+      await writeFile(unreadable, "#!/bin/sh\necho 'Filters: (a layout Scarlet does not know)'\n", { mode: 0o755 });
+      expect(await hasDrawtext(unreadable)).toBe(true);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 

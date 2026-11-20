@@ -459,11 +459,14 @@ export function ffmpegFilters(ffmpegPath?: string): Promise<Set<string>> {
 
 /**
  * Whether this ffmpeg build can draw text. A build that can't be asked counts as able, so whatever stops it from
- * running is the error the render reports.
+ * running is the error the render reports. So does a list Scarlet couldn't read a filter from, so a change in how a
+ * later FFmpeg prints it never blocks captions on a build that has them.
  */
 export async function hasDrawtext(ffmpegPath?: string): Promise<boolean> {
-  try { return (await ffmpegFilters(ffmpegPath)).has("drawtext"); }
-  catch { return true; }
+  try {
+    const filters = await ffmpegFilters(ffmpegPath);
+    return filters.size === 0 || filters.has("drawtext");
+  } catch { return true; }
 }
 
 /** Throw `MissingFilterError` before any work when this ffmpeg can't draw text that `need` requires. */
