@@ -11,6 +11,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - A cut now comes right where your last word's sound ends, about a tenth of a second of quiet in all, instead of holding on you silent or breathing in before it.
 - When a breath follows your last word, the cut now goes before the breath, even where Scarlet heard no pause around it.
 - When two words run together, Scarlet no longer cuts at the short stop inside a word, such as the “p” of “subscription”, which took the end of the word off.
+- When Scarlet fine-tunes a cut it already made, such as moving its edge a frame, the cut now stays one row in the list, playing as the video does now, instead of showing again as a second edit beside the old one.
 
 ## November 19, 2026
 

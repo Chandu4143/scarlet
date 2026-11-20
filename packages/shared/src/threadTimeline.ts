@@ -411,8 +411,10 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       }
       if (found && edit.named && kind === "other" && range.start === range.end) edit.still = true;
       // Only a save that took footage out at the point can have moved a cut's join there. A punch-in or a title named on a
-      // join changed no footage, and is an edit of its own.
-      if (found && edit.named && range.start === range.end && edit.beforeCut) edit.resaved = true;
+      // join changed no footage, and is an edit of its own. A save made of steps that left footage out at the join (`built`)
+      // moved it too: on Matt's pass a later save rolled the edges of six cuts it had made, “Extend end of ‘subscription.’”,
+      // and each cut showed twice, the first still flagged and playing its old clipped join (2026-11-20).
+      if ((found || built) && edit.named && range.start === range.end && edit.beforeCut) edit.resaved = true;
       const back = edit.named && kind === "restore" ? returned?.filter(r => r.start <= range.end + NAMED_SLACK && r.end >= range.start - NAMED_SLACK) : undefined;
       if (back?.length) edit.putBack = { start: Math.min(...back.map(r => r.start)), end: Math.max(...back.map(r => r.end)) };
       const prior = item.replaces ? edits.findIndex(e => matchesEdit(e, item.replaces!)) : -1;
@@ -676,13 +678,15 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
       return [...(last && carriesOn(last, item) ? [] : [item.start]), ...(next && carriesOn(item, next) ? [] : [item.end])];
     });
   }))].sort((x, y) => x - y);
-  /** The join within `slack` of a time, which was named or mapped a hair off it and so sits inside the clip beside it. */
-  const joinNear = (t: number, slack = NAMED_SLACK) => {
+  /** The joins within `slack` of a time, nearest first: it was named or mapped a hair off one and so sits inside the clip beside it. */
+  const joinsNear = (t: number, slack = NAMED_SLACK) => {
     let low = 0, high = joins.length;
-    while (low < high) { const mid = (low + high) >> 1; if (joins[mid]! < t) low = mid + 1; else high = mid; }
-    return [joins[low - 1], joins[low]].filter((join): join is number => join !== undefined && Math.abs(join - t) <= slack)
-      .sort((x, y) => Math.abs(x - t) - Math.abs(y - t))[0];
+    while (low < high) { const mid = (low + high) >> 1; if (joins[mid]! < t - slack) low = mid + 1; else high = mid; }
+    const near: number[] = [];
+    for (let i = low; i < joins.length && joins[i]! <= t + slack; i++) near.push(joins[i]!);
+    return near.sort((x, y) => Math.abs(x - t) - Math.abs(y - t));
   };
+  const joinNear = (t: number, slack = NAMED_SLACK) => joinsNear(t, slack)[0];
   const removedAt = (cut: ThreadEdit, join: number): TimeRange | undefined => {
     const back = backTo(cut.beforeCut!.version), { removed } = cut.beforeCut!;
     const start = back?.(join, "left"), end = back?.(join, "right");
@@ -699,8 +703,10 @@ export function threadTimeline(thread: Thread, head: Timeline, links: ReviewVers
    */
   const revised = (edit: ThreadEdit, at: number[], span?: TimeRange) => {
     const cuts = span ? cutsIn(edit, span) : result.filter(cut => cut.beforeCut && cut.at !== undefined && cut.changeId !== edit.changeId).reverse();
-    for (const cut of cuts) for (const t of at) {
-      const join = joinNear(t) ?? t, removed = removedAt(cut, join);
+    // Each track has its own joins, and a save can roll one track's edge a frame and leave another's: on Matt's pass the
+    // camera's join after “modeling,” moved and the screen's didn't, so the nearest join read as no cut at all (2026-11-20).
+    for (const cut of cuts) for (const t of at) for (const join of [...joinsNear(t), t]) {
+      const removed = removedAt(cut, join);
       if (!removed) continue;
       cut.at = join;
       cut.range = withHandles({ start: join, end: join }, 1.5, duration);
