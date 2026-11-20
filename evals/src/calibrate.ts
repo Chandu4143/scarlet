@@ -106,7 +106,7 @@ function clip(source: string, ranges: readonly Range[], out: string) {
   const parts = ranges.map((r, i) => `[0:a]atrim=${r.start.toFixed(3)}:${r.end.toFixed(3)},asetpts=PTS-STARTPTS,` +
     `afade=t=in:d=${fade},afade=t=out:st=${Math.max(0, r.end - r.start - fade).toFixed(3)}:d=${fade}[p${i}]`);
   const graph = `${parts.join(";")};${ranges.map((_, i) => `[p${i}]`).join("")}concat=n=${ranges.length}:v=0:a=1[a]`;
-  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", source, "-filter_complex", graph, "-map", "[a]", "-ac", "1", "-ar", "24000", "-b:a", "64k", out]);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", source, "-filter_complex", graph, "-map", "[a]", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "24k", out]);
 }
 
 /** The recording and the published video of a case, from its folder's media/. */
