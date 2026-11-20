@@ -189,6 +189,41 @@ it("shows the model name and effort dial and returns focus after keyboard naviga
   }
 });
 
+it("lists Standard once when the model names its own standard speed", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const oldHosts = useHostsStore.getState();
+  const oldUi = useUiStore.getState();
+  const savedPick = localStorage.getItem("scarlet.agent");
+  const host = { ...buildDb().hosts[0]!, online: true };
+  useHostsStore.setState({ hosts: [{ ...host, agents: [{
+    id: "claude", installed: true, models: ["claude-opus-5-5"], modelLabels: { "claude-opus-5-5": "Opus 5.5" },
+    modelOptions: { "claude-opus-5-5": { efforts: [{ id: "high" }], speeds: [{ id: "standard", label: "Standard" }, { id: "fast", label: "Fast" }] } },
+  }] }] });
+  useUiStore.setState({ agent: { agent: "claude", model: "claude-opus-5-5" } });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(() => root.render(<MemoryRouter><AgentChip /></MemoryRouter>));
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!.click());
+    const speeds = () => [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Speed"] [role="radio"]')];
+    expect(speeds().map(b => b.textContent)).toEqual(["Standard", "Fast"]);
+    expect(speeds()[0]!.getAttribute("aria-checked")).toBe("true");
+    await act(() => speeds()[1]!.click());
+    expect(useUiStore.getState().agent.serviceTier).toBe("fast");
+    await act(() => speeds()[0]!.click());
+    expect(useUiStore.getState().agent.serviceTier).toBe("standard");
+  } finally {
+    await act(() => root.unmount());
+    container.remove();
+    useUiStore.setState(oldUi, true);
+    useHostsStore.setState(oldHosts, true);
+    if (savedPick === null) localStorage.removeItem("scarlet.agent");
+    else localStorage.setItem("scarlet.agent", savedPick);
+    vi.unstubAllGlobals();
+  }
+});
+
 it("saves picker changes to the desktop in order even when WebView storage rejects the write", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("__TAURI_INTERNALS__", {});
