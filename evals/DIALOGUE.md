@@ -87,13 +87,12 @@ behind high editorial averages).
 
 | Factor | Group | 100% means |
 |---|---|---|
-| No mid-word cuts | Watchability | no join cuts into a sounding word (50% at 4/10 min) |
-| No wrong cuts | Watchability | no run of 2+ words cut that the editor kept (50% at 3/10 min) |
 | No missed retakes | Watchability | no line plays twice: no run of 6+ words left in that the editor cut for another take Scarlet plays too (50% at 3/10 min) |
 | No stutter cuts | Watchability | no piece under 1 s between two cuts (50% at 2/10 min) |
 | Cut decisions | Editorial match | every removal the editor made, Scarlet made, and no others; a removal counts once, long or short |
 | Take choice | Editorial match | where a line was said twice, Scarlet kept the take the editor kept, and only that one |
 | Lines kept | Editorial match | every sentence the editor kept is still in |
+| Words the editor kept | Editorial match | no run of 2+ words cut that the editor kept (50% at 3/10 min) |
 | Same cuts | Editorial match | every cut of the editor's that can be told apart, Scarlet made between the same two words |
 | Pauses left alone | Editorial match | every pause the editor left as it was said, Scarlet left too |
 | Pauses trimmed | Editorial match | every pause the editor shortened, Scarlet shortened too |
@@ -103,8 +102,15 @@ behind high editorial averages).
 | No restarts left in | Editorial match | no more restarts or doubled words play than in the editor's cut |
 | Known mistakes | Editorial match | every spot that went wrong before comes out right, or is asked about |
 
-Under the card is the count it is easiest to feel: **automated flags per 10 finished min** (runs of 2+ words Scarlet
-cut that the editor kept, retakes left in, sounding words a cut lands inside, and stutter cuts under 1 s). Taste is
+**Watchability scores only what the editor's ears confirmed.** In a listening check of 40 flagged spots (2026-11-20,
+`calibration/2026-11-20/results.md` in the eval data), 2 of 12 joins flagged as landing inside a word and 2 of 12 runs cut
+that the editor kept were real mistakes, while retakes left in were. So Watchability is retakes left in and stutter
+cuts; joins inside a sounding word, a word doubled at a join (“with ‖ without”) and half a sentence left at a join are
+counted under the card as *checked by ear next*, and runs cut that the editor kept are Editorial match. A count joins
+Watchability once a listening sheet (`calibrate.ts`) shows most of its flags are real.
+
+Under the card is the count it is easiest to feel: **craft mistakes per 10 finished min** (retakes left in and stutter
+cuts under 1 s), then the counts checked by ear next, then the editor's choices. Taste is
 counted apart: **content left in** (passages of 6+ words the editor cut that are said only once, such as a sponsor read
 or a tangent) and **short tightenings left in** (2–5 word phrases the editor trimmed, `"kind of"`, `"And so"`). A long
 Where Scarlet and the editor played the same words from different sayings of them (“it is a very good model. It is a
@@ -116,7 +122,7 @@ Words the published video plays where its matcher found no recording are left un
 say the editor cut them. All automated counts are flags rather than confirmed defects until someone listens:
 `calibrate.ts` (see `README.md`) builds the listening sheet that says how many of each are real.
 
-Every scored pass records two separate playable cuts under rubric `dialogue-playable-v4`:
+Every scored pass records two separate playable cuts under rubric `dialogue-playable-v5`:
 - `recommended` (default): what plays after accepting Scarlet's recommended staged cuts.
 - `automatic`: what plays from applied cuts alone, without accepting any staged proposals.
 

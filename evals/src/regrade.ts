@@ -35,8 +35,8 @@ const USAGE = `Usage:
 Rescores a saved run's trials under the current rules (${RUBRIC}) without an engine or model tokens, and writes the
 regraded run and its scorecard to <new dir>. The saved run is left as it was.`;
 
-/** Older rubrics regrade reads. v3 only added `otherTake` to runs, so both reproduce the same figures once it is set aside. */
-const PREVIOUS = ["dialogue-playable-v2", "dialogue-playable-v3"];
+/** Older rubrics regrade reads. Each only added readings of the same runs, so all reproduce the same figures once those are set aside. */
+const PREVIOUS = ["dialogue-playable-v2", "dialogue-playable-v3", "dialogue-playable-v4"];
 const POINTS: OperatingPoint[] = ["automatic", "recommended"];
 
 /** Where a trial's case lives: beside the run, or under the data roots given. */
@@ -52,7 +52,7 @@ export function findCaseRoot(runDir: string, caseId: string, roots: readonly str
 
 /** The figures every rubric since v2 shares, for comparing a regrade with what a trial stored. */
 function previous(d: CutDetail) {
-  const { unscored: _unscored, leftIn, wronglyCut, ...rest } = d;
+  const { unscored: _unscored, joins: _joins, leftIn, wronglyCut, ...rest } = d;
   const plain = (runs: CutDetail["leftIn"]) => runs.map(({ retake: _retake, otherTake: _otherTake, asked: _asked, ...x }) => x);
   return { ...rest, wronglyCut: plain(wronglyCut), leftIn: plain(leftIn) };
 }
@@ -88,8 +88,11 @@ export function regradeEvaluation(ev: Evaluation, caseRoot: string): Evaluation 
         const stored = playable[point].detail;
         if (!stored) continue;
         const kept = playable[point].kept as Record<string, Range[]>;
-        const old = addCutDetails(keys.map(id => cutDetail(words(id), kS.get(id)!, kept[id] ?? [], published.kept[id]!)));
-        if (!isDeepStrictEqual(JSON.parse(JSON.stringify(previous(old))), previous(stored))) {
+        // v2 read every word; v4, and the v3 of an earlier branch, left the unmatched ones unscored. One of the two must
+        // reproduce what the trial stored.
+        const readings = [{}, { unscored: undefined as Range[] | undefined }].map((_, i) =>
+          addCutDetails(keys.map(id => cutDetail(words(id), kS.get(id)!, kept[id] ?? [], published.kept[id]!, i ? { unscored: unscored.get(id) } : {}))));
+        if (!readings.some(old => isDeepStrictEqual(JSON.parse(JSON.stringify(previous(old))), previous(stored)))) {
           throw new Error(`Trial ${ev.taskId} (${point}): the case's words no longer reproduce what the trial stored. Its case changed since it was scored.`);
         }
         playable[point] = { ...playable[point], detail: addCutDetails(keys.map(id =>

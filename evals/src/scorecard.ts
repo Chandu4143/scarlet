@@ -12,7 +12,7 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { cli, isMain, list, main } from "./args.ts";
 import type { Evaluation } from "./evaluate.ts";
-import { LONG_MISSED_WORDS, NOTICED_WORDS, STUTTER_SECONDS, type CutDetail, type Disagreement } from "./cutDetail.ts";
+import { HALF_SENTENCE_WORDS, LONG_MISSED_WORDS, NOTICED_WORDS, STUTTER_SECONDS, type CutDetail, type Disagreement } from "./cutDetail.ts";
 import type { TrialRow } from "./report.ts";
 import { loadBoard, loadLedger, runChecks, type Verdict } from "./ledger.ts";
 import type { PacingSummary } from "./metrics.ts";
@@ -29,7 +29,7 @@ several runs into one side with commas, such as one run per recording.
 
 export type FactorGroup = "watchability" | "editorial";
 
-export type FactorId = "wholeWords" | "noWrongCuts" | "noMissedRetakes" | "noStutter"
+export type FactorId = "noWrongCuts" | "noMissedRetakes" | "noStutter"
   | "cutDecisions" | "takeChoice" | "linesKept" | "sameCuts" | "pausesLeft" | "pausesTrimmed" | "deadAir"
   | "cutCount" | "spaceAtCut" | "nothingLeftIn" | "knownMoments";
 
@@ -46,25 +46,26 @@ export interface Factor {
  * Scoring craft defects by rate instead of dividing by hundreds of cut edges keeps 15 clipped words from reading as 95%.
  */
 export const RATE_HALF_LIFE = {
-  wholeWords: 4,
   noWrongCuts: 3,
   noMissedRetakes: 3,
   noStutter: 2,
 } as const;
 
 /**
- * Every factor is 0–100 and higher is better. Watchability factors penalize viewer-audible craft bugs by rate per
+ * Watchability scores only the craft mistakes an editor's ears confirmed. In a listening check (2026-11-20) 2 of 12
+ * mid-word flags were real and 2 of 12 "cut what the editor kept" were, mostly taste, while retakes left in were the
+ * real mistakes: mid-word cuts are counted below the card until a better check proves itself by ear, and words the
+ * editor kept are Editorial match. Every factor is 0–100 and higher is better. Watchability factors penalize viewer-audible craft bugs by rate per
  * 10 minutes of cut; Editorial match factors measure alignment on the scale of the editor's own cut, never of the
  * raw recording (two passes that left three times the editor's dead air scored 98% against the recording, 2026-11-18).
  */
 export const FACTORS: readonly Factor[] = [
-  { id: "wholeWords", group: "watchability", label: "No mid-word cuts", means: `no join cuts into a sounding word (50% at ${RATE_HALF_LIFE.wholeWords}/10 min)` },
-  { id: "noWrongCuts", group: "watchability", label: "No wrong cuts", means: `no run of ${NOTICED_WORDS}+ words cut that the editor kept (50% at ${RATE_HALF_LIFE.noWrongCuts}/10 min)` },
   { id: "noMissedRetakes", group: "watchability", label: "No missed retakes", means: `no line plays twice unasked: no run of ${LONG_MISSED_WORDS}+ words left in that the editor cut for another take Scarlet plays too, and Scarlet didn't ask about (50% at ${RATE_HALF_LIFE.noMissedRetakes}/10 min)` },
   { id: "noStutter", group: "watchability", label: "No stutter cuts", means: `no piece under ${STUTTER_SECONDS} s between two cuts (50% at ${RATE_HALF_LIFE.noStutter}/10 min)` },
   { id: "cutDecisions", group: "editorial", label: "Cut decisions", means: "every removal the editor made, Scarlet made, and no others; a removal counts once, long or short" },
   { id: "takeChoice", group: "editorial", label: "Take choice", means: "where a line was said twice, Scarlet kept the take the editor kept, and only that one" },
   { id: "linesKept", group: "editorial", label: "Lines kept", means: "every sentence the editor kept is still in" },
+  { id: "noWrongCuts", group: "editorial", label: "Words the editor kept", means: `no run of ${NOTICED_WORDS}+ words cut that the editor kept (50% at ${RATE_HALF_LIFE.noWrongCuts}/10 min)` },
   { id: "sameCuts", group: "editorial", label: "Same cuts", means: "every cut of the editor's that can be told apart, Scarlet made between the same two words" },
   { id: "pausesLeft", group: "editorial", label: "Pauses left alone", means: "every pause the editor left as it was said, Scarlet left too" },
   { id: "pausesTrimmed", group: "editorial", label: "Pauses trimmed", means: "every pause the editor shortened, Scarlet shortened too" },
@@ -123,12 +124,6 @@ export function factors(score: Score, at: OperatingPoint = "recommended"): Facto
   const noReference = none("no published video for this recording");
   const noDetail = ref ? none("the case's words aren't here to read the cut by") : noReference;
   const per10 = (n: number) => seconds > 0 ? r1(n / (seconds / 600)) : null;
-
-  const edges = measured.total, clipped = measured.clippedOnSound;
-  const wholeWords: FactorValue = measured.unknown ? none("missing waveform evidence")
-    : seconds > 0
-      ? { pct: rateScore(clipped, seconds, RATE_HALF_LIFE.wholeWords), detail: `${clipped} of ${edges} cut edges land inside a sounding word (${per10(clipped)}/10 min)` }
-      : { pct: pctOf(edges - clipped, edges), detail: `${clipped} of ${edges} cut edges land inside a sounding word` };
 
   const wrongRuns = detail ? heard(detail.wronglyCut).length : null;
   const noWrongCuts: FactorValue = !detail ? noDetail
@@ -204,7 +199,7 @@ export function factors(score: Score, at: OperatingPoint = "recommended"): Facto
     : { pct: pctOf(ok, moments.length), detail: `${ok} of ${moments.length} play the expected words` };
 
   return {
-    wholeWords, noWrongCuts, noMissedRetakes, noStutter,
+    noWrongCuts, noMissedRetakes, noStutter,
     cutDecisions, takeChoice, linesKept, sameCuts, pausesLeft, pausesTrimmed, deadAir, cutCount, spaceAtCut, nothingLeftIn, knownMoments,
   };
 }
@@ -223,9 +218,12 @@ export interface Mistakes {
   askedRetakes: number;
   /** Runs of NOTICED_WORDS+ words where Scarlet and the editor kept different sayings of the same words: not a mistake. */
   otherTake: number;
+  /** Counted, not scored until checked by ear: joins that land inside a sounding word, a word doubled at a join, and half a sentence left at one. */
   clippedWords: number;
+  doubledAtJoin: number;
+  halfSentence: number;
   stutters: number;
-  /** Objective craft bugs: wronglyCut + longMissed + clippedWords + stutters. */
+  /** Craft mistakes the editor's ears confirmed: longMissed + stutters. */
   total: number;
   per10Min: number | null;
   /** Short runs (NOTICED_WORDS .. LONG_MISSED_WORDS - 1) Scarlet left in that the editor trimmed. */
@@ -236,8 +234,9 @@ export interface Mistakes {
 }
 
 /**
- * Hard bugs are: a run of 2+ words Scarlet cut that the editor kept, a retake left in (6+ words the editor cut for
- * another delivery of them), a sounding word a join cuts into, and a stutter piece under 1 s. Long passages the editor
+ * Craft mistakes are a retake left in (6+ words the editor cut for another delivery Scarlet plays too) and a stutter piece
+ * under 1 s. Runs cut that the editor kept are counted as agreement with the editor; joins inside a sounding word, a word
+ * doubled at a join and half a sentence left at one are counted until a listening check shows they are mistakes. Long passages the editor
  * cut as content (a sponsor read, a tangent) and short 2–5 word phrases the editor trimmed ("kind of", "And so") are
  * taste, counted separately; single-word edge drift is ignored.
  */
@@ -252,7 +251,8 @@ export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mist
   const styleLeftIn = heard(detail.leftIn).filter(x => x.words < LONG_MISSED_WORDS).length;
   const clippedWords = edges.clippedOnSound;
   const stutters = detail.pieces.short;
-  const total = wronglyCut + longMissed + clippedWords + stutters;
+  const doubledAtJoin = detail.joins?.doubled.length ?? 0, halfSentence = detail.joins?.halfSentence.length ?? 0;
+  const total = longMissed + stutters;
   return {
     wronglyCut,
     longMissed,
@@ -260,6 +260,8 @@ export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mist
     askedRetakes,
     otherTake: otherTakes(detail),
     clippedWords,
+    doubledAtJoin,
+    halfSentence,
     stutters,
     total,
     per10Min: seconds > 0 ? r1(total / (seconds / 600)) : null,
@@ -272,7 +274,7 @@ export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mist
 /** A figure over passes. `variance` is the passes' sample variance, when there are two or more. */
 export interface Stat { mean: number; min: number; max: number; n: number; variance?: number }
 type Summary = "overall" | "watchability" | "editorial";
-const COUNT_KEYS = ["wronglyCut", "longMissed", "askedRetakes", "contentLeftIn", "clippedWords", "stutters", "styleLeftIn", "leftIn", "otherTake"] as const;
+const COUNT_KEYS = ["wronglyCut", "longMissed", "askedRetakes", "contentLeftIn", "clippedWords", "doubledAtJoin", "halfSentence", "stutters", "styleLeftIn", "leftIn", "otherTake"] as const;
 type CountKey = (typeof COUNT_KEYS)[number];
 export interface Card {
   point: OperatingPoint;
@@ -502,15 +504,17 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
     };
     lines.push("", "Counted, not scored as a percentage. Fewer is better.", "",
       `| Automated flags | ${cards.map(c => c.label).join(" | ")} |${two ? " Change |" : ""} What is counted |`, `|---|${cards.map(() => "---").join("|")}|${two ? "---|" : ""}---|`,
-      row("**Flags per 10 finished min**", "per10Min", "the four craft counts below; not confirmed defects"),
-      row("Cut, and the editor kept it", "wronglyCut", `runs of ${NOTICED_WORDS} words or more, in the whole video`),
+      row("**Craft mistakes per 10 finished min**", "per10Min", "retakes left in and stutter cuts: the craft mistakes an editor's ears confirmed"),
       row("Retake left in", "longMissed", `runs of ${LONG_MISSED_WORDS} words or more that play a line twice, the editor cut, and Scarlet didn't ask about, in the whole video`),
-      row("Words a cut lands inside", "clippedWords", "in the whole video"),
       row("Stutter cuts", "stutters", `pieces under ${STUTTER_SECONDS} s between two cuts`),
+      row("*Checked by ear next:* words a cut lands inside", "clippedWords", "joins inside a sounding word by the transcript's timing; 2 of 12 were real by ear (2026-11-20), so not scored"),
+      row("*Checked by ear next:* word doubled at a join", "doubledAtJoin", "the word either side of a join said twice, whole or begun (\u201cwith \u2016 without\u201d); not scored until checked"),
+      row("*Checked by ear next:* half a sentence at a join", "halfSentence", `a join after ${HALF_SENTENCE_WORDS} words or fewer of a sentence that never finishes; not scored until checked`),
+      row("Cut, and the editor kept it", "wronglyCut", `runs of ${NOTICED_WORDS} words or more, in the whole video; mostly taste by ear, scored in Editorial match`),
       row("Retake left for your call", "askedRetakes", `retakes left in that Scarlet staged or flagged for the editor, in the whole video; not counted above`),
       row("Content the editor cut, left in", "contentLeftIn", `runs of ${LONG_MISSED_WORDS} words or more the editor dropped with no other take kept (taste: a sponsor read, a tangent)`),
-      row("Short tightenings left in (per 10 min)", "stylePer10Min", `${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} word runs the editor trimmed (taste/tightness, separate from hard mistakes)`),
-      row("Short tightenings left in", "styleLeftIn", `runs of ${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} words, in the whole video`),
+      row("Short tightenings left in (per 10 min)", "stylePer10Min", `${NOTICED_WORDS}\u2013${LONG_MISSED_WORDS - 1} word runs the editor trimmed (taste/tightness, separate from hard mistakes)`),
+      row("Short tightenings left in", "styleLeftIn", `runs of ${NOTICED_WORDS}\u2013${LONG_MISSED_WORDS - 1} words, in the whole video`),
       row("Same words, another take", "otherTake", `runs of ${NOTICED_WORDS} words or more Scarlet and the editor each played from a different saying, in the whole video; not a mistake`));
   }
   if (ledger) lines.push(`| Past mistakes | ${cards.map((_, i) => i === cards.length - 1 ? (ledger.pct === null ? "–" : `${ledger.pct}%`) : "").join(" | ")} |${two ? " |" : ""} every reported mistake with a free check still passes (${ledger.pass} of ${ledger.checked}, ${ledger.label}) |`);

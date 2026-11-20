@@ -41,7 +41,7 @@ page: rewrite a sheet's index.html from its spots.json and clips, with the clips
 sheet: a listening page with clips of flagged spots, from one pass per recording (needs ffmpeg).
 score: how many spots of each kind of flag the listener called real.`;
 
-export type Kind = "midword" | "control" | "wrong" | "retake" | "content";
+export type Kind = "midword" | "control" | "wrong" | "retake" | "content" | "doubled" | "half";
 
 /** What the listener is asked about each kind of spot. Mid-word flags and unflagged joins share a question, so they're blind. */
 /** The question each kind of spot asks, before the page adds where in the clip to listen. */
@@ -51,6 +51,8 @@ export const QUESTIONS: Record<Kind, string> = {
   wrong: "Scarlet took out words your editor kept. Is Scarlet's version a mistake?",
   retake: "Scarlet left in a line your editor cut for another take. Does a line play twice, or a restart stay in?",
   content: "Scarlet left in a passage your editor cut. Should a dialogue pass have taken it out?",
+  doubled: "Does a word play twice at Scarlet's join, whole or begun?",
+  half: "Does Scarlet's join leave a sentence half said?",
 };
 
 export interface Spot {
@@ -265,7 +267,10 @@ export function buildSheet(paths: readonly string[], out: string, opts: { roots:
       ...shuffled(clean.map(e => ({ kind: "control" as const, at: e.at, end: e.at, text: "" })), opts.seed).slice(0, 1),
       ...shuffled(runs(point.detail.wronglyCut.filter(x => x.words >= 2)).map(x => ({ kind: "wrong" as const, ...x })), opts.seed).slice(0, opts.perVideo),
       ...shuffled(runs(point.detail.leftIn.filter(x => x.words >= 6 && x.retake)).map(x => ({ kind: "retake" as const, ...x })), opts.seed).slice(0, Math.ceil(opts.perVideo / 2)),
-      ...shuffled(runs(point.detail.leftIn.filter(x => x.words >= 6 && !x.retake)).map(x => ({ kind: "content" as const, ...x })), opts.seed).slice(0, Math.ceil(opts.perVideo / 2)),
+      ...shuffled(runs(point.detail.leftIn.filter(x => x.words >= 6 && !x.retake && !x.otherTake)).map(x => ({ kind: "content" as const, ...x })), opts.seed).slice(0, Math.ceil(opts.perVideo / 2)),
+      // Checks not yet scored: every flag of theirs, since they are few, so the next sheet says how many are real.
+      ...(point.detail.joins?.doubled ?? []).map(j => ({ kind: "doubled" as const, at: j.at, end: j.at, text: j.text })),
+      ...(point.detail.joins?.halfSentence ?? []).map(j => ({ kind: "half" as const, at: j.at, end: j.at, text: j.text })),
     ];
     const words = (loaded.evidence.get(mediaId)?.words ?? []).filter(w => w.text.trim()).slice().sort((a, b) => a.start - b.start);
     const scarletKept = merge(kept.get(mediaId) ?? [], 0.001), editorKept = merge(published.kept[mediaId] ?? [], 0.001);
@@ -365,6 +370,8 @@ function sheetHtml(spots: readonly Spot[], src: (path: string) => string = p => 
     const t = s.offset ?? 0;
     switch (s.kind) {
       case "midword": case "control": return `Listen to Scarlet's join at <b>${at(t)}</b>. Does it chop off a word or a sound there?`;
+      case "doubled": return `Listen to Scarlet's join at <b>${at(t)}</b>. Does a word play twice there, whole or begun?`;
+      case "half": return `Listen to Scarlet's join at <b>${at(t)}</b>. Does it leave a sentence half said?`;
       case "wrong": return `At <b>${at(t)}</b> Scarlet jumps over words your editor kept (below). Is leaving them out a mistake?`;
       case "retake": return `From <b>${at(t)}</b> to <b>${at(t + (s.runSeconds ?? 0))}</b> Scarlet plays a line your editor cut for another take. Does a line play twice, or a restart stay in?`;
       case "content": return `From <b>${at(t)}</b> to <b>${at(t + (s.runSeconds ?? 0))}</b> Scarlet plays a passage your editor cut (below). Should a dialogue pass have taken it out?`;
@@ -377,7 +384,7 @@ function sheetHtml(spots: readonly Spot[], src: (path: string) => string = p => 
 <section data-id="${esc(s.id)}">
   <h2>${i + 1} of ${spots.length} <span>${esc(s.caseId)} · ${clock(s.at)} in the recording</span></h2>
   <p class="q">${where(s)}</p>
-  ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">${s.kind === "wrong" ? "Words Scarlet took out, so they're not in its clip" : "What Scarlet keeps there"}:
+  ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">${s.kind === "wrong" ? "Words Scarlet took out, so they're not in its clip" : s.kind === "doubled" || s.kind === "half" ? "The words either side of the join (‖), by the transcript" : "What Scarlet keeps there"}:
     “${esc(s.text.slice(0, 220))}${s.text.length > 220 ? "…" : ""}”</p>`}
   <div class="clips">${player("Scarlet", s.scarlet, s.offset)}
   ${s.editor ? player(s.editorApprox ? "Your editor, around the same words (couldn't line up exactly)" : "Your editor, same words first", s.editor, s.editorOffset)
@@ -452,7 +459,7 @@ paint();
 
 /** For each kind of flag, how many spots the listener called real. Unflagged joins say how often a clean join is called wrong. */
 export function scoreAnswers(spots: readonly Spot[], answers: Record<string, string>) {
-  const kinds: Kind[] = ["midword", "control", "wrong", "retake", "content"];
+  const kinds: Kind[] = ["midword", "control", "wrong", "retake", "content", "doubled", "half"];
   return Object.fromEntries(kinds.map(kind => {
     const of = spots.filter(s => s.kind === kind);
     const said = (v: string) => of.filter(s => answers[s.id] === v).length;

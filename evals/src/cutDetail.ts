@@ -81,7 +81,21 @@ export interface CutDetail {
   pieces: { total: number; short: number; editorTotal: number; editorShort: number };
   /** Words left unscored: the published video plays them, in a stretch its matcher never tied to this recording. */
   unscored: number;
+  /**
+   * Scarlet's joins that a listener hears as wrong, and the editor's cut doesn't share. `doubled`: the word or words
+   * either side say the same thing, whole or begun (“with ‖ without”). `halfSentence`: the words before the join start a
+   * sentence that never finishes, and a new one starts after it (“Now I have to ‖ The next demo”). In a listening check
+   * these were the mistakes the editor heard that no other count measured (2026-11-20).
+   */
+  joins?: { doubled: JoinFlaw[]; halfSentence: JoinFlaw[] };
 }
+
+/** A join of Scarlet's at source second `at` of the recording: the words either side of it. */
+export interface JoinFlaw { at: number; text: string }
+
+/** Words a half sentence may run to before a join and still read as abandoned rather than finished. */
+export const HALF_SENTENCE_WORDS = 6;
+const ENDS = /[.?!]["'”’)\]]*$/u;
 
 const text = (ws: readonly Word[]) => ws.map(w => w.text.trim()).join(" ");
 const tokenOf = (w: Word) => w.text.trim().toLowerCase().replace(/[^\p{L}\p{N}']+/gu, "");
@@ -232,6 +246,30 @@ export function cutDetail(words: readonly Word[], base: readonly Range[], scarle
       ...(asked(run) && { asked: true as const }) };
   };
 
+  // Joins: two words Scarlet plays one after the other with words of the recording taken out between them. A join the
+  // editor's cut makes too, between the same two words, is the editor's choice as well and isn't counted.
+  const doubled: JoinFlaw[] = [], halfSentence: JoinFlaw[] = [];
+  const keptIdx = sorted.flatMap((_, i) => s[i] === "keep" ? [i] : []);
+  const begun = (w: Word) => /[-–—]$/u.test(w.text.trim());
+  for (let k = 0; k + 1 < keptIdx.length; k++) {
+    const a = keptIdx[k]!, b = keptIdx[k + 1]!;
+    if (b === a + 1) continue;
+    const editorToo = e[a] === "keep" && e[b] === "keep" && [...Array(b - a - 1).keys()].every(n => e[a + 1 + n] !== "keep");
+    if (editorToo) continue;
+    const ta = tokens[a]!, tb = tokens[b]!;
+    const shorter = ta.length <= tb.length ? ta : tb, longer = ta.length <= tb.length ? tb : ta;
+    const prefix = !!shorter && longer.startsWith(shorter) && (shorter.length >= 3 || begun(sorted[ta.length <= tb.length ? a : b]!));
+    const two = k >= 1 && k + 2 < keptIdx.length && tokens[keptIdx[k - 1]!] === tokens[b] && tokens[a] === tokens[keptIdx[k + 2]!];
+    const pair = `${text(sorted.slice(Math.max(0, a - 3), a + 1))} ‖ ${text(sorted.slice(b, b + 4))}`;
+    if (ta && tb && (ta === tb || prefix || two)) doubled.push({ at: sorted[a]!.end, text: pair });
+    // Half a sentence: what Scarlet plays since the last sentence ended is a few words that never end one, and the word
+    // after the join starts the next sentence.
+    let since = 0;
+    for (let n = k; n >= 0 && !ENDS.test(sorted[keptIdx[n]!]!.text.trim()); n--) since++;
+    const startsNew = b > 0 && ENDS.test(sorted[b - 1]!.text.trim());
+    if (!ENDS.test(sorted[a]!.text.trim()) && startsNew && since >= 1 && since <= HALF_SENTENCE_WORDS) halfSentence.push({ at: sorted[a]!.end, text: pair });
+  }
+
   const mine = pieces(scarlet), theirs = pieces(editor);
   return {
     decisions: {
@@ -246,6 +284,7 @@ export function cutDetail(words: readonly Word[], base: readonly Range[], scarle
     pauses, takes,
     pieces: { total: mine.total, short: mine.short, editorTotal: theirs.total, editorShort: theirs.short },
     unscored,
+    joins: { doubled, halfSentence },
   };
 }
 
@@ -284,5 +323,6 @@ export function addCutDetails(parts: readonly CutDetail[]): CutDetail {
   const sum = <T extends Record<string, number>>(pick: (d: CutDetail) => T): T =>
     parts.reduce((acc, d) => { for (const [k, v] of Object.entries(pick(d))) (acc as Record<string, number>)[k] = ((acc as Record<string, number>)[k] ?? 0) + v; return acc; }, {} as T);
   return { decisions: sum(d => d.decisions), wronglyCut: parts.flatMap(d => d.wronglyCut), leftIn: parts.flatMap(d => d.leftIn),
-    pauses: sum(d => d.pauses), takes: sum(d => d.takes), pieces: sum(d => d.pieces), unscored: parts.reduce((n, d) => n + (d.unscored ?? 0), 0) };
+    pauses: sum(d => d.pauses), takes: sum(d => d.takes), pieces: sum(d => d.pieces), unscored: parts.reduce((n, d) => n + (d.unscored ?? 0), 0),
+    joins: { doubled: parts.flatMap(d => d.joins?.doubled ?? []), halfSentence: parts.flatMap(d => d.joins?.halfSentence ?? []) } };
 }

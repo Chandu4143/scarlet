@@ -78,8 +78,8 @@ describe("rateScore", () => {
 describe("factors", () => {
   it("reads Watchability by defect rate per 10 min and Editorial match on the editor's scale", () => {
     const f = factors(score(), detail());
-    // 2 clipped words in 20 min = 1/10 min; half-life 4 -> 100 * 0.5^(1/4) = 84.1%.
-    expect(f.wholeWords).toMatchObject({ pct: 84.1, detail: "2 of 100 cut edges land inside a sounding word (1/10 min)" });
+    // Mid-word joins are counted under the card, not scored.
+    expect(f).not.toHaveProperty("wholeWords");
     expect(f.noWrongCuts.pct).toBe(100);
     expect(f.noMissedRetakes.pct).toBe(100);
     expect(f.noStutter.pct).toBe(100);
@@ -97,14 +97,13 @@ describe("factors", () => {
     expect(f.knownMoments.pct).toBeNull();
   });
 
-  it("penalizes clipped words, wrong cuts, long misses, and stutters steeply by rate per 10 min", () => {
-    // On a 20 min cut: 8 clipped = 4/10m (50%), 6 wrong cuts = 3/10m (50%), 6 long misses = 3/10m (50%), 4 stutters = 2/10m (50%).
+  it("penalizes wrong cuts, retakes left in, and stutters steeply by rate per 10 min", () => {
+    // On a 20 min cut: 6 wrong cuts = 3/10m (50%), 6 retakes left in = 3/10m (50%), 4 stutters = 2/10m (50%).
     // Short 2-5w leftIn runs and long content the editor dropped outright do not penalize noMissedRetakes.
     const f = factors(
       score({ clipped: 8 }),
       detail({ wrong: [1, 2, 2, 3, 4, 5, 6], left: [2, 3, 5, 6, 6, 7, 8, 9, 12], content: [20, 40], short: 4 }),
     );
-    expect(f.wholeWords.pct).toBe(50);
     expect(f.noWrongCuts.pct).toBe(50);
     expect(f.noMissedRetakes.pct).toBe(50);
     expect(f.noStutter.pct).toBe(50);
@@ -139,17 +138,17 @@ describe("factors", () => {
     expect(noWords.linesKept.pct).toBe(100);
     const noVideo = factors(score({ reference: false }));
     expect(noVideo.deadAir.pct).toBeNull();
-    expect(noVideo.wholeWords.pct).toBe(84.1);
+    expect(noVideo.noStutter.pct).toBeNull();
   });
 });
 
 describe("mistakes", () => {
   it("counts hard craft bugs separately from content the editor dropped and short 2–5 word tightenings left in", () => {
     const m = mistakes(score({ clipped: 4 }), detail({ wrong: [1, 2, 6], left: [1, 2, 5, 6, 12], content: [7], short: 1 }));
-    // Hard bugs: 2 wrong (>=2w) + 2 retakes left in (>=6w) + 4 clipped + 1 stutter = 9 in 20 min (4.5 / 10 min).
+    // Craft mistakes: 2 retakes left in (>=6w) + 1 stutter = 3 in 20 min (1.5 / 10 min). 2 wrong cuts and 4 clipped are counted apart.
     // Taste: 1 content run, and 2 short tightenings (words 2 and 5) in 20 min (1 / 10 min). Total leftIn = 5.
     expect(m).toMatchObject({
-      wronglyCut: 2, longMissed: 2, contentLeftIn: 1, clippedWords: 4, stutters: 1, total: 9, per10Min: 4.5,
+      wronglyCut: 2, longMissed: 2, contentLeftIn: 1, clippedWords: 4, stutters: 1, total: 3, per10Min: 1.5,
       styleLeftIn: 2, stylePer10Min: 1, leftIn: 5,
     });
   });
@@ -193,6 +192,20 @@ describe("cutDetail", () => {
     expect(d.wronglyCut[0]!.otherTake).toBeUndefined();
     expect(d.leftIn).toEqual([expect.objectContaining({ text: "we can compare them" })]);
     expect(d.leftIn[0]!.otherTake).toBeUndefined();
+  });
+
+  it("finds a word doubled at one of Scarlet's joins, and half a sentence left before one, unless the editor joins the same words", () => {
+    const said = (text: string) => text.split(" ").map((t, i) => ({ text: t, start: i, end: i + 0.8 }));
+    // “a model. with prompting, without guidance”: Scarlet joins “with” to “without”.
+    const doubledWords = said("a model. With prompting, without specific guidance on time.");
+    const all = [{ start: 0, end: 9 }];
+    const doubled = cutDetail(doubledWords, all, [{ start: 0, end: 3 }, { start: 4, end: 9 }], all);
+    expect(doubled.joins!.doubled.map(j => j.text)).toEqual(["a model. With ‖ without specific guidance on"]);
+    expect(cutDetail(doubledWords, all, [{ start: 0, end: 3 }, { start: 4, end: 9 }], [{ start: 0, end: 3 }, { start: 4, end: 9 }]).joins!.doubled).toEqual([]);
+    // “It just isn't ‖ It's not easy at all.”: Scarlet keeps three words of a sentence, then the next one starts.
+    const halfWords = said("That is easy. It just isn't so. It's not easy at all.");
+    const half = cutDetail(halfWords, [{ start: 0, end: 12 }], [{ start: 0, end: 6 }, { start: 7, end: 12 }], [{ start: 0, end: 12 }]);
+    expect(half.joins!.halfSentence.map(j => j.text)).toEqual(["easy. It just isn't ‖ It's not easy at"]);
   });
 
   it("counts a piece under a second between two cuts as a stutter", () => {
@@ -274,7 +287,7 @@ describe("card", () => {
     expect(without.overall).toBe(Math.round(Math.sqrt(without.watchability! * without.editorial!) * 10) / 10);
     expect(overallOf(withMoments.factors, common)).toBe(overallOf(without.factors, common));
     expect(withMoments.overall).toBeLessThan(without.overall!);
-    expect(scorecardMarkdown([without, withMoments])).toContain("geometric mean of Watchability (4) and Editorial match (10)");
+    expect(scorecardMarkdown([without, withMoments])).toContain("geometric mean of Watchability (2) and Editorial match (11)");
   });
 });
 
@@ -316,11 +329,12 @@ describe("scorecardMarkdown", () => {
 
   it("splits hard craft mistakes from short editorial tightenings and warns on small sample sizes", () => {
     const md = scorecardMarkdown([card("main", [{ caseId: "a", score: withDetail(score(), detail({ wrong: [3], left: [2, 4, 8] })) }])]);
-    // Hard bugs: 1 wrong + 1 longMissed (8w) + 2 clipped + 0 stutter = 4 in 20 min -> 2/10 min.
+    // Craft mistakes: 1 retake left in (8w) + 0 stutters = 1 in 20 min -> 0.5/10 min; the wrong cut and 2 clipped are counted apart.
     // Short tightenings: 2 (words 2, 4) in 20 min -> 1/10 min.
     expect(md).toContain("| **Watchability** |");
     expect(md).toContain("| **Editorial match** |");
-    expect(md).toContain("| **Flags per 10 finished min** | 2 |");
+    expect(md).toContain("| **Craft mistakes per 10 finished min** | 0.5 |");
+    expect(md).toContain("| *Checked by ear next:* words a cut lands inside | 2 |");
     expect(md).toContain("| Retake left in | 1 |");
     expect(md).toContain("| Content the editor cut, left in | 0 |");
     expect(md).toContain("| Short tightenings left in (per 10 min) | 1 |");

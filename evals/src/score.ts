@@ -94,8 +94,10 @@ interface PacingScore {
  * v3: the same words played from another saying are a take choice, not a line lost or left in.
  * v4: words the published video plays where its matcher found no recording are unscored; a long run left in is a missed
  * retake only when Scarlet's cut plays the line twice, and one Scarlet asked the editor about is left for their call.
+ * v5: Watchability scores only what the editor's ears confirmed (retakes left in, stutter cuts); mid-word joins, a word
+ * doubled at a join and half a sentence at one are counted until checked by ear; words the editor kept are Editorial match.
  */
-export const RUBRIC = "dialogue-playable-v4";
+export const RUBRIC = "dialogue-playable-v5";
 export type OperatingPoint = "automatic" | "recommended";
 interface Playable {
   seconds: number; kept: Record<string, Range[]>; edges: EdgeSummary; pacing: PacingSummary;
