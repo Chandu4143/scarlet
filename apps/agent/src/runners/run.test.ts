@@ -114,9 +114,14 @@ rl.on("close", () => process.exit(Number(process.env.FAKE_CODE ?? 0)));
 const mcp = { command: "node", args: ["/scarlet/mcp/cli.js"], env: { SCARLET_SERVER: "http://localhost:4000", SCARLET_TOKEN: "agent-token" } };
 
 // The same stand-in in Node, installed on Windows as npm installs each CLI: a .cmd shim beside its package. The shim
-// only fails. Scarlet starts the package's own entry with Node, so the request never passes through cmd.exe.
+// only fails. Scarlet starts the package's own entry with Node, so the request never passes through cmd.exe. As the
+// shell stand-in does, it hands `acp` to the ACP stand-in, which answers each request as it comes.
 const FAKE_NODE = `import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 const dir = process.env.FAKE_DIR, args = process.argv.slice(2), NL = String.fromCharCode(10);
+if (args[0] === "acp" && process.env.FAKE_ACP) {
+  createRequire(import.meta.url)(process.env.FAKE_ACP_SCRIPT);
+} else {
 writeFileSync(dir + "/args", args.map(a => a + NL).join(""));
 const input = [];
 for await (const chunk of process.stdin) input.push(chunk);
@@ -127,6 +132,7 @@ process.stdout.write(readFileSync(dir + "/out"));
 if (process.env.FAKE_ERR) process.stderr.write(process.env.FAKE_ERR + NL);
 if (process.env.FAKE_SLEEP) await new Promise(r => setTimeout(r, Number(process.env.FAKE_SLEEP) * 1000));
 process.exitCode = Number(process.env.FAKE_CODE ?? 0);
+}
 `;
 const NPM_PACKAGES = { claude: "@anthropic-ai/claude-code", codex: "@openai/codex", gemini: "@google/gemini-cli" } as const;
 

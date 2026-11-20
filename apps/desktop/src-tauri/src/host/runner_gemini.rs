@@ -4,7 +4,6 @@
 //! thinking level (`thought_level`), session resume (`session/resume`), and token usage reporting.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1049,11 +1048,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-
     /// A fake `agy acp` that logs what it is sent. Its first turn asks to run a shell command, which Scarlet refuses,
     /// and ends there, as agy does. Unless `refuses_always`, the turn after says what it did.
-    fn fake_agy(dir: &Path, refuses_always: bool) -> (std::path::PathBuf, std::path::PathBuf) {
+    #[cfg(unix)]
+    fn fake_agy(dir: &std::path::Path, refuses_always: bool) -> (std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let log_path = dir.join("requests.jsonl");
         let script = dir.join("fake-agy");
@@ -1099,6 +1097,7 @@ done
         (script, log_path)
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn runs_acp_session_with_model_effort_permissions_and_usage() {
         let dir = tempfile::tempdir().unwrap();
@@ -1135,6 +1134,7 @@ done
         assert_eq!(events.iter().filter(|e| e.kind == "result").count(), 1);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn stops_a_run_whose_turns_keep_ending_on_refused_tools() {
         let dir = tempfile::tempdir().unwrap();

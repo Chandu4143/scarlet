@@ -720,6 +720,20 @@ it("sends words chosen in a call's passage as a revision of that one cut, where 
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
 });
 
+it("says where a call's cut is and where the playhead is after its numbered tag", async () => {
+  const ready = buildThreads(current).find(t => t.needs === "decision")!;
+  useUiStore.getState().setAgentContext({ changeId: ready.latest!.id, cutIndex: 0, version: project.head!, time: 2.3, end: 2.5, clipIds: [], label: "Cut 3" });
+  usePlayerStore.setState({ time: 177.4 });
+  await show({ thread: ready, targetTag: "Cut 3", aimTime: 167.2, pausedAt: { time: 177.4, version: "ver_before" } });
+  // The tag keeps the call's number, paused or not: the playhead's time is beside it.
+  expect(aimName()?.textContent).toBe("Cut 3");
+  expect(container.querySelector(".composer-aim-when")?.textContent).toBe("at 2:47 · Playhead 2:57");
+  // The playhead's clock follows the player, a second at a time.
+  await act(async () => usePlayerStore.setState({ time: 181.9 }));
+  expect(container.querySelector(".composer-aim-when")?.textContent).toBe("at 2:47 · Playhead 3:01");
+  usePlayerStore.setState({ time: 0 });
+});
+
 it("shows where the editor paused in an open cut's tag, and sends the message to the cut with that frame", async () => {
   const ready = buildThreads(current).find(t => t.needs === "decision")!;
   useUiStore.getState().setAgentContext({ changeId: ready.latest!.id, cutIndex: 0, version: project.head!, time: 2.3, end: 2.5, clipIds: [], label: "Cut at 0:02" });
