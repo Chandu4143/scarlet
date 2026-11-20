@@ -17,21 +17,70 @@ pub fn private_directory(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let script = concat!(
-            "$ErrorActionPreference='Stop';$id=[System.Security.Principal.WindowsIdentity]::GetCurrent().User;",
-            "$acl=[System.Security.AccessControl.DirectorySecurity]::new();$acl.SetOwner($id);$acl.SetAccessRuleProtection($true,$false);",
-            "$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($id,'FullControl','ContainerInherit,ObjectInherit','None','Allow'));",
-            "[System.IO.Directory]::SetAccessControl($env:SCARLET_PRIVATE_DIRECTORY,$acl)"
-        );
-        let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()))
-            .join(r"System32\WindowsPowerShell\v1.0");
-        let status = std::process::Command::new(powershell.join("powershell.exe"))
-            .args(["-NoProfile", "-NonInteractive", "-Command", script]).env("PSModulePath", powershell.join("Modules"))
-            .env("SCARLET_PRIVATE_DIRECTORY", path).creation_flags(crate::util::CREATE_NO_WINDOW).status()?;
-        anyhow::ensure!(status.success(), "could not restrict workspace permissions");
-    }
+    owner_only(path)?;
+    Ok(())
+}
+
+/// Give the folder to the current user alone: they own it, and its access list holds only them, with full control
+/// that its files and folders inherit. Nothing is inherited from the folder above.
+#[cfg(windows)]
+fn owner_only(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+        TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // The user this process runs as.
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: the pseudo-handle of this process needs no closing; the token handle is closed below.
+    anyhow::ensure!(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0, "could not read the current user: {}", std::io::Error::last_os_error());
+    let mut len = 0u32;
+    // SAFETY: the first call only asks for the size; the buffer is u64s, aligned for TOKEN_USER.
+    let user = unsafe {
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+        let mut user = vec![0u64; (len as usize).div_ceil(8)];
+        let read = GetTokenInformation(token, TokenUser, user.as_mut_ptr().cast(), len, &mut len);
+        let failed = std::io::Error::last_os_error();
+        CloseHandle(token);
+        anyhow::ensure!(read != 0, "could not read the current user: {failed}");
+        user
+    };
+    // SAFETY: GetTokenInformation filled the buffer with a TOKEN_USER whose SID points inside the same buffer.
+    let sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_ALL_ACCESS,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: sid.cast(),
+        },
+    };
+    let mut acl: *mut ACL = std::ptr::null_mut();
+    // SAFETY: one entry whose SID outlives the call; the new list is freed with LocalFree below.
+    let made = unsafe { SetEntriesInAclW(1, &access, std::ptr::null(), &mut acl) };
+    anyhow::ensure!(made == ERROR_SUCCESS, "could not restrict workspace permissions: {}", std::io::Error::from_raw_os_error(made as i32));
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+    // SAFETY: the path is NUL-terminated, and the SID and list live until after the call.
+    let set = unsafe {
+        let set = SetNamedSecurityInfoW(wide.as_ptr(), SE_FILE_OBJECT, info, sid, std::ptr::null_mut(), acl, std::ptr::null());
+        LocalFree(acl.cast());
+        set
+    };
+    anyhow::ensure!(set == ERROR_SUCCESS, "could not restrict workspace permissions: {}", std::io::Error::from_raw_os_error(set as i32));
     Ok(())
 }
 
@@ -328,6 +377,25 @@ mod tests {
         assert_eq!(level, log::Level::Warn);
     }
 
+    /// Whether the user owns the path, whether its access list is protected, then how many rules it holds and the
+    /// first one: whether it is the user's, its rights and inheritance, and whether it was inherited.
+    #[cfg(windows)]
+    fn access(path: &Path) -> String {
+        use std::os::windows::process::CommandExt;
+        let script = concat!(
+            "$ErrorActionPreference='Stop';$sid=[System.Security.Principal.SecurityIdentifier];",
+            "$u=[System.Security.Principal.WindowsIdentity]::GetCurrent().User;$p=$env:SCARLET_TEST_PATH;",
+            "$a=if([System.IO.Directory]::Exists($p)){[System.IO.Directory]::GetAccessControl($p)}else{[System.IO.File]::GetAccessControl($p)};",
+            "$r=@($a.GetAccessRules($true,$true,$sid));",
+            "'{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f ($a.GetOwner($sid) -eq $u),$a.AreAccessRulesProtected,$r.Count,($r[0].IdentityReference -eq $u),",
+            "$r[0].FileSystemRights,$r[0].InheritanceFlags,$r[0].IsInherited"
+        );
+        let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("SCARLET_TEST_PATH", path).creation_flags(crate::util::CREATE_NO_WINDOW).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     #[test]
     fn makes_the_work_folder_private_and_refuses_a_file_in_its_place() {
         let dir = tempfile::tempdir().unwrap();
@@ -353,6 +421,20 @@ mod tests {
             let link = dir.path().join("link");
             std::os::unix::fs::symlink(&open, &link).unwrap();
             assert!(private_directory(&link).is_err());
+        }
+        #[cfg(windows)]
+        {
+            // A folder made under the temp folder inherits access for others. Made private, it is the user's alone,
+            // and what is made in it later is theirs alone too.
+            let open = dir.path().join("open");
+            std::fs::create_dir(&open).unwrap();
+            std::fs::write(open.join("mcp.json"), "sct").unwrap();
+            private_directory(&open).unwrap();
+            std::fs::write(open.join("later.json"), "").unwrap();
+            assert_eq!(access(&open), "True|True|1|True|FullControl|ContainerInherit, ObjectInherit|False");
+            // Its owner is whoever the system makes the owner of new files, which for an administrator may be their group.
+            assert!(access(&open.join("later.json")).ends_with("|False|1|True|FullControl|None|True"));
+            assert_eq!(std::fs::read_to_string(open.join("mcp.json")).unwrap(), "sct");
         }
         // A file where the folder should be is an error, not something to write through.
         let file = dir.path().join("a-file");
