@@ -841,12 +841,42 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
     const middle = (w: TimeRange) => (w.start + w.end) / 2;
     // What one applied join plays and takes out, as words: the ones it removes on this version, and the ones the
     // version with this part's cuts plays up to it and from it on.
-    const wordsAtJoin = async (range: TimeRange, at: number) => {
-      const said = await transcripts();
-      if (!said.size) return undefined;
+    const joinWords = (said: Map<string, TranscriptWord[]>, range: TimeRange, at: number) => {
       const around = timelineWords(appliedPreview(), said, { start: at - JOIN_CONTEXT_SECONDS, end: at + JOIN_CONTEXT_SECONDS });
       return { before: around.filter(w => middle(w) < at).map(w => w.text), after: around.filter(w => middle(w) >= at).map(w => w.text),
         removed: timelineWords(tl, said, range).filter(w => middle(w) >= range.start && middle(w) < range.end).map(w => w.text) };
+    };
+    const wordsAtJoin = async (range: TimeRange, at: number) => {
+      const said = await transcripts();
+      return said.size ? joinWords(said, range, at) : undefined;
+    };
+    // The scan's own reading of each recording, page after page: each page gives the words past the last one taken.
+    let scanReading: Map<string, TranscriptWord[]> | undefined;
+    const scanned = () => {
+      if (scanReading) return scanReading;
+      scanReading = new Map();
+      for (const page of sources.evidence.scans.filter(s => s.segments?.length).sort((a, b) => a.start - b.start)) {
+        const list = scanReading.get(page.mediaId) ?? [];
+        const from = list.at(-1)?.end ?? -Infinity;
+        list.push(...page.segments!.flatMap(s => s.words).filter(w => w.text.trim() && (w.start + w.end) / 2 >= from).sort((a, b) => a.start - b.start));
+        scanReading.set(page.mediaId, list);
+      }
+      return scanReading;
+    };
+    /**
+     * The same join in the words the scan read, when its pages hold both of the join's edges. A transcript tidies a
+     * restart away and times the words it keeps on whichever take it likes: of “which is funny because, which is, uh,
+     * which is funny because as a company” it had one “which is” on the take before the last, so a cut that ended
+     * right before the last take read as taking “which is” from it (2026-11-19).
+     */
+    const scanWordsAtJoin = (range: TimeRange, at: number) => {
+      const reading = scanned();
+      const held = (t: number) => audibleMediaClips(tl).some(c => {
+        if (t < c.timelineIn || t >= c.timelineIn + clipDuration(c)) return false;
+        const source = timelineToSource(c, t);
+        return sources.evidence.scans.some(s => s.mediaId === c.mediaId && s.segments?.length && s.start <= source && source <= s.end);
+      });
+      return reading.size && held(Math.max(0, range.start - .5)) && held(Math.min(duration - 1e-3, range.end + .5)) ? joinWords(reading, range, at) : undefined;
     };
     // Existing doubled-word checks apply to the version that will actually be kept. A requested cut that
     // placement sends to review can still leave a partial repeat in its preview; return that to its author too.
@@ -902,8 +932,11 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
         const said = forReview || req.repeatHint ? undefined : await wordsAtJoin(range, playback.at);
         const dropped = contributing.flatMap(({ c }) => c.dropWords ?? []).map(phrase);
         const joinPlays = said && `…${said.before.slice(-EDGE_WORDS_SHOWN).join(" ")} ‖ ${said.after.slice(0, EDGE_WORDS_SHOWN).join(" ")}…`;
+        // An overshoot the transcript shows and the scan's reading of the same join doesn't is the transcript's tidying.
+        const asScanned = said ? scanWordsAtJoin(range, playback.at) : undefined;
+        const alsoRead = asScanned && new Set(edgeOvershoots(asScanned.before, asScanned.removed, asScanned.after).map(o => o.side));
         for (const { side, words } of said ? edgeOvershoots(said.before, said.removed, said.after) : []) {
-          if (dropped.includes(phrase(words))) continue;
+          if (dropped.includes(phrase(words)) || (alsoRead && !alsoRead.has(side))) continue;
           const target = side === "out" ? contributing[0]! : contributing.at(-1)!;
           if (side === "out" ? target.d.start !== join.start : target.d.end !== join.end) continue;
           const them = words.includes(" ") ? "them" : "it";

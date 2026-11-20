@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- A cut whose edge Scarlet only had to move back into a pause, with no word in between, now goes in on its own instead of waiting for you as a call.
 - On Windows, Scarlet's agent now locks its settings file, which holds the key to the engine, to your account each time it loads it, so another account on the PC can no longer read it through a permission left on the file itself.
 - Export can save captions as SubRip (.srt) or WebVTT (.vtt) files.
 - When you ask Scarlet to keep a video's original sound, it no longer plays that sound a second time on another track, which made it louder.
