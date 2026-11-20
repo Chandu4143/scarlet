@@ -9,7 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findChrome, graphicCoverage, graphicOver, renderPdfDocument, renderGraphic, renderGraphicStill, renderTimelineFrame, type MissingFont } from "@scarlet/render";
+import { findChrome, graphicCoverage, graphicOver, renderPdfDocument, renderGraphic, renderTimelineFrame } from "@scarlet/render";
 import type { GraphicRenderRequest, GraphicRenderResponse, SaveStyleGuideRequest, TaskAttachment, User } from "@scarlet/shared";
 import { newId, type MediaAsset, type Project, type StyleGuide } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";

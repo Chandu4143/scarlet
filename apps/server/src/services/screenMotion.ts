@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { probeMedia, screenFrameSize } from "@scarlet/render";
 import type { MediaAsset } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
-import { pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
+import { pictureGrid, pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
 
 /** Bump when the reading changes: the sampling, the grid or how changes become areas. Kept readings are read again. */
 const MOTION_VERSION = 1;
@@ -33,21 +33,6 @@ export interface MotionSecond {
   at: number;
   /** Each area: [left, top, right, bottom] as fractions of the frame, then the share of the frame's cells in it that changed. */
   areas: Array<[number, number, number, number, number]>;
-}
-
-/** Mean grey of each cell of the grid, from every pixel. */
-function grid(rgb: Buffer, width: number, height: number): Float32Array {
-  const sums = new Float32Array(COLS * ROWS), counts = new Uint32Array(COLS * ROWS);
-  for (let y = 0; y < height; y++) {
-    const row = Math.min(ROWS - 1, Math.floor(y * ROWS / height));
-    for (let x = 0; x < width; x++) {
-      const p = (y * width + x) * 3, cell = row * COLS + Math.min(COLS - 1, Math.floor(x * COLS / width));
-      sums[cell] = sums[cell]! + (rgb[p]! * 3 + rgb[p + 1]! * 6 + rgb[p + 2]!) / 10;
-      counts[cell] = counts[cell]! + 1;
-    }
-  }
-  for (let i = 0; i < sums.length; i++) sums[i] = counts[i] ? sums[i]! / counts[i]! : 0;
-  return sums;
 }
 
 /**
@@ -89,7 +74,8 @@ async function readWindow(ctx: Ctx, media: VideoMedia, file: string, { start, en
   const seconds = new Map<number, Uint8Array>();
   let last: Float32Array | undefined;
   await withFrames(ctx, media, file, "screen-motion", { start, end, fps: MOTION_FPS, width, height, signal }, (at, rgb) => {
-    const now = grid(rgb, width, height);
+    // Every pixel: a pointer-sized change has to register.
+    const now = pictureGrid(rgb, width, height, COLS, ROWS, 1);
     if (last) {
       const second = Math.floor(at - 1e-6);
       let cells = seconds.get(second);

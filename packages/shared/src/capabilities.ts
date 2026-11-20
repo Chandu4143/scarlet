@@ -37,6 +37,14 @@ export interface AgentCapabilities {
 /** Wait for a client whose tool deadline is unknown: a margin below the common 60-second one. */
 export const DEFAULT_TOOL_WAIT_SECONDS = 45;
 
+/**
+ * Seconds one tool call may wait for evidence still being measured: `margin` under the harness's tool deadline, to
+ * leave time for the answer itself. 220 s for a harness Scarlet launched and 25 s for a client it didn't, at a margin of 20.
+ */
+export function toolWait(caps: Pick<AgentCapabilities, "toolWaitSeconds">, margin: number): number {
+  return Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - margin));
+}
+
 // A 58-minute transcript exceeded Claude Code's result window and was saved to a file its
 // file-disabled session couldn't read. Leave headroom below its 50,000-character spill point.
 export const DEFAULT_RESULT_CHARS = 40_000;
