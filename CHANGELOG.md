@@ -7,6 +7,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 19, 2026
 
 - Keeping one cut Scarlet hadn't checked no longer puts the other unchecked cuts in without asking you.
+- With reduced motion on, the ring round the mic stays still while it records.
 - Edits with a Gemini model now get all of Scarlet's editing tools and your whole skill, and keep working instead of stopping early as if they were done.
 - When Scarlet asks to see several stretches of the footage, it now gets them together instead of asking again for the ones that weren't ready, which saves time and tokens on edits that look at the video.
 - A transcript's progress now counts the last check for restarts and filler words, so it no longer sits at 100% while that check runs.
