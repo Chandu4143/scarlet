@@ -78,6 +78,7 @@ if (process.env.FAKE_CODE) process.exit(Number(process.env.FAKE_CODE));
 const send = message => console.log(JSON.stringify({ jsonrpc: "2.0", ...message }));
 const emit = name => process.stdout.write(readFileSync(dir + "/" + name));
 let promptId = null;
+let prompts = 0;
 const configOptions = [
   { id: "model", category: "model", currentValue: "gemini-2.5-pro", options: [{ value: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }, { value: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }] },
   { id: "thought_level", category: "thought_level", currentValue: "medium", options: [{ value: "low" }, { value: "medium" }, { value: "high" }] },
@@ -98,7 +99,8 @@ rl.on("line", line => {
   if (method === "session/prompt") {
     promptId = id;
     if (process.env.FAKE_ACP_FAIL_PROMPT) return send({ id, error: { code: -32603, message: process.env.FAKE_ACP_FAIL_PROMPT } });
-    emit("out");
+    // A turn after the first is the run carrying on: it says nothing more, unless every turn repeats the first.
+    if (prompts++ === 0 || process.env.FAKE_ACP_EVERY_TURN) emit("out");
     if (process.env.FAKE_ACP_STOP_REASON) return send({ id, result: { stopReason: process.env.FAKE_ACP_STOP_REASON } });
     if (!process.env.FAKE_SLEEP) return send({ id, result: { stopReason: "end_turn" } });
   }
@@ -188,7 +190,7 @@ interface Fake {
   /** What Codex writes to its --output-last-message file. */
   last?: string;
   appServer?: true | "unsupported" | "reject-turn";
-  acp?: true | { failPrompt?: string; stopReason?: string };
+  acp?: true | { failPrompt?: string; stopReason?: string; everyTurn?: true };
   beforeStartResponse?: string[];
   afterInterrupt?: string[];
 }
@@ -225,6 +227,7 @@ async function run(runner: RunAgentFn, fake: Fake, opts: Partial<RunAgentOptions
       ...(fake.acp ? { FAKE_ACP: "1" } : {}),
       ...(typeof fake.acp === "object" && fake.acp.failPrompt ? { FAKE_ACP_FAIL_PROMPT: fake.acp.failPrompt } : {}),
       ...(typeof fake.acp === "object" && fake.acp.stopReason ? { FAKE_ACP_STOP_REASON: fake.acp.stopReason } : {}),
+      ...(typeof fake.acp === "object" && fake.acp.everyTurn ? { FAKE_ACP_EVERY_TURN: "1" } : {}),
       ...(fake.appServer === "unsupported" ? { FAKE_APP_UNSUPPORTED: "1" } : {}),
       ...(fake.appServer === "reject-turn" ? { FAKE_APP_FAIL_START: "1" } : {}),
       FAKE_NODE_BIN: process.execPath,
@@ -552,7 +555,7 @@ describe("runCodex", { timeout: 20_000 }, () => {
 describe("runGemini", { timeout: 20_000 }, () => {
   const upd = (update: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "g1", update } });
 
-  it("runs an ACP session with GEMINI.md, model/effort config, MCP-only permissions, and usage", async () => {
+  it("runs an ACP session with Scarlet's prompt, model/effort config, MCP-only permissions, and usage", async () => {
     const { result, events, cwd, stdin, args } = await run(runGemini, {
       acp: true,
       lines: [
@@ -588,14 +591,17 @@ describe("runGemini", { timeout: 20_000 }, () => {
       sessionId: "g1",
       usage: { model: "gemini-2.5-flash", inputTokens: 60, outputTokens: 9, cacheReadTokens: 40, cacheWriteTokens: 0, reasoningTokens: 0 },
     });
+    // agy ended the first turn on the refused bash tool: the run carried on, and was told why.
     expect(events.map((e) => [e.type, e.text])).toEqual([
       ["log", "Gemini session started (gemini-2.5-flash)"],
       ["log", "Adding captions."],
+      ["log", "Scarlet refused bash: only Scarlet's tools run here. Gemini carries on."],
       ["result", "Adding captions."],
     ]);
+    expect(events[2]!.data).toEqual({ kind: "tool_refused", harnessTool: "bash" });
     expect(await args()).toEqual(["acp", "--sandbox", "--disable-telemetry"]);
-    expect(await readFile(join(cwd, "GEMINI.md"), "utf8")).toBe("SYS");
-    expect(await whoCanOpen(join(cwd, "GEMINI.md"))).toEqual(OWNER_ONLY);
+    // No GEMINI.md: agy cuts a rule file off at 24,000 bytes. The prompt is the session's own.
+    await expect(readFile(join(cwd, "GEMINI.md"), "utf8")).rejects.toThrow();
 
     const sent = (await stdin()).trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(sent.filter((m) => m.method).map((m) => m.method)).toEqual([
@@ -604,7 +610,10 @@ describe("runGemini", { timeout: 20_000 }, () => {
       "session/set_config_option",
       "session/set_config_option",
       "session/prompt",
+      "session/prompt",
     ]);
+    expect(sent.find((m) => m.method === "session/new")?.params).toMatchObject({ _meta: { antigravity: { systemPrompt: { append: "SYS" } } } });
+    expect(JSON.stringify(sent.filter((m) => m.method === "session/prompt").at(-1))).toContain("Scarlet refused bash: only Scarlet's own tools");
     // Allowed Scarlet MCP tool, denied built-in bash tool.
     expect(sent.find((m) => m.id === 99)).toMatchObject({ result: { outcome: { outcome: "selected", optionId: "allow1" } } });
     expect(sent.find((m) => m.id === 100)).toMatchObject({ result: { outcome: { outcome: "selected", optionId: "deny2" } } });
@@ -620,6 +629,14 @@ describe("runGemini", { timeout: 20_000 }, () => {
 
     const missing = await run(runGemini, { acp: true }, { agent: "gemini", resumeSession: "gone" });
     expect(missing.result).toMatchObject({ ok: false, resumeFailed: true });
+  });
+
+  it("stops a run whose turns keep ending on refused tools", async () => {
+    const bash = JSON.stringify({ jsonrpc: "2.0", id: 100, method: "session/request_permission",
+      params: { toolCall: { name: "bash" }, options: [{ optionId: "allow", kind: "allow_once" }, { optionId: "deny", kind: "reject_once" }] } });
+    const { result, stdin } = await run(runGemini, { acp: { everyTurn: true }, lines: [bash] }, { agent: "gemini" });
+    expect(result).toMatchObject({ ok: false, error: "Gemini stopped after Scarlet refused bash, a tool that doesn't run in Scarlet, 5 times." });
+    expect((await stdin()).match(/"method":"session\/prompt"/g)).toHaveLength(5);
   });
 
   it("fails on a prompt error, refusal stopReason, or non-zero exit", async () => {

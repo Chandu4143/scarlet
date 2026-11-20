@@ -4,8 +4,6 @@
  * Scarlet MCP tools and rejects all built-in file/shell tools. Supports model selection,
  * thinking level (`thought_level`), session resume (`session/resume`), and token usage reporting.
  */
-import { join } from "node:path";
-import { writePrivateFile } from "../private-files.js";
 import {
   briefInput,
   DEFAULT_STALL_MS,
@@ -291,21 +289,23 @@ export function acpMcpServer(mcp: McpSpec): Record<string, unknown> {
 export interface GeminiCommand {
   file: string;
   args: string[];
-  files: Record<string, string>;
 }
 
-export function buildGeminiCommand(
-  opts: Pick<RunAgentOptions, "systemPrompt" | "cwd">,
-  bin: string,
-): GeminiCommand {
-  return {
-    file: bin,
-    args: ["acp", "--sandbox", "--disable-telemetry"],
-    files: {
-      [join(opts.cwd, "GEMINI.md")]: opts.systemPrompt,
-    },
-  };
+/**
+ * agy reads Scarlet's prompt from the session's own system prompt (`systemPromptMeta`), not a `GEMINI.md`: it cuts a
+ * rule file off at 24,000 bytes, and a pass's prompt with the editor's skill runs past that.
+ */
+export function buildGeminiCommand(bin: string): GeminiCommand {
+  return { file: bin, args: ["acp", "--sandbox", "--disable-telemetry"] };
 }
+
+/** `session/new` and `session/resume` meta that appends Scarlet's prompt to agy's system prompt. */
+export function systemPromptMeta(systemPrompt: string) {
+  return { antigravity: { systemPrompt: { append: systemPrompt } } };
+}
+
+/** How many times a run carries on after agy ended Gemini's turn on a tool Scarlet refused. */
+export const MAX_CARRY_ONS = 4;
 
 function findConfigOption(configs: AcpConfigOption[], category: string, ids: string[]): AcpConfigOption | undefined {
   return configs.find((c) => c.category === category || ids.includes(c.id ?? c.configId ?? ""));
@@ -334,8 +334,7 @@ type PendingStep =
 export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> {
   const env = { ...(opts.env ?? process.env) };
   const bin = await resolveCli("agy", opts.bin, env);
-  const cmd = buildGeminiCommand(opts, bin);
-  for (const [p, content] of Object.entries(cmd.files)) await writePrivateFile(p, content);
+  const cmd = buildGeminiCommand(bin);
 
   const st = newGeminiState();
   let requestId = 1;
@@ -346,6 +345,9 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
   let configOptions: AcpConfigOption[] = [];
   let hasLegacyModels = false;
   let sentUsage: AgentUsage | undefined;
+  // Tools Scarlet refused during the turn under way. agy ends Gemini's turn on a refusal.
+  let refused: string[] = [];
+  let carryOns = 0;
   const hasApiKey = Boolean(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
   const resuming = Boolean(opts.resumeSession);
 
@@ -393,19 +395,37 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
   const sendOpenSession = () => {
     step = "session_open";
     const mcpServers = [acpMcpServer(opts.mcp)];
+    const _meta = systemPromptMeta(opts.systemPrompt);
     if (opts.resumeSession) {
-      sendRequest("session/resume", { sessionId: opts.resumeSession, cwd: opts.cwd, mcpServers });
+      sendRequest("session/resume", { sessionId: opts.resumeSession, cwd: opts.cwd, mcpServers, _meta });
     } else {
-      sendRequest("session/new", { cwd: opts.cwd, mcpServers });
+      sendRequest("session/new", { cwd: opts.cwd, mcpServers, _meta });
     }
   };
 
-  const sendPrompt = () => {
+  const sendTurn = (text: string) => {
     step = "prompt";
+    refused = [];
     sendRequest("session/prompt", {
       sessionId: st.sessionId!,
-      prompt: [{ type: "text", text: opts.instruction }],
+      prompt: [{ type: "text", text }],
     });
+  };
+  const sendPrompt = () => sendTurn(opts.instruction);
+
+  // agy ends Gemini's turn as soon as Scarlet refuses one of its tools, before the model hears why, and reports the
+  // turn ended as if it were finished. Tell the model what was refused and let it carry on.
+  const carryOnAfterRefusal = (): boolean => {
+    if (!refused.length) return false;
+    const names = [...new Set(refused)].join(", ");
+    if (carryOns >= MAX_CARRY_ONS) {
+      failSession(`Gemini stopped after Scarlet refused ${names}, a tool that doesn't run in Scarlet, ${carryOns + 1} times.`);
+      return true;
+    }
+    carryOns += 1;
+    opts.onEvent({ type: "log", text: `Scarlet refused ${names}: only Scarlet's tools run here. Gemini carries on.`, data: { kind: "tool_refused", harnessTool: names } });
+    sendTurn(`Scarlet refused ${names}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools.`);
+    return true;
   };
 
   const maybeSetEffortThenPrompt = () => {
@@ -441,6 +461,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
         if (msg.id !== undefined) {
           if (msg.method === "session/request_permission") {
             const allow = isScarletMcpPermission(msg.params);
+            if (!allow) refused.push(extractToolName(asRecord(asRecord(msg.params)?.toolCall) ?? {}));
             send({ id: msg.id, result: { outcome: permissionOutcome(msg.params, allow) } });
           } else {
             send({ id: msg.id, error: { code: -32601, message: "Unsupported by Scarlet" } });
@@ -552,6 +573,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
             stopSession();
             return;
           }
+          if (stopReason === "end_turn" && carryOnAfterRefusal()) return;
           if (stopReason === "end_turn" || stopReason === "max_tokens" || stopReason === "stop_sequence") {
             st.completed = true;
             opts.onEvent({
