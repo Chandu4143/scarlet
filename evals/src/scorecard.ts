@@ -3,27 +3,27 @@
  * to get right, and one overall figure. Every figure is read from what run.ts already measured against the editor's
  * published video (evaluation.json), so a scorecard costs nothing to make: only the passes it reads cost tokens.
  *
- *   tsx evals/src/scorecard.ts <run dir | evaluation.json> [<another>] [--labels main,change] [--ledger] [--json]
+ *   tsx evals/src/scorecard.ts <run dir | evaluation.json> [<another>] [--point automatic|recommended] [--labels main,change] [--ledger] [--json]
  *
- * Each path is one side of a comparison: every evaluation.json under it is a trial. A side's figure for a recording is
- * the mean of its trials, and its figure overall is the mean over recordings, so a long video counts once.
+ * Each path is one side of a comparison: eligible completed trials from its trials.json (or a standalone evaluation.json).
+ * A side's figure for a recording is the mean of its trials, and its figure overall is the mean over recordings, so a long video counts once.
  */
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { cli, isMain, list, main } from "./args.ts";
 import type { Evaluation } from "./evaluate.ts";
-import { loadCase } from "./case.ts";
-import { addCutDetails, cutDetail, LONG_MISSED_WORDS, NOTICED_WORDS, STUTTER_SECONDS, type CutDetail } from "./cutDetail.ts";
-import { merge } from "./intervals.ts";
+import { LONG_MISSED_WORDS, NOTICED_WORDS, STUTTER_SECONDS, type CutDetail } from "./cutDetail.ts";
+import type { TrialRow } from "./report.ts";
 import { loadBoard, loadLedger, runChecks, type Verdict } from "./ledger.ts";
-import type { PacingSummary, Word } from "./metrics.ts";
-import { readJson } from "./paths.ts";
-import type { Score } from "./score.ts";
+import type { PacingSummary } from "./metrics.ts";
+import { checkedPath, fileComponent, readJson } from "./paths.ts";
+import { RUBRIC, type Score, type OperatingPoint } from "./score.ts";
 
 const USAGE = `Usage:
-  tsx evals/src/scorecard.ts <run dir | evaluation.json> [<another> ...] [--labels a,b] [--ledger] [--json]
+  tsx evals/src/scorecard.ts <run dir | evaluation.json> [<another> ...] [--point automatic|recommended] [--labels a,b] [--ledger] [--json]
 
-Each path is one side: all the scored trials under it. Two sides are compared factor by factor.
+Each path is one side: eligible completed trials from trials.json under it (or a standalone evaluation.json).
+--point selects which playable cut to score: recommended (default, after accepting AI cut picks) or automatic (applied cuts only).
 --ledger also runs the free ledger checks on this checkout and adds their pass rate (about a minute, no model tokens).`;
 
 export type FactorGroup = "watchability" | "editorial";
@@ -87,7 +87,6 @@ const clamp = (v: number) => Math.max(0, Math.min(100, v));
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const none = (detail: string): FactorValue => ({ pct: null, detail });
 const pctOf = (n: number, d: number) => r1(100 * n / d);
-const keptSecondsOf = (score: Score) => Object.values(score.left?.kept ?? {}).flat().reduce((a, r) => a + r.end - r.start, 0);
 
 /** How close two amounts are, as the smaller over the larger: 100 when equal, 50 when one is twice the other, either way round. */
 export function ratio(candidate: number, reference: number): number {
@@ -110,17 +109,15 @@ export function rateScore(count: number, keptSeconds: number, halfLifePer10Min: 
  * `detail` is the cut read decision by decision against the published video (cutDetail.ts); without the case's words
  * the factors that need it have no figure.
  */
-export function factors(score: Score, detail?: CutDetail): Factors {
-  const point = score.reference?.operatingPoints.recommended.cut ?? score.reference?.operatingPoints.applied.cut;
-  const p = score.pacing, ref = p.reference, left: PacingSummary = p.recommended ?? p.final ?? p.applied;
+export function factors(score: Score, at: OperatingPoint = "recommended"): Factors {
+  const { cut: point, detail, seconds, pacing: left, sharedJoins: shared, edges: measured, moments = [] } = score.playable[at];
+  const ref = score.pacing.reference;
   const noReference = none("no published video for this recording");
   const noDetail = ref ? none("the case's words aren't here to read the cut by") : noReference;
-  const seconds = keptSecondsOf(score);
   const per10 = (n: number) => seconds > 0 ? r1(n / (seconds / 600)) : null;
 
-  const edges = score.applied.edges.total + (score.review?.edges.total ?? 0);
-  const clipped = score.applied.edges.clippedOnSound + (score.review?.edges.clippedOnSound ?? 0);
-  const wholeWords: FactorValue = !edges ? none("no cuts")
+  const edges = measured.total, clipped = measured.clippedOnSound;
+  const wholeWords: FactorValue = measured.unknown ? none("missing waveform evidence")
     : seconds > 0
       ? { pct: rateScore(clipped, seconds, RATE_HALF_LIFE.wholeWords), detail: `${clipped} of ${edges} cut edges land inside a sounding word (${per10(clipped)}/10 min)` }
       : { pct: pctOf(edges - clipped, edges), detail: `${clipped} of ${edges} cut edges land inside a sounding word` };
@@ -161,7 +158,6 @@ export function factors(score: Score, detail?: CutDetail): Factors {
   const linesKept: FactorValue = !lines?.required ? noReference
     : { pct: pctOf(lines.required - lines.missing, lines.required), detail: `${lines.missing} of ${lines.required} lines the editor kept are cut` };
 
-  const shared = p.sharedJoins?.applied;
   const sameCuts: FactorValue = !shared?.eligible ? noReference
     : { pct: pctOf(shared.shared, shared.eligible), detail: `${shared.shared} of the editor's ${shared.eligible} cuts that can be told apart` };
 
@@ -192,10 +188,9 @@ export function factors(score: Score, detail?: CutDetail): Factors {
     detail: `${restartCount(left)} restarts and doubled words play${ref ? `, the editor's cut plays ${allowed}` : ""}`,
   };
 
-  const moments = score.moments ?? [];
-  const ok = moments.filter(m => m.outcome !== "wrong").length;
+  const ok = moments.filter(m => m.outcome === "right").length;
   const knownMoments: FactorValue = !moments.length ? none("no known spots in this recording")
-    : { pct: pctOf(ok, moments.length), detail: `${ok} of ${moments.length} right or asked` };
+    : { pct: pctOf(ok, moments.length), detail: `${ok} of ${moments.length} play the expected words` };
 
   return {
     wholeWords, noWrongCuts, noLongMisses, noStutter,
@@ -227,14 +222,15 @@ export interface Mistakes {
  * the editor cut, a sounding word a join cuts into, and a stutter piece under 1 s. Short 2–5 word phrases the editor
  * trimmed ("kind of", "And so") are tracked separately as editorial tightenings, and single-word edge drift is ignored.
  */
-export function mistakes(score: Score, detail: CutDetail): Mistakes {
+export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mistakes | null {
+  const { detail, seconds, edges } = score.playable[at];
+  if (!detail || edges.unknown || seconds <= 0) return null;
   const wronglyCut = detail.wronglyCut.filter(x => x.words >= NOTICED_WORDS).length;
   const longMissed = detail.leftIn.filter(x => x.words >= LONG_MISSED_WORDS).length;
   const styleLeftIn = detail.leftIn.filter(x => x.words >= NOTICED_WORDS && x.words < LONG_MISSED_WORDS).length;
-  const clippedWords = score.applied.edges.clippedOnSound + (score.review?.edges.clippedOnSound ?? 0);
+  const clippedWords = edges.clippedOnSound;
   const stutters = detail.pieces.short;
   const total = wronglyCut + longMissed + clippedWords + stutters;
-  const seconds = keptSecondsOf(score);
   return {
     wronglyCut,
     longMissed,
@@ -250,9 +246,13 @@ export function mistakes(score: Score, detail: CutDetail): Mistakes {
 
 export interface Stat { mean: number; min: number; max: number; n: number }
 export interface Card {
+  point: OperatingPoint;
+  rubric: typeof RUBRIC;
   label: string;
   trials: number;
   cases: string[];
+  /** Content hash of the frozen grading inputs (source, evidence, reference, moments, edgeOptions) per recording. */
+  gradingByCase?: Record<string, string>;
   factors: Record<FactorId, Stat | null>;
   /** Mean of the rate-based Watchability (craft) factors this side has. */
   watchability: number | null;
@@ -269,7 +269,7 @@ export interface Card {
   /** Not scored: for the editor's eye. */
   facts: { asks: Stat | null; tokens: Stat | null; minutes: Stat | null; finishMinutes: Stat | null; cents: Stat | null };
 }
-export interface Trial { caseId?: string; score: Score; detail?: CutDetail }
+export interface Trial { caseId?: string; gradingSha256?: string; score: Score }
 
 const stat = (values: number[]): Stat | null => values.length
   ? { mean: r1(values.reduce((a, b) => a + b, 0) / values.length), min: Math.min(...values), max: Math.max(...values), n: values.length } : null;
@@ -282,17 +282,23 @@ const acrossCases = (perCase: Array<Stat | null>): Stat | null => {
 };
 
 /** One side's card from its scored trials. A trial with no reference still counts toward the factors that need none. */
-export function card(label: string, trials: readonly Trial[]): Card {
+export function card(label: string, trials: readonly Trial[], at: OperatingPoint = "recommended"): Card {
   const groups = new Map<string, Trial[]>();
   for (const t of trials) groups.set(t.caseId ?? "(no case)", [...(groups.get(t.caseId ?? "(no case)") ?? []), t]);
   const byCase: Card["byCase"] = {};
+  const gradingByCase: Record<string, string> = {};
   const mistakesByCase: Array<Record<keyof Mistakes, Stat | null>> = [];
   for (const [id, ts] of groups) {
-    const fs = ts.map(t => factors(t.score, t.detail));
-    byCase[id] = Object.fromEntries(FACTORS.map(f => [f.id, stat(numbers(fs.map(x => x[f.id].pct)))])) as Record<FactorId, Stat | null>;
-    const ms = ts.flatMap(t => t.detail ? [mistakes(t.score, t.detail)] : []);
+    const hashes = new Set(ts.map(t => t.gradingSha256).filter((h): h is string => !!h));
+    if (hashes.size > 1 || (hashes.size === 1 && ts.some(t => !t.gradingSha256))) {
+      throw new Error(`Trials for ${id} were graded on different frozen inputs.`);
+    }
+    if (hashes.size === 1) gradingByCase[id] = [...hashes][0]!;
+    const fs = ts.map(t => factors(t.score, at));
+    byCase[id] = Object.fromEntries(FACTORS.map(f => [f.id, fs.every(x => x[f.id].pct !== null) ? stat(numbers(fs.map(x => x[f.id].pct))) : null])) as Record<FactorId, Stat | null>;
+    const ms = ts.map(t => mistakes(t.score, at)).filter((m): m is Mistakes => m !== null);
     mistakesByCase.push(Object.fromEntries((["wronglyCut", "longMissed", "clippedWords", "stutters", "total", "per10Min", "styleLeftIn", "stylePer10Min", "leftIn"] as const)
-      .map(k => [k, stat(numbers(ms.map(m => m[k])))])) as Record<keyof Mistakes, Stat | null>);
+      .map(k => [k, ms.length === ts.length ? stat(numbers(ms.map(m => m[k]))) : null])) as Record<keyof Mistakes, Stat | null>);
   }
   const all = Object.fromEntries(FACTORS.map(f => [f.id, acrossCases(Object.values(byCase).map(c => c[f.id]))])) as Record<FactorId, Stat | null>;
   const headline = (k: string) => stat(numbers(trials.map(t => t.score.headline[k])));
@@ -305,9 +311,10 @@ export function card(label: string, trials: readonly Trial[]): Card {
   const watchability = meanOf(all, WATCHABILITY_IDS);
   const editorial = meanOf(all, EDITORIAL_IDS);
   return {
-    label,
+    label, rubric: RUBRIC, point: at,
     trials: trials.length,
     cases: [...groups.keys()],
+    ...(Object.keys(gradingByCase).length && { gradingByCase }),
     factors: all,
     watchability,
     editorial,
@@ -342,6 +349,8 @@ function meanOf(of: Record<FactorId, Stat | null>, ids: readonly FactorId[]): nu
  * averages. When only one group is present, returns that group's mean.
  */
 export function overallOf(of: Record<FactorId, Stat | null>, ids: readonly FactorId[]): number | null {
+  if (ids.some(id => WATCHABILITY_SET.has(id)) && ids.some(id => !WATCHABILITY_SET.has(id)) &&
+    (!WATCHABILITY_IDS.every(id => of[id]) || !of.linesKept)) return null;
   const w = meanOf(of, ids.filter(id => WATCHABILITY_SET.has(id)));
   const e = meanOf(of, ids.filter(id => !WATCHABILITY_SET.has(id)));
   if (w !== null && e !== null) return r1(Math.sqrt(w * e));
@@ -363,7 +372,16 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
   const common = FACTORS.map(f => f.id).filter(id => cards.every(c => c.factors[id]));
   const commonWatch = common.filter(id => WATCHABILITY_SET.has(id));
   const commonEdit = common.filter(id => !WATCHABILITY_SET.has(id));
-  const lines = ["# Dialogue scorecard", "",
+  if (cards.some(c => c.rubric !== a?.rubric || c.point !== a?.point || [...c.cases].sort().join("\0") !== [...a!.cases].sort().join("\0"))) {
+    throw new Error("Compare the same rubric, recordings, and operating point.");
+  }
+  for (const id of a?.cases ?? []) {
+    const hashes = new Set(cards.map(c => c.gradingByCase?.[id]).filter((h): h is string => !!h));
+    if (hashes.size > 1 || (hashes.size === 1 && cards.some(c => !c.gradingByCase?.[id]))) {
+      throw new Error(`Sides were graded on different frozen inputs for ${id}.`);
+    }
+  }
+  const lines = ["# Dialogue scorecard", "", `Rubric: ${RUBRIC}. Cut: ${a?.point}. Ranges are observed min–max, not confidence intervals.`, "",
     cards.map(c => `**${c.label}**: ${c.trials} pass${c.trials === 1 ? "" : "es"} on ${c.cases.join(", ")}`).join(" · "), "",
     `| Factor | ${cards.map(c => c.label).join(" | ")} |${two ? " Change |" : ""} 100% means |`,
     `|---|${cards.map(() => "---").join("|")}|${two ? "---|" : ""}---|`];
@@ -384,7 +402,7 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
   const overallDesc = commonWatch.length && commonEdit.length
     ? `geometric mean of Watchability (${commonWatch.length}) and Editorial match (${commonEdit.length})`
     : `the mean of the ${common.length} factors every side has`;
-  summaryRow("Overall", c => overallOf(c.factors, common), overallDesc);
+  summaryRow("Overall", c => c.overall === null || !WATCHABILITY_IDS.every(id => common.includes(id)) || !common.includes("linesKept") ? null : overallOf(c.factors, common), overallDesc);
   if (commonWatch.length) {
     summaryRow("Watchability", c => overallOf(c.factors, commonWatch), `craft quality across ${commonWatch.length} rate-based bug factors`);
   }
@@ -408,8 +426,8 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
     const row = (label: string, pick: (c: Card) => Stat | null, means: string) =>
       `| ${label} | ${cards.map(c => n(pick(c))).join(" | ")} |${two ? ` ${fewer(pick(a!), pick(b!))} |` : ""} ${means} |`;
     lines.push("", "Counted, not scored as a percentage. Fewer is better.", "",
-      `| Mistakes you'd notice | ${cards.map(c => c.label).join(" | ")} |${two ? " Change |" : ""} What is counted |`, `|---|${cards.map(() => "---").join("|")}|${two ? "---|" : ""}---|`,
-      row("**Hard mistakes per 10 min**", c => c.mistakesPer10Min, "the four objective craft bugs below, added up"),
+      `| Automated flags | ${cards.map(c => c.label).join(" | ")} |${two ? " Change |" : ""} What is counted |`, `|---|${cards.map(() => "---").join("|")}|${two ? "---|" : ""}---|`,
+      row("**Flags per 10 finished min**", c => c.mistakesPer10Min, "the four counts below; not confirmed defects"),
       row("Cut, and the editor kept it", c => c.mistakeCounts.wronglyCut, `runs of ${NOTICED_WORDS} words or more, in the whole video`),
       row("Long passage left in", c => c.mistakeCounts.longMissed, `runs of ${LONG_MISSED_WORDS} words or more the editor cut, in the whole video`),
       row("Words a cut lands inside", c => c.mistakeCounts.clippedWords, "in the whole video"),
@@ -434,61 +452,68 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
   return lines.join("\n") + "\n";
 }
 
-/** Every evaluation.json at or under a path: a run folder holds one per trial. */
-export function findEvaluations(path: string): string[] {
-  const at = resolve(path);
-  if (!existsSync(at)) throw new Error(`No such file or folder: ${path}`);
-  if (statSync(at).isFile()) return [at];
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const name of readdirSync(dir).sort()) {
-      const child = join(dir, name);
-      if (statSync(child).isDirectory()) walk(child);
-      else if (name === "evaluation.json") out.push(child);
-    }
-  };
-  walk(at);
-  return out;
-}
+export const configSlug = (config: string) => fileComponent(config.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-|-$/g, ""));
 
-/**
- * A scored trial with its cut read against the published video. That needs the case's words and what the published
- * video kept, and what the task left of each recording: a trial scored before those were saved, or whose case isn't in
- * this eval data, has the figures that need neither.
- */
-export function readTrial(file: string, cases = new Map<string, ReturnType<typeof loadCase> | undefined>()): Trial {
-  const ev = readJson<Evaluation>(file);
-  if (!ev.caseId || !ev.score.left) return ev;
-  if (!cases.has(ev.caseId)) {
-    let loaded: ReturnType<typeof loadCase> | undefined;
-    try { loaded = loadCase(ev.caseId); } catch { loaded = undefined; }
-    cases.set(ev.caseId, loaded);
-  }
-  const loaded = cases.get(ev.caseId), published = loaded?.file.reference?.published?.kept;
-  if (!loaded || !published) return ev;
-  const parts = loaded.file.dialogueMedia.flatMap(mediaId => {
-    const words = loaded.evidence.get(mediaId)?.words as Word[] | undefined, editor = published[mediaId];
-    const kept = ev.score.left.kept[mediaId] ?? [], removed = ev.score.left.removed[mediaId] ?? [];
-    // What the source version played of the recording is what the task kept of it and what it took out.
-    return words && editor ? [cutDetail(words, merge([...kept, ...removed]), kept, editor)] : [];
+export function eligibleTrials(run: string, config?: string) {
+  const rows = readJson<TrialRow[]>(checkedPath(run, join(run, "trials.json")));
+  const seen = new Set<string>(), tasks = new Set<string>();
+  return rows.filter(row => !config || row.config === config).filter(row => row.state === "done" && row.headline && !row.error).map(row => {
+    if (!Number.isSafeInteger(row.trial) || row.trial < 1 || !row.taskId || tasks.has(row.taskId)) throw new Error("Invalid or duplicated trial identity");
+    const file = checkedPath(run, join(run, fileComponent(row.caseId), configSlug(row.config), `trial-${row.trial}`, "evaluation.json"));
+    if (seen.has(file)) throw new Error("Duplicate trial path");
+    seen.add(file); tasks.add(row.taskId);
+    return { file, row };
   });
-  return parts.length ? { ...ev, detail: addCutDetails(parts) } : ev;
 }
 
-/** The scored trials under a path, with the detail of each factor for a single trial. */
-export function loadSide(label: string, path: string): { card: Card; details?: Factors } {
-  const files = findEvaluations(path);
-  if (!files.length) throw new Error(`No evaluation.json under ${path}: score the run first (run.ts --evaluate-task, or a run with --yes).`);
-  const cases = new Map<string, ReturnType<typeof loadCase> | undefined>();
-  const trials = files.map(f => readTrial(f, cases));
-  return { card: card(label, trials), ...(trials.length === 1 && { details: factors(trials[0]!.score, trials[0]!.detail) }) };
+function configMatches(label: string, cfg: Evaluation["config"]): boolean {
+  if (!cfg.agent || !label.startsWith(`${cfg.agent}:`)) return false;
+  const rest = label.slice(cfg.agent.length + 1);
+  const models = cfg.model ? [cfg.model, "default"] : ["default"];
+  const efforts = cfg.effort ? [cfg.effort, "default"] : ["default"];
+  return models.some(m => efforts.some(e => rest === `${m}:${e}` || rest.startsWith(`${m}:${e}:`)));
+}
+
+export function readTrial(file: string, row?: TrialRow): Evaluation {
+  const ev = readJson<Evaluation>(file);
+  if (row) {
+    if (ev.taskId !== row.taskId || ev.caseId !== row.caseId || !configMatches(row.config, ev.config)) {
+      throw new Error("Trial does not match manifest: " + file);
+    }
+  }
+  if (ev.score.trace?.state !== "done" || ev.score.rubric !== RUBRIC || !ev.score.playable?.automatic || !ev.score.playable?.recommended) {
+    throw new Error("Not a completed playable-v2 evaluation; re-score the saved task first: " + file);
+  }
+  return ev;
+}
+
+export function loadSide(label: string, path: string, at: OperatingPoint = "recommended"): { card: Card; details?: Factors } {
+  const selected = resolve(path);
+  if (!existsSync(selected)) throw new Error(`No such file or folder: ${path}`);
+  const single = statSync(selected).isFile();
+  let run = single ? dirname(selected) : selected;
+  while (!existsSync(join(run, "trials.json")) && dirname(run) !== run) run = dirname(run);
+  let trials: Trial[];
+  if (existsSync(join(run, "trials.json"))) {
+    const entries = eligibleTrials(run).filter(({ file }) => {
+      if (single) return file === selected;
+      const rel = relative(selected, file);
+      return rel !== ".." && !rel.startsWith(".." + sep);
+    });
+    if (new Set(entries.map(entry => entry.row.config)).size > 1) throw new Error("Choose one configuration per side.");
+    trials = entries.map(({ file, row }) => readTrial(file, row));
+  } else if (single) trials = [readTrial(selected)];
+  else throw new Error("A run directory needs trials.json; use the exact file for a standalone evaluation.");
+  if (!trials.length) throw new Error("No eligible completed trials: " + selected);
+  return { card: card(label, trials, at), ...(trials.length === 1 && { details: factors(trials[0]!.score, at) }) };
 }
 
 async function scorecardCli(argv = process.argv.slice(2)) {
-  const { values, positionals } = cli({ labels: { type: "string" }, ledger: { type: "boolean" }, json: { type: "boolean" } }, USAGE, argv);
-  if (!positionals.length) throw new Error(USAGE);
+  const { values, positionals } = cli({ point: { type: "string" }, labels: { type: "string" }, ledger: { type: "boolean" }, json: { type: "boolean" } }, USAGE, argv);
+  const point = values.point ?? "recommended";
+  if (!positionals.length || (point !== "automatic" && point !== "recommended")) throw new Error(USAGE);
   const labels = list(values.labels);
-  const sides = positionals.map((p, i) => loadSide(labels[i] ?? (positionals.length === 1 ? "This run" : p.replace(/\/+$/, "").split("/").at(-1)!), p));
+  const sides = positionals.map((p, i) => loadSide(labels[i] ?? (positionals.length === 1 ? "This run" : p.replace(/\/+$/, "").split("/").at(-1)!), p, point));
   let ledger: Parameters<typeof scorecardMarkdown>[1];
   if (values.ledger) {
     const { results } = await runChecks(loadLedger().entries, line => console.error(line));

@@ -103,20 +103,32 @@ behind high editorial averages).
 | No restarts left in | Editorial match | no more restarts or doubled words play than in the editor's cut |
 | Known mistakes | Editorial match | every spot that went wrong before comes out right, or is asked about |
 
-Under the card is the count it is easiest to feel: **hard mistakes per 10 min** (runs of 2+ words Scarlet cut that the
-editor kept, long passages of 6+ words Scarlet left in that the editor cut, sounding words a cut lands inside, and
-stutter cuts under 1 s). Shorter 2–5 word phrases Scarlet left in that the editor trimmed (`"kind of"`, `"And so"`) are
-counted separately as **short tightenings left in** so taste differences don't inflate craft-bug counts.
+Under the card is the count it is easiest to feel: **automated flags per 10 finished min** (runs of 2+ words Scarlet
+cut that the editor kept, long passages of 6+ words Scarlet left in that the editor cut, sounding words a cut lands
+inside, and stutter cuts under 1 s). Shorter 2–5 word phrases Scarlet left in that the editor trimmed (`"kind of"`,
+`"And so"`) are counted separately as **short tightenings left in**. All automated counts are flags rather than
+confirmed defects until someone listens to the actual rendered audio timeline.
+
+Every scored pass records two separate playable cuts under rubric `dialogue-playable-v2`:
+- `recommended` (default): what plays after accepting Scarlet's recommended staged cuts.
+- `automatic`: what plays from applied cuts alone, without accepting any staged proposals.
+
+Each operating point is scored strictly on its own playable timeline, playback duration, and join edges, and comparisons
+require matching rubric, operating point, recordings, and frozen grading inputs (`gradingSha256`).
 
 ```sh
 # One run, or one pass: its card, and for a single pass what each figure is made of.
-node_modules/.bin/tsx evals/src/scorecard.ts <run folder | evaluation.json>
+node_modules/.bin/tsx evals/src/scorecard.ts <run folder | evaluation.json> [--point automatic|recommended]
 # Main against a change: each factor side by side, and which differences are inside the spread between passes.
-node_modules/.bin/tsx evals/src/scorecard.ts <main's run> <the change's run> --labels main,change --ledger
+node_modules/.bin/tsx evals/src/scorecard.ts <main's run> <the change's run> --point recommended --labels main,change --ledger
+# Re-score an existing run offline against its original local SQLite library (no model tokens):
+node_modules/.bin/tsx evals/src/rescore.ts <original run> <original scarlet.db> <new output dir>
 ```
 
-A scorecard costs nothing: it reads what `run.ts` already scored, and every run writes its own `scorecard.md`. Only the
-passes cost tokens.
+A scorecard costs nothing: it reads eligible completed trials from `trials.json` and `evaluation.json`, and every run
+writes its own `scorecard.md`. Only the passes cost tokens. Under the card, timing prints both **time to finish**
+(wall clock from request to completion) and **active** minutes (using cumulative `workedMs` when recorded, or earliest
+event to completion minus editor wait), along with tokens and estimated API cost.
 
 **Every change to what the model reads ships with its scorecard beside main's** (the editor's rule, 2026-11-18): a
 skill, the prompt, a tool's description or what a tool returns. The standard run is two passes on each recording that

@@ -25,7 +25,7 @@ import { evaluateCaseOrigin, evaluateTask } from "./evaluate.ts";
 import { DEFAULT_EDGE_OPTIONS, KEPT_SIDE_EDGE_OPTIONS } from "./metrics.ts";
 import { checkedPath, dataDir, fileComponent, readJson, REPO_ROOT, resultsDir, timestamp, writeJson, writeText } from "./paths.ts";
 import { evaluationMarkdown, runMarkdown, type TrialRow } from "./report.ts";
-import { card, findEvaluations, readTrial, scorecardMarkdown } from "./scorecard.ts";
+import { card, configSlug as slug, eligibleTrials, readTrial, scorecardMarkdown } from "./scorecard.ts";
 
 const USAGE = `Usage:
   run.ts --evaluate-task <taskId> [--case <id>] [--reference-version <v>] [--kept-side] [--refresh] [--engine <url>]
@@ -68,7 +68,6 @@ function parseConfig(spec: string): AgentConfig {
   return { agent: parts[0]!, model: parts.slice(1, -1).join(":") || undefined, effort: parts.at(-1) || undefined };
 }
 const configLabel = (c: AgentConfig) => [c.agent, c.model ?? "default", c.effort ?? "default", ...(c.serviceTier ? [c.serviceTier] : [])].join(":");
-const slug = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-|-$/g, "");
 
 /** The exact request the app's composer sends for a first cut, on a dedicated branch. */
 function taskRequest(loaded: LoadedCase, config: AgentConfig, branch: string, skillIds: string[]) {
@@ -242,7 +241,7 @@ function summarize(runDir: string, title: string): TrialRow[] {
   // The same trials as percentages, a card for each configuration. A run with nothing scored has none.
   const configs = [...new Set(rows.filter(r => r.state === "done" && r.headline).map(r => r.config))];
   const cards = configs.flatMap(config => {
-    const trials = findEvaluations(runDir).filter(f => f.split("/").at(-3) === slug(config)).map(f => readTrial(f));
+    const trials = eligibleTrials(runDir, config).map(({ file, row }) => readTrial(file, row));
     return trials.length ? [card(config, trials)] : [];
   });
   if (cards.length) {
