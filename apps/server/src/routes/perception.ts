@@ -7,6 +7,7 @@ import type { Ctx } from "../context.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { measuredLoudness } from "../render/loudness.js";
 import { faces } from "../services/faces.js";
+import { lipSync } from "../services/lipSync.js";
 import { pictureCuts } from "../services/pictureCuts.js";
 import { screenMotion } from "../services/screenMotion.js";
 import { screenText } from "../services/screenText.js";
@@ -79,6 +80,17 @@ export function perceptionRoutes(ctx: Ctx) {
 
   // Where the faces are in a range of a video, found once and kept. A range not read yet is read now, as screen text is.
   r.get("/projects/:projectId/media/:mediaId/faces", readPicture("faces", (media, range, opts) => faces(ctx, media, range, opts)));
+
+  // Whether a video's sound keeps time with its own picture, from a face talking in it: a few stretches across the range,
+  // each measured once and kept. Waits up to `wait` seconds (default 60); stretches not done yet carry on.
+  r.get("/projects/:projectId/media/:mediaId/lip-sync", readPicture("lip sync", (media, range, opts, c) => {
+    const count = optionalNumberParam(c.req.query("count"), "count"), seconds = optionalNumberParam(c.req.query("seconds"), "seconds");
+    if (count !== undefined && !(Number.isInteger(count) && count >= 1 && count <= 20)) throw badRequest("bad_count", "count is 1 to 20 stretches.");
+    if (seconds !== undefined && !(seconds >= 5 && seconds <= 120)) throw badRequest("bad_seconds", "seconds is 5 to 120 a stretch.");
+    if (media.hasAudio === false) throw badRequest("no_audio", "This video has no sound of its own to measure against its picture.");
+    const wait = optionalNumberParam(c.req.query("wait"), "wait");
+    return lipSync(ctx, media, { ...range, count, seconds }, { waitMs: Math.max(0, Math.min(240, wait ?? 60)) * 1000, signal: opts.signal });
+  }));
 
   // What of a video's picture viewers may see: the areas given for it and where each holds. A first ask reads the
   // recording's edges and waits up to `wait` seconds (default 30); `done` is false until they are read.

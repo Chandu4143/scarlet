@@ -93,6 +93,7 @@ const toolSteps: Record<string, StepSpec> = {
   screen_reading: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
   screen_motion: picture,
   faces: { group: "faces", verb: "Found", doing: "Finding", detail: () => "where the faces are", once: true },
+  lip_sync: { group: "lip-sync", verb: "Checked", doing: "Checking", detail: () => "the lip sync", once: true },
   dialogue_check_repeats: sound,
   dialogue_check_join: { group: "joins", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} joins` : "a join", once: true },
   dialogue_review_inspect: { group: "inspect", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} suggested cuts` : "a suggested cut", once: true },

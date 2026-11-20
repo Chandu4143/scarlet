@@ -113,6 +113,7 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
     case "screen_motion": return `Watching where the screen changes${span(input, "from", "to")}`;
     case "screen_reading": return `Finding where the screen is read aloud${span(input, "from", "to")}`;
     case "faces": return `Finding where the faces are${span(input, "from", "to")}`;
+    case "lip_sync": return "Checking the lip sync";
     case "frame_contact_sheet": return `Looking at the picture${span(input)}`;
     case "frame_contact_sheet_batch": {
       const n = count(field(input, "windows"));

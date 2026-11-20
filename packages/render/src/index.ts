@@ -45,4 +45,5 @@ export async function checkFfmpeg(paths: ToolPaths = {}): Promise<FfmpegCheck> {
 }
 export * from "./inspection.js";
 export * from "./soundPicture.js";
+export * from "./lipSync.js";
 export * from "./graphic.js";

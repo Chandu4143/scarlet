@@ -16,6 +16,7 @@ export * from "./cutReview.js";
 export * from "./stagedCutMapping.js";
 export * from "./joinCrossfade.js";
 export * from "./doubledSound.js";
+export * from "./pictureSync.js";
 export * from "./putBack.js";
 
 export * from "./history.js";
