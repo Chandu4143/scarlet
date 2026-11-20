@@ -555,6 +555,13 @@ export function seedSkillList(ctx: Ctx, list: Array<{ folder: string; content: s
             return 1;
           }
         }
+        // An editor's copy set back to the text this release ships is the stock skill again, and follows later releases.
+        // Edited once, a copy kept its old text for good: the editor's own talking-head skill missed four releases of
+        // its shipped revisions, the camera inset among them, with no way back short of deleting it (2026-11-20).
+        if (!outOfBox(existing) && existing.content === content && existing.name === name) {
+          ctx.repos.skills.put({ ...existing, source, bundledName: name });
+          return 0;
+        }
         if (!outOfBox(existing) || (existing.content === content && existing.name === name)) return 0;
         // A directory seed may have given this command its own instructions before Scarlet used the name.
         if (publicDialogue && existing.name === name && existing.source === "seed" &&

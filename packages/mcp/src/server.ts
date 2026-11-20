@@ -22,7 +22,7 @@ import { DialogueEvidence, matchFillers } from "./dialogue-decisions.js";
 import { acousticRetakeContinuations, acousticRetakeJoin, type AcousticRetakePage } from "./dialogue-retake-join.js";
 import { acousticRepeatedTakes, findRepeatedTakes } from "./dialogue-retakes.js";
 import { firstCutRanges } from "./first-cut-ranges.js";
-import { InsetFraming, insetFraming, syncPictureOps } from "./sync-layout.js";
+import { InsetFraming, InsetPresenter, insetFraming, insetStretches, presetInset, syncPictureOps, type FaceReading, type PresetInset } from "./sync-layout.js";
 import { createHash } from "node:crypto";
 import { wordDigest } from "./transcript-digest.js";
 import { mkdtemp } from "node:fs/promises";
@@ -36,7 +36,7 @@ import { listToolsBriefly } from "./brief-tools.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
-import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
+import type { Author, Change, MediaAsset, Project, TimeRange, Transcript } from "@scarlet/timeline";
 import {
   applyOps,
   audioCrossfadeOps,
@@ -3053,6 +3053,30 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     },
   );
 
+  /**
+   * The preset inset over the source seconds a camera plays, from where `faces` finds the presenter in a few stretches
+   * spread across them. Faces not read in time leave the whole picture, said so: the save doesn't wait on a reading.
+   */
+  const presetInsetOver = async (project: Project, camera: MediaAsset, from: number, to: number, want?: InsetPresenter): Promise<PresetInset> => {
+    if (!(to > from)) return presetInset(project, camera, [], want);
+    const wait = Math.min(20, toolWait(caps, 25));
+    const readings = await Promise.all(insetStretches(from, to).map(s => client.get<FaceReading>(
+      `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(camera.id)}/faces?from=${s.from.toFixed(3)}&to=${s.to.toFixed(3)}&wait=${wait}`)
+      .catch(withoutOnce(`failed to find the presenter's face in ${camera.id} for the inset`, null))));
+    const read = readings.filter((r): r is FaceReading => r !== null);
+    const preset = presetInset(project, camera, read, want);
+    return read.length || !preset.whole ? preset : { ...preset, whole: "the faces in the camera's picture couldn't be read" };
+  };
+  /** What a preset inset shows, for the save's result. */
+  const presetInsetText = (camera: string, preset: PresetInset, want?: InsetPresenter) => {
+    const f = preset.framing;
+    const area = `[${[f.cropLeft ?? 0, f.cropTop ?? 0, 1 - (f.cropRight ?? 0), 1 - (f.cropBottom ?? 0)].map(n => Math.round(n * 1000) / 10).join(", ")}] percent of its picture`;
+    const shown = `${area}, at scale ${f.scale}${f.cornerRadius ? ` with corners rounded ${f.cornerRadius}` : ""}`;
+    return preset.whole
+      ? `The inset isn't placed on the presenter: ${preset.whole}. It shows ${camera}'s ${shown}. Give framing to set it yourself.`
+      : `The inset holds the presenter (${want?.show ?? "shoulders"}): ${camera} shows ${shown}, around the face found in ${preset.presenter!.seconds} s of it. Change presenter, or give framing, to set it otherwise.`;
+  };
+
   tool(
     "timeline_propose",
     `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, the stretch that got louder and both levels. Make the change it names, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
@@ -3067,9 +3091,10 @@ ${OPS_DOC}`,
       fromVersion: z.string().optional().describe("Version the ops apply to. Defaults to the version you last read with timeline_get or timeline_at; leave it out unless you mean another version."),
       range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive() }).optional().describe("Timeline range on the base version for synchronized ripple removals across all tracks, including local pauses."),
       pictureLayout: z.union([z.object({ screenClipId: z.string(), cameraClipId: z.string(),
+        presenter: InsetPresenter.optional(),
         framing: InsetFraming.optional(),
       }), z.literal("asPlaced")]).optional()
-        .describe("Optional camera inset during the specified clips’ overlap. Supply framing (scale, center-relative x/y, optional crop and cornerRadius), or use the preset quarter-size bottom-right inset. Omit pictureLayout to use the submitted clip transforms."),
+        .describe("Optional camera inset during the specified clips’ overlap, in the bottom-right corner, placed on the presenter where `faces` finds one face: `presenter` sets how much of them it shows, its shape, size and corners as the editor's skill asks (head and shoulders at a quarter size when omitted). `framing` (scale, center-relative x/y, optional crop and cornerRadius) sets the transform outright instead. Omit pictureLayout to use the submitted clip transforms."),
       intent: intentInput,
       timelineEdits: timelineEditsInput,
       ...(!ctx.taskId && { autoApprove: z.boolean().optional().describe("Apply a standalone edit authored directly by the editor") }),
@@ -3109,6 +3134,20 @@ ${OPS_DOC}`,
         ...(withdraws?.length && { withdraws }) };
       const frameChanges: FrameAdjustment[] = [];
       const inset = typeof pictureLayout === "object" ? pictureLayout : undefined;
+      let insetNote: string | undefined;
+      /** The inset as given, or the preset on the presenter where no framing was. Roles are checked before faces are read. */
+      const insetLayout = async (placed: Timeline): Promise<NonNullable<typeof inset>> => {
+        if (inset?.presenter && inset.framing) throw new Error("Give pictureLayout presenter or framing, not both.");
+        if (!inset || inset.framing) return inset!;
+        const { project } = await getProject();
+        syncPictureOps(project, placed, inset);
+        const clip = placed.tracks.flatMap(t => t.clips).find(c => c.id === inset.cameraClipId);
+        const camera = clip?.kind === "media" ? project.media.find(m => m.id === clip.mediaId) : undefined;
+        if (clip?.kind !== "media" || !camera) return inset;
+        const preset = await presetInsetOver(project, camera, clip.sourceIn, clip.sourceOut, inset.presenter);
+        insetNote = presetInsetText(camera.id, preset, inset.presenter);
+        return { ...inset, framing: preset.framing };
+      };
       if (ops) {
         const v = validateOps(ops);
         if (!v.ok) return errorText(v.error);
@@ -3154,7 +3193,7 @@ ${OPS_DOC}`,
             ". Nothing was saved. Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
         }
         await refuseEdgesInSound(before, placed);
-        if (inset) body.ops = [...v.ops, ...syncPictureOps((await getProject()).project, placed, inset)];
+        if (inset) body.ops = [...v.ops, ...syncPictureOps((await getProject()).project, placed, await insetLayout(placed))];
       } else {
         const parsed = WritableTimeline.safeParse({ ...timeline, projectId: ctx.projectId, version: (timeline as { version?: string })?.version ?? "draft" });
         if (!parsed.success) {
@@ -3163,9 +3202,10 @@ ${OPS_DOC}`,
         body.timeline = parsed.data;
         await refuseDoubledSound(parsed.data);
         await refuseEdgesInSound(before, parsed.data);
-        if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, inset));
+        if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, await insetLayout(parsed.data)));
       }
-      return propose(body, before, frameChanges);
+      const result = await propose(body, before, frameChanges);
+      return insetNote ? { ...result, content: [...result.content, { type: "text" as const, text: insetNote }] } : result;
     },
   );
 
@@ -3431,7 +3471,7 @@ ${OPS_DOC}`,
 
   tool(
     "timeline_first_cut",
-    "Replace the whole timeline with SOURCE keeps in the supplied playback order. For dialogue, {fromWord,toWord} keeps those inclusive transcript_get word indices and places their edges in measured quiet. Split adjacent words into separate keeps to tighten their pause to `leave`. For picture, reordered jumps, or a boundary that needs review, supply exact source seconds as start/end on the affected keeps. {start,end} alone keeps an exact passage. The first and last source words keep the recording head and tail unless you give those handles. With synced A1 audio or audible layer sound, word indices belong to the recording that is heard. `layer` adds a second recording of the same event (a camera beside a screen capture) on a video track above V1, in sync at the offset audio_sync measured with mediaId as the reference: each keep range plays the same moment of both, wherever the layer has footage, as an inset (the preset quarter-size bottom-right, or `framing`). One recording is heard: mediaId's, or the layer's with `sound`. `audioMediaId` places a separate audio recording on A1 with the same ranges and mutes the video clips; use it only when it shares mediaId's timebase. `crossfade` adds that many seconds of audio fade in/out on each clip. For centered audio joins, leave crossfade unset. After the assembly is applied, timeline_get returns its clip IDs for timeline_crossfade_audio, which keeps this assembly separately reviewable. Each keep edge is measured on the recording that is heard: one that would leave a piece of a sound playing moves onto the quiet that ends it, 0.12 s away at most, and comes back in `movedEdges`; one inside a sounding word saves nothing and is named with what was measured.",
+    "Replace the whole timeline with SOURCE keeps in the supplied playback order. For dialogue, {fromWord,toWord} keeps those inclusive transcript_get word indices and places their edges in measured quiet. Split adjacent words into separate keeps to tighten their pause to `leave`. For picture, reordered jumps, or a boundary that needs review, supply exact source seconds as start/end on the affected keeps. {start,end} alone keeps an exact passage. The first and last source words keep the recording head and tail unless you give those handles. With synced A1 audio or audible layer sound, word indices belong to the recording that is heard. `layer` adds a second recording of the same event (a camera beside a screen capture) on a video track above V1, in sync at the offset audio_sync measured with mediaId as the reference: each keep range plays the same moment of both, wherever the layer has footage, as an inset in the bottom-right corner, placed on the presenter where `faces` finds one face: `presenter` sets how much of them it shows, its shape, size and corners as the editor's skill asks (head and shoulders at a quarter size when omitted), or `framing` sets its transform outright. One recording is heard: mediaId's, or the layer's with `sound`. `audioMediaId` places a separate audio recording on A1 with the same ranges and mutes the video clips; use it only when it shares mediaId's timebase. `crossfade` adds that many seconds of audio fade in/out on each clip. For centered audio joins, leave crossfade unset. After the assembly is applied, timeline_get returns its clip IDs for timeline_crossfade_audio, which keeps this assembly separately reviewable. Each keep edge is measured on the recording that is heard: one that would leave a piece of a sound playing moves onto the quiet that ends it, 0.12 s away at most, and comes back in `movedEdges`; one inside a sounding word saves nothing and is named with what was measured.",
     {
       intent: intentInput,
       mediaId: z.string().describe("Video (or audio-only) media to cut from"),
@@ -3447,7 +3487,8 @@ ${OPS_DOC}`,
         mediaId: z.string().describe("The second video recording"),
         offset: z.number().finite().describe("Seconds it starts after mediaId (negative = earlier): audio_sync's offset with mediaId as referenceId"),
         sound: z.boolean().optional().describe("Hear this recording instead of mediaId's"),
-        framing: InsetFraming.optional().describe("Scale and center-relative x/y of its picture, with optional crop and cornerRadius, in place of the preset inset"),
+        presenter: InsetPresenter.optional().describe("How the inset holds the presenter, from the editor's skill"),
+        framing: InsetFraming.optional().describe("Scale and center-relative x/y of its picture, with optional crop and cornerRadius, in place of the inset placed on the presenter"),
       }).optional().describe("A second simultaneous recording, inset above the first"),
       audioMediaId: z.string().optional().describe("Separate audio recording synced to the video (same source timebase)"),
       crossfade: z.number().min(0).max(2).optional().describe("Audio fade in/out per clip, seconds"),
@@ -3473,6 +3514,7 @@ ${OPS_DOC}`,
         if (second.kind !== "video" || second.id === mediaId) throw new Error("The layer is a second video recording, not mediaId itself or a sound recording. A separate sound recording goes in audioMediaId.");
         if (!second.duration) throw new Error(`The length of ${layer.mediaId} isn't known yet, so it can't be placed in sync. Try again once it has been read.`);
         if (layer.sound && audioMediaId) throw new Error("Choose one sound: the layer's (sound) or the separate recording (audioMediaId).");
+        if (layer.presenter && layer.framing) throw new Error("Give the layer presenter or framing, not both.");
       }
       const anchor = ctx.task?.context;
       if (before?.tracks.some(t => t.clips.length) && selectedRange(anchor))
@@ -3499,9 +3541,12 @@ ${OPS_DOC}`,
         }
       });
       if (problems.length) return errorText(`Invalid keep ranges:\n${problems.map((p) => `- ${p}`).join("\n")}`);
+      // The layer plays the source seconds of the keeps, `offset` later in its own recording.
+      const preset = layer && second && !layer.framing ? await presetInsetOver(detail.project, second,
+        Math.max(0, Math.min(...ranges.map(r => r.start)) - layer.offset), Math.min(second.duration!, Math.max(...ranges.map(r => r.end)) - layer.offset), layer.presenter) : undefined;
       const build = () => timelineFromKeepRanges(ctx.projectId, mediaId, ranges, { audioMediaId, crossfade,
         layer: layer && second ? { mediaId: second.id, offset: layer.offset, duration: second.duration!, sound: layer.sound,
-          transform: Transform.parse(layer.framing ?? insetFraming(detail.project, second)) } : undefined });
+          transform: Transform.parse(layer.framing ?? preset!.framing) } : undefined });
       // Check the audible picture and audio edges of the assembled timeline, including the edges supplied in seconds. One that
       // leaves a piece of a sound playing goes onto the quiet that ends the piece, a fragment's length away at most,
       // and is reported. One inside a sounding word is the model's to move: which side of the word it meant is its call.
@@ -3545,6 +3590,7 @@ ${OPS_DOC}`,
         content: [
           { type: "text", text: `First edit: ${ranges.length} clip(s), ${total.toFixed(2)} s total${media.duration ? ` from ${media.duration.toFixed(2)} s of source` : ""}.` +
             (layer ? ` Layer ${layer.mediaId}: ${covered.toFixed(2)} s of the ${total.toFixed(2)} s inset on V2 in ${inset.length} clip(s)${total - covered > 0.01 ? `; it has no footage for the other ${(total - covered).toFixed(2)} s, where ${mediaId} plays alone` : ""}.` : "") },
+          ...(preset ? [{ type: "text" as const, text: presetInsetText(second!.id, preset, layer?.presenter) }] : []),
           ...(movedEdges.length ? [{ type: "text" as const, text: JSON.stringify({ movedEdges }) }] : []),
           ...(placement.length ? [{ type: "text" as const, text: placement.join("\n") }] : []),
           ...result.content,
