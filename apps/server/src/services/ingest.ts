@@ -22,6 +22,7 @@ import { putBackTidiedWords } from "../transcribe/saidWords.js";
 import { fillTranscriptHoles } from "../transcribe/transcriptHoles.js";
 import { extractWav } from "../render/ffmpeg.js";
 import { audioLane, whisperLane, type AudioWork } from "./audioWork.js";
+import { scanAheadOfPasses } from "./dialoguePrefetch.js";
 import { editorFirst } from "./editorFirst.js";
 import { decodeWaveformCache, encodeWaveformCache, fileInDirectory, MAX_WAVEFORM_CACHE_BYTES, MAX_WAVEFORM_POINTS, WAVEFORM_CACHE_VERSION } from "@scarlet/render";
 import type { WaveformCache } from "../render/adapter.js";
@@ -855,6 +856,8 @@ async function runTranscription(ctx: Ctx, projectId: string, asset: MediaAsset, 
         ? { wav, size: stamp.size, mtimeMs: stamp.mtimeMs, ctimeMs: stamp.ctimeMs } : undefined;
       labeling = ctx.speakers.ensure(ctx, projectId, stored.speakerSource, stored.transcript, decoded, transcriptionHeld(ctx, projectId));
     }
+    // The first pass on this recording finds its pages read.
+    if (stored && !interrupted.aborted) scanAheadOfPasses(ctx, projectId);
     ctx.log(stored
       ? `[transcribe] ${asset.id} done in ${humanDuration(Date.now() - started)}: ${stored.transcript.segments.length} segments`
       : `[transcribe] ${asset.id} finished in ${humanDuration(Date.now() - started)} but was discarded: ${task.id} was no longer running`);

@@ -792,7 +792,9 @@ it.each(["whispercpp", "openai"] as const)("resumes %s recognition after two app
       workspace = openWorkspace({}, env);
     }
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
-    expect(calls.map(c => c.word)).toEqual(["un", "deux", "deux", "trois", "trois"]);
+    // Once the transcript is saved, its pages are read ahead of any dialogue pass: those calls come after it, unprogressed.
+    expect(calls.slice(0, 5).map(c => c.word)).toEqual(["un", "deux", "deux", "trois", "trois"]);
+    expect(calls.slice(5).every(c => c.progress === undefined)).toBe(true);
     for (const index of [2, 4]) {
       expect(calls[index]!.progress).toBeGreaterThan(0);
       expect(calls[index]!.progress).toBeCloseTo(calls[index - 1]!.progress!, 3);

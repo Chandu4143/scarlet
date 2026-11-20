@@ -162,8 +162,9 @@ export class AudioLane {
     try {
       signal?.throwIfAborted();
       // A recording no pass is reading is nobody's to wait for, unless work a pass needs waits behind it: it yields to
-      // the editor's playback meanwhile. A scan page is always a pass's.
-      return await (work.kind === "page" ? job() : editorFirst.run(() => this.rank(work) === 2 && !this.urgentWaiting(), job));
+      // the editor's playback meanwhile. So does a scan page read ahead of any pass, until a pass reads its recording;
+      // a page a pass reads or asks for is the pass's from the start.
+      return await (work.kind === "page" && this.rank(work) < 2 ? job() : editorFirst.run(() => this.rank(work) === 2 && !this.urgentWaiting(), job));
     } catch (error) {
       failed = true;
       throw error;

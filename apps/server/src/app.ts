@@ -26,6 +26,7 @@ import { graphicRoutes } from "./routes/graphics.js";
 import { historyRoutes } from "./routes/history.js";
 import { evalExportRoutes } from "./routes/evalExport.js";
 import { scheduleTrashPurge } from "./services/trash.js";
+import { scanAheadOfPasses } from "./services/dialoguePrefetch.js";
 import { migrateDialogueOperations } from "./services/tasks.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { continueReadyRuns, recoverTasks, wireContinueWhenReady } from "./services/taskRecovery.js";
@@ -83,6 +84,9 @@ export function createApp(options: ServerOptions): ScarletApp {
   } catch (err) {
     ctx.log(`[task] recovering interrupted runs failed and will run again: ${(err as Error).message}`);
   }
+  // The project worked on last reads its dialogue pages ahead of a pass, once startup's own work has had its turn.
+  const latest = projects.find(p => !p.media_paused);
+  if (latest) setTimeout(() => { try { scanAheadOfPasses(ctx, latest.id); } catch (err) { ctx.log(`[dialogue-scan] couldn’t read ahead: ${(err as Error).message}`); } }, 30_000).unref();
   // A repair of earlier builds' leftovers. It must never keep Scarlet from starting.
   try {
     retireLeftoverPasses(ctx);

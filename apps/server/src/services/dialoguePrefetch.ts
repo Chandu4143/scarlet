@@ -38,6 +38,29 @@ export function passRecordings(ctx: Ctx, projectId: string): MediaAsset[] {
 }
 
 /**
+ * Read a project's dialogue pages before any pass asks: the recordings its edit plays with their sound on, or, before
+ * there is an edit, every recording whose finished transcript holds speech. One at a time, in the order a pass reads
+ * them (`scanAhead` in dialogueDetections.ts).
+ */
+export function scanAheadOfPasses(ctx: Ctx, projectId: string): void {
+  const project = ctx.repos.projects.get(projectId);
+  if (!project || project.mediaPaused) return;
+  let recordings = passRecordings(ctx, projectId);
+  if (!recordings.length) {
+    const spoken = ctx.db.prepare(`SELECT 1 FROM transcripts t WHERE t.id = ? AND json_extract(t.json, '$.aligning') IS NULL
+      AND EXISTS (SELECT 1 FROM json_each(t.json, '$.segments') s WHERE json_array_length(s.value, '$.words') > 0)`);
+    recordings = project.media.filter(m => !!m.duration && m.kind !== "image" && (m.kind === "audio" || m.hasAudio) && !!m.transcriptId && !!spoken.get(m.transcriptId));
+  }
+  if (!recordings.length) return;
+  const detector = sharedDialogueDetector(ctx);
+  void ctx.track((async () => {
+    for (const media of recordings) await detector.scanAhead(projectId, media);
+  })().catch(err => {
+    if (!ctx.mediaSignal(projectId).aborted) ctx.log(`[dialogue-scan] ${projectId}: reading ahead of any pass stopped: ${(err as Error).message}`);
+  }), projectId);
+}
+
+/**
  * Start what a first dialogue pass reads as soon as a host claims it: the dialogue scan its first `dialogue_scan`
  * call would start, each recording's transcript if it has none, and the loudness `media_profile` reports. The pass's
  * own calls join this work rather than repeat it. The scan stops with the pass, like the one the pass starts.
