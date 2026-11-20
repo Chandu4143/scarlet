@@ -7,6 +7,7 @@ import { api, errorMessage, IS_DESKTOP } from "../../lib/client";
 import { messageTimestamps, type MessageClock } from "../../lib/messageTimestamps";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachments";
+import { usePlayerStore } from "../../stores/player";
 import { usePictureMarksStore, type MarkedFrame } from "../../stores/pictureMarks";
 import { markedFramePicture } from "../../lib/markedFrame";
 import { rememberMarkedFrame } from "../../lib/markedFramePictures";
@@ -66,9 +67,14 @@ interface ComposerProps {
    * that time in place of the cut's or the edit's; the message is still theirs, and Scarlet is told the frame too.
    */
   pausedAt?: PausedAt;
+  /**
+   * Where the cut a call's tag names ("Cut 3") is in the video. The tag's line says it after the tag, with where the
+   * playhead is now: "at 2:47 · Playhead 2:57".
+   */
+  aimTime?: number;
   selectedEdit?: AgentContext; onClearSelectedEdit?(): void; thread?: Thread; onCreated?(task: Task): void; onSent?(): void; modelPicker?: boolean }
 
-function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, onRestoreTarget, rewording, messageClock, pausedAt }: ComposerProps & { project: Project }) {
+function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, onRestoreTarget, rewording, messageClock, pausedAt, aimTime }: ComposerProps & { project: Project }) {
   const media = useProjectStore(s => s.current?.media);
   const createTask = useProjectStore((s) => s.createTask);
   const createNote = useProjectStore((s) => s.createNote);
@@ -383,7 +389,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   };
   // Paused with a cut or an edit open, the tag shows the one time the editor is looking at: where they stopped. Its full
   // name still says which cut or edit the message goes to.
-  const stopped = replying && !targetIsPoint && pausedAt ? clock(pausedAt.time) : undefined;
+  // A call's tag keeps its number: the playhead's time is beside it already.
+  const stopped = replying && !targetIsPoint && pausedAt && aimTime === undefined ? clock(pausedAt.time) : undefined;
   const aimItems: AimItem[] = [
     ...placeTag ? [{ key: `target:${placeTag}`, name: targetIsPoint ? placeTag.replace(/^At /, "") : stopped ? `${placeTag}, stopped at ${stopped}` : placeTag,
       displayName: stopped ?? placeTag.replace(/^(?:(?:Cut|Edit) at|At) /, ""),
@@ -429,6 +436,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           the box, under the queue's tray, so the box keeps its whole width for the words. */}
       {primaryAim && <div className="composer-aim-line">
         <ComposerAim items={[primaryAim, ...additionalAims]} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />
+        {/* A call's tag is its number, so the line says where its cut is and where the playhead is now. */}
+        {aimTime !== undefined && placeTag && <span className="composer-aim-when">at {clock(aimTime)} · <PlayheadClock /></span>}
       </div>}
       {(attached.length > 0 || markedFrame) && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }}
         marked={markedFrame} onOpenMarked={frame => {
@@ -513,6 +522,12 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     {editor}
     {dropping && <div className="composer-drop" aria-hidden="true">Attach to your message</div>}
   </div>;
+}
+
+/** Where the playhead is, in whole seconds as the clock under the timeline reads, so it redraws once a second. */
+function PlayheadClock() {
+  const second = usePlayerStore(s => Math.floor(s.time + 1e-6));
+  return <span className="composer-playhead">Playhead {clock(second)}</span>;
 }
 
 /** What the empty box says when the message would start a new edit. */

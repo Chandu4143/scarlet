@@ -7,6 +7,15 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 19, 2026
 
 - A cut whose edge Scarlet only had to move back into a pause, with no word in between, now goes in on its own instead of waiting for you as a call.
+- On Windows, Scarlet's agent now locks its settings file, which holds the key to the engine, to your account each time it loads it, so another account on the PC can no longer read it through a permission left on the file itself.
+- Export can save captions as SubRip (.srt) or WebVTT (.vtt) files.
+- When you ask Scarlet to keep a video's original sound, it no longer plays that sound a second time on another track, which made it louder.
+- Keeping one cut Scarlet hadn't checked no longer puts the other unchecked cuts in without asking you.
+- With reduced motion on, the ring round the mic stays still while it records.
+- Edits with a Gemini model now get all of Scarlet's editing tools and your whole skill, and keep working instead of stopping early as if they were done.
+- When Scarlet asks to see several stretches of the footage, it now gets them together instead of asking again for the ones that weren't ready, which saves time and tokens on edits that look at the video.
+- A transcript's progress now counts the last check for restarts and filler words, so it no longer sits at 100% while that check runs.
+
 - Pause for media processing now appears only while files are actually being prepared, cached, or transcribed (and stays as Resume while paused).
 - An edit Scarlet was working on when you quit or restarted says “Picking up where it left off” when Scarlet reopens, and Restart to update says beforehand that the edit carries on.
 - Rejecting an edit no longer moves the timeline: its band fades where it is and the card says Rejected until you go on to another edit.

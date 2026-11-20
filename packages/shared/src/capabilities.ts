@@ -32,10 +32,23 @@ export interface AgentCapabilities {
    * deadline; a client Scarlet didn't launch keeps the common 60 s one, so it waits less.
    */
   toolWaitSeconds?: number;
+  /**
+   * The harness keeps only so much of its tools' definitions and drops the rest without telling the model, so Scarlet
+   * lists each tool by its first sentence and its parameters' shape, and the model reads the rest from `tool_help`.
+   */
+  briefTools?: boolean;
 }
 
 /** Wait for a client whose tool deadline is unknown: a margin below the common 60-second one. */
 export const DEFAULT_TOOL_WAIT_SECONDS = 45;
+
+/**
+ * Seconds one tool call may wait for evidence still being measured: `margin` under the harness's tool deadline, to
+ * leave time for the answer itself. 220 s for a harness Scarlet launched and 25 s for a client it didn't, at a margin of 20.
+ */
+export function toolWait(caps: Pick<AgentCapabilities, "toolWaitSeconds">, margin: number): number {
+  return Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - margin));
+}
 
 // A 58-minute transcript exceeded Claude Code's result window and was saved to a file its
 // file-disabled session couldn't read. Leave headroom below its 50,000-character spill point.
@@ -53,7 +66,10 @@ const KNOWN: Record<string, AgentCapabilities> = {
   // Plan: Codex 0.166 has update_plan only with tools.update_plan.enabled, and reports it as `todo_list` items.
   codex: { images: true, audio: false, files: true, plan: false, toolWaitSeconds: 240 },
   // agy acp runs with Scarlet's permission handler allowing only Scarlet MCP tools (no file tools); audio forwarding from MCP is unverified. Its runner reads no plan.
-  gemini: { images: true, audio: false, files: false, plan: false },
+  // Brief tools: agy 1.x keeps about 60 KB of MCP tool definitions a session and drops the largest past it, listing
+  // nothing in their place. On 2026-11-19 it dropped seven of Scarlet's 50 (117 KB), timeline_propose and
+  // dialogue_apply_cuts among them, so a Gemini pass couldn't save an edit; listed briefly (43 KB) all 51 stayed.
+  gemini: { images: true, audio: false, files: false, plan: false, briefTools: true },
 };
 
 // An agent Scarlet didn't launch is someone's own MCP client, such as Claude Code or Claude Desktop pointed at Scarlet,

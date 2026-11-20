@@ -12,7 +12,7 @@ import type { Ctx } from "../context.js";
 import { audioWorker } from "../transcribe/audioWorker.js";
 import { LocalWhisperModel } from "../transcribe/localModel.js";
 import { SCREEN_TEXT_MODELS, type ScreenLine } from "../transcribe/screenTextModel.js";
-import { pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
+import { pictureGrid, pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
 
 /** Bump when the reading changes: the models, the sampling or how lines become spans. Kept readings are read again. */
 const SCREEN_TEXT_VERSION = 2;
@@ -27,21 +27,6 @@ const MIN_CONFIDENCE = 0.7;
 
 /** A line of text on screen: source seconds, its words, and its box as fractions of the frame (left, top, right, bottom). */
 export interface ScreenTextSpan { start: number; end: number; text: string; box: [number, number, number, number]; confidence: number }
-
-/** Mean grey of each cell of a cols × rows grid over the frame, from every other pixel. */
-export function pictureGrid(rgb: Buffer, width: number, height: number, cols = 32, rows = 18): Float32Array {
-  const sums = new Float32Array(cols * rows), counts = new Uint32Array(cols * rows);
-  for (let y = 0; y < height; y += 2) {
-    const row = Math.min(rows - 1, Math.floor(y * rows / height));
-    for (let x = 0; x < width; x += 2) {
-      const p = (y * width + x) * 3, cell = row * cols + Math.min(cols - 1, Math.floor(x * cols / width));
-      sums[cell] = sums[cell]! + (rgb[p]! * 3 + rgb[p + 1]! * 6 + rgb[p + 2]!) / 10;
-      counts[cell] = counts[cell]! + 1;
-    }
-  }
-  for (let i = 0; i < sums.length; i++) sums[i] = counts[i] ? sums[i]! / counts[i]! : 0;
-  return sums;
-}
 
 /** Whether the picture changed enough to read again: any cell by 6 grey levels, about a word typed in a 60-pixel cell. */
 export function pictureChanged(before: Float32Array, after: Float32Array) {

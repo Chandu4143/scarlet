@@ -19,19 +19,39 @@ export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   if (!(await lstat(path)).isDirectory()) throw new Error("Expected a private directory");
   if (process.platform !== "win32") return chmod(path, 0o700);
-  // Replace the DACL instead of retaining explicit grants or inheriting from a shared parent.
+  await ownerOnlyOnWindows(path);
+}
+
+/**
+ * Closes a file that already exists, and its folder, to everyone but the current user. On Windows a folder's new
+ * access list leaves the rules set on its files themselves, so the file gets its own, in the same ACL process.
+ */
+export async function privateFile(path: string): Promise<void> {
+  const dir = dirname(path);
+  if (!(await lstat(dir)).isDirectory() || !(await lstat(path)).isFile()) throw new Error("Expected a private file");
+  if (process.platform === "win32") return ownerOnlyOnWindows(dir, path);
+  await chmod(dir, 0o700);
+  await chmod(path, 0o600);
+}
+
+// Replace the DACL instead of retaining explicit grants or inheriting from a shared parent.
+async function ownerOnlyOnWindows(directory: string, file?: string): Promise<void> {
+  const ownerOnly = (kind: "Directory" | "File", path: string) => [
+    `$acl=[System.Security.AccessControl.${kind}Security]::new()`,
+    "$acl.SetOwner($id)",
+    "$acl.SetAccessRuleProtection($true,$false)",
+    `$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($id,'FullControl',${kind === "Directory" ? "'ContainerInherit,ObjectInherit','None'," : ""}'Allow'))`,
+    `[System.IO.${kind}]::SetAccessControl(${path},$acl)`,
+  ];
   const script = [
     "$ErrorActionPreference='Stop'",
     "$id=[System.Security.Principal.WindowsIdentity]::GetCurrent().User",
-    "$acl=[System.Security.AccessControl.DirectorySecurity]::new()",
-    "$acl.SetOwner($id)",
-    "$acl.SetAccessRuleProtection($true,$false)",
-    "$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($id,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))",
-    "[System.IO.Directory]::SetAccessControl($env:SCARLET_PRIVATE_DIRECTORY,$acl)",
+    ...ownerOnly("Directory", "$env:SCARLET_PRIVATE_DIRECTORY"),
+    ...(file ? ownerOnly("File", "$env:SCARLET_PRIVATE_FILE") : []),
   ].join(";");
   const shell = windowsAclShell();
   await promisify(execFile)(shell.executable, ["-NoProfile", "-NonInteractive", "-Command", script], {
-    windowsHide: true, env: { ...shell.env, SCARLET_PRIVATE_DIRECTORY: path },
+    windowsHide: true, env: { ...shell.env, SCARLET_PRIVATE_DIRECTORY: directory, SCARLET_PRIVATE_FILE: file ?? "" },
   });
 }
 

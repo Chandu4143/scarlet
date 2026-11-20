@@ -541,7 +541,7 @@ export async function planDialogueCuts(req: DialoguePlanRequest, sources: Dialog
       // A pause with nothing to trim is a finding about that pause alone, as a cut that can't be placed is: beside
       // other cuts it is set aside with its reason and they save. Asked for on its own it is still refused, which is
       // how a caller placing one pause learns to leave the recording playing there (first-cut-ranges.ts).
-      const noTrim = err instanceof NoPauseToTrim && requested.some((other, k) => k !== i && !req.setAside?.has(k));
+      const noTrim = err instanceof NoPauseToTrim && requested.some((_, k) => k !== i && !req.setAside?.has(k));
       if (!(err instanceof CutNotPlaced) && !noTrim) throw err;
       unplaced.push({ reason: `cuts[${i}]: ${err.message}${noTrim ? " It was left out of this save; the other cuts are unaffected." : ""}`, cuts: [i] });
     });

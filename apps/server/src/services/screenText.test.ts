@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { findBoxes, letterClasses, readLetters, type ScreenLine } from "../transcribe/screenTextModel.js";
 import { iou } from "../transcribe/faceModel.js";
-import { joinSpans, pictureChanged, pictureGrid, sameLine, screenTextMatches, spansFromFrames, type ScreenTextSpan } from "./screenText.js";
+import { joinSpans, pictureChanged, sameLine, screenTextMatches, spansFromFrames, type ScreenTextSpan } from "./screenText.js";
+import { pictureGrid } from "./pictureReading.js";
 
 const line = (text: string, box: ScreenLine["box"], confidence = 0.95): ScreenLine => ({ text, confidence, box });
 

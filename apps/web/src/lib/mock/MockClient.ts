@@ -31,7 +31,7 @@ import type {
   WsEvent,
 } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript } from "@scarlet/timeline";
-import { planRevert, toOtio, toFcpxml, usedMedia, handoffFileNames, handoffLosses, handoffReadMe, toSrt, captionTracks, exactRate, type HandoffSource, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
+import { CaptionExportError, captionExportHttpStatus, captionExportRange, toCaptions, planRevert, toOtio, toFcpxml, usedMedia, handoffFileNames, handoffLosses, handoffReadMe, timelineToSrt, captionTracks, exactRate, type HandoffSource, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
 import type { ActivityEntry, ApproveResponse, HandoffFile, HandoffResponse, TrashedProject } from "@scarlet/shared";
 import type { ScarletApi } from "../api";
 import { buildDb, mc, SAMPLE_TRANSCRIPTION_MODEL, type MockDb } from "./fixtures";
@@ -597,6 +597,25 @@ export class MockClient implements ScarletApi {
     const otio = tl ? toOtio({ ...project, media: this.db.media[projectId] ?? project.media }, tl, { mediaRoot: "C:/scarlet/media" }) : {};
     return `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(otio, null, 2))}`;
   }
+  srtUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }): string {
+    return this.captionDataUrl(projectId, version, "srt", opts);
+  }
+  vttUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }): string {
+    return this.captionDataUrl(projectId, version, "vtt", opts);
+  }
+  private captionDataUrl(projectId: string, version: string, format: "srt" | "vtt", opts?: { trackId?: string; start?: number; end?: number }): string {
+    const project = this.projectById(projectId);
+    const tl = this.db.timelines[version === "head" ? (project.head ?? "") : version];
+    if (!tl) throw notFound("Version");
+    try {
+      const text = toCaptions(tl, format, { trackId: opts?.trackId, range: captionExportRange(opts?.start, opts?.end) });
+      const type = format === "vtt" ? "text/vtt" : "text/plain";
+      return `data:${type};charset=utf-8,${encodeURIComponent(text)}`;
+    } catch (err) {
+      if (err instanceof CaptionExportError) throw new ScarletApiError(captionExportHttpStatus(err.code), err.code, err.message);
+      throw err;
+    }
+  }
 
   /** The demo's folder for another app: real timeline files, with the sample video standing in for every clip. */
   async handoff(projectId: string, version: string, folder: string): Promise<HandoffResponse> {
@@ -611,7 +630,7 @@ export class MockClient implements ScarletApi {
       url: `file://${encodeURI(`${folder}/Media/${names[i]}`)}`, fileName: names[i]!, hasVideo: a.kind !== "audio", hasAudio: a.hasAudio !== false,
       rate: a.fps ? exactRate(a.fps).rate : undefined, width: a.width, height: a.height, duration: a.duration ?? 0,
     }]));
-    const captions = captionTracks(tl).map(({ cues }) => ({ path: `${base} captions.srt`, text: toSrt(cues) })).slice(0, 1);
+    const captions = captionTracks(tl).map(({ track }) => ({ path: `${base} captions.srt`, text: timelineToSrt(tl, { trackId: track.id }) })).slice(0, 1);
     const files: HandoffFile[] = [
       { path: `${base}.fcpxml`, text: toFcpxml(project, tl, sources) },
       { path: `${base}.otio`, text: JSON.stringify(toOtio(project, tl, { sources }), null, 2) },

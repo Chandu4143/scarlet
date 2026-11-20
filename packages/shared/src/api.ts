@@ -40,6 +40,8 @@
  *   GET    /projects/:id/versions/:a/diff/:b             → { diff: TimelineDiff, description: string[] }
  *   POST   /projects/:id/versions/:v/checkout            → { project }        (set head to a past version; records a change)
  *   GET    /projects/:id/versions/:v/export.otio         → application/json (OTIO)
+ *   GET    /projects/:id/versions/:v/export.srt          → application/x-subrip (SubRip); ?trackId&start&end
+ *   GET    /projects/:id/versions/:v/export.vtt          → text/vtt (WebVTT); ?trackId&start&end
  *   POST   /projects/:id/versions/:v/handoff { folder }  → HandoffResponse (the folder for finishing the edit in another app)
  *
  *  Changes (the review loop)
@@ -149,7 +151,6 @@ import {
   WritableTimeline,
   TimelineOp,
   TimeRange,
-  Transition,
 } from "@scarlet/timeline";
 
 // ---------------------------------------------------------------------------

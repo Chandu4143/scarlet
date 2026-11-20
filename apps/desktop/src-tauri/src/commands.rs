@@ -317,6 +317,10 @@ pub(crate) async fn pick_destination(app: &AppHandle, title: &str, file_name: &s
         picker = picker.add_filter("Zip archive", &["zip"]);
     } else if file_name.ends_with(".otio") {
         picker = picker.add_filter("OpenTimelineIO timeline", &["otio"]);
+    } else if file_name.ends_with(".srt") {
+        picker = picker.add_filter("SubRip captions", &["srt"]);
+    } else if file_name.ends_with(".vtt") {
+        picker = picker.add_filter("WebVTT captions", &["vtt"]);
     }
     picker.save_file(move |p| { let _ = tx.send(p); });
     rx.await.map_err(|e| e.to_string())?.map(|picked| picked.into_path().map_err(|e| e.to_string())).transpose()
@@ -350,6 +354,26 @@ pub fn discard_video_export(destinations: State<'_, ExportDestinations>, ticket:
     destinations.change(|paths| { let kept = paths.remove(&ticket).is_some_and(|d| d.kept); ((), kept) })
 }
 
+fn decode_data_url_payload(encoded: &str, empty: &str) -> Result<String, String> {
+    let raw = format!("body={}", encoded.replace('+', "%2B"));
+    Ok(url::form_urlencoded::parse(raw.as_bytes()).next().ok_or(empty)?.1.into_owned())
+}
+
+/// Isolated demo downloads: OTIO JSON and caption text carried as data URLs.
+fn demo_data_url_bytes(url: &str) -> Result<Option<Vec<u8>>, String> {
+    if let Some(encoded) = url.strip_prefix("data:application/json;charset=utf-8,") {
+        let json = decode_data_url_payload(encoded, "Empty timeline")?;
+        serde_json::from_str::<serde_json::Value>(&json).map_err(|_| "Invalid timeline")?;
+        return Ok(Some(json.into_bytes()));
+    }
+    for prefix in ["data:text/plain;charset=utf-8,", "data:text/vtt;charset=utf-8,"] {
+        if let Some(encoded) = url.strip_prefix(prefix) {
+            return Ok(Some(decode_data_url_payload(encoded, "Empty captions")?.into_bytes()));
+        }
+    }
+    Ok(None)
+}
+
 struct ExportTransfer {
     request: uuid::Uuid,
     stage: &'static str,
@@ -363,17 +387,14 @@ async fn save_engine_file(app: &AppHandle, state: &AppState, url: &str, path: &P
     let (file, temp_path) = temp.into_parts();
     let mut file = tokio::io::BufWriter::with_capacity(1024 * 1024, tokio::fs::File::from_std(file));
 
-    // The isolated native demo has no engine. Its only downloadable assets are the sample video and OTIO JSON.
+    // The isolated native demo has no engine. Its only downloadable assets are the sample video, OTIO JSON, and caption text.
     let mut demo_content = false;
     if crate::is_demo(app) {
         if url.split('#').next() == Some("/sample.mp4") {
             file.write_all(include_bytes!("../../../web/public/sample.mp4")).await.map_err(|e| e.to_string())?;
             demo_content = true;
-        } else if let Some(encoded) = url.strip_prefix("data:application/json;charset=utf-8,") {
-            let raw = format!("json={}", encoded.replace('+', "%2B"));
-            let json = url::form_urlencoded::parse(raw.as_bytes()).next().ok_or("Empty timeline")?.1;
-            serde_json::from_str::<serde_json::Value>(&json).map_err(|_| "Invalid timeline")?;
-            file.write_all(json.as_bytes()).await.map_err(|e| e.to_string())?;
+        } else if let Some(bytes) = demo_data_url_bytes(url)? {
+            file.write_all(&bytes).await.map_err(|e| e.to_string())?;
             demo_content = true;
         }
     }
@@ -754,6 +775,18 @@ mod tests {
         assert!(!paths.contains_key(&3), "a destination no export took is forgotten");
         assert!(!partial.exists());
         assert!(unrelated.exists(), "only this app's temporary files are removed");
+    }
+
+    #[test]
+    fn writes_demo_caption_and_timeline_data_urls() {
+        let json = demo_data_url_bytes("data:application/json;charset=utf-8,%7B%22ok%22%3Atrue%7D").unwrap().unwrap();
+        assert_eq!(json, br#"{"ok":true}"#);
+        let srt = demo_data_url_bytes("data:text/plain;charset=utf-8,1%0A00%3A00%3A00%2C200%20--%3E%2000%3A00%3A02%2C400%0AWelcome%20back%0A").unwrap().unwrap();
+        assert!(String::from_utf8(srt).unwrap().contains("Welcome back"));
+        let vtt = demo_data_url_bytes("data:text/vtt;charset=utf-8,WEBVTT%0A%0A00%3A00%3A00.200%20--%3E%2000%3A00%3A02.400%0AWelcome%20back%0A").unwrap().unwrap();
+        assert!(String::from_utf8(vtt).unwrap().starts_with("WEBVTT"));
+        assert!(demo_data_url_bytes("/sample.mp4").unwrap().is_none());
+        assert_eq!(demo_data_url_bytes("data:application/json;charset=utf-8,not-json").unwrap_err(), "Invalid timeline");
     }
 
     #[test]

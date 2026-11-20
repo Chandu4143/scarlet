@@ -1,9 +1,13 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cutDetail, type CutDetail } from "../src/cutDetail.ts";
 import type { PacingSummary } from "../src/metrics.ts";
-import type { Score } from "../src/score.ts";
+import { RUBRIC, type Score } from "../src/score.ts";
 import {
-  card, EDITORIAL_IDS, factors, FACTORS, ledgerPct, mistakes, overallOf, rateScore, ratio, scorecardMarkdown, WATCHABILITY_IDS,
+  card, configSlug, EDITORIAL_IDS, eligibleTrials, factors as scoreFactors, FACTORS, ledgerPct, loadSide,
+  mistakes as scoreMistakes, overallOf, rateScore, ratio, readTrial, scorecardMarkdown, WATCHABILITY_IDS,
 } from "../src/scorecard.ts";
 
 const pace = (o: { dead: number; joins: number; restarts?: number }): PacingSummary => ({
@@ -16,7 +20,12 @@ function score(o: { missing?: number; clipped?: number; dead?: number; joins?: n
   const reference = o.reference ?? true;
   const cut = { words: { tp: 0, fp: 0, fn: 0, precision: 0.9, recall: 0.8, f1: 0.85, inScope: 100 }, requiredLines: { required: 50, missing: o.missing ?? 0 } };
   const matched = (o.spaces ?? [0, 50, 100, 250]).map(errorMs => ({ errorMs }));
+  const view = { seconds: 1200, edges: { total: 100, clippedOnSound: o.clipped ?? 2 }, cut: reference ? cut : undefined,
+    pacing: pace({ dead: o.dead ?? 10, joins: o.joins ?? 50, restarts: o.restarts ?? 2 }),
+    sharedJoins: reference ? { matched, eligible: 40, shared: o.shared ?? 30, medianAbsErrorMs: 75 } : undefined,
+    moments: o.moments?.map(outcome => ({ outcome })) };
   return {
+    playable: { automatic: view, recommended: view },
     applied: { edges: { total: 80, clippedOnSound: o.clipped ?? 2 } },
     review: { edges: { total: 20, clippedOnSound: 0 } },
     pacing: {
@@ -27,7 +36,7 @@ function score(o: { missing?: number; clipped?: number; dead?: number; joins?: n
     reference: reference ? { operatingPoints: { applied: { cut }, recommended: { cut }, proposed: { cut } } } : null,
     left: { kept: { m: [{ start: 0, end: 1200 }] }, removed: {}, staged: [] },
     ...(o.moments && { moments: o.moments.map((outcome, i) => ({ id: `m${i}`, outcome })) }),
-    headline: { needsYourCall: 2, tokens: 3_000_000, activeMinutes: 6 },
+    headline: { needsYourCall: 2, tokens: 3_000_000, activeMinutes: 6, finishMinutes: 8, costUsd: 0.034 },
   } as unknown as Score;
 }
 
@@ -38,6 +47,12 @@ const detail = (o: Partial<{ editor: number; scarlet: number; editorMatched: num
   takes: { decided: 10, same: 8, other: 1, both: 1, neither: 0 },
   pieces: { total: 50, short: o.short ?? 0, editorTotal: 50, editorShort: 0 },
 });
+
+function withDetail(input: Score, detail?: CutDetail): Score {
+  return { ...input, playable: { automatic: input.playable.automatic, recommended: { ...input.playable.recommended, detail } } };
+}
+const factors = (input: Score, detail?: CutDetail) => scoreFactors(withDetail(input, detail));
+const mistakes = (input: Score, detail: CutDetail) => scoreMistakes(withDetail(input, detail));
 
 describe("ratio", () => {
   it("is the smaller amount over the larger, whichever side is over", () => {
@@ -172,13 +187,15 @@ describe("card", () => {
     expect(c.factors.linesKept).toMatchObject({ mean: 60, min: 40, max: 90, n: 4 });
     expect(c.trials).toBe(4);
     expect(c.facts.tokens!.mean).toBe(3_000_000);
+    expect(c.facts.finishMinutes!.mean).toBe(8);
+    expect(c.facts.cents!.mean).toBe(3.4);
     expect(c.mistakesPer10Min).toBeNull();
     expect(c.stylePer10Min).toBeNull();
   });
 
   it("combines Watchability and Editorial match as a geometric mean and compares two sides only on common factors", () => {
-    const withMoments = card("change", [{ caseId: "a", score: score({ moments: ["wrong"] }), detail: detail() }]);
-    const without = card("main", [{ caseId: "a", score: score(), detail: detail() }]);
+    const withMoments = card("change", [{ caseId: "a", score: withDetail(score({ moments: ["wrong"] }), detail()) }]);
+    const without = card("main", [{ caseId: "a", score: withDetail(score(), detail()) }]);
     const common = FACTORS.map(f => f.id).filter(id => id !== "knownMoments");
     expect(without.watchability).toBe(overallOf(without.factors, WATCHABILITY_IDS));
     expect(without.editorial).toBe(overallOf(without.factors, EDITORIAL_IDS));
@@ -198,12 +215,12 @@ describe("scorecardMarkdown", () => {
   });
 
   it("splits hard craft mistakes from short editorial tightenings and warns on small sample sizes", () => {
-    const md = scorecardMarkdown([card("main", [{ caseId: "a", score: score(), detail: detail({ wrong: [3], left: [2, 4, 8] }) }])]);
+    const md = scorecardMarkdown([card("main", [{ caseId: "a", score: withDetail(score(), detail({ wrong: [3], left: [2, 4, 8] })) }])]);
     // Hard bugs: 1 wrong + 1 longMissed (8w) + 2 clipped + 0 stutter = 4 in 20 min -> 2/10 min.
     // Short tightenings: 2 (words 2, 4) in 20 min -> 1/10 min.
     expect(md).toContain("| **Watchability** |");
     expect(md).toContain("| **Editorial match** |");
-    expect(md).toContain("| **Hard mistakes per 10 min** | 2 |");
+    expect(md).toContain("| **Flags per 10 finished min** | 2 |");
     expect(md).toContain("| Long passage left in | 1 |");
     expect(md).toContain("| Short tightenings left in (per 10 min) | 1 |");
     expect(md).toContain("| Short tightenings left in | 2 |");
@@ -217,5 +234,98 @@ describe("ledgerPct", () => {
     expect(ledgerPct([{ verdict: "pass" }, { verdict: "pass" }, { verdict: "fail" }, { verdict: "model" }, { verdict: "unchecked" }, { verdict: "error" }]))
       .toEqual({ pct: 50, pass: 2, checked: 4 });
     expect(ledgerPct([{ verdict: "model" }]).pct).toBeNull();
+  });
+});
+
+describe("scorecard guards and eligibility", () => {
+  const mkEval = (o: { taskId: string; caseId?: string; config?: { agent?: string; model?: string; effort?: string }; state?: string; rubric?: string; gradingSha256?: string }) => ({
+    schema: 1, kind: "task", generatedAt: "2026-11-19T00:00:00Z",
+    taskId: o.taskId, projectId: "prj_1", caseId: o.caseId ?? "ep1",
+    config: o.config ?? { agent: "gemini", model: "gemini-4-neon", effort: "medium" },
+    instruction: "cut", gradingSha256: o.gradingSha256 ?? "sha-a",
+    score: {
+      ...withDetail(score(), detail()),
+      rubric: o.rubric ?? RUBRIC,
+      trace: { state: o.state ?? "done" },
+    },
+  });
+
+  const withTmpRun = (fn: (dir: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "scarlet-scorecard-test-"));
+    try { fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+
+  it("reads only manifest-eligible completed trials and ignores errored or failed rows", () => withTmpRun(dir => {
+    const cfg = "gemini:gemini-4-neon:medium";
+    const okPath = join(dir, "ep1", configSlug(cfg), "trial-1", "evaluation.json");
+    const errPath = join(dir, "ep1", configSlug(cfg), "trial-2", "evaluation.json");
+    mkdirSync(join(dir, "ep1", configSlug(cfg), "trial-1"), { recursive: true });
+    mkdirSync(join(dir, "ep1", configSlug(cfg), "trial-2"), { recursive: true });
+    writeFileSync(okPath, JSON.stringify(mkEval({ taskId: "tsk_ok" })));
+    writeFileSync(errPath, JSON.stringify(mkEval({ taskId: "tsk_bad" })));
+    writeFileSync(join(dir, "trials.json"), JSON.stringify([
+      { caseId: "ep1", config: cfg, trial: 1, state: "done", taskId: "tsk_ok", headline: { activeMinutes: 6 } },
+      { caseId: "ep1", config: cfg, trial: 2, state: "done", taskId: "tsk_bad", headline: { activeMinutes: 6 }, error: "transcript mismatch" },
+      { caseId: "ep1", config: cfg, trial: 3, state: "failed", taskId: "tsk_fail" },
+    ]));
+    expect(eligibleTrials(dir)).toHaveLength(1);
+    const loaded = loadSide("gemini", dir);
+    expect(loaded.card.trials).toBe(1);
+    expect(loaded.card.gradingByCase).toEqual({ ep1: "sha-a" });
+  }));
+
+  it("accepts colon-containing model names and serviceTier suffixes in manifest config checks", () => withTmpRun(dir => {
+    const cfg = "ollama:qwen3:8b:medium:priority";
+    const file = join(dir, "evaluation.json");
+    writeFileSync(file, JSON.stringify(mkEval({ taskId: "tsk_1", config: { agent: "ollama", model: "qwen3:8b", effort: "medium" } })));
+    expect(readTrial(file, { caseId: "ep1", config: cfg, trial: 1, state: "done", taskId: "tsk_1", headline: {} }).taskId).toBe("tsk_1");
+    expect(() => readTrial(file, { caseId: "ep1", config: "ollama:qwen3:8b:high", trial: 1, state: "done", taskId: "tsk_1", headline: {} })).toThrow(/manifest/);
+  }));
+
+  it("rejects stale rubrics, non-done trials, missing trials.json dirs, and multi-config dirs", () => withTmpRun(dir => {
+    const stale = join(dir, "stale.json");
+    writeFileSync(stale, JSON.stringify(mkEval({ taskId: "tsk_old", rubric: "old-v1" })));
+    expect(() => readTrial(stale)).toThrow(/playable-v2/);
+
+    const unfinished = join(dir, "running.json");
+    writeFileSync(unfinished, JSON.stringify(mkEval({ taskId: "tsk_run", state: "running" })));
+    expect(() => readTrial(unfinished)).toThrow(/playable-v2/);
+
+    expect(() => loadSide("empty", dir)).toThrow(/trials\.json/);
+    expect(() => loadSide("missing", join(dir, "does-not-exist"))).toThrow(/No such file or folder/);
+
+    for (const [cfg, tid] of [["codex:m:medium", "tsk_c"], ["gemini:g:medium", "tsk_g"]] as const) {
+      const p = join(dir, "ep1", configSlug(cfg), "trial-1");
+      mkdirSync(p, { recursive: true });
+      const [agent, model, effort] = cfg.split(":");
+      writeFileSync(join(p, "evaluation.json"), JSON.stringify(mkEval({ taskId: tid, config: { agent, model, effort } })));
+    }
+    writeFileSync(join(dir, "trials.json"), JSON.stringify([
+      { caseId: "ep1", config: "codex:m:medium", trial: 1, state: "done", taskId: "tsk_c", headline: {} },
+      { caseId: "ep1", config: "gemini:g:medium", trial: 1, state: "done", taskId: "tsk_g", headline: {} },
+    ]));
+    expect(() => loadSide("mixed", dir)).toThrow(/one configuration per side/);
+    expect(loadSide("codex", join(dir, "ep1", configSlug("codex:m:medium"))).card.trials).toBe(1);
+  }));
+
+  it("rejects comparing mismatched points, recordings, or frozen grading hashes and withholds incomplete overall", () => {
+    const s = withDetail(score(), detail());
+    const a = card("a", [{ caseId: "ep1", gradingSha256: "sha-1", score: s }], "recommended");
+    const bAuto = card("b", [{ caseId: "ep1", gradingSha256: "sha-1", score: s }], "automatic");
+    const bCase = card("b", [{ caseId: "ep2", gradingSha256: "sha-1", score: s }], "recommended");
+    const bHash = card("b", [{ caseId: "ep1", gradingSha256: "sha-2", score: s }], "recommended");
+
+    expect(() => scorecardMarkdown([a, bAuto])).toThrow(/operating point/);
+    expect(() => scorecardMarkdown([a, bCase])).toThrow(/recordings/);
+    expect(() => scorecardMarkdown([a, bHash])).toThrow(/different frozen inputs/);
+    expect(() => card("mixed", [
+      { caseId: "ep1", gradingSha256: "sha-1", score: s },
+      { caseId: "ep1", gradingSha256: "sha-2", score: s },
+    ])).toThrow(/different frozen inputs/);
+
+    // Without published reference detail, Watchability lacks 3 of 4 factors, so Overall is withheld.
+    const noRef = card("no-ref", [{ caseId: "ep1", score: score({ reference: false }) }]);
+    expect(noRef.overall).toBeNull();
+    expect(scorecardMarkdown([noRef])).toContain("| **Overall** | – |");
   });
 });

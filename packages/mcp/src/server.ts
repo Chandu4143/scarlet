@@ -32,7 +32,8 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+import { listToolsBriefly } from "./brief-tools.js";
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
@@ -49,6 +50,8 @@ import {
   diffTimelines,
   emptyTimeline,
   frameAligned,
+  introducedDoubledSound,
+  type LouderDoubledSound,
   newId,
   makeTimeMap,
   mergeRanges,
@@ -157,7 +160,8 @@ export { SCARLET_TOOL_NAMES, type ScarletToolName } from "@scarlet/shared";
 /**
  * The audible clip edges a saved timeline cuts at that the version it replaces did not: each start (`in`) and end
  * (`out`) of a clip, in its own recording's seconds. An edge the old version already had is no new cut and is left
- * out. So are the first and last instants of a recording, and the two halves of a split that plays straight on.
+ * out. So are the first and last instants of a recording, and an edge where another clip of the recording plays straight
+ * on from that second, on its track or another: the halves of a split, or a copy that takes over where one is silenced.
  * Whatever made the edge counts: a ripple, a trimmed or added clip, a whole new timeline. A pass that built its
  * video from added clips skipped every edge check there was, and a revision that trimmed one clip by a frame did too.
  */
@@ -166,23 +170,55 @@ function newClipEdges(before: Timeline | null, next: Timeline, media: ReadonlyAr
   const old = before ? audibleMediaClips(before) : [];
   const seen = new Set<string>();
   const edges: ReturnType<typeof newClipEdges> = [];
-  for (const clips of audibleClipsByTrack(next)) {
-    for (const clip of clips) {
-      const length = media.find(m => m.id === clip.mediaId)?.duration, stream = dialogueAudioStream(clip), ends = clip.timelineIn + clipDuration(clip);
-      for (const [side, source] of [["in", clip.sourceIn], ["out", clip.sourceOut]] as const) {
-        const key = `${clip.mediaId}/${stream ?? ""}/${side}/${source.toFixed(3)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (source < .05 || (length !== undefined && source > length - .05)) continue;
-        if (old.some(c => c.mediaId === clip.mediaId && Math.abs((side === "in" ? c.sourceIn : c.sourceOut) - source) < 1e-3)) continue;
-        if (clips.some(c => c !== clip && c.mediaId === clip.mediaId && (side === "out"
-          ? Math.abs(c.sourceIn - source) < 1e-3 && Math.abs(c.timelineIn - ends) < 1e-3
-          : Math.abs(c.sourceOut - source) < 1e-3 && Math.abs(c.timelineIn + clipDuration(c) - clip.timelineIn) < 1e-3))) continue;
-        edges.push({ clipId: clip.id, mediaId: clip.mediaId, ...(stream !== undefined && { stream }), side, source });
-      }
+  const clips = audibleClipsByTrack(next).flat();
+  for (const clip of clips) {
+    const length = media.find(m => m.id === clip.mediaId)?.duration, stream = dialogueAudioStream(clip), ends = clip.timelineIn + clipDuration(clip);
+    for (const [side, source] of [["in", clip.sourceIn], ["out", clip.sourceOut]] as const) {
+      const key = `${clip.mediaId}/${stream ?? ""}/${side}/${source.toFixed(3)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (source < .05 || (length !== undefined && source > length - .05)) continue;
+      if (old.some(c => c.mediaId === clip.mediaId && Math.abs((side === "in" ? c.sourceIn : c.sourceOut) - source) < 1e-3)) continue;
+      if (clips.some(c => c !== clip && c.mediaId === clip.mediaId && dialogueAudioStream(c) === stream && (side === "out"
+        ? Math.abs(c.sourceIn - source) < 1e-3 && Math.abs(c.timelineIn - ends) < 1e-3
+        : Math.abs(c.sourceOut - source) < 1e-3 && Math.abs(c.timelineIn + clipDuration(c) - clip.timelineIn) < 1e-3))) continue;
+      edges.push({ clipId: clip.id, mediaId: clip.mediaId, ...(stream !== undefined && { stream }), side, source });
     }
   }
   return edges;
+}
+
+const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that stretch would play louder than the edit started. Make the change named for it, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone and leaves the mix the edit started from everywhere else, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
+
+/**
+ * A louder stretch as the refusal names it, with the change that turns down each copy it names there alone: split off
+ * just that stretch of it, so what it plays before and after stays as it was.
+ */
+export function doubledSoundText(d: LouderDoubledSound, next: Timeline): string {
+  const clips = new Map(next.tracks.flatMap(t => t.clips.map(c => [c.id, c] as const)));
+  const t = (n: number) => String(+n.toFixed(6));
+  const { start: from, end: to } = d.overlap;
+  const copies = d.copies.length > 2 ? `${d.copies.slice(0, -1).join(", ")} and ${d.copies.at(-1)} all` : `${d.clipIds[0]} and ${d.clipIds[1]} both`;
+  const pair = `clips ${copies} play ${d.mediaId} from ${t(d.source.start)} to ${t(d.source.end)} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
+  const turnDown = ({ clipId, volume: v }: LouderDoubledSound["turnDown"][number]) => {
+    const quiet = clips.get(clipId) as MediaClip;
+    const volume = t(v);
+    // An id for a piece split off it that no clip has yet.
+    const fresh = (name: string) => { let id = `${quiet.id}-${name}`; for (let n = 2; clips.has(id); n++) id = `${quiet.id}-${name}-${n}`; return id; };
+    const before = quiet.timelineIn < from - 1e-6, after = clipEnd(quiet) > to + 1e-6;
+    if (!before && !after) return `${quiet.id} plays only there, so set its volume to ${volume}`;
+    if (!before) {
+      const rest = fresh("after");
+      return `${quiet.id} plays on after that, so splitClip ${quiet.id} at ${t(to)} with newClipId ${rest}, which keeps the part after it as ${rest} with its sound, and set ${quiet.id}'s volume to ${volume}`;
+    }
+    const louder = fresh("louder");
+    if (!after) return `${quiet.id} plays before that as the edit started, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, which keeps the part before it as it was, and set ${louder}'s volume to ${volume}`;
+    const rest = fresh("after");
+    return `${quiet.id} plays on either side of that, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, then splitClip ${louder} at ${t(to)} with newClipId ${rest}, which keeps the parts either side as they were, and set ${louder}'s volume to ${volume}`;
+  };
+  // Turned down to 0, the first copy can still leave the stretch louder, as three copies where the base played one:
+  // the next is named too, so the fix done as it says is the whole fix.
+  return `${pair}: ${d.turnDown.map(turnDown).join("; and ")}`;
 }
 
 const OPS_DOC = `Op types (all times are seconds; timeline times are positions in the edit, source times are positions in the media file):
@@ -947,7 +983,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     });
   }
   /** A recording's areas viewers may see and where each holds. A first ask reads the recording's edges, within one tool call where it can. */
-  const recordingAreas = (mediaId: string, waitSeconds = Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 20))) =>
+  const recordingAreas = (mediaId: string, waitSeconds = toolWait(caps, 20)) =>
     client.get<RecordingAreas & { error?: string }>(`/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${waitSeconds}`);
   /**
    * Every save an agent makes goes through here: one that frames footage past the area viewers may see, or on part of a
@@ -966,7 +1002,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // Footage with no area on record is looked at now, a frame for each stretch, by short runs beside this one. An
     // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
     // time one tool call has.
-    const deadline = Date.now() + Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 30)) * 1000;
+    const deadline = Date.now() + toolWait(caps, 30) * 1000;
     // A frame is asked about once per save: its answer doesn't change, and asking again cost a run each time (2026-11-18).
     const looked = new Set<string>();
     for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
@@ -1324,7 +1360,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const result = await inspect(() => client.contactSheet(ctx.projectId, request, signal), ready => { windows = ready; }, signal);
     return { request, result, windows };
   }
-  async function deliverPictures({ request, result, windows }: PreparedPictures) {
+  async function deliverPictures({ result, windows }: PreparedPictures) {
     for (const w of windows) {
       if (!w.jpeg || !w.timestamps.length) continue;
       if (w.clock === "timeline" && caps.images) readPassage(w.id, w.range);
@@ -1346,7 +1382,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return deliverPictures(await preparePictures(request!));
     });
 
-  const batches = new PictureBatches(preparePictures);
+  // One call waits for the whole batch, a margin under the harness's tool deadline (toolWaitSeconds): 25 s for a
+  // client Scarlet didn't launch, as before.
+  const batches = new PictureBatches(preparePictures, { waitMs: toolWait(caps, 20) * 1000 });
   // The only close handler: a second assignment would replace this one.
   server.server.onclose = () => { diagnosticSessionClosed = true; batches.close(); reviews.close(); };
   tool("frame_contact_sheet_batch",
@@ -1458,7 +1496,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has a picture to show.`);
       const bad = set?.findIndex(a => !(a.area[2]! - a.area[0]! >= 5 && a.area[3]! - a.area[1]! >= 5));
       if (bad !== undefined && bad >= 0) throw new Error(`set[${bad}].area is [left, top, right, bottom] in percent, at least 5 percent each way.`);
-      const wait = Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 20));
+      const wait = toolWait(caps, 20);
       const path = `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${wait}`;
       const state = set?.length || remove?.length
         ? await client.post<RecordingAreas & { error?: string }>(path, { set: set?.map(a => ({ at: a.at, area: a.area.map(n => n / 100) })), remove })
@@ -3016,7 +3054,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, the stretch that got louder and both levels. Make the change it names, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {
@@ -3036,12 +3074,25 @@ ${OPS_DOC}`,
       ...(!ctx.taskId && { autoApprove: z.boolean().optional().describe("Apply a standalone edit authored directly by the editor") }),
       skipRender: z.boolean().optional().describe("Skip before/after renders (metadata-only changes like markers)"),
       withdraws: z.array(z.string()).max(20).optional().describe("Change IDs of this request's own suggestions or alternatives, still waiting for the editor, that this one replaces, such as a draft or a test. They leave the editor's review when this one is saved."),
+      layeredSound: z.boolean().optional().describe("The editor asked to hear the same moment of a recording on two clips at once. Leave it out otherwise"),
     },
-    async ({ ops, timeline, description, reason, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws }) => {
+    async ({ ops, timeline, description, reason, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws, layeredSound }) => {
       // Every clip edge the edit makes is measured on its recording, however the edit makes it: a ripple, a clip added
       // or trimmed, a whole new timeline. One pass built its video from added clips, which nothing measured, and began
       // a clip inside the end of an “uh”; the revision the editor then asked for trimmed that join by one frame, into
       // the first sound of the next word, and said the word now played in full (2026-11-12).
+      // A second audible copy of the same moment of a recording doubles that sound in the mix. One edit asked to keep the
+      // original audio and played it twice as loud, on the video clip and again on A1 (#18). A directly requested edit
+      // applies as it's saved, so the model hears of it first, and an editor who asked for the layering still gets it.
+      // It reads no audio, so it runs before any of the edit's edges are measured and refuses sooner.
+      const refuseDoubledSound = async (next: Timeline) => {
+        if (layeredSound) return;
+        const doubled = await getProject()
+          .then(({ project }) => introducedDoubledSound(before, next, project.media))
+          .catch(without("failed to check the edit for sound it plays louder", [] as LouderDoubledSound[]));
+        if (doubled.length) throw new Error(doubled.slice(0, 6).map(d => doubledSoundText(d, next)).join("; ") +
+          `${doubled.length > 6 ? `; and ${doubled.length - 6} more` : ""}. ${DOUBLED_SOUND}`);
+      };
       const refuseEdgesInSound = async (base: Timeline | null, next: Timeline) => {
         const inside = await edgesInSound(base, next).catch(withoutUnlessPreparing("failed to measure the edit's new clip edges", [] as SoundingEdge[]));
         if (inside.length) throw new Error(inside.slice(0, 12).map(e => edgeInSoundText(e)).join("; ") +
@@ -3076,6 +3127,9 @@ ${OPS_DOC}`,
           v.ops = aligned;
         } else v.ops = await ripplesOnFrames(v.ops, before, frameChanges);
         body.ops = v.ops;
+        // Dry-run against the pinned base before deriving the picture from the synchronized clips.
+        const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);
+        await refuseDoubledSound(placed);
         // Dialogue removed here skips the edge placement and checks of dialogue_apply_cuts. Three removals on one pass
         // came this way, and an edge inside a sounding word is the clipped word the editor sends back. Each all-track
         // ripple is measured on the timeline it applies to, in order.
@@ -3098,8 +3152,6 @@ ${OPS_DOC}`,
           if (split.length) throw new Error(split.join("; ") +
             ". Nothing was saved. Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
         }
-        // Dry-run against the pinned base before deriving the picture from the synchronized clips.
-        const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);
         await refuseEdgesInSound(before, placed);
         if (inset) body.ops = [...v.ops, ...syncPictureOps((await getProject()).project, placed, inset)];
       } else {
@@ -3108,6 +3160,7 @@ ${OPS_DOC}`,
           return errorText(`Invalid timeline:\n${formatZodError(parsed.error)}`);
         }
         body.timeline = parsed.data;
+        await refuseDoubledSound(parsed.data);
         await refuseEdgesInSound(before, parsed.data);
         if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, inset));
       }
@@ -3276,7 +3329,7 @@ ${OPS_DOC}`,
       }
       const report = plan.frames.map((f, i) => {
         const show = fraction(framings[i]!.show);
-        const [fl, ft, fr, fb] = f.frame, fw = fr - fl, fh = fb - ft;
+        const [, ft, , fb] = f.frame, fh = fb - ft;
         const inside = (box: readonly number[], x: number, y: number) => x >= box[0]! && x <= box[2]! && y >= box[1]! && y <= box[3]!;
         const spans = lines[i]?.map(s => ({ ...s, x: (s.box[0] + s.box[2]) / 2, y: (s.box[1] + s.box[3]) / 2 }));
         const shown = spans?.filter(s => inside(show, s.x, s.y));
@@ -3830,6 +3883,7 @@ ${OPS_DOC}`,
     );
   }
 
+  if (caps.briefTools) listToolsBriefly(server);
   return server;
 }
 

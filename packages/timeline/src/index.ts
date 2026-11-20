@@ -10,10 +10,12 @@ export * from "./rebase.js";
 export * from "./leftOut.js";
 export * from "./otio.js";
 export * from "./otioImport.js";
+export * from "./captions.js";
 export * from "./builders.js";
 export * from "./cutReview.js";
 export * from "./stagedCutMapping.js";
 export * from "./joinCrossfade.js";
+export * from "./doubledSound.js";
 export * from "./putBack.js";
 
 export * from "./history.js";

@@ -338,9 +338,7 @@ describe("gemini ACP parser", () => {
     expect(permissionOutcome({ options: opts }, false)).toEqual({ outcome: "selected", optionId: "r1" });
     expect(permissionOutcome({ options: [] }, false)).toEqual({ outcome: "cancelled" });
 
-    const cmd = buildGeminiCommand({ systemPrompt: "SYS", cwd: "/w" }, "agy");
-    expect(cmd.args).toEqual(["acp", "--sandbox", "--disable-telemetry"]);
-    expect(cmd.files[Object.keys(cmd.files).find((k) => k.endsWith("GEMINI.md"))!]).toBe("SYS");
+    expect(buildGeminiCommand("agy")).toEqual({ file: "agy", args: ["acp", "--sandbox", "--disable-telemetry"] });
     expect(acpMcpServer(mcp)).toEqual({
       name: "scarlet",
       command: mcp.command,

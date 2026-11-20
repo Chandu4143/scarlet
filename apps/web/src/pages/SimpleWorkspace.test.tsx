@@ -39,7 +39,7 @@ const it = partedIt(vitestIt);
 
 /** The message box has its own tests. Here it records what the workspace hands it, and draws the tray it is given. */
 type BoxProps = { onCreated?(task: { id: string }): void; onSent?(): void; tray?: React.ReactNode; targetTag?: string; targetIsPoint?: boolean; onClearTarget?(): void; onRestoreTarget?(): boolean;
-  messageClock?: import("../lib/messageTimestamps").MessageClock; pausedAt?: import("../components/agent/Composer").PausedAt;
+  messageClock?: import("../lib/messageTimestamps").MessageClock; pausedAt?: import("../components/agent/Composer").PausedAt; aimTime?: number;
   rewording?: { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void } };
 const composer = vi.hoisted(() => ({ props: undefined as BoxProps | undefined }));
 vi.mock("../components/agent/Composer", () => ({ Composer: (props: BoxProps) => { composer.props = props; return props.tray ?? null; } }));
@@ -2661,13 +2661,16 @@ it("sums a dialogue pass up on one card, and makes its calls in the card on the 
   // How many still wait is on hover. It has no picker and no script.
   expect([...call().querySelectorAll(".edit-card-bar > .edit-card-count, .edit-card-bar > .edit-card-title")].map(e => e.textContent))
     .toEqual(["Cut 1", "Breath before the price."]);
-  expect(call().querySelector(".edit-card-count")?.getAttribute("title")).toBe("1 of 2 still waiting for you");
+  // Hovering the number says where the cut is in the video, and nothing else.
+  expect(call().querySelector(".edit-card-count")?.getAttribute("title")).toBe("Cut at 3:50");
   expect(call().children.length).toBe(1);
   expect(call().querySelector(".edit-card-nav, .preference-select, .edit-card-script, .review-step, .edit-passage")).toBeNull();
   // The conversation stays whole and the message box is tagged with this cut. The icon for the cut's words is
   // on the card, before the one for Before, folded: the chat is for what's said and done, not the dialogue.
   expect(turns().some(t => t.hidden)).toBe(false);
   expect(boxTag()).toBe("Cut 1");
+  // The tag is only the call's number, so its line says where the cut is: at 3:50.
+  expect(composer.props!.aimTime).toBe(230);
   expect(container.querySelector(".simple-open")).toBeNull();
   expect(call().querySelector(".edit-card-side > :first-child")).toBe(transcriptLink());
   expect([...transcriptName(), transcriptLink().getAttribute("aria-expanded")]).toEqual(["", "Show transcript", "Show transcript", "false"]);
@@ -7641,7 +7644,7 @@ it("opens a call that's with Scarlet: its card says so, and its revision is at w
   // The other call still has its decisions, the only one waiting.
   await press("ArrowDown");
   expect(buttonIn(call(), "Approve")).toBeDefined();
-  expect([call().querySelector(".edit-card-count")?.textContent, call().querySelector(".edit-card-count")?.getAttribute("title")]).toEqual(["Cut 2", "1 of 1 still waiting for you"]);
+  expect([call().querySelector(".edit-card-count")?.textContent, call().querySelector(".edit-card-count")?.getAttribute("title")]).toEqual(["Cut 2", expect.stringMatching(/^Cut at \d+:\d\d$/)]);
 });
 
 it("aims the message box at the cut that's open, and lets go of it when the cut closes", async () => {
