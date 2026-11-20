@@ -7,7 +7,7 @@
  */
 import type { TimeRange } from "@scarlet/timeline";
 import { escapeFilterPath } from "./effects.js";
-import { LOCAL_MEDIA_INPUT, ffSeconds, resolveFfmpeg, runCapture } from "./exec.js";
+import { LOCAL_MEDIA_INPUT, ffSeconds, requireDrawtext, resolveFfmpeg, runCapture } from "./exec.js";
 import { resolveFontFile } from "./fonts.js";
 
 export interface SoundPictureWord { text: string; start: number; end: number }
@@ -129,6 +129,7 @@ export function soundPictureGraph(opts: SoundPictureOptions): { graph: string; l
 
 /** The picture as a JPEG, with where each row's sound sits in it. */
 export async function soundPicture(file: string, opts: SoundPictureOptions): Promise<{ jpeg: Buffer; layout: SoundPictureLayout }> {
+  await requireDrawtext("write the times and words on a sound picture");
   const { graph, layout } = soundPictureGraph(opts);
   const { stdout } = await runCapture(resolveFfmpeg(), ["-hide_banner", "-nostdin", "-nostats", "-ss", ffSeconds(opts.range.start),
     "-t", String(opts.range.end - opts.range.start), ...LOCAL_MEDIA_INPUT, "-i", file, "-filter_complex", graph, "-map", "[out]",

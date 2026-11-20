@@ -8,11 +8,17 @@ import {
   INDEXED_MP4_INPUT,
   failureReason,
   ffSeconds,
+  MissingFilterError,
   ffmpegEncoders,
+  ffmpegFilters,
   ffmpegMajor,
   ffmpegVersion,
   fnum,
+  hasDrawtext,
+  missingTextFilterMessage,
+  parseFilterList,
   parseProgressLine,
+  requireDrawtext,
   mediaToolLaunchError,
   runCapture,
   runFfmpeg,
@@ -262,6 +268,56 @@ describe("what a build offers", () => {
     for (const name of ["=", "------", "Encoders:"]) expect(encoders.has(name)).toBe(false);
     expect(await ffmpegEncoders()).toBe(encoders);
     expect(await ffmpegMajor()).toBeGreaterThanOrEqual(4);
+  });
+
+  it("lists filters by name, without the legend, and asks once per binary", async () => {
+    const listed = parseFilterList([
+      "Filters:",
+      "  T.. = Timeline support",
+      "  .S. = Slice threading",
+      "  A = Audio input/output",
+      "  | = Source or sink filter",
+      " TS aap               AA->A      Apply Affine Projection algorithm to first audio stream.",
+      " .. anullsrc          |->A       Null audio source, return empty audio frames.",
+      " T. drawtext          V->V       Draw text on top of video frames using libfreetype library.",
+      " TSC scale            V->V       Scale the input video size.", // an older build's three flag columns
+      " ... buffersink       V->|       Buffer video frames.",
+    ].join("\n"));
+    expect([...listed].sort()).toEqual(["aap", "anullsrc", "buffersink", "drawtext", "scale"]);
+    const filters = await ffmpegFilters();
+    expect(filters.has("scale")).toBe(true);
+    expect(filters.has("=")).toBe(false);
+    expect(await ffmpegFilters()).toBe(filters);
+  });
+
+  it("says in plain words what an FFmpeg without text drawing stops and how to install one that has it", () => {
+    const mac = missingTextFilterMessage("draw the video’s captions", "darwin");
+    expect(mac).toBe("This copy of FFmpeg can’t draw text, so Scarlet can’t draw the video’s captions. "
+      + "Run the FFmpeg setup helper linked in the Scarlet download instructions. Then restart Scarlet and try again.");
+    expect(missingTextFilterMessage("draw the video’s captions", "win32")).toContain("winget install --id Gyan.FFmpeg.Essentials --exact.");
+    expect(missingTextFilterMessage("draw the video’s captions", "linux")).toContain("libfreetype");
+  });
+
+  // A shell script stands in for ffmpeg here: one built without libfreetype, so without drawtext.
+  it.skipIf(process.platform === "win32")("finds an FFmpeg that can't draw text, and lets one that can't be asked fail on its own", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scarlet-exec-"));
+    try {
+      const bin = join(dir, "ffmpeg-no-text");
+      await writeFile(bin, "#!/bin/sh\necho ' .. scale            V->V       Scale the input video size.'\n", { mode: 0o755 });
+      expect(await hasDrawtext(bin)).toBe(false);
+      const refused = requireDrawtext("draw the video’s captions", bin);
+      await expect(refused).rejects.toBeInstanceOf(MissingFilterError);
+      await expect(refused).rejects.toThrow(/^This copy of FFmpeg can’t draw text, so Scarlet can’t draw the video’s captions\./);
+      await expect(refused).rejects.not.toThrow(dir);
+      expect(await hasDrawtext()).toBe(true);
+      await expect(requireDrawtext("draw the video’s captions")).resolves.toBeUndefined();
+      // Whatever stops a binary from running is the render's own error to report.
+      expect(await hasDrawtext(join(dir, "missing"))).toBe(true);
+      // A list Scarlet can't read a filter from doesn't block captions.
+      const unreadable = join(dir, "ffmpeg-new-format");
+      await writeFile(unreadable, "#!/bin/sh\necho 'Filters: (a layout Scarlet does not know)'\n", { mode: 0o755 });
+      expect(await hasDrawtext(unreadable)).toBe(true);
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
   // A shell script stands in for ffmpeg here.

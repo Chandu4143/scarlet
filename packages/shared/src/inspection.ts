@@ -196,6 +196,8 @@ export interface InspectionWindow {
   jpeg: string;
   events?: CutEvent[];
   wav?: string;
+  /** Something about the picture its reader should know, such as labels Scarlet couldn't draw. */
+  note?: string;
 }
 export type InspectionResult =
   | { state: "preparing"; renderIds: string[] }
