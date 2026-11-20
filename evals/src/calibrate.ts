@@ -33,8 +33,10 @@ import { keptSource } from "./timeline.ts";
 
 const USAGE = `Usage:
   tsx evals/src/calibrate.ts sheet <scored path,...> --out <new dir> [--data <eval data root>] [--per-video 2] [--seed 1]
+  tsx evals/src/calibrate.ts page <sheet dir>
   tsx evals/src/calibrate.ts score <answers.json>
 
+page: rewrite a sheet's index.html from its spots.json and clips, with the clips inside the page.
 sheet: a listening page with clips of flagged spots, from one pass per recording (needs ffmpeg).
 score: how many spots of each kind of flag the listener called real.`;
 
@@ -187,21 +189,32 @@ export function buildSheet(paths: readonly string[], out: string, opts: { roots:
   }
   const sheet = shuffled(spots, opts.seed);
   writeJson(join(out, "spots.json"), sheet, out);
-  writeText(join(out, "index.html"), sheetHtml(sheet), out);
-  return { spots: sheet.length, page: join(out, "index.html") };
+  return { spots: sheet.length, page: writePage(out) };
+}
+
+/**
+ * The sheet's page, with every clip inside it as data, so it plays wherever it is opened: a viewer that shows one file
+ * can't fetch the clips beside it, and the page played nothing there (2026-11-20).
+ */
+export function writePage(dir: string): string {
+  const spots = readJson<Spot[]>(join(dir, "spots.json"));
+  const inline = (path: string) => `data:audio/mp4;base64,${readFileSync(join(dir, path)).toString("base64")}`;
+  const page = join(dir, "index.html");
+  writeText(page, sheetHtml(spots, inline), dir);
+  return page;
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
-function sheetHtml(spots: readonly Spot[]): string {
+function sheetHtml(spots: readonly Spot[], src: (path: string) => string = p => p): string {
   const rows = spots.map((s, i) => `
 <section data-id="${esc(s.id)}">
   <h2>${i + 1} of ${spots.length} <span>${esc(s.caseId)} · ${clock(s.at)} in the recording</span></h2>
   <p class="q">${esc(QUESTIONS[s.kind])}</p>
   ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">“${esc(s.text.slice(0, 220))}${s.text.length > 220 ? "…" : ""}”</p>`}
-  <div class="clips"><label>Scarlet <audio controls preload="none" src="${esc(s.scarlet)}"></audio></label>
-  ${s.editor ? `<label>Your editor <audio controls preload="none" src="${esc(s.editor)}"></audio></label>` : ""}</div>
+  <div class="clips"><label>Scarlet <audio controls preload="none" src="${src(s.scarlet)}"></audio></label>
+  ${s.editor ? `<label>Your editor <audio controls preload="none" src="${src(s.editor)}"></audio></label>` : ""}</div>
   <div class="answer" role="radiogroup">
     <button data-v="real">Yes, a real mistake</button><button data-v="fine">No, it's fine</button><button data-v="unsure">Not sure</button>
   </div>
@@ -222,12 +235,14 @@ audio{width:300px;max-width:100%}
 .answer{display:flex;flex-wrap:wrap;gap:8px}
 button{background:none;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
 button.on{border-color:var(--on);background:var(--on);color:var(--bg)}
+#saved{display:none;width:100%;height:120px;margin-top:8px;background:none;color:var(--fg);border:1px solid var(--line);border-radius:6px;font:12px ui-monospace,monospace}
 footer{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:center}
 #done{color:var(--dim)}#save.ready{border-color:var(--green);color:var(--green)}
 </style></head><body><main>
 <h1>Flag check</h1>
-<p class="lead">${spots.length} spots the eval flagged, and a few it didn't. Play Scarlet's clip, then your editor's where there is one, and answer. Clips are rebuilt from the cut with a tiny fade, not rendered by Scarlet. Answers are kept in this browser until you save them.</p>
+<p class="lead">${spots.length} spots the eval flagged, and a few it didn't. Play Scarlet's clip, then your editor's where there is one, and answer. Clips are rebuilt from the cut with a tiny fade, not rendered by Scarlet. Answers are kept in this browser until you save them. If saving doesn't download a file, copy the answers from the box that opens and paste them back.</p>
 ${rows}
+<textarea id="saved" readonly></textarea>
 </main><footer><span id="done"></span><button id="save">Save answers</button></footer>
 <script>
 const KEY = "flag-check:" + location.pathname;
@@ -247,9 +262,15 @@ for (const s of sections) for (const b of s.querySelectorAll("button")) b.addEve
 });
 for (const a of document.querySelectorAll("audio")) a.addEventListener("play", () => { for (const o of document.querySelectorAll("audio")) if (o !== a) o.pause(); });
 document.getElementById("save").addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify({ schema: 1, answeredAt: new Date().toISOString(), answers }, null, 2)], { type: "application/json" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob); link.download = "answers.json"; link.click();
+  const text = JSON.stringify({ schema: 1, answeredAt: new Date().toISOString(), answers }, null, 2);
+  // Some viewers block downloads: the answers also show in a box to copy from.
+  const box = document.getElementById("saved");
+  box.value = text; box.style.display = "block"; box.select();
+  try { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}); } catch {}
+  try {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); link.download = "answers.json"; link.click();
+  } catch {}
 });
 paint();
 </script></body></html>
@@ -275,6 +296,10 @@ async function calibrateCli(argv = process.argv.slice(2)) {
     const roots = [values.data, process.env.SCARLET_EVAL_DATA].filter((r): r is string => !!r).map(r => resolve(r));
     const result = buildSheet(target.split(","), resolve(values.out), { roots, perVideo: Number(values["per-video"] ?? 2), seed: Number(values.seed ?? 1) });
     console.log(`${result.spots} spots. Open ${result.page}, answer, press Save answers, then: tsx evals/src/calibrate.ts score <answers.json>`);
+    return;
+  }
+  if (command === "page" && target) {
+    console.log(`Rewrote ${writePage(resolve(target))}`);
     return;
   }
   if (command === "score" && target) {

@@ -182,7 +182,7 @@ trials an arm. Results saved before a trial stored what it left (`score.left`) a
 
 The flags are counted from transcripts and levels, never heard. `calibrate.ts sheet` takes one pass per recording,
 picks a few spots of each kind of flag plus some joins nothing flagged (mixed in blind with the mid-word cuts), cuts a
-clip of Scarlet's cut and of the published video at each, and writes a page to open from disk. Answer each spot, press
+clip of Scarlet's cut and of the published video at each, and writes one self-contained page, clips inside, that plays wherever it is opened. Answer each spot, press
 Save answers, then `calibrate.ts score answers.json` says how many spots of each kind were real: the share of each count
 worth believing. Clips are rebuilt from the cut's kept ranges with a 10 ms fade, not rendered by Scarlet.
 
