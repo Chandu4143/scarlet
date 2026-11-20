@@ -7,8 +7,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { agentCapabilities, ProposeChangeRequest, ScarletApiError, ScarletClient, Task } from "@scarlet/shared";
-import type { Transcript } from "@scarlet/timeline";
-import { emptyTimeline, makeMediaClip } from "@scarlet/timeline";
+import type { MediaClip, Timeline, Transcript } from "@scarlet/timeline";
+import { applyOps, clipEnd, emptyTimeline, makeMediaClip } from "@scarlet/timeline";
 import { createScarletMcpServer, SCARLET_TOOL_NAMES } from "./server.js";
 import * as dialogueJoin from "./dialogue-join.js";
 import { describeError, toolRefusal } from "./tool-result.js";
@@ -492,6 +492,245 @@ describe("timeline_propose", () => {
     expect((post.body as { ops: unknown[] }).ops).toEqual([{ op: "rippleDelete", start: 1.0, end: 1.5 }]);
     // The agent is told where the removal landed.
     expect(JSON.parse(textOf(r))).toMatchObject({ onWholeFrames: [{ asked: [0.987, 1.513], removed: [1, 1.5] }] });
+  });
+
+  it("refuses an edit that plays the same moment of a recording on two audible clips, before it can apply, unless the editor asked for it layered", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    const changes = () => mock.requests.filter(req => req.method === "POST" && req.path.endsWith("/changes")).length;
+    const propose = async (base: Timeline, args: Record<string, unknown>) => {
+      mock.state.timeline = structuredClone(base);
+      await c.callTool({ name: "timeline_get", arguments: {} });
+      return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Keep the original audio", reason: "The editor asked for it.", ...args } }) as CallToolResult;
+    };
+    try {
+      // The report in #18: the recording on V1 with its sound, and the same range added to A1 at unity gain.
+      const tl = emptyTimeline(mock.state.project.id);
+      tl.version = "v_doubled";
+      tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "video-clip" })];
+      const added = { op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 0, 5, 0, { id: "audio-clip" }) };
+      const saved = changes();
+      const doubled = await propose(tl, { ops: [added] });
+      expect(doubled.isError).toBe(true);
+      expect(textOf(doubled)).toContain("clips video-clip and audio-clip both play m1 from 0 to 5 s, at 0–5 s on the timeline, where their volumes add up to 2 and the edit started at 1: audio-clip plays only there, so set its volume to 0");
+      expect(textOf(doubled)).toContain("Nothing was saved");
+      expect(changes()).toBe(saved);
+      // The editor asked to hear it twice.
+      const layered = await propose(tl, { ops: [added], layeredSound: true });
+      expect(layered.isError).toBeFalsy();
+      expect(changes()).toBe(saved + 1);
+
+      // From the same one-clip timeline: the same addition with the video copy muted, which is the fix, and a copy
+      // offset by 5 ms, under a frame, which may be deliberate. Neither is refused.
+      for (const ops of [[{ op: "updateClip", clipId: "video-clip", patch: { volume: 0 } }, added],
+        [{ op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 0.005, 5, 0, { id: "audio-clip" }) }]])
+        expect((await propose(tl, { ops })).isError).toBeFalsy();
+
+      // A full replacement timeline is checked the same way.
+      const whole = { ...tl, tracks: [tl.tracks[0]!, { ...tl.tracks[1]!, clips: [makeMediaClip("m1", 0, 5, 0, { id: "audio-clip" })] }] };
+      expect(textOf(await propose(tl, { timeline: whole }))).toContain("clips video-clip and audio-clip both play m1");
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
+  });
+
+  it("compares the copies' combined level with the base's: a split into two copies at 0.5 applies, and raising them to 1 is refused", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    const changes = () => mock.requests.filter(req => req.method === "POST" && req.path.endsWith("/changes")).length;
+    const propose = async (base: Timeline, ops: object[], extra: Record<string, unknown> = {}) => {
+      mock.state.timeline = structuredClone(base);
+      await c.callTool({ name: "timeline_get", arguments: {} });
+      return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Layer the sound", reason: "The editor asked for it.", ops, ...extra } }) as CallToolResult;
+    };
+    try {
+      const single = emptyTimeline(mock.state.project.id);
+      single.version = "v_single";
+      single.tracks[0]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "video-clip" })];
+      // The one clip at 1 as two copies in sync at 0.5 each: the mix plays it as loud as before.
+      const halves = [{ op: "updateClip", clipId: "video-clip", patch: { volume: 0.5 } },
+        { op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 0, 5, 0, { id: "audio-clip", volume: 0.5 }) }];
+      const split = await propose(single, halves);
+      expect(split.isError, textOf(split)).toBeFalsy();
+
+      // Those two copies raised to 1 play it at twice the level, though neither is a new copy.
+      const layered = structuredClone(single);
+      layered.version = "v_halves";
+      layered.tracks[0]!.clips[0]!.volume = 0.5;
+      layered.tracks[1]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "audio-clip", volume: 0.5 })];
+      const raise = [{ op: "updateClip", clipId: "video-clip", patch: { volume: 1 } }, { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }];
+      const saved = changes();
+      const raised = await propose(layered, raise);
+      expect(raised.isError).toBe(true);
+      expect(textOf(raised)).toContain("clips video-clip and audio-clip both play m1 from 0 to 5 s, at 0–5 s on the timeline, where their volumes add up to 2 and the edit started at 1");
+      expect(textOf(raised)).toContain("Nothing was saved");
+      expect(changes()).toBe(saved);
+      expect((await propose(layered, raise, { layeredSound: true })).isError).toBeFalsy();
+      // Raising one of them alone with the other silenced is one copy at 1, as the base played it.
+      const swapped = [{ op: "updateClip", clipId: "video-clip", patch: { volume: 0 } }, { op: "updateClip", clipId: "audio-clip", patch: { volume: 1 } }];
+      expect((await propose(layered, swapped)).isError).toBeFalsy();
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
+  });
+
+  it("reports only the stretch an extended layer made louder, and its fix turns the layer down there alone", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    const changes = () => mock.requests.filter(req => req.method === "POST" && req.path.endsWith("/changes"));
+    try {
+      // Camera sound from 0:00 to 0:10, with a second copy layered on purpose from 0:00 to 0:05.
+      const tl = emptyTimeline(mock.state.project.id);
+      tl.version = "v_layered";
+      tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 10, 0, { id: "camera" })];
+      tl.tracks[1]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "layer" })];
+      const propose = async (ops: object[]) => {
+        mock.state.timeline = structuredClone(tl);
+        await c.callTool({ name: "timeline_get", arguments: {} });
+        return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Extend the layer", reason: "The editor asked for it.", ops } }) as CallToolResult;
+      };
+      // Extending the layer to 0:10 doubles only 0:05–0:10: the first five seconds were layered already.
+      const extend = { op: "updateClip", clipId: "layer", patch: { sourceOut: 10 } };
+      const saved = changes().length;
+      const refused = await propose([extend]);
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toContain("clips camera and layer both play m1 from 5 to 10 s, at 5–10 s on the timeline, where their volumes add up to 2 and the edit started at 1: layer plays before that as the edit started, so splitClip layer at 5 with newClipId layer-louder, which keeps the part before it as it was, and set layer-louder's volume to 0");
+      expect(textOf(refused)).not.toContain("0–10 s on the timeline");
+      expect(changes()).toHaveLength(saved);
+
+      // Done as it says, the edit applies and keeps the layering the editor had over the first five seconds.
+      const fix = [extend, { op: "splitClip", clipId: "layer", at: 5, newClipId: "layer-louder" }, { op: "updateClip", clipId: "layer-louder", patch: { volume: 0 } }];
+      const fixed = await propose(fix);
+      expect(fixed.isError, textOf(fixed)).toBeFalsy();
+      const ops = (changes().at(-1)!.body as { ops: Parameters<typeof applyOps>[1] }).ops;
+      const mix = applyOps(tl, ops).tracks.flatMap(t => t.clips.map(c => [c.id, c.timelineIn, clipEnd(c), (c as MediaClip).volume]));
+      expect(mix).toEqual([["camera", 0, 10, 1], ["layer", 0, 5, 1], ["layer-louder", 5, 10, 0]]);
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
+  });
+
+  it("says how to silence a partly overlapping copy and keep the sound each clip plays alone, and takes that fix", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    try {
+      // V1 already ends inside “back.” (1.5–1.8 s). A1 adds the recording from the quiet at 1.05 s to 3.5 s, so the two
+      // play 1.05–1.7 s twice, and each plays sound the other doesn't on either side.
+      const tl = emptyTimeline(mock.state.project.id);
+      tl.version = "v_partial";
+      tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 1.7, 0, { id: "video-clip" })];
+      mock.state.timeline = tl;
+      const propose = async (ops: object[]) => {
+        mock.state.timeline = structuredClone(tl);
+        await c.callTool({ name: "timeline_get", arguments: {} });
+        return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Add the audio", reason: "The editor asked for it.", ops } }) as CallToolResult;
+      };
+      const added = { op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 1.05, 3.5, 1.05, { id: "audio-clip" }) };
+      const doubled = await propose([added]);
+      expect(doubled.isError).toBe(true);
+      expect(textOf(doubled)).toContain("at 1.05–1.7 s on the timeline, where their volumes add up to 2 and the edit started at 1: audio-clip plays on after that, so splitClip audio-clip at 1.7 with newClipId audio-clip-after, which keeps the part after it as audio-clip-after with its sound, and set audio-clip's volume to 0");
+      // Done as it says, A1 takes over from V1 at 1.7 s inside “back.”, on the same second of the recording: one sound
+      // that plays on, not a cut through the word.
+      const fixed = await propose([added, { op: "splitClip", clipId: "audio-clip", at: 1.7, newClipId: "audio-clip-after" },
+        { op: "updateClip", clipId: "audio-clip", patch: { volume: 0 } }]);
+      expect(fixed.isError, textOf(fixed)).toBeFalsy();
+      // Ending V1 there with nothing to take over is still a cut through the word.
+      const cut = await propose([{ op: "updateClip", clipId: "video-clip", patch: { sourceOut: 1.65 } }]);
+      expect(textOf(cut)).toContain("inside “back”");
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
+  });
+
+  it("refuses three copies before measuring any edge they make, and names both added copies to turn down", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    const reads = () => mock.requests.filter(req => req.path.endsWith("/waveform")).length;
+    try {
+      const tl = emptyTimeline(mock.state.project.id);
+      tl.version = "v_three";
+      tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "camera" })];
+      const propose = async (ops: object[]) => {
+        mock.state.timeline = structuredClone(tl);
+        await c.callTool({ name: "timeline_get", arguments: {} });
+        return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Layer the sound", reason: "The editor asked for it.", ops } }) as CallToolResult;
+      };
+      // Two more copies of 0–1.7 s under the camera, each ending inside “back.” (1.5–1.8 s): the sound plays at three
+      // times its level, and both copies end through a word. The level needs no audio read, so it refuses first.
+      const copies = [{ op: "addTrack", track: { id: "a2", kind: "audio", name: "A2", clips: [] } },
+        { op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 0, 1.7, 0, { id: "layer" }) },
+        { op: "addClip", trackId: "a2", clip: makeMediaClip("m1", 0, 1.7, 0, { id: "layer-2" }) }];
+      const read = reads();
+      const refused = await propose(copies);
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toContain("clips camera, layer and layer-2 all play m1 from 0 to 1.7 s, at 0–1.7 s on the timeline, where their volumes add up to 3 and the edit started at 1: layer plays only there, so set its volume to 0; and layer-2 plays only there, so set its volume to 0");
+      expect(textOf(refused)).not.toContain("inside “back”");
+      expect(reads()).toBe(read);
+      // The same three copies as a whole new timeline are refused the same way, before any edge is measured.
+      const whole = { ...tl, version: undefined, tracks: [tl.tracks[0]!, { ...tl.tracks[1]!, clips: [makeMediaClip("m1", 0, 1.7, 0, { id: "layer" })] },
+        { ...tl.tracks[1]!, id: "a2", name: "A2", clips: [makeMediaClip("m1", 0, 1.7, 0, { id: "layer-2" })] }] };
+      mock.state.timeline = structuredClone(tl);
+      await c.callTool({ name: "timeline_get", arguments: {} });
+      const wholeRefused = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Layer the sound",
+        reason: "The editor asked for it.", timeline: whole } }) as CallToolResult;
+      expect(textOf(wholeRefused)).toContain("clips camera, layer and layer-2 all play m1 from 0 to 1.7 s");
+      expect(textOf(wholeRefused)).not.toContain("inside “back”");
+      expect(reads()).toBe(read);
+      // Done as it says, both copies are silent and the edit applies.
+      const fixed = await propose([...copies, ...["layer", "layer-2"].map(clipId => ({ op: "updateClip", clipId, patch: { volume: 0 } }))]);
+      expect(fixed.isError, textOf(fixed)).toBeFalsy();
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
+  });
+
+  it("hears a clip's sound go on in the same recording on another track at the same second, and only there", async () => {
+    const old = { timeline: mock.state.timeline, waveform: mock.state.waveform };
+    mock.state.waveform = (id, from, to, points) => spokenWaveform(id, from, to, points, transcript.segments.flatMap(s => s.words));
+    const c = await connect();
+    try {
+      const tl = emptyTimeline(mock.state.project.id);
+      tl.version = "v_handoff";
+      tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 5, 0, { id: "camera" })];
+      const propose = async (ops: object[]) => {
+        mock.state.timeline = structuredClone(tl);
+        await c.callTool({ name: "timeline_get", arguments: {} });
+        return await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Move the sound to A1", reason: "The editor asked for it.", ops } }) as CallToolResult;
+      };
+      // V1 ends at 1.7 s, inside “back.” (1.5–1.8 s), and A1 plays the recording on from that second: one sound that
+      // plays on, so neither new edge is a cut through the word.
+      const trim = { op: "updateClip", clipId: "camera", patch: { sourceOut: 1.7 } };
+      const onward = (at: number) => ({ op: "addClip", trackId: "a1", clip: makeMediaClip("m1", 1.7, 5, at, { id: "onward" }) });
+      const handed = await propose([trim, onward(1.7)]);
+      expect(handed.isError, textOf(handed)).toBeFalsy();
+      // The same second of the recording a moment later on A1 is a gap, not the sound going on: V1's end and A1's start
+      // both cut through the word.
+      const later = await propose([trim, onward(2.2)]);
+      expect(later.isError).toBe(true);
+      expect(textOf(later)).toContain("clip camera ends at source 1.70 s inside “back”");
+      expect(textOf(later)).toContain("clip onward starts at source 1.70 s inside “back”");
+      // With nothing to take over, V1's end is a cut through the word.
+      expect(textOf(await propose([trim]))).toContain("clip camera ends at source 1.70 s inside “back”");
+    } finally {
+      mock.state.timeline = old.timeline;
+      mock.state.waveform = old.waveform;
+      await c.close();
+    }
   });
 
   it("returns a readable error for invalid ops instead of crashing", async () => {
