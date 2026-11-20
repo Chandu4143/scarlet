@@ -80,8 +80,8 @@ cost when you ask.
 ## 5. Score it against the published video
 
 The ledger says whether old mistakes stay fixed. The scorecard says how good the cut is: each scored pass is read
-against the video the editor's own editor published from the same recording, and comes down to **Watchability** (four
-craft-bug factors scored by rate per 10 minutes of cut), **Editorial match** (alignment with the editor's decisions and
+against the video the editor's own editor published from the same recording, and comes down to **Watchability** (the
+craft mistakes an editor's ears confirmed, scored by rate per 10 minutes of cut), **Editorial match** (alignment with the editor's decisions and
 pacing), and **Overall** (the geometric mean of Watchability and Editorial match, so severe craft defects cannot hide
 behind high editorial averages).
 
