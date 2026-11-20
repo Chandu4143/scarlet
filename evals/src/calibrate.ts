@@ -377,10 +377,11 @@ function sheetHtml(spots: readonly Spot[], src: (path: string) => string = p => 
 <section data-id="${esc(s.id)}">
   <h2>${i + 1} of ${spots.length} <span>${esc(s.caseId)} · ${clock(s.at)} in the recording</span></h2>
   <p class="q">${where(s)}</p>
-  ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">“${esc(s.text.slice(0, 220))}${s.text.length > 220 ? "…" : ""}”</p>`}
+  ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">${s.kind === "wrong" ? "Words Scarlet took out, so they're not in its clip" : "What Scarlet keeps there"}:
+    “${esc(s.text.slice(0, 220))}${s.text.length > 220 ? "…" : ""}”</p>`}
   <div class="clips">${player("Scarlet", s.scarlet, s.offset)}
   ${s.editor ? player(s.editorApprox ? "Your editor, around the same words (couldn't line up exactly)" : "Your editor, same words first", s.editor, s.editorOffset)
-    : `<div class="clip"><span>${s.editorCut ? "Your editor cut this whole stretch, so there's nothing of theirs to compare. Judge Scarlet's clip on its own." : "No clip of your editor's version here."}</span></div>`}</div>
+    : `<div class="clip"><span>${s.editorCut ? (s.kind === "wrong" ? "Your editor's version of these words couldn't be found in their video, so there's no clip of it. Judge Scarlet's clip on its own." : "Your editor cut this whole stretch, so there's nothing of theirs to compare. Judge Scarlet's clip on its own.") : "No clip of your editor's version here."}</span></div>`}</div>
   <div class="answer" role="radiogroup">
     <button data-v="real">Yes, a real mistake</button><button data-v="fine">No, it's fine</button><button data-v="unsure">Not sure</button>
   </div>
