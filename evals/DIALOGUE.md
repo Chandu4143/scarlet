@@ -106,10 +106,13 @@ behind high editorial averages).
 Under the card is the count it is easiest to feel: **automated flags per 10 finished min** (runs of 2+ words Scarlet
 cut that the editor kept, long passages of 6+ words Scarlet left in that the editor cut, sounding words a cut lands
 inside, and stutter cuts under 1 s). Shorter 2–5 word phrases Scarlet left in that the editor trimmed (`"kind of"`,
-`"And so"`) are counted separately as **short tightenings left in**. All automated counts are flags rather than
-confirmed defects until someone listens to the actual rendered audio timeline.
+`"And so"`) are counted separately as **short tightenings left in**. Where Scarlet and the editor played the same words
+from different sayings of them (“it is a very good model. It is a very good model”), or Scarlet took out a repeat the
+editor left in, the viewer hears the line either way: that run counts as **same words, another take**, in neither of the
+counts above. All automated counts are flags rather than confirmed defects until someone listens to the actual
+rendered audio timeline.
 
-Every scored pass records two separate playable cuts under rubric `dialogue-playable-v2`:
+Every scored pass records two separate playable cuts under rubric `dialogue-playable-v3`:
 - `recommended` (default): what plays after accepting Scarlet's recommended staged cuts.
 - `automatic`: what plays from applied cuts alone, without accepting any staged proposals.
 

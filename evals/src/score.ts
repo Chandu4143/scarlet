@@ -89,7 +89,7 @@ interface PacingScore {
   /** The longest gaps of the edit the task left, when that is not the applied version. */
   finalGaps?: PacingGap[];
 }
-export const RUBRIC = "dialogue-playable-v2";
+export const RUBRIC = "dialogue-playable-v3";
 export type OperatingPoint = "automatic" | "recommended";
 interface Playable {
   seconds: number; kept: Record<string, Range[]>; edges: EdgeSummary; pacing: PacingSummary;

@@ -37,7 +37,7 @@ replays of the model's real requests through today's code) and compares with the
 
 ## The dialogue scorecard
 
-`scorecard.ts` turns manifest-eligible `dialogue-playable-v2` passes into **Watchability** (four craft-bug factors
+`scorecard.ts` turns manifest-eligible `dialogue-playable-v3` passes into **Watchability** (four craft-bug factors
 scored by rate per 10 finished minutes: mid-word cuts, wrong cuts, long missed removals, and stutter cuts), **Editorial
 match** (cut decisions, take choice, lines kept, same cuts, pauses, dead air, cut count, space at a cut, restarts left
 in, known mistakes), a combined **Overall** (geometric mean of Watchability and Editorial match, withheld when required
