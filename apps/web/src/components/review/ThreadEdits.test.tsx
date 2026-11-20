@@ -6,8 +6,6 @@ import { buildThreads, threadEditList, type VersionSummary } from "@scarlet/shar
 import { api } from "../../lib/client";
 import { buildDb, PRJ } from "../../lib/mock/fixtures";
 import { useProjectStore, type ProjectData } from "../../stores/project";
-import { NO_AGENT_REASON } from "../agent/AgentChip";
-import { useHostsStore } from "../../stores/hosts";
 import { rejectInstruction, ThreadAction, useThreadEdits } from "./ThreadEdits";
 import type { Thread, ThreadEdit } from "@scarlet/shared";
 

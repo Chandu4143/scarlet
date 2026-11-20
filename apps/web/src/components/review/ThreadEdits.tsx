@@ -12,7 +12,6 @@ import { useShownCutStore } from "../../stores/shownCut";
 import { Dropdown, MenuItem } from "../shell/WorkspaceNavigation";
 import { Icon } from "../ui/primitives";
 import { useAgentAvailability } from "../agent/AgentChip";
-import { useHotkeys } from "../../lib/hotkeys";
 import type { AgentContext } from "../../stores/ui";
 
 /** What Scarlet is asked to do when the editor rejects an edit the engine can't put back itself. One × is one edit. */

@@ -32,7 +32,7 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
@@ -947,7 +947,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     });
   }
   /** A recording's areas viewers may see and where each holds. A first ask reads the recording's edges, within one tool call where it can. */
-  const recordingAreas = (mediaId: string, waitSeconds = Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 20))) =>
+  const recordingAreas = (mediaId: string, waitSeconds = toolWait(caps, 20)) =>
     client.get<RecordingAreas & { error?: string }>(`/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${waitSeconds}`);
   /**
    * Every save an agent makes goes through here: one that frames footage past the area viewers may see, or on part of a
@@ -966,7 +966,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // Footage with no area on record is looked at now, a frame for each stretch, by short runs beside this one. An
     // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
     // time one tool call has.
-    const deadline = Date.now() + Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 30)) * 1000;
+    const deadline = Date.now() + toolWait(caps, 30) * 1000;
     // A frame is asked about once per save: its answer doesn't change, and asking again cost a run each time (2026-11-18).
     const looked = new Set<string>();
     for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
@@ -1324,7 +1324,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const result = await inspect(() => client.contactSheet(ctx.projectId, request, signal), ready => { windows = ready; }, signal);
     return { request, result, windows };
   }
-  async function deliverPictures({ request, result, windows }: PreparedPictures) {
+  async function deliverPictures({ result, windows }: PreparedPictures) {
     for (const w of windows) {
       if (!w.jpeg || !w.timestamps.length) continue;
       if (w.clock === "timeline" && caps.images) readPassage(w.id, w.range);
@@ -1346,7 +1346,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return deliverPictures(await preparePictures(request!));
     });
 
-  const batches = new PictureBatches(preparePictures);
+  // One call waits for the whole batch, a margin under the harness's tool deadline (toolWaitSeconds): 25 s for a
+  // client Scarlet didn't launch, as before.
+  const batches = new PictureBatches(preparePictures, { waitMs: toolWait(caps, 20) * 1000 });
   // The only close handler: a second assignment would replace this one.
   server.server.onclose = () => { diagnosticSessionClosed = true; batches.close(); reviews.close(); };
   tool("frame_contact_sheet_batch",
@@ -1458,7 +1460,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has a picture to show.`);
       const bad = set?.findIndex(a => !(a.area[2]! - a.area[0]! >= 5 && a.area[3]! - a.area[1]! >= 5));
       if (bad !== undefined && bad >= 0) throw new Error(`set[${bad}].area is [left, top, right, bottom] in percent, at least 5 percent each way.`);
-      const wait = Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - 20));
+      const wait = toolWait(caps, 20);
       const path = `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${wait}`;
       const state = set?.length || remove?.length
         ? await client.post<RecordingAreas & { error?: string }>(path, { set: set?.map(a => ({ at: a.at, area: a.area.map(n => n / 100) })), remove })
@@ -3276,7 +3278,7 @@ ${OPS_DOC}`,
       }
       const report = plan.frames.map((f, i) => {
         const show = fraction(framings[i]!.show);
-        const [fl, ft, fr, fb] = f.frame, fw = fr - fl, fh = fb - ft;
+        const [, ft, , fb] = f.frame, fh = fb - ft;
         const inside = (box: readonly number[], x: number, y: number) => x >= box[0]! && x <= box[2]! && y >= box[1]! && y <= box[3]!;
         const spans = lines[i]?.map(s => ({ ...s, x: (s.box[0] + s.box[2]) / 2, y: (s.box[1] + s.box[3]) / 2 }));
         const shown = spans?.filter(s => inside(show, s.x, s.y));

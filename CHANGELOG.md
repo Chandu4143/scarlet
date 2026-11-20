@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- When Scarlet asks to see several stretches of the footage, it now gets them together instead of asking again for the ones that weren't ready, which saves time and tokens on edits that look at the video.
 - A transcript's progress now counts the last check for restarts and filler words, so it no longer sits at 100% while that check runs.
 
 - Pause for media processing now appears only while files are actually being prepared, cached, or transcribed (and stays as Resume while paused).

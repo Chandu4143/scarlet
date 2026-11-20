@@ -149,7 +149,6 @@ import {
   WritableTimeline,
   TimelineOp,
   TimeRange,
-  Transition,
 } from "@scarlet/timeline";
 
 // ---------------------------------------------------------------------------
