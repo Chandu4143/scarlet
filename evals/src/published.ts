@@ -164,3 +164,21 @@ export function publishedReference(finished: readonly Word[], evidence: Readonly
     pieces: match.stretches.map(s => ({ mediaId: s.mediaId, finalStart: s.finalStart, finalEnd: s.finalEnd, sourceStart: s.sourceStart, sourceEnd: s.sourceEnd, rate: match.rate })),
   };
 }
+
+/**
+ * The published video's passages no recording was matched to, as their words: runs of its words that fall outside every
+ * matched stretch. Some are speech no recording has, such as narration added later. Others are the recording's own words
+ * the two transcripts heard too differently to match; the matcher hands those to the piece around them, so they are found
+ * by time, not by piece.
+ */
+export function unmatchedPassages(reference: Pick<PublishedReference, "played" | "pieces">): string[][] {
+  const inStretch = (w: PlayedWord) => reference.pieces.some(p => w.start >= p.finalStart - 0.05 && w.end <= p.finalEnd + 0.05);
+  const passages: string[][] = [];
+  let current: string[] = [];
+  for (const w of reference.played) {
+    if (inStretch(w)) { if (current.length) passages.push(current); current = []; }
+    else current.push(w.text);
+  }
+  if (current.length) passages.push(current);
+  return passages;
+}
