@@ -108,7 +108,7 @@ export const MediaAsset = z.object({
   graphic: z.object({
     /** The page, relative to the project's folder. Files it links to sit beside it. */
     source: z.string(),
-    /** The saved template it was filled from, and with what. */
+    /** Earlier builds filled graphics from saved templates. Kept so those projects still open. */
     templateId: Id.optional(),
     fields: z.record(z.string()).optional(),
   }).optional(),
@@ -189,7 +189,7 @@ export const Transition = z.object({
   direction: TransitionDirection.default("left"),
   /** dip: the colour it passes through (default black). */
   color: RenderColor.optional(),
-  /** The saved template it came from, by the name the editor types after $ ("swipe"). */
+  /** Earlier builds named the saved template a transition came from. Kept so those timelines still open. */
   template: z.string().max(64).optional(),
 });
 export type Transition = z.infer<typeof Transition>;
@@ -552,7 +552,9 @@ export const Change = z.object({
     /** Why the editor should look or listen before keeping this applied cut. */
     check: z.string().trim().min(1).max(120).optional(),
     /** Why Scarlet held this cut for a closer look: what it measured at the edges. For the agent; the editor reads `reason`. */
-    held: z.string().optional() })).optional(),
+    held: z.string().optional(),
+    /** Nothing Scarlet measures can settle this cut's join, so it waits for the editor to hear it and no later cut replaces it. */
+    unheard: z.literal(true).optional() })).optional(),
   /** Second-pass recommendations on the immutable chronological cut-review plan. */
   cutAssessments: z.array(CutAssessment).optional(),
   /** A call rechecked against newer footage. Its index still identifies the same call in the original pass. */
@@ -568,6 +570,8 @@ export const Change = z.object({
     briefToPlayableMs: z.number().nonnegative().optional() }).optional(),
   /** Note(s) this change responds to. */
   noteIds: z.array(Id).default([]),
+  /** The editor rejected the edits this change's own `replaces`: it put back what they changed, and nothing else. */
+  rejects: z.literal(true).optional(),
   /** Named, individually playable edits on toVersion. Overlapping edits keep distinct identities. */
   timelineEdits: z.array(z.object({ label: z.string().trim().min(1).max(180), range: TimeRange,
     /** Editorial reason shown on the edit's card. Optional for earlier edits. */

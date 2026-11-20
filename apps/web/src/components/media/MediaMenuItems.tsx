@@ -69,14 +69,15 @@ export function MediaButton({ importing, importFailed, onOpen }: { importing: nu
   const adding = importing > 0 ? `Adding ${plural(importing, "file")}` : undefined;
   const transcription = transcribing ? "Transcription in progress" : undefined;
   const description = [warning, adding ?? label ?? headline, transcription].filter(Boolean).join(". ") || undefined;
+  const hasCard = !!(warning || adding || headline || transcription || listed.length || processing.available || processing.error);
 
-  return <div className="media-hover" data-dismissed={dismissed || undefined} data-escape-owner={(focused && !dismissed) || undefined}
+  return <div className="media-hover" data-dismissed={dismissed || undefined} data-escape-owner={(hasCard && focused && !dismissed) || undefined}
     onPointerEnter={() => setDismissed(false)} onFocus={() => { setFocused(true); setDismissed(false); }}
     onBlur={event => {
       if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
     }}
     onKeyDown={event => {
-      if (event.key !== "Escape" || dismissed) return;
+      if (!hasCard || event.key !== "Escape" || dismissed) return;
       event.stopPropagation();
       button.current?.focus();
       setDismissed(true);
@@ -86,11 +87,12 @@ export function MediaButton({ importing, importFailed, onOpen }: { importing: nu
       Media{warning && <span className="menu-dot" role="img" aria-label={warning} />}
       {active && <ProgressLine progress={progress} />}
     </button>
-    <div className="media-hover-card">
+    {hasCard && <div className="media-hover-card">
       <div className="card" role="group" aria-label="Media processing">
         {warning && <span className="text-warn">{warning}</span>}
         {adding && <span role="status">{adding}</span>}
         {headline && <strong role="status">{headline}</strong>}
+        {active && <span className="text-muted">You can edit during caching.</span>}
         {transcription && <span role="status">{transcription}</span>}
         {listed.slice(0, 5).map(({ media, cache }) => {
           const status = cacheLabel(cache, paused);
@@ -101,13 +103,13 @@ export function MediaButton({ importing, importFailed, onOpen }: { importing: nu
           </div>;
         })}
         {listed.length > 5 && <span className="text-muted">{listed.length - 5} more in Media</span>}
-        <button type="button" className="simple-link aria-disabled:opacity-60" aria-disabled={processing.busy}
+        {processing.available && <button type="button" className="simple-link aria-disabled:opacity-60" aria-disabled={processing.busy}
           title={processing.description} onClick={() => void processing.toggle()}>
           <Icon name={processing.icon} size={12} />{processing.label}
-        </button>
+        </button>}
         {processing.error && <span className="simple-error" role="alert">{processing.error}</span>}
       </div>
-    </div>
+    </div>}
   </div>;
 }
 
@@ -118,11 +120,9 @@ function useTranscriptionActive(): boolean {
 
 /** Keep the same action in the workspace's More menu while there is work to pause, or while it is paused. */
 export function CachingMenuItem({ close }: { close(): void }) {
-  const { paused, canPause } = useVideoCaching();
-  const transcribing = useTranscriptionActive();
   const processing = useMediaProcessing();
 
-  if (!canPause && !transcribing && !paused) return null;
+  if (!processing.available) return null;
   return <MenuItem disabled={processing.busy} title={processing.description} onClick={async () => {
     if (await processing.toggle()) close();
   }}>

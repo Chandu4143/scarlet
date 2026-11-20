@@ -8,6 +8,7 @@ services:
       SCARLET_DATA: /data
       # OPENAI_API_KEY: ${OPENAI_API_KEY}
       # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # GEMINI_API_KEY: ${GEMINI_API_KEY}
     volumes:
       - scarlet-data:/data
     restart: unless-stopped

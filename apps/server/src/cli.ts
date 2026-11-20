@@ -50,7 +50,7 @@ const HELP = `scarlet-engine <command> [options]
 
 Environment: SCARLET_PORT, SCARLET_DATA, SCARLET_SKILLS_SEED,
              SCARLET_HOST (bind address, default 127.0.0.1),
-             OPENAI_API_KEY (transcription + note cleanup), ANTHROPIC_API_KEY (note cleanup),
+             OPENAI_API_KEY (transcription + note cleanup), ANTHROPIC_API_KEY / GEMINI_API_KEY (note cleanup),
              FFMPEG_PATH / FFPROBE_PATH,
              SCARLET_TELEMETRY_ENABLED (false turns off anonymous usage reports; see docs/telemetry.md)`;
 
@@ -108,6 +108,7 @@ async function runServe(argv: string[]) {
     prepareSourceProxies: true,
     backgroundCheckpoints: true,
     telemetry: { posthogKey: isSea() ? DEFAULT_POSTHOG_KEY : undefined },
+    modelPrices: { fetch },
   });
 
   const hostname = solo ? "127.0.0.1" : (process.env.SCARLET_HOST ?? "127.0.0.1");

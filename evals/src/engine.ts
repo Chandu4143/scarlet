@@ -72,12 +72,14 @@ export class Engine {
   branches(projectId: string) { return this.get<{ branches: Array<{ name: string; head: string }> }>(`/projects/${enc(projectId)}/branches`).then(r => r.branches); }
   task(taskId: string) { return this.get<{ task: TaskRecord; events: EventLike[] }>(`/tasks/${enc(taskId)}`); }
   /** Token totals for one task (every run, including pauses for questions). Null on engines without usage tracking. */
-  async taskUsage(projectId: string, taskId: string): Promise<Record<string, number> | null> {
+  /** The task's token counts and the engine's cost estimate (`estimatedApiCostUsd`, null with `unpricedModels` when a model has no price). */
+  async taskUsage(projectId: string, taskId: string): Promise<Record<string, unknown> | null> {
     try {
       const res = await this.get<{ groups: Array<{ key: string | null } & Record<string, unknown>> }>(`/projects/${enc(projectId)}/usage?by=task`);
       const group = res.groups.find(g => g.key === taskId);
       if (!group) return null;
-      return Object.fromEntries(Object.entries(group).filter((e): e is [string, number] => typeof e[1] === "number"));
+      return Object.fromEntries(Object.entries(group).filter(([k, v]) => k !== "key" &&
+        (typeof v === "number" || v === null || (Array.isArray(v) && v.every(m => typeof m === "string")))));
     } catch { return null; }
   }
   tasks(projectId: string, state?: string) {

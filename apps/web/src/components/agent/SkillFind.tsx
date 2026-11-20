@@ -32,7 +32,7 @@ export function normalizeSkillLines(text: string) {
   return text.replace(/\r\n?/g, "\n");
 }
 
-/** Preserve the existing text runs when a match spans multiple template or version-change marks. */
+/** Preserve the existing text runs when a match spans multiple keyword or version-change marks. */
 export function markSkillMatches(text: string, from: number, find: SkillFindState | undefined): ReactNode {
   if (!find?.matches.length || !text) return text;
   const { matches, activeIndex } = find;
@@ -127,8 +127,7 @@ export function useSkillFind({ text, readOnly, onChange, scope, editor }: {
       const escape = open && event.key === "Escape" && !event.metaKey && !event.ctrlKey;
       if (!find && !escape) return;
       if ([...document.querySelectorAll('dialog[open], [role="menu"], [data-shortcut-overlay]')]
-        .some(layer => !layer.contains(owner) && !(find && event.target === editor.current
-          && owner.contains(layer) && layer.classList.contains("composer-templates")))) return;
+        .some(layer => !layer.contains(owner))) return;
       event.preventDefault();
       if (find) {
         if (open) focusFind();

@@ -152,6 +152,49 @@ export function timelineWords(tl: Timeline, transcripts: Map<string, TranscriptW
     normalizeTranscriptToken(p.text) === normalizeTranscriptToken(w.text)));
 }
 
+/** A hesitation sound, which the transcript leaves out by design rather than by tidying a restart away. */
+const HESITATION = /^(?:uh+|um+|uhm|ah+|er+|erm|hm+|mm+|mhm)$/;
+
+/** Words the verbatim reading plays where the transcript has none, with source seconds and a few words either side. */
+export interface HeardOnly { mediaId: string; start: number; end: number; source: TimeRange; text: string; context: string }
+
+/**
+ * Runs of words the scan's verbatim reading hears that the transcript doesn't have: a restart, a stutter or a false
+ * start it tidied away ("up to 1,286, up to 1,286 tokens per second" reads "up to 1,286 tokens per second" there).
+ * Both lists are one version's playback-order words; `source` gives a heard word's source seconds. A run counts only
+ * between two words both readings share, with no transcript word skipped between them, so a word the two spell
+ * differently isn't one, and neither is a run made only of hesitation sounds.
+ */
+export function heardOnlyVerbatim(said: readonly TimelineWord[], heard: readonly TimelineWord[],
+  source: (w: TimelineWord) => TimeRange, reach = 1.5): HeardOnly[] {
+  const key = (w: TimelineWord) => normalizeTranscriptToken(w.text);
+  const found: HeardOnly[] = [];
+  for (const mediaId of new Set(heard.map(w => w.mediaId))) {
+    const s = said.filter(w => w.mediaId === mediaId), h = heard.filter(w => w.mediaId === mediaId);
+    let next = 0, last = -1, runFrom = -1;
+    for (let k = 0; k < h.length; k++) {
+      const w = h[k]!, token = key(w);
+      let match = -1;
+      for (let i = next; token && i < s.length && s[i]!.start <= w.start + reach; i++) {
+        if (s[i]!.start >= w.start - reach && key(s[i]!) === token) { match = i; break; }
+      }
+      if (match < 0) { if (runFrom < 0 && token) runFrom = k; continue; }
+      if (runFrom >= 0 && last >= 0 && match === last + 1) {
+        const run = h.slice(runFrom, k).filter(x => key(x));
+        if (run.some(x => !HESITATION.test(key(x)))) {
+          const first = source(run[0]!), end = source(run.at(-1)!);
+          found.push({ mediaId, start: run[0]!.start, end: run.at(-1)!.end, source: { start: first.start, end: end.end },
+            text: run.map(x => x.text).join(" "), context: h.slice(Math.max(0, runFrom - 4), k + 4).map(x => x.text).join(" ") });
+        }
+      }
+      runFrom = -1;
+      last = match;
+      next = match + 1;
+    }
+  }
+  return found.sort((a, b) => a.start - b.start);
+}
+
 /**
  * Compact playback-order transcript. `lines` groups words between joins and pauses; `words` lists
  * each word with its index and timeline times. Join lines show the source jump and the words
@@ -159,10 +202,13 @@ export function timelineWords(tl: Timeline, transcripts: Map<string, TranscriptW
  * `joins` was taken from, a join keeps its number among them, the one timeline_join_audit gives it.
  */
 export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJoin[],
-  opts: { detail: "lines" | "words"; fps: number; pause?: number; all?: TimelineJoin[]; removed?: (join: TimelineJoin) => string | undefined }) {
+  opts: { detail: "lines" | "words"; fps: number; pause?: number; all?: TimelineJoin[]; removed?: (join: TimelineJoin) => string | undefined;
+    heard?: readonly HeardOnly[] }) {
   const pause = opts.pause ?? .6;
   const lines: string[] = [];
-  let j = 0, line: TimelineWord[] = [];
+  const heard = opts.heard ?? [];
+  let j = 0, h = 0, line: TimelineWord[] = [];
+  const heardLine = (x: HeardOnly) => `  + heard ${x.start.toFixed(2)}-${x.end.toFixed(2)} ${x.mediaId} ${x.source.start.toFixed(2)}-${x.source.end.toFixed(2)}, not in the transcript: “${x.text}” in “${x.context}”`;
   const flush = () => {
     if (!line.length) return;
     const head = line[0]!, who = line.find(w => w.speaker)?.speaker;
@@ -186,6 +232,10 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
       lines.push(joinLine(j, previous, w));
       j++;
     }
+    while (h < heard.length && heard[h]!.start <= w.start + 1e-3) {
+      flush();
+      lines.push(heardLine(heard[h++]!));
+    }
     if (w.mediaId !== previous?.mediaId) {
       flush();
       lines.push(`mediaId ${w.mediaId}`);
@@ -208,6 +258,7 @@ export function formatTimelineTranscript(words: TimelineWord[], joins: TimelineJ
     previous = w;
   }
   flush();
+  for (; h < heard.length; h++) lines.push(heardLine(heard[h]!));
   for (; j < joins.length; j++) lines.push(joinLine(j, previous));
   return lines.join("\n");
 }
@@ -261,14 +312,16 @@ export interface JoinAudit {
   verdict: string;
 }
 
-function bucketing(r: Reading) {
+function bucketing(r: Reading, words?: readonly TranscriptWord[]) {
   const n = (r.rms ?? r.peaks).length;
   const step = (r.to - r.from) / Math.max(1, n);
   // A span that only touches a bucket boundary (within float error) does not voice it.
   const voiced = (s: number, e: number) => (r.speechActivity ?? []).some(v => v.start < e - 1e-6 && v.end > s + 1e-6);
   const quietBelow = quietRms(r.rms ?? [], step);
   const low = (i: number) => i >= 0 && i < n && (r.rms?.[i] ?? 0) <= quietBelow && r.peaks[i]! <= QUIET_PEAK;
-  const still = r.rms ? quietBuckets(r.rms, r.peaks, r.from, step, r.speechActivity ?? [], quietBelow) : undefined;
+  // Measured as the join check places edges: a breath after a word is part of the quiet after it.
+  const spoken = words?.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text));
+  const still = r.rms ? quietBuckets(r.rms, r.peaks, r.from, step, r.speechActivity ?? [], quietBelow, spoken) : undefined;
   return {
     step,
     level: (i: number) => (i >= 0 && i < n ? dbfs(r.rms?.[i] ?? r.peaks[i]!) : undefined),
@@ -282,7 +335,7 @@ function bucketing(r: Reading) {
 /** Audit one track's join from two measured windows, one around each source edge. */
 export function auditJoin(join: number, at: number, side: TrackJoin, out: Reading, inn: Reading,
   words: { out?: TranscriptWord[]; in?: TranscriptWord[] } = {}): JoinAudit {
-  const o = bucketing(out), n = bucketing(inn);
+  const o = bucketing(out, words.out), n = bucketing(inn, words.in);
   const oEdge = o.index(side.out.source), nEdge = n.index(side.in.source);
   const reach = Math.round(STRIP_REACH / STRIP_STEP);
   // Resample both windows to the strip's 20 ms grid by nearest bucket.
@@ -334,8 +387,8 @@ export function auditJoin(join: number, at: number, side: TrackJoin, out: Readin
   if (voiceOnCut) { /* The word starts on the cut and plays whole. */ }
   else if (!clippedIn && airBefore < 1e-6) issues.push(voiceIn ? "incoming edge on speech" : "incoming edge on sound");
   else if (!clippedIn && airBefore < MIN_AIR_BEFORE) issues.push(`only ${airBefore.toFixed(2)} s before ${name(firstWord) || "the next sound"}`);
-  // Room tone is only comparable when both 60 ms windows are quiet.
-  if (airAfter >= .06 - 1e-6 && airBefore >= .06 - 1e-6 && Math.abs(jumpDb) >= ROOM_TONE_JUMP_DB &&
+  // Room tone is only comparable when both 60 ms windows are quiet and at room level: a breath after a word is air, not room tone.
+  if (airAfter >= .06 - 1e-6 && airBefore >= .06 - 1e-6 && outQuiet >= .06 - 1e-6 && inQuiet >= .06 - 1e-6 && Math.abs(jumpDb) >= ROOM_TONE_JUMP_DB &&
       Math.max(outLevel ?? -99, inLevel ?? -99) > AUDIBLE_ROOM_TONE_DB) issues.push(`room tone ${jumpDb > 0 ? "rises" : "drops"} ${Math.abs(jumpDb)} dB`);
   return {
     join, at: round(at), trackId: side.trackId, ...(side.overlap && { overlap: side.overlap }),

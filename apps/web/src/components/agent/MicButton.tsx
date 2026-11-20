@@ -16,14 +16,16 @@ export function MicButton({ onResult, onStart, onRecording, onError, disabled, d
   const button = useRef<HTMLButtonElement>(null);
 
   // While it records, a ring round the button moves with the voice, so the editor sees it hears them. It is set on the
-  // button each frame, not through React. It rises at once and falls back gently between words.
+  // button each frame, not through React. It rises at once and falls back gently between words. With motion reduced it
+  // rests at its width and doesn't move.
   const { recording, readLevel } = rec;
   useEffect(() => {
     const el = button.current;
     if (!recording || !el) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let shown = 0, frame = requestAnimationFrame(function draw() {
       shown = Math.max(readLevel(), shown * 0.86);
-      el.style.setProperty("--voice", shown.toFixed(3));
+      if (reduceMotion.matches) el.style.removeProperty("--voice"); else el.style.setProperty("--voice", shown.toFixed(3));
       frame = requestAnimationFrame(draw);
     });
     return () => { cancelAnimationFrame(frame); el.style.removeProperty("--voice"); };

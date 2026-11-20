@@ -100,3 +100,71 @@ export function backgroundShows(before: Timeline | null, after: Timeline, media:
 }
 
 export const BACKGROUND_NEXT = "Each stretch in backgroundShows plays with that share of the video uncovered by any picture, so the timeline's background shows there: a crop that isn't the video's shape leaves it at the sides. If the picture should fill the video, timeline_framing frames it on an area with none showing.";
+
+/** An inset an edit set: a picture laid over part of another, cropped and sized a way the video didn't have before. */
+export interface InsetToLook {
+  mediaId: string;
+  trackId: string;
+  /** The area of its recording the inset shows, as fractions of the source picture: left, top, right, bottom. */
+  crop: Box;
+  /** Its clips in the edit with this crop and size. */
+  clips: number;
+  /** Source seconds to look at it, spread over those clips. */
+  at: number[];
+}
+
+/** Insets an edit set and the moments to look at each, at most this many insets. */
+const INSETS_TO_LOOK = 2;
+const LOOKS_PER_INSET = 3;
+
+/**
+ * The insets an edit set with a crop or size the video didn't have, and when to look at each. A pass cropped the
+ * camera inset in a new studio by numbers alone, checked it on contact-sheet tiles where the inset was about 100 px
+ * wide, and cut off the top of the editor's head for the whole video (2026-11-18). A close look at what the crop
+ * shows of the recording, at a few moments, lets the agent judge it; whether it frames the subject well is its call.
+ */
+export function insetsToLook(before: Timeline | null, after: Timeline, media: readonly MediaAsset[], canvas: { width: number; height: number }): InsetToLook[] {
+  const assets = new Map(media.map(m => [m.id, m]));
+  const opaque = (c: MediaClip) => c.enabled !== false && c.opacity > 0 && !!assets.get(c.mediaId) && assets.get(c.mediaId)!.kind !== "graphic" && !assets.get(c.mediaId)!.hasAlpha;
+  const size = (clip: MediaClip) => ({ width: assets.get(clip.mediaId)!.width || canvas.width, height: assets.get(clip.mediaId)!.height || canvas.height });
+  const key = (clip: MediaClip) => {
+    const t = TransformSchema.parse(clip.transform ?? {});
+    return JSON.stringify([clip.mediaId, t.cropLeft, t.cropTop, t.cropRight, t.cropBottom, t.scale]);
+  };
+  /** The insets of a timeline: clips on a video track above the lowest one with pictures, covering part of the video. */
+  const insets = (timeline: Timeline) => {
+    const tracks = timeline.tracks.filter(track => track.kind === "video" && !track.hidden)
+      .map(track => ({ track, clips: track.clips.filter((c): c is MediaClip => c.kind === "media" && opaque(c)) }))
+      .filter(t => t.clips.length);
+    return tracks.slice(1).flatMap(({ track, clips }) => clips.filter(clip => {
+      if (clip.transform?.rotation || assets.get(clip.mediaId)!.kind !== "video") return false;
+      const [l, t, r, b] = pictureBox(clip, 0, size(clip), canvas);
+      const shown = Math.max(0, Math.min(1, r) - Math.max(0, l)) * Math.max(0, Math.min(1, b) - Math.max(0, t));
+      return shown > 0.001 && shown < 0.9;
+    }).map(clip => ({ clip, trackId: track.id })));
+  };
+  const had = new Set(before ? insets(before).map(({ clip }) => key(clip)) : []);
+  const groups = new Map<string, { trackId: string; clips: MediaClip[] }>();
+  for (const { clip, trackId } of insets(after)) {
+    const k = key(clip);
+    if (had.has(k)) continue;
+    const group = groups.get(k) ?? { trackId, clips: [] };
+    group.clips.push(clip);
+    groups.set(k, group);
+  }
+  return [...groups.values()].sort((a, b) => b.clips.length - a.clips.length).slice(0, INSETS_TO_LOOK).map(({ trackId, clips }) => {
+    const sorted = [...clips].sort((a, b) => a.timelineIn - b.timelineIn);
+    const t = TransformSchema.parse(sorted[0]!.transform ?? {});
+    const picks = sorted.length <= LOOKS_PER_INSET ? sorted
+      : Array.from({ length: LOOKS_PER_INSET }, (_, i) => sorted[Math.round(i * (sorted.length - 1) / (LOOKS_PER_INSET - 1))]!);
+    return {
+      mediaId: sorted[0]!.mediaId, trackId, clips: sorted.length,
+      crop: [t.cropLeft, t.cropTop, 1 - t.cropRight, 1 - t.cropBottom],
+      at: [...new Set(picks.map(c => Math.round((c.sourceIn + (c.sourceOut - c.sourceIn) / 2) * 1000) / 1000))],
+    };
+  });
+}
+
+/** Pixels wide of a close look at an inset: about the inset's own size in a 1080p video and up, so a head's edge shows. */
+export const INSET_LOOK_WIDTH = 640;
+export const INSET_LOOK_NEXT = "insetLook lists each inset this edit cropped or sized anew, with its crop in percent of its recording, and the pictures after this result show all of it at those source seconds, close up. The crop holds for every clip listed: look at what it shows of its subject at each moment.";

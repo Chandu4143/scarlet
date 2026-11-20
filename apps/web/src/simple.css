@@ -58,13 +58,10 @@
 
 .simple-row-text { color: var(--color-fg); overflow-wrap: anywhere; }
 
-.simple-target { display: flex; align-items: center; gap: 10px; padding: 8px 18px 0; font-size: 12px; color: var(--color-muted); border-top: 1px solid var(--color-line); }
-/* The box is aimed at what the chat shows, which the list already marks: the line is there for screen readers only. */
-.simple-target.is-quiet { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.simple-target.is-quiet + .composer-dock { border-top: 1px solid var(--color-line); padding-top: 12px; }
-.simple-pin:has(> .unit:not([hidden])) + .simple-target.is-quiet + .composer-dock { border-top: 0; padding-top: 9px; }
-.simple-target span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.simple-target + .composer-dock { border-top: 0; padding-top: 6px; }
+/* The tag in the box shows where a message goes: the line that names it is there for screen readers only. */
+.simple-target { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.simple-target + .composer-dock { border-top: 1px solid var(--color-line); padding-top: 12px; }
+.simple-pin:has(> .unit:not([hidden])) + .simple-target + .composer-dock { border-top: 0; padding-top: 9px; }
 
 .simple-decide { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 clamp(16px, 2vw, 28px) 16px; padding: 9px 10px 9px 14px;
   border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-panel); font-size: 12.5px; color: var(--color-muted); }
@@ -139,14 +136,14 @@
 .simple-timeline-cut.is-kept { background: rgba(244, 241, 233, .55); }
 .simple-timeline-cut.is-kept span { border-color: rgba(244, 241, 233, .35); background: rgba(12, 12, 12, .78); }
 .simple-timeline-mark { position: absolute; z-index: 1; pointer-events: none; }
-.simple-timeline-mark.is-dot { top: calc(var(--ruler-height) - var(--marker-strip-height) / 2 - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
+.simple-timeline-mark.is-dot { top: calc(var(--ruler-height) - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
   background: var(--color-muted); box-shadow: 0 0 0 1px #1a1918; }
 /* A dot with no number is amber too while it asks for a look. */
 .simple-timeline-mark.is-dot[data-state="check"] { background: var(--color-warn); }
 .simple-timeline-mark.is-dot.is-hot, .simple-timeline-mark.is-dot.is-on { background: var(--color-fg); }
 .simple-timeline-mark.is-dot.is-on { box-shadow: 0 0 0 3px rgba(255, 255, 255, .16); }
 /* Hovering anywhere along the markers picks the nearest one, and lifts it over the playhead and the others. */
-.simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - var(--marker-strip-height)); height: var(--marker-strip-height); }
+.simple-timeline-hover { position: absolute; z-index: 2; left: 0; right: 0; top: calc(var(--ruler-height) - 12px); height: 32px; }
 /* Over a marker that opens its edit, the pointer says a press opens it instead of scrubbing. */
 .simple-timeline-hover.is-aimed { cursor: pointer; }
 .simple-timeline-mark.is-pill { z-index: 2; }
@@ -215,25 +212,34 @@
 .review-compare { display: inline-flex; }
 .review-compare:empty { display: none; }
 
-/* Flat edit numbers occupy their own strip between the ruler and the footage. */
-.simple-timeline-mark.is-numbered { top: calc(var(--ruler-height) - var(--marker-strip-height)); height: var(--marker-strip-height);
-  display: grid; place-items: center; color: var(--color-muted); }
-.simple-timeline-number { display: inline-flex; align-items: center; white-space: nowrap; font: 500 12px/16px var(--font-mono);
-  font-variant-numeric: tabular-nums; }
-.simple-timeline-mark.is-numbered:is(.is-hot, .is-on) { color: var(--color-fg); }
-.simple-timeline-mark.is-numbered:is(.is-hot, .is-on) .simple-timeline-number { box-shadow: 0 1px currentColor; }
-.simple-timeline-mark.is-numbered[data-state="check"] { color: var(--color-warn); }
-.simple-timeline-mark.is-numbered[data-state="kept"] .simple-timeline-number::before { content: ""; width: 7px; height: 4px; margin-right: 3px;
-  border: solid currentColor; border-width: 0 0 1.5px 1.5px; transform: rotate(-45deg); }
+/* An applied edit's dot and a waiting call's carry their number, as in the chat: filled once kept, amber while it asks for a look. */
+.simple-timeline-mark.is-numbered { top: calc(var(--ruler-height) - 9px); width: 17px; height: 17px; margin-left: -8.5px; display: grid; place-items: center;
+  border: 1.2px solid var(--color-muted); border-radius: 9px; background: var(--color-raised); box-shadow: 0 0 0 1px #1a1918; }
+.simple-timeline-number { white-space: nowrap; font-size: 10px; font-weight: 600; line-height: 1; font-style: normal; color: var(--color-fg); font-variant-numeric: tabular-nums; pointer-events: none; }
+.simple-timeline-mark.is-numbered[data-state="check"] { border-color: var(--color-warn); }
+.simple-timeline-mark.is-numbered[data-state="check"] .simple-timeline-number { color: var(--color-warn); }
+.simple-timeline-mark.is-numbered[data-state="kept"] { border-color: var(--color-fg); background: var(--color-fg); }
+.simple-timeline-mark.is-numbered[data-state="kept"] .simple-timeline-number { color: var(--color-bg); }
+.simple-timeline-mark.is-numbered.is-hot, .simple-timeline-mark.is-numbered.is-on { border-color: var(--color-fg); }
+.simple-timeline-mark.is-numbered.is-hot:not([data-state="kept"]), .simple-timeline-mark.is-numbered.is-on:not([data-state="kept"]) { background: #3a3a3a; }
+.simple-timeline-mark.is-numbered.is-on { box-shadow: 0 0 0 3px rgba(255, 255, 255, .16); }
 /* An edit applied a moment ago arrives with a moment: its marker pops in with one ring that spreads and fades. A cut's
    red first closes up where the footage came out. With motion reduced, the marker is simply there. */
 .simple-timeline-mark[data-landed] { animation: timeline-land .42s cubic-bezier(.2, .9, .3, 1.35) both; }
 .simple-timeline-mark[data-landed="cut"] { animation-delay: .26s; }
 .simple-timeline-mark[data-landed]::after { content: ""; position: absolute; inset: -1.5px; border: 1.5px solid rgba(244, 241, 233, .75);
-  border-radius: 50%; pointer-events: none; animation: timeline-land-ring .7s ease-out both; animation-delay: inherit; }
+  border-radius: inherit; pointer-events: none; animation: timeline-land-ring .7s ease-out both; animation-delay: inherit; }
+.simple-timeline-mark.is-dot[data-landed]::after { border-radius: 50%; }
 .simple-timeline-closing { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; width: 44px; margin-left: -22px; pointer-events: none;
   border-radius: 3px; border: 1px solid rgba(255, 160, 156, .7); background: rgba(255, 160, 156, .26);
   transform: scaleX(0); animation: timeline-close .3s cubic-bezier(.5, 0, .75, 0) both; }
+/* An edit the editor rejected leaves the same way it came: its band drains where it is and its marker shrinks away,
+   before the card goes on to the next edit. With motion reduced, they are simply gone. */
+.simple-timeline-band.is-leaving, .simple-timeline-cut.is-leaving { animation: timeline-leave .42s cubic-bezier(.4, 0, .2, 1) both; }
+.simple-timeline-band.is-leaving span, .simple-timeline-cut.is-leaving span { animation: timeline-leave .18s ease-out both; }
+.simple-timeline-mark[data-leaving] { animation: timeline-leave-mark .3s cubic-bezier(.5, 0, .75, 0) both; }
+@keyframes timeline-leave { from { opacity: 1; } to { opacity: 0; } }
+@keyframes timeline-leave-mark { from { transform: none; opacity: 1; } to { transform: scale(.35); opacity: 0; } }
 @keyframes timeline-land { from { transform: scale(.35); opacity: 0; } 60% { transform: scale(1.18); opacity: 1; } to { transform: none; opacity: 1; } }
 @keyframes timeline-land-ring { from { transform: scale(1); opacity: .8; } to { transform: scale(2.4); opacity: 0; } }
 @keyframes timeline-close { from { transform: scaleX(1); opacity: 1; } to { transform: scaleX(0); opacity: .5; } }
@@ -333,7 +339,7 @@
 .simple-pass-toggle:is(:hover, :focus-visible) { text-decoration-thickness: 2px; }
 .simple-pass-toggle:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
 /* Keep the review choices together above the list, including when its rows scroll in a pinned request. */
-.simple-review-tabs { display: flex; flex: none; align-items: baseline; gap: 18px; margin: 4px 0 5px; border-bottom: 1px solid var(--color-line); }
+.simple-review-tabs { display: flex; flex: none; align-items: baseline; gap: 18px; margin: 12px 0 5px; border-bottom: 1px solid var(--color-line); }
 .simple-review-tab { display: inline-flex; align-items: baseline; gap: 6px; min-height: 28px; margin-bottom: -1px; padding: 4px 0; border: 0;
   border-bottom: 2px solid transparent; background: none; color: var(--color-muted); font: inherit; font-weight: 600;
   line-height: 19px; white-space: nowrap; cursor: pointer; }
@@ -390,9 +396,11 @@
 .edit-card .review-actions .btn-ghost[data-key="R"] { border-color: transparent; background: none; color: var(--color-muted); }
 .edit-card .review-actions .btn-ghost[data-key="R"]:enabled:hover { color: var(--color-fg); }
 .edit-card-bar .review-actions { margin-left: auto; }
-/* An applied edit's decisions are at the row's end, after any small icon such as Save as template. */
+/* An applied edit's decisions are at the row's end, after any small icon. */
 .edit-card-acts { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
 .edit-card-acts .review-actions { margin-left: 0; }
+/* Reject edit sits after Keep as Skip sits after a call's Approve, the same 6px apart. */
+.edit-card-acts > .edit-card-reject { margin-left: 2px; }
 /* The cut's words open under the card's row and scroll inside it, so a long passage never pushes the timeline away. */
 .edit-card > .thread-passage { max-height: 30vh; overflow-y: auto; }
 /* What an edit that removed nothing did: "Audio", "Zoom". Neutral, since its footage stays; green for footage put back. */
@@ -473,9 +481,15 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 /* The active request's action follows its metrics. */
 .unit-stop { flex: none; align-self: center; font-size: 12.5px; line-height: 19px; }
 .unit-state:not(:empty) + .unit-stop { margin-left: -2px; }
-.unit-actions { flex: none; align-self: flex-start; display: inline-flex; align-items: center; height: 19px; }
-.unit-actions-icon { display: inline-grid; place-items: center; width: 24px; height: 22px; color: var(--color-muted); }
-.unit-actions button:is(:hover, :focus-visible, [aria-expanded="true"]) .unit-actions-icon { color: var(--color-fg); }
+.unit-actions { flex: none; align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; height: 19px; }
+/* Pause (or Resume) and Stop: an icon each, muted until the pointer rests on it, when its name shows at once. */
+:is(.unit-stop-edit, .unit-pause-edit) { display: inline-grid; place-items: center; width: 20px; height: 19px; padding: 0; border: 0; background: none; color: var(--color-muted);
+  cursor: pointer; }
+:is(.unit-stop-edit, .unit-pause-edit):is(:hover, :focus-visible) { color: var(--color-fg); }
+/* An icon's name, over it with no delay, fixed to the window so the pinned request's scrolling box doesn't clip it. */
+.button-tip { position: fixed; z-index: 40; width: max-content; max-width: min(240px, calc(100vw - 16px)); padding: 5px 9px;
+  border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-panel); box-shadow: 0 3px 12px rgb(0 0 0 / 35%);
+  font-size: 12px; line-height: 1.4; font-weight: 400; color: var(--color-fg); white-space: nowrap; pointer-events: none; }
 .unit-tokens { flex: none; align-self: baseline; font-size: 12.5px; line-height: 19px; white-space: nowrap; }
 .unit-metrics-dot { color: var(--color-dim); }
 /* A request's tokens open every part of the count on hover, in a note above the count at its right edge. It's fixed
@@ -560,7 +574,6 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 /* With nothing under way and no pass waiting on the editor, nothing is fixed here. */
 .simple-pin:not(:has(> .unit:not([hidden]))) { display: none; }
 .simple-pin:has(> .unit:not([hidden])) + .composer-dock { border-top: 0; padding-top: 9px; }
-.simple-pin:has(> .unit:not([hidden])) + .simple-target { border-top: 0; }
 /* Fixed here, a long message keeps to two lines so the spot holds its place. Its title carries the rest. */
 .simple-pin .unit-msg p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 
@@ -676,9 +689,26 @@ button.req-summary:hover > span { text-decoration: underline; text-decoration-co
 .req .simple-pass-label:has(> .edit-version) { display: flex; align-items: baseline; }
 .req .simple-pass-label > .simple-pass-tick, .req .simple-pass-label > .edit-version { flex: none; }
 .simple-pass-words { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A moment's row says what else it holds after its words ("+ 4 edits"), dim and small. A press unfolds the moment's
+   edits under the row, and the words are underlined while they show. */
+.req .simple-pass-label:has(> .simple-pass-more) { display: flex; align-items: baseline; }
+.req .simple-pass-label > .simple-pass-more { flex: none; }
+.simple-pass-more { margin-left: 7px; font-size: 11.5px; color: var(--color-dim); cursor: pointer; font-variant-numeric: tabular-nums; }
+.simple-pass-more:hover, .simple-pass-more[aria-expanded="true"] { color: var(--color-muted); text-decoration: underline; text-underline-offset: 3px; }
+/* The moment's own edits, under its row: no times, since they all play in its stretch, their words in line with the
+   moment's, and a rule at their left as a request under its row has. */
+.simple-pass-list.is-moment, .req .simple-pass-list.is-moment { max-height: none; overflow: visible; margin: 0 0 2px 46px; padding-left: 4px; border-top: 0; border-left: 1px solid var(--color-line); }
+.req .simple-pass-list.has-hours .simple-pass-list.is-moment { margin-left: 60px; }
+.simple-pass-list.is-moment > li > button { grid-template-columns: minmax(0, 1fr) auto; }
 .simple-pass-list > li > button.is-decided .simple-pass-label, .simple-pass-list > li > button.is-decided .simple-pass-time { color: var(--color-dim); }
 .simple-pass-tick { display: inline-block; margin-right: 6px; vertical-align: -1px; color: var(--color-muted); }
 .simple-pass-tick svg { display: inline; }
+/* An edit the editor rejected: a × where a kept one has its tick, its words dim, and "Rejected" where it said how much
+   it took. Nothing is left of it to open, so its row doesn't light under the pointer. */
+.simple-pass-tick.is-rejected { color: var(--color-dim); }
+.simple-pass-list > li > button.is-rejected :is(.simple-pass-label, .simple-pass-time, .simple-pass-value),
+.simple-edit.is-rejected :is(.simple-edit-title, .simple-edit-value) { color: var(--color-dim); }
+.edit-badge.is-rejected { border-color: var(--color-line); color: var(--color-dim); }
 /* "Need you" is the short list: a call's number, Scarlet's note, and a word once it's settled or sent back. */
 .simple-pass-list.is-short > li > button { grid-template-columns: minmax(18px, max-content) minmax(0, 1fr) auto; align-items: center; }
 .simple-pass-list > li > button:is(.is-decided, :disabled) .edit-badge { border-color: var(--color-line); color: var(--color-dim); }
@@ -760,3 +790,4 @@ button.queue-head:hover { color: var(--color-fg); }
 .simple-source-note .simple-msg p { flex: 1; min-width: 0; }
 .simple-source-dismiss { flex: none; margin: 1px -6px 0 0; color: var(--color-dim); }
 .simple-source-dismiss:hover { color: var(--color-fg); }
+.simple-pass-list.is-moment > li > .subunit { margin-left: 8px; }

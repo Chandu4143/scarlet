@@ -4,8 +4,7 @@ import { createRoot } from "react-dom/client";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { api } from "../lib/client";
-import { buildDb, sampleTemplates } from "../lib/mock/fixtures";
-import { useTemplatesStore } from "../stores/templates";
+import { buildDb } from "../lib/mock/fixtures";
 import { useHostsStore } from "../stores/hosts";
 import { useSkillsStore } from "../stores/skills";
 import { useUiStore } from "../stores/ui";
@@ -283,7 +282,6 @@ it("replaces the active match or every match in the draft", async () => {
     skill = { ...skill, content: input.content ?? skill.content };
     return { skill };
   });
-  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: [] });
   vi.spyOn(api, "skills").mockResolvedValue({ skills: [] });
   const view = await open(`/settings/skills/${skill.id}`);
   const { el } = view;
@@ -942,13 +940,11 @@ it("holds Restore while a skill revision runs and shows its saved words when it 
   } finally { await view.close(); }
 });
 
-it("lists the templates with $ at the cursor in a skill's instructions and in its chat, and marks each $template and /skill of the editor's", async () => {
+it("marks each /skill of the editor's in a skill's instructions, leaves $ as plain words, and opens no list in the skill's own message box", async () => {
   const db = buildDb();
   const skill = { ...db.skills[0]!, content: "---\nname: frame-screen\ndescription: Frame the screen.\n---\n\nKeep $9 and the price.\n" };
   vi.spyOn(api, "skill").mockImplementation(async () => ({ skill, versions: db.skillVersions[skill.id] ?? [] }));
-  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: sampleTemplates() });
   vi.spyOn(api, "skills").mockResolvedValue({ skills: [{ ...db.skills[0]!, name: "dialogue-pass" }] } as never);
-  useTemplatesStore.setState(useTemplatesStore.getInitialState());
   const view = await open(`/settings/skills/${skill.id}`);
   const { el } = view;
   const body = markdown(el);
@@ -957,34 +953,24 @@ it("lists the templates with $ at the cursor in a skill's instructions and in it
     field.setSelectionRange(value.length, value.length);
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  const key = (field: HTMLTextAreaElement, name: string) => act(async () => { field.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })); });
-  const titles = () => [...el.querySelectorAll(".composer-templates .composer-template-title")].map(t => t.textContent);
   const marked = () => [...el.querySelectorAll(".skill-instructions-text .skill-keyword")].map(k => k.textContent);
   try {
     await act(async () => {});
-    // A $ that isn't the editor's template is plain words.
     expect(marked()).toEqual([]);
     await act(async () => body.focus());
-    // $ at the end of a line lists the templates there, graphics and then transitions, as the message box does.
+    // $ opens no list and marks nothing: there are no templates.
     await type(body, `${body.value}Every time I go from my camera to the screen recording, use $`);
-    expect([...el.querySelectorAll(".composer-templates .eyebrow")].map(e => e.textContent)).toEqual(["Graphics", "Transitions"]);
-    expect(titles()).toEqual(["Lower third", "Title card", "Pull quote", "Swipe", "Dip to black"]);
-    expect(el.querySelector(".skill-instructions .composer-style-guide")).toBeNull();
-    await type(body, `${body.value}sw`);
-    expect(titles()).toEqual(["Swipe"]);
-    await key(body, "Enter");
-    expect(body.value).toMatch(/use \$swipe $/);
-    expect(el.querySelector(".composer-templates")).toBeNull();
-    // The template's name and a skill's have a faint fill in the text drawn under the field.
-    await type(body, `${body.value}after /dialogue-pass, and $nothing.`);
-    expect(marked()).toEqual(["$swipe", "/dialogue-pass"]);
+    expect(el.querySelector("[role='listbox']")).toBeNull();
+    // A skill's name has a faint fill in the text drawn under the field.
+    await type(body, `${body.value}swipe after /dialogue-pass, and /nothing.`);
+    expect(marked()).toEqual(["/dialogue-pass"]);
     expect(el.querySelector(".skill-instructions-text")!.textContent).toBe(`${body.value}​`);
-    // The skill's own message box lists templates with $ and has no list for /.
+    // The skill's own message box has no list for / or $.
     const ask = el.querySelector<HTMLTextAreaElement>('[aria-label="Tell Scarlet what to change in this skill"]')!;
     await act(async () => ask.focus());
     await type(ask, "/dial");
     expect(el.querySelector(".skill-chat [role='listbox']")).toBeNull();
     await type(ask, "Every time we cut to the screen, use $sw");
-    expect([...el.querySelectorAll(".skill-chat .composer-template-title")].map(t => t.textContent)).toEqual(["Swipe"]);
+    expect(el.querySelector(".skill-chat [role='listbox']")).toBeNull();
   } finally { await view.close(); }
 });

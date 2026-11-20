@@ -1,4 +1,5 @@
 import { badRequest, conflict, notFound } from "../errors.js";
+import { nameCutRowsByWords } from "../services/cutRowWords.js";
 import { cancelTask } from "../services/tasks.js";
 import { holdTranscriptions, resumeImportsInBackground } from "../services/ingest.js";
 import { recoverSourcePreviews } from "../services/sourcePreviews.js";
@@ -106,7 +107,7 @@ export function projectRoutes(ctx: Ctx) {
     for (const [i, thread] of threads.entries()) {
       if (i) await new Promise(resolve => setImmediate(resolve));
       try {
-        lists.push([thread.id, head ? threadTimeline(thread, head, links, read, project.settings.fps, media) : []]);
+        lists.push([thread.id, head ? nameCutRowsByWords(ctx, projectId, threadTimeline(thread, head, links, read, project.settings.fps, media), read) : []]);
       } catch (error) {
         failed.push([thread.id, error instanceof Error ? error : new Error(String(error))]);
       }

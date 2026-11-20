@@ -62,8 +62,13 @@ const LEAD_ABOVE_ROOM = 2.5;
  *   cut went before the breath instead, half a second early.
  * - The start of a detected voice, for as long as the level has not left the room it was in. A speech detector hears a
  *   word coming and began up to half a second before any sound. The level says where the word starts.
+ * Given the transcript's `words`, the quiet after a word starts where the word's sound is back down at room level: what
+ * sounds after that, under speaking level and in no word, up to the quiet, is a breath, and part of the pause. After
+ * “yeah, it's okay” the level was at the room 0.1 s after the word, then a breath 30 dB under the voice ran 0.2 s more
+ * with the detector still on. The quiet began after it, every way of asking for the cut put its edge there, and the
+ * editor was already looking away from the camera (2026-11-18).
  */
-export function quietBuckets(rms: ArrayLike<number>, peaks: ArrayLike<number>, from: number, step: number, voice: ReadonlyArray<{ start: number; end: number }>, quietBelow = quietRms(rms, step)): boolean[] {
+export function quietBuckets(rms: ArrayLike<number>, peaks: ArrayLike<number>, from: number, step: number, voice: ReadonlyArray<{ start: number; end: number }>, quietBelow = quietRms(rms, step), words?: ReadonlyArray<TimeRange>): boolean[] {
   const n = rms.length;
   const level = Array.from({ length: n }, (_, i) => rms[i]! <= quietBelow && peaks[i]! <= QUIET_PEAK);
   // Ticks: a short run above the room, still far under speech, between two buckets at room level.
@@ -101,6 +106,18 @@ export function quietBuckets(rms: ArrayLike<number>, peaks: ArrayLike<number>, f
     if (!still) leading = -2 - v;
     led += step;
     quiet.push(still);
+  }
+  if (words?.length) {
+    const spoken = (k: number) => words.some(w => w.start < from + (k + 1) * step - 1e-6 && w.end > from + k * step + 1e-6);
+    for (let i = 1; i < n; i++) {
+      if (!quiet[i] || quiet[i - 1]) continue;
+      // Back from the quiet over sound under speaking level, to the earliest bucket at room level: where the word ended.
+      // A soft sound between two silences, with no word or speech before it, stays sound: it may be a word nobody timed.
+      let room = i, k = i - 1;
+      for (; k >= 0 && !quiet[k] && rms[k]! <= QUIET_RMS && !spoken(k); k--) if (rms[k]! <= quietBelow && peaks[k]! <= QUIET_PEAK) room = k;
+      if (k < 0 || quiet[k]) continue;
+      for (let j = room; j < i; j++) quiet[j] = true;
+    }
   }
   return quiet;
 }

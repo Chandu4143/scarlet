@@ -4,12 +4,11 @@ import { fileURLToPath } from "node:url";
 import { run } from "../render/ffmpeg.js";
 import { logId } from "../logText.js";
 import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, selectionPlacements, taskDialogueOperation, type DialogueCutsRequest, type JoinCrossfades, reviewItemPath, type StagedCutRevision } from "@scarlet/shared";
-import { agentTarget, beginRevision, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type KeepEditsRequest, type KeptEdit, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
+import { agentTarget, beginRevision, callNumbers, threadTimeline, type ApproveResponse, type FlagEditRequest, type KeepEditsRequest, type KeptEdit, type UnkeepEditsRequest, type AgentId, type ProposeChangeRequest, type Task, type ThreadEdit, type User } from "@scarlet/shared";
 import { z } from "zod/v3";
 import { ReviseRequest as ReviseRequestSchema } from "@scarlet/shared";
 import { frameAligned, frameAlignedRemoval, isPublishedCall, onFrame, makeStagedCutMapper,
   SUMMARY_MAX,
-  clipEnd,
   crossfadeJoins,
   type JoinFades,
   applyOps,
@@ -58,7 +57,7 @@ import { requestCutPlaybackFile, waitForPlayback } from "./playback.js";
 import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { notify } from "./notify.js";
-import { createTask, editsDialogue, FINISHED_TASK, parseAssignTo, isDialoguePass, queueRepeatCheck, saveTask, stagesCut } from "./tasks.js";
+import { createTask, editsDialogue, FINISHED_TASK, parseAssignTo, saveTask, stagesCut } from "./tasks.js";
 import { runAttemptIds, runRoot } from "./runAttempts.js";
 import { ensureProjectHead, resolveTimeline, storeValidatedVersion, storeVersion } from "./timeline.js";
 import { actorFor, authorName, logActivity, quote } from "./activity.js";
@@ -370,10 +369,20 @@ function opsOnWholeFrames(ctx: Ctx, projectId: string, body: ProposeChangeReques
       const placed = drift.place(op);
       const aligned = selectedRange(task?.context) ? frameAlignedRemoval(placed, fps, placed) : frameAligned(placed, fps);
       const removed = { start: aligned.start, end: placed.end >= duration - 1e-6 ? placed.end : aligned.end };
-      if (!op.trackIds) drift.removed(op, removed);
+      if (!op.trackIds) {
+        drift.removed(op, removed);
+        const cut = Math.max(0, Math.min(duration, removed.end) - Math.min(duration, removed.start));
+        duration = Math.max(0, duration - cut);
+      }
       return { ...op, ...removed };
     }
-    if (op.op === "rippleInsertGap") return near(op, ["at", "duration"]);
+    if (op.op === "rippleInsertGap") {
+      const snapped = near(op, ["at", "duration"]);
+      if (!snapped.trackIds && duration != null && typeof snapped.duration === "number" && snapped.duration > 0) {
+        duration += snapped.duration;
+      }
+      return snapped;
+    }
     if (op.op === "moveClip") return near(op, ["timelineIn"]);
     if (op.op === "splitClip") return near(op, ["at"]);
     if (op.op === "addClip" && op.clip && typeof op.clip === "object") return { ...op, clip: near(op.clip, clipTimes) };
@@ -597,6 +606,11 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       for (const r of reasons) {
         const call = assessmentOf(change, r);
         if (call && (isPublishedCall(call) || call.askOrder !== undefined)) protectedCuts.set(r, `${change.id}:${call.index}`);
+        // A cut staged because nothing Scarlet measures can settle its join is the editor's to hear from the moment it is
+        // staged, recommendation or none: a pass staged the right cut of a restart, then applied a cut of the take that
+        // replaced it over the same footage half a minute later, and the review ended with no cut on the line (2026-11-17).
+        // A keep recorded on it is the model's own decision that the passage stays, and frees the footage.
+        else if (r.unheard && call?.verdict !== "keep" && !editorChoice(change, r)) protectedCuts.set(r, `${change.id}:unheard:${r.start}`);
         else if ((!call || call.provisional) && !editorChoice(change, r)) {
           const slot = inherited.find(span => covers(span, r));
           if (slot) protectedCuts.set(r, `${change.id}:pending:${slot.start}`);
@@ -617,7 +631,21 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     const overruled = candidates.filter(c => decided.some(d => overlaps(outer(c), d)));
     const held = candidates.filter(c => !overruled.includes(c) && heldRanges.some(r => overlaps(outer(c), outer(r)) ||
       ((c.review || !requested) && (Math.abs(c.start - r.end) < 1e-5 || Math.abs(c.end - r.start) < 1e-5))));
-    const planned = candidates.filter(c => !overruled.includes(c) && !held.includes(c));
+    // A staged cut Scarlet held for how its join measured is the model's to settle where it placed it: cut there, keep
+    // it, or ask. A cut that takes its place with other edges, and applies only because the model sent unsureJoins cut,
+    // swaps one join Scarlet couldn't place for another and changes what the line says, with no one hearing either:
+    // held at "thing. ‖ And so in this video", a closing save cut "And so" as well and applied it (2026-11-18). The
+    // staged cut stays, and the model is told.
+    const heldCutsStay: NonNullable<DialogueCutsAdjustments["heldCutsStay"]> = [];
+    const replacesHeld = candidates.filter(c => {
+      if (c.review || !c.appliedAsPlaced || overruled.includes(c) || held.includes(c)) return false;
+      const staged = earlier.flatMap(change => change.cutReasons!.filter(r => r.held && !r.unheard && !editorChoice(change, r) &&
+        overlaps(outer(c), outer(r)) && (Math.abs(outer(c).start - outer(r).start) >= LEFT_OF_STAGED_CUT || Math.abs(outer(c).end - outer(r).end) >= LEFT_OF_STAGED_CUT)));
+      for (const r of staged) heldCutsStay.push({ asked: c.asked, staged: { start: r.start, end: r.end },
+        why: `This cut takes the place of the staged cut at ${r.start.toFixed(2)}–${r.end.toFixed(2)} s with other edges, and Scarlet couldn't place its join either, so it applied only as unsureJoins cut. Moving a held cut onto other words changes what the line says. The staged cut stays as you first placed it: cut it there with unsureJoins cut, record keep, or ask the editor.` });
+      return staged.length > 0;
+    });
+    const planned = candidates.filter(c => !overruled.includes(c) && !held.includes(c) && !replacesHeld.includes(c));
     const carried: Planned[] = [];
     // A note on staged cuts that touch is about all of them: how many staged cuts each note covers.
     const noted = new Map<CutAssessment, number>();
@@ -630,8 +658,17 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       const clashes = carried.some(c => (!protectedSlot || c.protectedSlot !== protectedSlot) && overlaps(outer(c), outer(r)));
       if (protectedSlot && clashes)
         throw conflict("cut_changed", "Two earlier review slots now cover the same footage. Their existing reviews are still saved.");
-      if (!choice && (clashes || planned.some(c => overlaps(outer(c), outer(r))))) continue;
-      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, summary: r.summary, ...(r.held && { held: r.held }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
+      if (!choice && (clashes || planned.some(c => overlaps(outer(c), outer(r))))) {
+        // A cut this save sends over the same footage takes a staged cut's place: a plan often sends a staged cut again.
+        // One that takes only part of it leaves the rest playing with nothing staged there, and the agent is told.
+        const over = planned.filter(c => overlaps(outer(c), outer(r)));
+        const taken = mergeRanges(over.map(outer), 1e-6).reduce((n, c) => n + Math.max(0, Math.min(c.end, outer(r).end) - Math.max(c.start, outer(r).start)), 0);
+        // An edge moved a few frames is the same cut. A syllable or more left over is footage nobody decided.
+        const left = outer(r).end - outer(r).start - taken;
+        if (over.length && left >= LEFT_OF_STAGED_CUT) drop(change, r, `A cut in this save (${over.map(c => `${c.asked.start.toFixed(2)}–${c.asked.end.toFixed(2)} s`).join(", ")}) takes part of this staged cut's footage, so it left the review, and ${left.toFixed(2)} s of what it would have removed plays on.`);
+        continue;
+      }
+      carried.push({ start: r.start, end: r.end, review: true, reason: r.reason, summary: r.summary, ...(r.held && { held: r.held }), ...(r.unheard && { unheard: true as const }), crossfade: r.crossfade ?? change.joinFades?.duration, ...(r.originalRange && { originalRange: r.originalRange }),
         ...(r.kind && { kind: r.kind }), ...(r.legacySuggest && { legacySuggest: true }), ...((current || protectedSlot) && { preserveEdges: true }), protectedSlot, ...(recoveredCuts.has(r) && { recovered: true }),
         ...(assessment && { assessment }), ...(choice && !lapsed ? { choice } : { asked: { start: r.start, end: r.end }, ...(lapsed && { lapsed }) }) });
     }
@@ -647,9 +684,9 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     if (second > 0) throw badRequest("invalid_cuts", `The ranges ${span(sorted[second-1]!)} and ${span(sorted[second]!)} overlap. End the first where the second starts, or merge them.`);
     if (sorted.reduce((n, c) => n + c.end - c.start, 0) >= duration - 1e-7) throw badRequest("invalid_cuts", "These ranges remove the whole timeline. Retain some footage.");
     // A pass that repeats only calls already on this version has nothing to save or announce.
-    if (!planned.length && held.length && waiting.length === 1 && !alreadyRemoved.length && waiting[0]!.fromVersion === head) {
-      return { changes: waiting, carriedForward: carried.length, heldForReview: held.map(c => c.asked),
-        ...(droppedFromReview.length && { droppedFromReview }),
+    if (!planned.length && (held.length || heldCutsStay.length) && waiting.length === 1 && !alreadyRemoved.length && waiting[0]!.fromVersion === head) {
+      return { changes: waiting, carriedForward: carried.length, ...(held.length && { heldForReview: held.map(c => c.asked) }),
+        ...(droppedFromReview.length && { droppedFromReview }), ...(heldCutsStay.length && { heldCutsStay }),
         ...(overruled.length && { editorDecided: overruled.map(c => c.asked) }) };
     }
     if (toHead) {
@@ -711,7 +748,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
       }
       return start === c.originalRange.start && end === c.originalRange.end ? c : { ...c, originalRange: { start, end } };
     });
-    const satisfied = { ...(alreadyRemoved.length && { alreadyRemoved }), ...(droppedFromReview.length && { droppedFromReview }) };
+    const satisfied = { ...(alreadyRemoved.length && { alreadyRemoved }), ...(droppedFromReview.length && { droppedFromReview }), ...(heldCutsStay.length && { heldCutsStay }) };
     if (!cuts.length) return { changes: [], ...satisfied };
     const applied = cuts.filter(c => requested && !c.review);
     const stagedConfident = stagedWhy ? cuts.filter(c => c.submitted && !c.review).length : 0;
@@ -755,7 +792,7 @@ export function submitDialogueCuts(ctx: Ctx, user: User, projectId: string, body
     // Staged cuts the editor hasn't called that now sit against footage they chose to keep. Their call covers them.
     const joined: TimeRange[] = [];
     if (optional.length) {
-      const reasons = optional.map(({ start, end, reason, summary, originalRange, kind, crossfade, legacySuggest, held }) => ({ start, end, reason, summary, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }) }));
+      const reasons = optional.map(({ start, end, reason, summary, originalRange, kind, crossfade, legacySuggest, held, unheard }) => ({ start, end, reason, summary, originalRange, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(held && { held }), ...(unheard && { unheard }) }));
       const { change } = persistProposal(ctx, user, projectId, { fromVersion: version, intent: "suggestion", autoApprove: false,
         ops: ops(optional), description: whole && own ? own : `Review ${optional.length} optional dialogue ${optional.length === 1 ? "cut" : "cuts"}`,
         taskId, author, noteIds }, ids[1], reasons, { fold });
@@ -830,6 +867,8 @@ export interface DialogueCutsAdjustments {
   onFrames?: { cuts: number; largestShift: number; why: string };
   /** Staged cuts of an earlier part that left the review because their footage changed, on the version they were staged on. */
   droppedFromReview?: Array<{ changeId: string; version: string; start: number; end: number; why: string }>;
+  /** Cuts left out because they would have replaced a staged cut held for its join with other edges, applied only by unsureJoins cut. */
+  heldCutsStay?: Array<{ asked: TimeRange; staged: TimeRange; why: string }>;
 }
 
 const REVISED = "Replaced by a later revision of the same cut.";
@@ -1011,6 +1050,15 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     const autonomous = !scoped && (!!task || body.author?.type === "agent");
     if (autonomous && (was && (isPublishedCall(was) || was.askOrder !== undefined) || change.cutChoices?.some(c => c.index === index)))
       throw conflict("cut_with_editor", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s is with the editor. Only a revision they request can change this cut. ${CALL_WITH_EDITOR}`);
+    // A cut staged because nothing Scarlet measures can settle its join is the editor's to hear, where Scarlet placed it.
+    // A pass moved one onto the take that replaced the false start, where both edges were quiet, recorded it as a cut,
+    // and the broken take played with no call (2026-11-17). A keep is the model's own decision that the passage stays.
+    const unheard = !!change.cutReasons?.some(r => r.unheard && r.start < old.end - 1e-6 && r.end > old.start + 1e-6);
+    const aFrame = 1 / project.settings.fps;
+    const moves = Math.abs(range.start - old.start) > aFrame + 1e-6 || Math.abs(range.end - old.end) > aFrame + 1e-6;
+    if (autonomous && unheard && moves && !body.keep)
+      throw conflict("cut_unheard", `${capitalized(editorsCut(change, index))} at ${old.start}–${old.end} s waits for the editor to hear its join, so it stays where Scarlet placed it. `
+        + "Record ask on it with dialogue_review_save, with what to listen for, or keep if the passage belongs in the video as it was said.");
     const placement = placeRevision(ctx, project, change, review, index, body, range, task, scoped, named.fromVersion);
     if ("conflict" in placement) {
       const { reason, range } = placement.conflict;
@@ -1034,7 +1082,7 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
       const duration = r.crossfade ?? change.joinFades?.duration;
       return duration ? { ...r, crossfade: duration } : r;
     });
-    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }) });
+    cutReasons.push({ start, end, reason, summary, ...(kind && { kind }), ...(crossfade && { crossfade }), ...(legacySuggest && { legacySuggest }), ...(unheard && !moves && { unheard: true as const }) });
     cutReasons.sort((a, b) => a.start - b.start);
     const { change: revised } = persistProposal(ctx, user, change.projectId, { fromVersion: change.fromVersion, intent: "suggestion", autoApprove: false,
       ops: [...ranges].reverse().map(r => ({ op: "rippleDelete" as const, start: r.start, end: r.end })),
@@ -1218,6 +1266,9 @@ function editorsCut(change: Change, index: number): string {
 
 const capitalized = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
+/** A staged cut that a later cut of the same save takes part of has left this much of its footage playing: a syllable or more. */
+const LEFT_OF_STAGED_CUT = .15;
+
 /**
  * What to do with a finding about a call the editor holds. The same pass asked "Scarlet has locked edit 5 for your
  * review. May I revise it…?" about a call that already waited on the editor's Approve, Skip and Revise (2026-11-16).
@@ -1258,7 +1309,9 @@ function assertStagedCallsStand(ctx: Ctx, project: Omit<Project, "media">, task:
       const named = taken.slice(0, 12).map(c => `${editorsCut(change, c.index)} at ${c.start.toFixed(2)}–${c.end.toFixed(2)} s`).join(", ");
       throw conflict("staged_cuts_changed", `This edit takes away the footage of ${taken.length === 1 ? "a staged cut" : `${taken.length} staged cuts`} that `
         + `${taken.length === 1 ? "waits" : "wait"} for the editor’s call in ${change.id} (${named}${taken.length > 12 ? ", …" : ""}; times on version ${base.version}). `
-        + "Nothing was saved. Leave that footage in this edit. Use dialogue_apply_cuts to update a staged cut Scarlet hasn't asked the editor about.");
+        // A pass sent the same edit here three times before it moved the cut with dialogue_revise_cut (2026-11-18).
+        + `Nothing was saved. Leave that footage in this edit. To move a staged cut's edges, use dialogue_revise_cut with changeId ${change.id} and its index (${taken.slice(0, 12).map(c => c.index).join(", ")}). `
+        + "dialogue_apply_cuts updates a staged cut Scarlet hasn't asked the editor about.");
     }
     located.sort((a, b) => a.range.start - b.range.start);
     for (let i = 1; i < located.length; i++) {
@@ -2039,13 +2092,9 @@ export function approveChange(ctx: Ctx, user: User, change: Change, opts: { spot
     appliedJoinFades,
     leftOut: appliedReview ? undefined : leftOutOf(ctx, project, change),
   });
-  if (saved.intent === "suggestion" && saved.cutReasons?.length && target !== head && appliedReview?.joins.length !== 0) {
-    const pass = latestAttempt(ctx, saved.taskId);
-    const owner = pass?.repeatAudit ? pass : latestAttempt(ctx, saved.threadId);
-    if (owner?.state === "done" && owner.finishedAt && owner.repeatAudit && owner.repeatAudit.version !== target && isDialoguePass(owner)) {
-      queueRepeatCheck(ctx, owner, target);
-    }
-  }
+  // A finished pass whose calls the editor has just made stays finished. Its closing check ran before they decided, and
+  // each call played its join for them as they decided it. Checking the video again afterwards started the pass back
+  // up after the editor's last Approve and re-cut that join three times (2026-11-17).
   retireOtherVersions(ctx, saved);
   if (saved.intent === "alternative" && saved.taskId) {
     const alternatives = ctx.repos.changes.select(
@@ -2182,7 +2231,6 @@ export function reopenChange(ctx: Ctx, user: User, change: Change): Change {
 
 type ReviseRequest = z.output<typeof ReviseRequestSchema>;
 
-/** Name the one staged cut a revision is about, with why it was proposed and how it was assessed. */
 /**
  * Where the stretch the editor marked sits in the cut their words are about, when it is only part of it: "leave this
  * part in" with the cut's first 0.3 s marked means that part, not the whole cut (2026-11-14).
@@ -2202,6 +2250,7 @@ function onPositionClock(position: ReviseRequest["position"]) {
   return marked && !marked.mediaId && !position.mediaId && (marked.version ?? position.version) === position.version ? marked : undefined;
 }
 
+/** Name the one staged cut a revision is about, with why it was proposed and how it was assessed. */
 export function cutRevisionReference(change: Change, position: ReviseRequest["position"]): string {
   const index = position?.cutIndex;
   if (index === undefined) return "";
@@ -2307,6 +2356,22 @@ export function keepEdits(ctx: Ctx, projectId: string, body: KeepEditsRequest) {
   return { added };
 }
 
+/** The editor took these Keeps back (⌘Z). Taking back one that isn't recorded changes nothing. Caller holds the write lock. */
+export function unkeepEdits(ctx: Ctx, projectId: string, body: UnkeepEditsRequest) {
+  const byChange = new Map<string, UnkeepEditsRequest["edits"]>();
+  for (const edit of body.edits) byChange.set(edit.changeId, [...byChange.get(edit.changeId) ?? [], edit]);
+  let removed = 0;
+  for (const [changeId, edits] of byChange) {
+    const change = ctx.repos.changes.get(changeId);
+    if (!change || change.projectId !== projectId) throw notFound(`change ${changeId}`);
+    const kept = (change.kept ?? []).filter(k => k.threadId !== body.threadId || !edits.some(e => e.spot === k.spot && e.recheck === k.recheck));
+    if (kept.length === (change.kept?.length ?? 0)) continue;
+    removed += (change.kept?.length ?? 0) - kept.length;
+    saveChange(ctx, { ...change, kept: kept.length ? kept : undefined });
+  }
+  return { removed };
+}
+
 /** What the editor kept in a request, oldest first, as its runs hear of it. */
 export function keptEdits(ctx: Ctx, projectId: string, threadId: string): KeptEdit[] {
   const changes = ctx.repos.changes.select("project_id = ? AND json_extract(json, '$.kept') IS NOT NULL", [projectId]);
@@ -2363,8 +2428,11 @@ export function flagEdit(ctx: Ctx, projectId: string, task: Task, body: FlagEdit
       // only that nothing was found (2026-11-15). An option carries its doubt from when it is saved.
       const staged = ctx.repos.changes.get(body.changeId);
       if (staged?.projectId === projectId && staged.state === "ready") {
-        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` +
-          "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there.");
+        // A dialogue pass's staged cut is a call: the editor decides it whatever is flagged, and reads its reason as the note.
+        // A revision told to save a check with timeline_propose tried a review save next, refused too (2026-11-18).
+        throw badRequest("not_applied", `${body.changeId} waits for the editor and isn't in the video, so edit_flag can't mark it. ` + (staged.cutReasons?.length
+          ? "Its staged cuts are the editor's calls: a doubt about one goes in the reason you save it with (dialogue_revise_cut or dialogue_review_save), which the editor reads on its card."
+          : "Give the doubt as the edit's check when you save it with timeline_propose, and withdraw this one there."));
       }
       throw notFound(`edit ${body.spot} of change ${body.changeId} on the working cut`);
     }

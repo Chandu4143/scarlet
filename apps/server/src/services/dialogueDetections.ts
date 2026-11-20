@@ -7,7 +7,6 @@ import type { DialogueDetections, ServerSettings } from "@scarlet/shared";
 import type { MediaAsset, TimeRange } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
-import { extractWav } from "../render/ffmpeg.js";
 import { UhmDetector } from "../transcribe/uhm.js";
 import { getTranscriptionProvider } from "../transcribe/index.js";
 import { readAcousticWindow } from "../transcribe/acousticWords.js";
@@ -22,8 +21,16 @@ import { appendTaskEvent, editsDialogue } from "./tasks.js";
 import { AnalysisCache } from "./analysisCache.js";
 import { askFor, audioLane, whisperLane, type AudioWork } from "./audioWork.js";
 import { emissionStore, emissionStorePaths, recordingWav } from "./recordingAudio.js";
+import { VERBATIM_PROMPT as verbatim } from "../transcribe/saidWords.js";
+import { handOver, SEAM_CONTEXT, segmentsWithin } from "../transcribe/seams.js";
+import { SAMPLE_RATE } from "../transcribe/ctcAlign.js";
 
-const verbatim = "Um, well, uh, I think, I think we should go ahead. Hmm. Yeah.";
+/**
+ * How a page is read: bump when a change to it should read saved pages again. 2: Whisper and the aligner hear the page
+ * with SEAM_CONTEXT either side, and the page keeps the words whose middle is on it (2026-11-18).
+ */
+const PAGE_READING = 2;
+
 
 function onSourceClock(segments: DialogueDetections["segments"], from: number, to: number) {
   const at = (s: number) => Math.min(to, from + Math.max(0, s));
@@ -51,17 +58,25 @@ async function localModelIdentity(runtime: LocalRuntime) {
 type ScanWord = DialogueDetections["segments"][number]["words"][number];
 
 /**
- * The words a recording's saved scan pages read, each from the page it sits furthest inside (a page reads worse at
- * its edges, and pages overlap), with the stretches the pages cover.
+ * The words a recording's saved scan pages read, with the stretches the pages cover. Pages overlap: where two do, the
+ * earlier page's words run to a word both read near the middle of the overlap and the later page's go on after it
+ * (seams.ts), so a word the two pages timed a little differently is neither read twice nor left out. Taking each word
+ * from the page it sat furthest inside, by each page's own times, did both: "are", at 175.07 s on one page and 174.83 s
+ * on the next, with the overlap's middle at 175, was left out of both. A page inside what earlier pages read adds nothing.
  */
 export function wordsFromPages(pages: ReadonlyArray<TimeRange & { words: readonly ScanWord[] }>) {
-  const depth = (p: TimeRange, t: number) => Math.min(t - p.start, p.end - t);
-  const words = pages.flatMap((p, i) => p.words.filter(w => {
-    const middle = (w.start + w.end) / 2;
-    if (!(w.end > w.start) || middle < p.start || middle >= p.end) return false;
-    return pages.every((q, k) => k === i || middle < q.start || middle >= q.end || depth(q, middle) < depth(p, middle) ||
-      (depth(q, middle) === depth(p, middle) && k > i));
-  })).sort((a, b) => a.start - b.start);
+  const middle = (w: ScanWord) => (w.start + w.end) / 2;
+  let words: ScanWord[] = [], reach = -Infinity;
+  for (const p of [...pages].sort((a, b) => a.start - b.start || b.end - a.end)) {
+    if (p.end <= reach) continue;
+    const own = p.words.filter(w => w.end > w.start && middle(w) >= p.start && middle(w) < p.end).sort((a, b) => a.start - b.start);
+    if (p.start >= reach) words.push(...own);
+    else {
+      const { last, first } = handOver(words, own, (p.start + reach) / 2);
+      words = [...words.slice(0, last + 1), ...own.slice(first)];
+    }
+    reach = p.end;
+  }
   const covered: TimeRange[] = [];
   for (const p of [...pages].sort((a, b) => a.start - b.start)) {
     const last = covered.at(-1);
@@ -136,7 +151,7 @@ export function dialogueDetector(ctx: Ctx) {
     // The file's path, size and times identify it. Its content hash is finished in the background after import, so a
     // page saved before then would stop matching once it lands and be analyzed again. Pages saved under the hash
     // (`legacy`) still read.
-    const print = (hash: string | undefined) => createHash("sha256").update(JSON.stringify([1, speakerTurnCacheVersion, speakerAnalysisVersion,
+    const print = (hash: string | undefined) => createHash("sha256").update(JSON.stringify([1, PAGE_READING, speakerTurnCacheVersion, speakerAnalysisVersion,
       identity, hash, media.voiceRoles, settings.language, verbatim, alignmentVersion])).digest("hex");
     const fingerprint = print(undefined);
     const legacy = media.hash ? print(media.hash) : fingerprint;
@@ -216,7 +231,7 @@ export function dialogueDetector(ctx: Ctx) {
         const measured = await cachedSpeech(projectId, media, file, from, to, stream, policy.settings.language);
         if (measured) return measured;
       }
-      const wav = join(ctx.paths.tmp, randomUUID() + ".wav");
+      const wav = join(ctx.paths.tmp, randomUUID() + ".wav"), heard = join(ctx.paths.tmp, randomUUID() + ".wav");
       // The page's minute, its speech detection and any emissions its alignment lacks all come from one decode of
       // the recording, shared with the pages before and after it.
       const recording = await recordingWav(ctx, file, signal, stream);
@@ -226,6 +241,12 @@ export function dialogueDetector(ctx: Ctx) {
           const speech = await inWhisperLane(() => transcribeWindow(wav));
           return { acoustic: [], segments: onSourceClock(speech.segments, from, to) };
         }
+        // Whisper and the aligner hear the page with audio either side, so the page's first and last words are read with
+        // what came before and after them: at a hard edge Whisper finished a sentence cut off mid-word with a full stop
+        // and rebuilt the next page's first word from half a syllable, and a pass read the two as a retake (seams.ts).
+        // The page keeps the words whose middle is on it; the next page, which overlaps it, has the rest.
+        const readFrom = Math.max(0, from - SEAM_CONTEXT), readTo = Math.max(to, Math.min(recording.samples / SAMPLE_RATE, to + SEAM_CONTEXT));
+        await recording.writeWindow(heard, readFrom, readTo);
         const detectors = () => Promise.allSettled([uhm.detect(wav, from, signal),
           recording.pcm(speechActivityStart(from), to).then(pcm => speechActivityOf(pcm, speechActivityStart(from), from, to))]);
         type Speech = Awaited<ReturnType<typeof transcribeWindow>>;
@@ -238,8 +259,8 @@ export function dialogueDetector(ctx: Ctx) {
           // model's output for this audio is the recording's: what its transcript's alignment has saved is read, and
           // the rest is inferred from the whole recording's decode and saved for the transcript.
           try {
-            const emissions = { file: await emissionStore(ctx, projectId, file), offset: from, duration: to - from, wav: async () => recording.wav };
-            const words = await alignWords(ctx, wav, speech.value.segments, { language: speech.value.language ?? policy.settings.language, signal, emissions });
+            const emissions = { file: await emissionStore(ctx, projectId, file), offset: readFrom, duration: readTo - readFrom, wav: async () => recording.wav };
+            const words = await alignWords(ctx, heard, speech.value.segments, { language: speech.value.language ?? policy.settings.language, signal, emissions });
             return { acoustic, activity, words, unaligned: false };
           } catch (err) {
             signal.throwIfAborted();
@@ -251,16 +272,16 @@ export function dialogueDetector(ctx: Ctx) {
           job.then(value => ({ status: "fulfilled" as const, value }), reason => ({ status: "rejected" as const, reason }));
         let page: Awaited<ReturnType<typeof align>>;
         if (whisper && whisper !== lane) {
-          const [speech, detected] = await Promise.all([settled(inWhisperLane(() => transcribeWindow(wav, verbatim))), inLane(detectors)]);
+          const [speech, detected] = await Promise.all([settled(inWhisperLane(() => transcribeWindow(heard, verbatim))), inLane(detectors)]);
           page = await inLane(() => align(speech, detected));
         } else {
           page = await inLane(async () => {
-            const [speech, detected] = await Promise.all([settled(transcribeWindow(wav, verbatim)), detectors()]);
+            const [speech, detected] = await Promise.all([settled(transcribeWindow(heard, verbatim)), detectors()]);
             return align(speech, detected);
           });
         }
         const { acoustic, activity, words, unaligned } = page;
-        const segments = onSourceClock(words, from, to);
+        const segments = segmentsWithin(onSourceClock(words, readFrom, readTo), from, to);
         const result: DialogueDetections = { segments, acoustic: acoustic.value, speechActivity: activity.value };
         if (unaligned) unalignedPages.add(result);
         if (media.voiceRoles) {
@@ -271,7 +292,10 @@ export function dialogueDetector(ctx: Ctx) {
             const turns = otherVoiceTurns(measured.energy, roles, from, to);
             result.otherVoiceTurns = [];
             if (turns.length) {
-              await extractWav(file, wav, { start: from, duration: to - from, audioStream: roles.other - 1, signal });
+              // The other voice's minute comes from one decode of its track, shared with the pages before and after it,
+              // as the page's own does: cut from the source, each page of a long recording took ffmpeg most of a second.
+              const other = await recordingWav(ctx, file, signal, roles.other - 1);
+              try { await other.writeWindow(wav, from, to); } finally { other.release(); }
               const isolated = await inWhisperLane(() => transcribeWindow(wav));
               const words = isolated.segments.flatMap(s => s.words);
               result.otherVoiceTurns = turns.map(turn => ({ ...turn, text: words.filter(w => {
@@ -287,7 +311,7 @@ export function dialogueDetector(ctx: Ctx) {
         return result;
       } finally {
         recording.release();
-        await rm(wav, { force: true });
+        await Promise.all([rm(wav, { force: true }), rm(heard, { force: true })]);
       }
     }, { signal }), projectId);
     // A cut reads only its surviving words. Its short window is never a completed dialogue-scan page.

@@ -2,7 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Timeline } from "@scarlet/timeline";
 import { api } from "../../lib/client";
+import { readTimeline } from "../../lib/timelineCache";
 import { useReviewTimeline } from "./useReviewTimeline";
 
 let root: Root;
@@ -59,4 +61,32 @@ it("asks again for a version that failed, and drops the error once it loads", as
   await act(async () => retry());
   expect(load).toHaveBeenCalledTimes(2);
   expect(seen.at(-1)).toMatchObject({ error: undefined, loaded: true });
+});
+
+function Known({ version, known }: { version?: string; known?: Timeline | null }) {
+  const { timeline } = useReviewTimeline("prj", version, known);
+  seen.push({ version, loaded: !!timeline });
+  return null;
+}
+
+it("keeps a version it had once the caller no longer has it to hand, and reads nothing again", async () => {
+  const read = vi.spyOn(api, "timeline").mockImplementation(() => new Promise(() => {}));
+  const before = { version: "v_before", tracks: [], markers: [] } as unknown as Timeline;
+  await act(async () => root.render(<Known version="v_before" known={before} />));
+  // The working cut moved on, as when the editor rejects an edit: the open cut's own version is still the same one.
+  await act(async () => root.render(<Known version="v_before" known={{ ...before, version: "v_now" }} />));
+  await act(async () => root.render(<Known version="v_before" />));
+  expect(seen.every(render => render.loaded)).toBe(true);
+  expect(read).not.toHaveBeenCalled();
+});
+
+it("shows a version that was read already in its first render, with no moment without it", async () => {
+  const next = { version: "v_next", tracks: [], markers: [] } as unknown as Timeline;
+  vi.spyOn(api, "timeline").mockResolvedValue({ timeline: next });
+  // Read ahead, as the card does before it goes on to the next cut.
+  await readTimeline("prj", "v_next");
+  await act(async () => root.render(<Known version="v_before" known={{ ...next, version: "v_before" }} />));
+  seen = [];
+  await act(async () => root.render(<Known version="v_next" />));
+  expect(seen.map(render => render.loaded)).not.toContain(false);
 });

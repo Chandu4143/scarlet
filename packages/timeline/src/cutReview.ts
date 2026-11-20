@@ -348,6 +348,27 @@ export function reviewHeldNotes(change: Pick<Change, "cutReasons">, cuts: Review
   return reviewNotes(change.cutReasons, cuts).map(notes => [...new Set(notes.map(note => note.held).filter(Boolean))].join(" ") || undefined);
 }
 
+const KIND_ROWS = { pause: "Shortened a pause", filler: "Cut a filler word", retake: "Cut a false start", coaching: "Cut a note to the crew" } as const;
+
+/** A cut's row in the list when Scarlet gave it no summary: what kind of footage came out. Never its reason, which says why. */
+export function cutKindRow(kind: keyof typeof KIND_ROWS | undefined) {
+  return kind && KIND_ROWS[kind];
+}
+
+/** The kind of footage a row names when it was read from the cut's kind (`cutKindRow`), else undefined. */
+export function cutKindOfRow(row: string) {
+  return (Object.keys(KIND_ROWS) as (keyof typeof KIND_ROWS)[]).find(kind => KIND_ROWS[kind] === row);
+}
+
+/** Each review spot's row by what kind of footage it took out, for cuts saved without a summary. */
+export function reviewKindRows(change: Pick<Change, "cutReasons">, cuts: ReviewSpots) {
+  if (!change.cutReasons?.some(cut => cut.kind)) return cuts.map(() => undefined);
+  return reviewNotes(change.cutReasons, cuts).map(notes => {
+    const rows = notes.map(note => cutKindRow(note.kind));
+    if (rows.length && rows.every(Boolean)) return [...new Set(rows)].join(" · ");
+  });
+}
+
 /** Find the short chat summaries on a review spot's original footage, including coalesced removals. */
 export function reviewCutSummaries(change: Pick<Change, "cutReasons">, cuts: ReviewSpots) {
   if (!change.cutReasons?.some(cut => cut.summary)) return cuts.map(() => undefined);

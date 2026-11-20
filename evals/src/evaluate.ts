@@ -1,10 +1,12 @@
 /** Gather a finished task's artifacts from the engine (read-only) and score them. */
+import { createHash } from "node:crypto";
 import type { Change, MediaAsset, Timeline } from "../../packages/timeline/src/index.ts";
 import type { LoadedCase } from "./case.ts";
 import { reviewDecisions, reviewExport } from "./decisions.ts";
 import type { Engine, ReviewChangeExport, TaskRecord } from "./engine.ts";
 import { mediaEvidence, type StoredEvidence } from "./evidence.ts";
-import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type LabeledRange, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
+import { loadMoments } from "./moments.ts";
+import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
 import { scoreRun, type Score } from "./score.ts";
 import { audibleMediaIds, type MediaInfo } from "./timeline.ts";
 
@@ -23,6 +25,8 @@ export interface Artifacts {
   /** Every part's plan, the first being `plan`. */
   plans?: SubmittedPlan[];
   reviewExport?: ReviewChangeExport;
+  /** Reviews the task staged on other versions that still wait for the editor. */
+  waiting?: ReviewChangeExport[];
   reviewSource: "engine" | "local" | "none";
   versions: { source: string; applied: string; proposed: string; final?: string };
   timelines: Map<string, Timeline>;
@@ -33,7 +37,7 @@ export const mediaInfo = (m: { id: string; kind: string; name?: string; duration
 
 type Decide = (review: Change, timeline: (v: string) => Promise<Timeline>) => Promise<{ source: "engine" | "local"; changes: ReviewChangeExport[] }>;
 
-async function assemble(task: TaskRecord, events: EventLike[], changes: Change[], project: { id: string; fps: number; media: MediaInfo[] },
+async function assemble(task: TaskRecord, events: EventLike[], changes: Change[], project: { id: string; fps: number; media: MediaInfo[]; head?: string },
   load: (v: string) => Promise<Timeline>, decide: Decide, partial = false): Promise<Artifacts> {
   const owned = changes.filter(c => !c.taskId || c.taskId === task.id);
   const requested = owned.filter(c => c.intent === "requested" && c.state === "approved")
@@ -69,6 +73,9 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
     seen.add(next.id);
     finalVersion = next.appliedVersion ?? next.toVersion;
   }
+  // The task's branch ends where the task left it. When the walk above stops short of that head and one of the task's
+  // own changes made it, the head is what it left playing: a run scored a version from nine minutes before it ended.
+  if (project.head && project.head !== finalVersion && landed.some(c => (c.appliedVersion ?? c.toVersion) === project.head)) finalVersion = project.head;
   // The last submission on each version of the chain is the plan that version's part applied.
   const chain = [source, ...parts.map(p => p.appliedVersion ?? p.toVersion)];
   const plans = chain.flatMap(v => submitted.filter(p => p.version === v).slice(-1));
@@ -88,6 +95,9 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
   // Versions the run checked joins on, to compare those checks with later parts. A case may not store them.
   const checked = events.flatMap(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "dialogue_check_join"
     && typeof (e.data?.input as { version?: unknown } | undefined)?.version === "string" ? [(e.data!.input as { version: string }).version] : []);
+  // And the versions it flagged edits on, to place each flag in the recordings.
+  checked.push(...events.flatMap(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "edit_flag"
+    && typeof (e.data?.input as { version?: unknown } | undefined)?.version === "string" ? [(e.data!.input as { version: string }).version] : []));
   for (const v of new Set(checked)) if (!timelines.has(v)) await timeline(v).catch(() => undefined);
   let reviewExport: ReviewChangeExport | undefined, reviewSource: Artifacts["reviewSource"] = "none";
   if (review && !(partial && (!timelines.has(review.fromVersion) || !timelines.has(review.toVersion)))) {
@@ -95,7 +105,14 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
     reviewExport = result.changes.find(c => c.id === review.id);
     reviewSource = reviewExport ? result.source : "none";
   }
-  return { task, events, projectId: project.id, fps: project.fps, media: project.media, changes, applied, parts, review, plan, plans, reviewExport, reviewSource,
+  // Staged cuts on earlier versions the editor has yet to decide go in with the editor's calls.
+  const waiting: ReviewChangeExport[] = [];
+  for (const change of reviews.filter(c => c.state === "ready" && c.id !== review?.id)) {
+    if (partial && (!timelines.has(change.fromVersion) || !timelines.has(change.toVersion))) continue;
+    const item = (await decide(change, timeline).catch(() => undefined))?.changes.find(c => c.id === change.id);
+    if (item) waiting.push(item);
+  }
+  return { task, events, projectId: project.id, fps: project.fps, media: project.media, changes, applied, parts, review, plan, plans, reviewExport, waiting, reviewSource,
     versions: { source, applied: appliedVersion, proposed, ...(finalVersion !== appliedVersion && { final: finalVersion }) }, timelines };
 }
 
@@ -106,7 +123,9 @@ export async function gatherTask(engine: Engine, taskId: string, cached?: (v: st
   const task = usage ? { ...record, usage } : record;
   const project = await engine.project(task.projectId);
   const changes = await Promise.all(task.changeIds.map(id => engine.change(id)));
-  return assemble(task, events, changes, { id: project.id, fps: project.settings.fps, media: project.media.map(mediaInfo) },
+  const branch = typeof task.context.branch === "string" ? task.context.branch : undefined;
+  const head = branch ? (await engine.branches(task.projectId).catch(() => [])).find(b => b.name === branch)?.head : undefined;
+  return assemble(task, events, changes, { id: project.id, fps: project.settings.fps, media: project.media.map(mediaInfo), head },
     async v => cached?.(v) ?? engine.timeline(task.projectId, v),
     (review, timeline) => reviewDecisions(engine, task.projectId, [review], timeline, project.media, taskId));
 }
@@ -129,6 +148,7 @@ export async function artifactsFromCase(loaded: LoadedCase, opts: { partial?: bo
 }
 
 export interface Evaluation {
+  gradingSha256?: string;
   schema: 1;
   kind: "task";
   generatedAt: string;
@@ -178,18 +198,21 @@ type ReferenceInput = NonNullable<Parameters<typeof scoreRun>[0]["reference"]>;
 
 function evaluateArtifacts(a: Artifacts, evidence: ReadonlyMap<string, MediaEvidence>, reference: ReferenceInput | undefined, opts: EvaluateOptions = {}): Evaluation {
   const edgeOptions = opts.edgeOptions ?? DEFAULT_EDGE_OPTIONS;
+  const moments = opts.loaded?.dir ? loadMoments(opts.loaded.dir) : undefined;
   const score = scoreRun({
     media: a.media,
     timelines: { source: a.timelines.get(a.versions.source)!, applied: a.timelines.get(a.versions.applied)!, proposed: a.timelines.get(a.versions.proposed)!,
       reviewBase: a.review ? a.timelines.get(a.review.fromVersion) : undefined, plan: a.plan ? a.timelines.get(a.plan.version) : undefined,
       final: a.versions.final ? a.timelines.get(a.versions.final) : undefined },
-    appliedChange: a.applied, reviewChange: a.review, review: a.reviewExport, plan: a.plan,
+    appliedChange: a.applied, reviewChange: a.review, review: a.reviewExport, waiting: a.waiting, plan: a.plan,
     appliedParts: a.parts?.map(change => ({ change, from: a.timelines.get(change.fromVersion)! })),
     plans: a.plans?.map(plan => ({ plan, timeline: a.timelines.get(plan.version)! })),
     timelineAt: v => a.timelines.get(v),
     evidence, reference, task: a.task, events: a.events, edgeOptions,
+    moments,
   });
   return {
+    gradingSha256: createHash("sha256").update(JSON.stringify([a.versions.source, edgeOptions, reference, moments, [...evidence].sort(([first], [second]) => first.localeCompare(second))])).digest("hex"),
     schema: 1, kind: "task", generatedAt: new Date().toISOString(), taskId: a.task.id, projectId: a.projectId, caseId: opts.loaded?.file.id,
     config: { agent: a.task.agent, model: a.task.model, effort: a.task.effort },
     instruction: String(a.task.context.message ?? a.task.instruction).slice(0, 500),

@@ -195,6 +195,3 @@ export async function runScreenTextWorker(frames: string, width: number, height:
   }
   return out;
 }
-
-
-/** How much of two boxes overlap, as a share of both together: the same measure faces use. */

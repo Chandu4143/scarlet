@@ -128,8 +128,8 @@ async fn check(app: &AppHandle) -> Result<Option<String>, String> {
     // The release on offer until now gives way to the newer one.
     if !inner.installing {
         inner.ready = Some((update, file));
+        log::info!("release update: {version} is ready to install");
     }
-    log::info!("release update: {version} is ready to install");
     Ok(Some(version))
 }
 

@@ -57,14 +57,70 @@ it("reads Claude picker aliases from the initialization response", async () => {
     modelOptions: { "": { efforts: [{ id: "high" }], speeds: [] }, sonnet: { efforts: [], speeds: [{ id: "standard", label: "Standard" }, { id: "fast", label: "Fast" }] } } });
 });
 
-it("reads Gemini ACP session choices and distinguishes an empty list from a failed probe", async () => {
+it("reads Gemini ACP session choices, configOptions efforts, and API-key authenticate fallback", async () => {
   const requests = peer(({ id, method }) => ({ id, result: method === "initialize" ? {} : { models: { availableModels: [{ modelId: "flash", name: "Flash" }] } } }));
-  expect(await discoverModels("gemini", "gemini", {})).toEqual({ models: ["flash"], modelLabels: { flash: "Flash" }, modelOptions: { flash: { efforts: [], speeds: [] } } });
+  expect(await discoverModels("gemini", "agy", {})).toEqual({ models: ["flash"], modelLabels: { flash: "Flash" }, modelOptions: { flash: { efforts: [], speeds: [] } } });
   expect(requests.map((r) => r.method)).toEqual(["initialize", "session/new"]);
+
+  // Modern ACP configOptions with model + thought_level + auth fallback on -32000.
+  let authed = false;
+  const modernReqs = peer(({ id, method }) => {
+    if (method === "initialize") return { id, result: {} };
+    if (method === "authenticate") {
+      authed = true;
+      return { id, result: {} };
+    }
+    if (!authed) return { id, error: { code: -32000, message: "Authentication required" } };
+    return {
+      id,
+      result: {
+        configOptions: [
+          {
+            id: "model",
+            category: "model",
+            currentValue: "gemini-2.5-pro",
+            options: [
+              { value: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+              { value: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+            ],
+          },
+          {
+            id: "thought_level",
+            category: "thought_level",
+            currentValue: "medium",
+            options: [
+              { value: "low", name: "Low", description: "Fast thinking" },
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+            ],
+          },
+        ],
+      },
+    };
+  });
+  expect(await discoverModels("gemini", "agy", { GEMINI_API_KEY: "test-key" })).toEqual({
+    model: "gemini-2.5-pro",
+    models: ["gemini-2.5-pro", "gemini-2.5-flash"],
+    modelLabels: { "gemini-2.5-pro": "Gemini 2.5 Pro", "gemini-2.5-flash": "Gemini 2.5 Flash" },
+    modelOptions: {
+      "gemini-2.5-pro": {
+        efforts: [{ id: "low", label: "Low", description: "Fast thinking" }, { id: "medium", label: "Medium" }, { id: "high", label: "High" }],
+        speeds: [],
+        defaultEffort: "medium",
+      },
+      "gemini-2.5-flash": {
+        efforts: [{ id: "low", label: "Low", description: "Fast thinking" }, { id: "medium", label: "Medium" }, { id: "high", label: "High" }],
+        speeds: [],
+        defaultEffort: "medium",
+      },
+    },
+  });
+  expect(modernReqs.map((r) => r.method)).toEqual(["initialize", "session/new", "authenticate", "session/new"]);
+
   peer(({ id, method }) => ({ id, result: method === "initialize" ? {} : { models: { availableModels: [] } } }));
-  expect((await discoverModels("gemini", "gemini", {}))?.models).toEqual([]);
+  expect((await discoverModels("gemini", "agy", {}))?.models).toEqual([]);
   peer(({ id }) => ({ id, error: { code: -1 } }));
-  await expect(discoverModels("gemini", "gemini", {})).rejects.toMatchObject({ reason: "initialize_failed" });
+  await expect(discoverModels("gemini", "agy", {})).rejects.toMatchObject({ reason: "initialize_failed" });
 });
 
 

@@ -62,26 +62,29 @@ describe("OpenAI transcription", () => {
     });
   }
 
-  it("uploads a long recording's audio in ten-minute chunks and puts every word at its time in the recording", async () => {
+  it("uploads a long recording's audio in ten-minute chunks heard 8 s past both ends, and puts every word at its time in the recording", async () => {
     const decode = decodes(1300);
     const fetchMock = api(
       { language: "english", segments: [{ start: 0, end: 4, text: " First." }], words: [{ word: "First.", start: 1, end: 2 }] },
-      { language: "spanish", segments: [{ start: 3, end: 5, text: "Second." }], words: [{ word: "Second.", start: 3, end: 4 }] },
-      { text: "Third.", words: [{ word: "Third.", start: 50, end: 51 }] });
+      { language: "spanish", segments: [{ start: 11, end: 13, text: "Second." }], words: [{ word: "Second.", start: 11, end: 12 }] },
+      { text: "Third.", words: [{ word: "Third.", start: 58, end: 59 }] });
     const progress: number[] = [];
     const beforeUpload = vi.fn(() => { expect(fetchMock).toHaveBeenCalledTimes(beforeUpload.mock.calls.length - 1); });
     const result = await provider({ language: "en", baseUrl: "http://127.0.0.1:9/v1" })
       .transcribe({ path: "talk.mov", duration: 1300, tmpDir: dir, beforeUpload, onProgress: fraction => progress.push(fraction) });
-    expect(decode.mock.calls.map(([input, , opts]) => [input, opts?.start, opts?.duration])).toEqual([["talk.mov", 0, 600], ["talk.mov", 600, 600], ["talk.mov", 1200, 600]]);
+    // A later chunk is first checked for audio where it starts, then decoded with the 8 s before it and after it.
+    expect(decode.mock.calls.map(([input, , opts]) => [input, opts?.start, opts?.duration])).toEqual([["talk.mov", 0, 608],
+      ["talk.mov", 600, 1], ["talk.mov", 592, 616], ["talk.mov", 1200, 1], ["talk.mov", 1192, 108]]);
     expect(result.language).toBe("english");
     expect(result.segments.map(s => [s.start, s.end, s.text, s.words])).toEqual([
       [0, 4, "First.", [{ text: "First.", start: 1, end: 2 }]],
       [603, 605, "Second.", [{ text: "Second.", start: 603, end: 604 }]],
       [1250, 1251, "Third.", [{ text: "Third.", start: 1250, end: 1251 }]],
     ]);
-    expect(progress).toEqual([600 / 1300, 1200 / 1300, 1]);
+    // Each chunk's words are saved up to 8 s before its end; the rest wait for the next chunk to hand over.
+    expect(progress).toEqual([592 / 1300, 1192 / 1300, 1]);
     expect(beforeUpload).toHaveBeenCalledTimes(3);
-    expect(uploads.map(u => u.bytes)).toEqual([78 + 3200 + 600, 78 + 3200 + 600, 78 + 3200 + 100]);
+    expect(uploads.map(u => u.bytes)).toEqual([78 + 3200 + 608, 78 + 3200 + 616, 78 + 3200 + 108]);
     expect(uploads[0]).toMatchObject({ url: "http://127.0.0.1:9/v1/audio/transcriptions", key: "Bearer key-for-tests",
       fields: { model: ["whisper-1"], response_format: ["verbose_json"], "timestamp_granularities[]": ["word", "segment"], language: ["en"] } });
     expect(uploads[0]!.fields.prompt).toBeUndefined();
@@ -169,26 +172,28 @@ describe("OpenAI transcription", () => {
   it("resumes after the last saved upload, including a later window with no audio", async () => {
     const decode = decodes(1180); // The video continues to 1300 s.
     api({ language: "english", text: "First", words: [{ word: "First", start: 1, end: 2 }] },
-      { text: "Next", words: [{ word: "Next", start: 3, end: 4 }] });
+      { text: "Next", words: [{ word: "Next", start: 19, end: 20 }] });
     const saved: Array<{ through: number; chunk: TranscribeResult; fraction?: number }> = [];
     const stop = new AbortController();
     const save = (through: number, chunk: TranscribeResult, fraction?: number) => saved.push({ through, chunk, fraction });
     const input = { path: "interview.mov", duration: 1300, tmpDir: dir };
-    await expect(provider().transcribe({ ...input, signal: stop.signal,
-      checkpoint: { through: 0, result: { segments: [] }, save }, onProgress: () => stop.abort(new Error("quit")) })).rejects.toThrow("quit");
+    // A chunk's words are saved up to 8 s before its end as soon as it is read. Quit after that first save.
+    await expect(provider().transcribe({ ...input, signal: stop.signal, checkpoint: { through: 0, result: { segments: [] },
+      save(through, chunk, fraction) { save(through, chunk, fraction); stop.abort(new Error("quit")); } } })).rejects.toThrow("quit");
     expect(saved).toHaveLength(1);
     const { through, chunk: result } = saved[0]!;
     const resumed = await provider().transcribe({ ...input, checkpoint: { through, result, save } });
-    expect(saved.map(s => s.through)).toEqual([600, 1200, 1300]);
-    expect(saved.map(s => s.fraction)).toEqual([600 / 1300, 1200 / 1300, 1]);
-    expect(saved[2]!.chunk.segments).toEqual([]);
-    expect(decode.mock.calls.map(([, , opts]) => opts?.start)).toEqual([0, 600, 1200]);
+    // The resumed chunk starts where the saved words end, heard from 8 s before; the next starts past the audio.
+    expect(saved.map(s => s.through)).toEqual([592, 1184, 1192, 1300]);
+    expect(saved.map(s => s.fraction)).toEqual(saved.map(s => s.through / 1300));
+    expect(saved.slice(2).map(s => s.chunk.segments)).toEqual([[], []]);
+    expect(decode.mock.calls.map(([, , opts]) => opts?.start)).toEqual([0, 592, 584, 1192]);
     expect(uploads).toHaveLength(2);
     expect(resumed.language).toBe("english");
     expect(resumed.segments).toEqual([result.segments[0], saved[1]!.chunk.segments[0]]);
     expect(resumed.segments[1]!.words).toEqual([{ text: "Next", start: 603, end: 604 }]);
     expect(await provider().transcribe({ ...input, checkpoint: { through: 1300, result: resumed, save } })).toEqual(resumed);
-    expect(decode).toHaveBeenCalledTimes(3);
+    expect(decode).toHaveBeenCalledTimes(4);
   });
 
   describe("of a dialogue window", () => {

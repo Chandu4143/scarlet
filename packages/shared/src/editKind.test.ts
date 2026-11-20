@@ -87,6 +87,20 @@ describe("telling what an applied edit did", () => {
       { before: base, after: after(t => { t.tracks.push(upper); }) })).toEqual(["text", "overlay", "other"]);
   });
 
+  it("gives a stretch that only touches an edit's edge to the edit beside it", () => {
+    // A punch-in named end to end with a demo laid over the picture: each is what it did, not a mix of the two.
+    const split = after(t => { t.tracks.push(upper);
+      t.tracks.find(x => x.kind === "video")!.clips = [{ ...shot, id: "a", timelineOut: 30, sourceOut: 30 },
+        { ...shot, id: "b", timelineIn: 30, timelineOut: 50, sourceIn: 30, sourceOut: 50 }, { ...shot, id: "c", timelineIn: 50, sourceIn: 50 }]; });
+    const pass = change([
+      { op: "updateClip", clipId: "a", patch: { transform: { scale: 1.2 } } },
+      { op: "addClip", trackId: "v2", clip: makeMediaClip("screen", 0, 20, 30, { id: "demo" }) },
+      { op: "updateClip", clipId: "c", patch: { transform: { scale: 1.2 } } },
+    ]);
+    expect(editKinds(pass, [{ start: 20, end: 30 }, { start: 30, end: 50 }, { start: 50, end: 60 }], { before: split, after: split }))
+      .toEqual(["zoom", "overlay", "zoom"]);
+  });
+
   it("doesn't call an edit a cut because another edit of the same change cut", () => {
     // Two pop-ups cut out and one covered by holding a frame, which only trims clips: the cover took nothing out.
     const pass = change([

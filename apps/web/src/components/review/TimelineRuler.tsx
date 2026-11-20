@@ -16,13 +16,11 @@ export const TimelineRuler = memo(function TimelineRuler({ start, duration, widt
     const time = i * step;
     const offset = (time - start) / duration;
     // As the player, the cards and the chat write a time: "0:02", not "00:02".
+    const stamp = clock(time);
     const fraction = step < 1 ? (time % 1).toFixed(2).slice(1) : "";
-    const stamp = clock(time) + fraction;
-    const space = (1 - offset) * width - endInset;
-    if (space < 0) break;
+    if ((1 - offset) * width < endInset) break;
     ticks.push(<span key={i} className="ruler-major" style={{ left: `${offset * 100}%` }}>
-      {/* Allow 8px per 12px monospace character and the label's inset from its tick. */}
-      {space >= 2 + stamp.length * 8 && <span>{stamp}</span>}
+      {(1 - offset) * width >= 76 + endInset && <span>{stamp}{fraction}</span>}
     </span>);
   }
   return <div className="timeline-ruler" aria-hidden="true">{ticks}</div>;

@@ -8,7 +8,16 @@ const KEPT = 16;
  * Saved versions' timelines, read once and shared by everything that shows one: a saved version never changes. A
  * read on its way is shared too, and one that failed is let go, so the next asks again. The newest used stay.
  */
-const kept = new Map<string, { read: Promise<Timeline>; from: typeof api.timeline }>();
+const kept = new Map<string, { read: Promise<Timeline>; from: typeof api.timeline; timeline?: Timeline }>();
+
+/**
+ * A saved version's timeline when it has been read already, with no wait: a card that moves to a cut on a version in
+ * hand shows it in the same frame, instead of going back to the video for the moment a read would take.
+ */
+export function readyTimeline(projectId: string, version: string): Timeline | undefined {
+  const entry = kept.get(JSON.stringify([projectId, version]));
+  return entry?.from === api.timeline ? entry.timeline : undefined;
+}
 
 /**
  * One saved version's timeline. `signal` lets go of the wait, not the read, which others may share. "head" is not a
@@ -22,8 +31,9 @@ export function readTimeline(projectId: string, version: string, signal?: AbortS
   kept.delete(key);
   if (entry?.from !== api.timeline) {
     const read: Promise<Timeline> = api.timeline(projectId, version).then(({ timeline }) => timeline);
-    read.catch(() => { if (kept.get(key)?.read === read) kept.delete(key); });
-    entry = { read, from: api.timeline };
+    const made: { read: Promise<Timeline>; from: typeof api.timeline; timeline?: Timeline } = { read, from: api.timeline };
+    read.then(timeline => { made.timeline = timeline; }, () => { if (kept.get(key)?.read === read) kept.delete(key); });
+    entry = made;
   }
   kept.set(key, entry);
   while (kept.size > KEPT) kept.delete(kept.keys().next().value!);

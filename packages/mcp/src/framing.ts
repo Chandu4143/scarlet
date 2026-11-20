@@ -62,11 +62,27 @@ const COVERS_ALL = 0.9;
 /** The frame is drawn this much larger than the canvas, so rounding to whole pixels never leaves a line of background at an edge. */
 const OVERSCAN = 1.003;
 
-/** The parts of the canvas beside each cover that no cover touches, as canvas fractions. */
+const insideBox = (a: Box, b: Box) => a[0] >= b[0] - 1e-9 && a[1] >= b[1] - 1e-9 && a[2] <= b[2] + 1e-9 && a[3] <= b[3] + 1e-9;
+
+/** The maximal parts of the canvas that no cover touches, as canvas fractions. Falls back to the whole canvas if none is wide enough. */
 function freeAreas(covers: readonly Box[]): Box[] {
-  if (!covers.length) return [WHOLE];
-  const beside = covers.flatMap(([l, t, r, b]): Box[] => [[0, 0, l, 1], [r, 0, 1, 1], [0, 0, 1, t], [0, b, 1, 1]]);
-  return beside.filter(k => w(k) > 0.05 && h(k) > 0.05 && covers.every(c => area(meet(c, k)) < 1e-9));
+  let areas: Box[] = [WHOLE];
+  for (const c of covers) {
+    const next: Box[] = [];
+    for (const b of areas) {
+      if (area(meet(b, c)) < 1e-9) { next.push(b); continue; }
+      const splits: Box[] = [
+        [b[0], b[1], c[0], b[3]],
+        [c[2], b[1], b[2], b[3]],
+        [b[0], b[1], b[2], c[1]],
+        [b[0], c[3], b[2], b[3]],
+      ];
+      for (const s of splits) if (w(s) > 0.05 && h(s) > 0.05) next.push(s);
+    }
+    areas = next.filter((a, i) => !next.some((b, j) => i !== j && insideBox(a, b) && (j < i || !insideBox(b, a))));
+    if (!areas.length) return [WHOLE];
+  }
+  return areas;
 }
 
 /** Where on one axis the frame starts: the shown area centred in the free span, inside `within` when both can hold, inside the picture always. */

@@ -59,11 +59,17 @@ fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
 pub const SUBSCRIPTION: &str = "subscription";
 pub const API_KEY: &str = "api_key";
 
+/// CLI executable name on PATH for each agent id.
+pub fn cli_binary(agent: &str) -> &str {
+    if agent == "gemini" { "agy" } else { agent }
+}
+
 /// Env vars that make a CLI bill an API key instead of the signed-in subscription.
 pub fn api_key_vars(agent: &str) -> &'static [&'static str] {
     match agent {
         "claude" => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
         "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         _ => &[],
     }
 }
@@ -86,7 +92,7 @@ pub fn runner_env(agent: &str, agents: &[AgentAvailability], env: &HashMap<Strin
 
 /// Where the CLI is, or the entry for one that isn't installed.
 async fn installed<I: DetectIo>(io: &I, id: &str) -> Result<String, AgentAvailability> {
-    let Some(path) = io.find(id).await else {
+    let Some(path) = io.find(cli_binary(id)).await else {
         return Err(AgentAvailability { id: id.into(), installed: false, ..Default::default() });
     };
     Ok(path)
@@ -214,9 +220,34 @@ pub async fn detect_gemini<I: DetectIo>(io: &I, o: &DetectOptions<'_>) -> AgentA
         Ok(found) => found,
         Err(missing) => return missing,
     };
-    let version = cli_version(io, &path).await;
-    let logged_in = io.exists(&o.home.join(".gemini").join("oauth_creds.json")) || env_truthy(o.env, "GEMINI_API_KEY") || env_truthy(o.env, "GOOGLE_API_KEY");
-    AgentAvailability { id: "gemini".into(), installed: true, version, logged_in: Some(logged_in), ..Default::default() }
+    let mut logged_in: Option<bool> = None;
+    let mut auth: Option<String> = None;
+    // `agy models` runs without API-key vars, so a successful list reflects a signed-in Google account / ADC session.
+    let (version, st) = tokio::join!(cli_version(io, &path), io.exec(&path, &["models"]));
+    let out = format!("{}\n{}", st.stdout, st.stderr).to_lowercase();
+    let auth_prompt = ["not logged in", "authentication required", "unauthenticated", "not authenticated", "sign in", "please login", "run agy"]
+        .iter()
+        .any(|needle| out.contains(needle));
+    if auth_prompt {
+        logged_in = Some(false);
+    } else if st.code == Some(0) && !st.stdout.trim().is_empty() {
+        logged_in = Some(true);
+        auth = Some(SUBSCRIPTION.into());
+    } else if st.code.is_some() && st.code != Some(0) {
+        logged_in = Some(false);
+    }
+    if logged_in != Some(true) && api_key_vars("gemini").iter().any(|k| env_truthy(o.env, k)) {
+        logged_in = Some(true);
+        auth = Some(API_KEY.into());
+    }
+    AgentAvailability {
+        id: "gemini".into(),
+        installed: true,
+        version,
+        logged_in: Some(logged_in.unwrap_or(false)),
+        auth,
+        ..Default::default()
+    }
 }
 
 /// Detect all three CLIs in parallel. Always returns one entry per agent, in order claude, codex, gemini.
@@ -238,6 +269,7 @@ pub async fn detect(env: &HashMap<String, String>, home: &Path, models: &HashMap
     // Probe the CLIs without API-key vars so their status reflects the subscription sign-in.
     let mut keys: Vec<&str> = api_key_vars("claude").to_vec();
     keys.extend_from_slice(api_key_vars("codex"));
+    keys.extend_from_slice(api_key_vars("gemini"));
     let io = RealIo { env: strip_vars(env, &keys) };
     detect_with(&io, &DetectOptions { env, home: home.to_path_buf(), models }).await
 }
@@ -313,6 +345,7 @@ mod tests {
     struct ScriptIo {
         claude_status: (i32, &'static str),
         codex_status: (i32, &'static str),
+        gemini_models: (i32, &'static str),
     }
     impl DetectIo for ScriptIo {
         async fn exec(&self, file: &str, args: &[&str]) -> ExecResult {
@@ -320,12 +353,13 @@ mod tests {
                 (_, ["--version"]) => (0, "1.2.3"),
                 ("claude", ["auth", "status"]) => self.claude_status,
                 ("codex", ["login", "status"]) => self.codex_status,
+                ("agy", ["models"]) => self.gemini_models,
                 _ => (1, ""),
             };
             ExecResult { code: Some(code), stdout: out.into(), stderr: String::new() }
         }
         async fn find(&self, name: &str) -> Option<String> {
-            (name != "gemini").then(|| name.to_string())
+            Some(name.to_string())
         }
         fn exists(&self, _p: &Path) -> bool {
             false
@@ -343,23 +377,34 @@ mod tests {
         let io = ScriptIo {
             claude_status: (0, r#"{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}"#),
             codex_status: (0, "Logged in using ChatGPT\n"),
+            gemini_models: (0, "gemini-3.1-pro\ngemini-3-flash\n"),
         };
         let c = detect_claude(&io, &o).await;
         assert_eq!((c.logged_in, c.auth.as_deref(), c.plan.as_deref()), (Some(true), Some(SUBSCRIPTION), Some("max")));
         let x = detect_codex(&io, &o).await;
         assert_eq!((x.logged_in, x.auth.as_deref()), (Some(true), Some(SUBSCRIPTION)));
+        let g = detect_gemini(&io, &o).await;
+        assert_eq!((g.logged_in, g.auth.as_deref()), (Some(true), Some(SUBSCRIPTION)));
 
-        // Signed out: claude prints JSON but exits 1; codex prints "Not logged in" and exits 1.
-        let io = ScriptIo { claude_status: (1, r#"{"loggedIn":false,"authMethod":"none"}"#), codex_status: (1, "Not logged in\n") };
+        // Signed out: claude prints JSON but exits 1; codex prints "Not logged in"; agy prompts to sign in.
+        let io = ScriptIo {
+            claude_status: (1, r#"{"loggedIn":false,"authMethod":"none"}"#),
+            codex_status: (1, "Not logged in\n"),
+            gemini_models: (1, "Authentication required. Run agy login.\n"),
+        };
         assert_eq!(detect_claude(&io, &o).await.logged_in, Some(false));
         assert_eq!(detect_codex(&io, &o).await.logged_in, Some(false));
+        assert_eq!(detect_gemini(&io, &o).await.logged_in, Some(false));
 
         // Signed out but an API key is in the environment.
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant".to_string());
+        env.insert("GEMINI_API_KEY".to_string(), "AIza-test".to_string());
         let o = DetectOptions { env: &env, home: PathBuf::from("/nonexistent-home"), models: &models };
         let c = detect_claude(&io, &o).await;
         assert_eq!((c.logged_in, c.auth.as_deref()), (Some(true), Some(API_KEY)));
+        let g = detect_gemini(&io, &o).await;
+        assert_eq!((g.logged_in, g.auth.as_deref()), (Some(true), Some(API_KEY)));
     }
 
     #[test]
@@ -367,15 +412,21 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant".to_string());
         env.insert("OPENAI_API_KEY".to_string(), "sk-oai".to_string());
+        env.insert("GEMINI_API_KEY".to_string(), "AIza-gem".to_string());
+        env.insert("GOOGLE_API_KEY".to_string(), "AIza-goog".to_string());
         env.insert("PATH".to_string(), "/bin".to_string());
         let agents = vec![
             AgentAvailability { id: "claude".into(), installed: true, logged_in: Some(true), auth: Some(SUBSCRIPTION.into()), ..Default::default() },
             AgentAvailability { id: "codex".into(), installed: true, logged_in: Some(true), auth: Some(API_KEY.into()), ..Default::default() },
+            AgentAvailability { id: "gemini".into(), installed: true, logged_in: Some(true), auth: Some(SUBSCRIPTION.into()), ..Default::default() },
         ];
         let claude = runner_env("claude", &agents, &env);
         assert!(!claude.contains_key("ANTHROPIC_API_KEY"));
         assert!(claude.contains_key("OPENAI_API_KEY") && claude.contains_key("PATH"));
         assert_eq!(runner_env("codex", &agents, &env), env);
+        let gemini = runner_env("gemini", &agents, &env);
+        assert!(!gemini.contains_key("GEMINI_API_KEY") && !gemini.contains_key("GOOGLE_API_KEY"));
+        assert!(gemini.contains_key("PATH"));
     }
 
     /// CLIs from before the status commands could be trusted: the sign-in is read from files and the environment.
@@ -479,19 +530,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reads_geminis_sign_in_from_its_credentials_file_or_a_key() {
+    async fn reads_geminis_sign_in_from_agy_models_or_a_key() {
         let home = PathBuf::from("/home/editor");
         let models = HashMap::from([("gemini".to_string(), "gemini-2.5-pro".to_string())]);
         let none = HashMap::new();
         let o = DetectOptions { env: &none, home: home.clone(), models: &models };
         let signed_out = detect_gemini(&FilesIo { status: (0, ""), files: vec![] }, &o).await;
         assert_eq!((signed_out.installed, signed_out.logged_in, signed_out.version.as_deref()), (true, Some(false), Some("9.8.7-beta.1")));
-        let creds = FilesIo { status: (0, ""), files: vec![(home.join(".gemini").join("oauth_creds.json"), "{}")] };
-        assert_eq!(detect_gemini(&creds, &o).await.logged_in, Some(true));
+        let signed_in = detect_gemini(&FilesIo { status: (0, "gemini-3.1-pro\ngemini-3-flash\n"), files: vec![] }, &o).await;
+        assert_eq!(sign_in(&signed_in), (Some(true), Some(SUBSCRIPTION)));
         for key in ["GEMINI_API_KEY", "GOOGLE_API_KEY"] {
             let env = HashMap::from([(key.to_string(), "k".to_string())]);
             let o = DetectOptions { env: &env, home: home.clone(), models: &models };
-            assert_eq!(detect_gemini(&FilesIo { status: (0, ""), files: vec![] }, &o).await.logged_in, Some(true), "{key}");
+            assert_eq!(sign_in(&detect_gemini(&FilesIo { status: (0, ""), files: vec![] }, &o).await), (Some(true), Some(API_KEY)), "{key}");
         }
         // The model chosen in settings is carried on the entry, for every assistant that has one.
         let all = detect_with(&FilesIo { status: (0, ""), files: vec![] }, &o).await;
@@ -505,8 +556,9 @@ mod tests {
         assert_eq!(parse_version("v1.2.3-nightly.20261108+abc").as_deref(), Some("1.2.3-nightly.20261108"));
         assert_eq!(parse_version("command not found"), None);
         assert_eq!(parse_version("version 2.1"), None);
-        // No key variables for an assistant with no key sign-in, so nothing is stripped from its runs.
-        assert!(api_key_vars("gemini").is_empty());
+        // Unknown assistants have no key variables, so nothing is stripped from their runs.
+        assert!(api_key_vars("other").is_empty());
+        assert_eq!(api_key_vars("gemini"), &["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
         let env = HashMap::from([("anthropic_api_key".to_string(), "k".to_string()), ("PATH".to_string(), "/bin".to_string())]);
         assert_eq!(strip_vars(&env, api_key_vars("claude")).keys().collect::<Vec<_>>(), ["PATH"]);
     }

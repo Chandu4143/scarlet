@@ -49,7 +49,7 @@ const WEBGPU_CPU_NODES = [1, 2, 3, 4, 5, 6].map(layer => `/wav2vec2/feature_extr
 const GPU_LOGIT_TOLERANCE = 0.05, GPU_FLIP_TOLERANCE = 0.001;
 
 /** Bump with the model or the algorithm so cached word-timed results are rebuilt. */
-export const alignmentVersion = 7;
+export const alignmentVersion = 8;
 /** Audio searched on each side of a run's Whisper times. */
 const MARGIN = 0.5;
 /** Words of the next run read after a run's own, enough to cover the margin's half second of speech. */
@@ -254,6 +254,12 @@ function recordingAligner(ctx: { paths: { root: string } }) {
 /** A request is waiting on this measurement now, so it goes ahead of background work in the audio lane. */
 export function measureRecordingWords(ctx: { paths: { root: string } }, mediaId: string, source: EmissionSource, ranges: TimeRange[], signal: AbortSignal) {
   return audioLane(ctx).run({ mediaId, kind: "page", asked: true }, signal, () => recordingAligner(ctx).measure(source, ranges, signal));
+}
+
+/** Fill missing windows of a recording's emissions, in the turn of the audio lane `work` holds, or at once without one. */
+export function measureInTurn(ctx: { paths: { root: string } }, source: EmissionSource, ranges: TimeRange[], signal: AbortSignal, work?: AudioWork) {
+  const measure = () => recordingAligner(ctx).measure(source, ranges, signal);
+  return work ? audioLane(ctx).run(work, signal, measure) : measure();
 }
 
 /**

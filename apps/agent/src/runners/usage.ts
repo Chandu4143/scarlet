@@ -68,9 +68,21 @@ export function codexUsage(raw: unknown, model?: string): AgentUsage | undefined
   };
 }
 
-/** Gemini `result.stats`: `input_tokens` includes `cached`; `input` (newer CLIs) is the uncached part. */
+/** Gemini usage: ACP `PromptResponse.usage` (camelCase) or legacy `result.stats` (snake_case). */
 export function geminiUsage(raw: unknown, model?: string): AgentUsage | undefined {
   const s = record(raw);
+  if (has(s, "inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens")) {
+    const cached = tokenCount(s!.cachedReadTokens);
+    const written = tokenCount(s!.cachedWriteTokens);
+    return {
+      ...emptyUsage(model),
+      inputTokens: Math.max(0, tokenCount(s!.inputTokens) - cached - written),
+      outputTokens: tokenCount(s!.outputTokens),
+      cacheReadTokens: cached,
+      cacheWriteTokens: written,
+      reasoningTokens: tokenCount(s!.thoughtTokens),
+    };
+  }
   if (!has(s, "input_tokens", "output_tokens", "input", "cached")) return undefined;
   const cached = tokenCount(s!.cached);
   return {

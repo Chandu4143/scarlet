@@ -536,3 +536,23 @@ describe("playback sections", () => {
     expect(sourceClockAnchors(cut, 4).slice(0, 3)).toEqual([4, 6.5, 10.5]);
   });
 });
+
+describe("transitions", () => {
+  it("clamps lead-in sourceIn to 0 when transitioning into a still image", async () => {
+    const { planTransitions } = await import("./transitions.js");
+    const tl = emptyTimeline(createProject("Still").id);
+    tl.tracks[0]!.clips = [
+      makeMediaClip("cam", 0, 5, 0, { id: "cam_0" }),
+      makeMediaClip("still", 0, 4, 5, { id: "still_0", transitionIn: { type: "dissolve", duration: 1 } }),
+    ];
+    const media = new Map([
+      ["cam", { kind: "video" as const, duration: 10 }],
+      ["still", { kind: "image" as const, duration: 0 }],
+    ]);
+    const plan = planTransitions(tl, media, 30);
+    const leadIn = plan.timeline.tracks[0]!.clips.find(c => c.kind === "media" && c.mediaId === "still" && c.timelineIn < 5) as MediaClip | undefined;
+    expect(leadIn).toBeDefined();
+    expect(leadIn!.sourceIn).toBe(0);
+    expect(leadIn!.sourceOut).toBeCloseTo(0.5, 6);
+  });
+});

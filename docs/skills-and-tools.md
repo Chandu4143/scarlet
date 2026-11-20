@@ -41,7 +41,7 @@ An explicit tool option can also encode a convenient preset. For a screen demo, 
 
 The model can request an audio crossfade when submitting dialogue cuts. Scarlet places the requested overlap using the available audio and records it so preview and approval play the same join. The model chooses which pauses to shorten and how much time to leave. [Join crossfades](../packages/timeline/src/joinCrossfade.ts)
 
-A transition is the same split. The editor's taste is in a template (how the picture moves: a swipe, a whip pan, a dip) and in a skill ("every time I go from my camera to the screen recording, use $swipe"), or in the request itself. The model decides which joins get one. Scarlet puts it on those joins with `timeline_transition`, using the footage either side of each, and reports any join that had too little footage for the whole transition. [Transitions](../packages/timeline/src/transitions.ts) · [Drawing them](../packages/render/src/transitions.ts)
+A transition is the same split. The editor's taste is in a skill ("every time I go from my camera to the screen recording, use a swipe"), or in the request itself. The model decides which joins get one. Scarlet puts it on those joins with `timeline_transition`, using the footage either side of each, and reports any join that had too little footage for the whole transition. [Transitions](../packages/timeline/src/transitions.ts) · [Drawing them](../packages/render/src/transitions.ts)
 
 ## How a skill reaches an edit
 

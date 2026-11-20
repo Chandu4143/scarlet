@@ -260,14 +260,32 @@ describe("trace", () => {
   const task = { id: "tsk_1", state: "done", agent: "codex", createdAt: at(-5), startedAt: at(0), finishedAt: at(600),
     usage: { inputTokens: 1000, outputTokens: 200, cache: { read: 50 } } };
 
+  it("prefers cumulative workedMs when recorded on a resumed task", () => {
+    const resumed = { ...task, startedAt: at(500) };
+    expect(traceMetrics({ ...resumed, workedMs: 420000 }, events)).toMatchObject({ activeSeconds: 420, finishSeconds: 605, firstCallSeconds: 201 });
+  });
+
   it("counts tools, errors, inspection and active time without the editor's wait", () => {
     const m = traceMetrics(task, events);
-    expect(m).toMatchObject({ activeSeconds: 540, queueSeconds: 5, waitingSeconds: 60, firstChangeSeconds: 201, firstCallSeconds: 202,
+    expect(m).toMatchObject({ finishSeconds: 605, activeSeconds: 540, queueSeconds: 5, waitingSeconds: 60, firstChangeSeconds: 201, firstCallSeconds: 202,
       firstRecommendationSeconds: 260, toolCalls: 5, errors: 1, questions: 1 });
     expect(m.byTool).toMatchObject({ dialogue_scan: 1, dialogue_check_join: 1, frame_contact_sheet: 1, dialogue_apply_cuts: 1, dialogue_review_save: 1 });
     expect(m.errorsByTool).toEqual({ frame_contact_sheet: 1 });
     expect(m.inspection).toMatchObject({ listened: 1, usedAudio: true, usedVisual: true, levels: 2 });
     expect(m.usage).toEqual({ inputTokens: 1000, outputTokens: 200, "cache.read": 50 });
+  });
+
+  it("times a task claimed again from its first event, not its latest start", () => {
+    const m = traceMetrics({ ...task, startedAt: at(250) }, events);
+    expect(m).toMatchObject({ finishSeconds: 605, activeSeconds: 539, queueSeconds: 6, firstChangeSeconds: 200 });
+  });
+
+  it("takes the engine's cost estimate, and none when a model has no price", () => {
+    expect(traceMetrics({ ...task, usage: { inputTokens: 10, estimatedApiCostUsd: 4.0954064, models: ["gpt-6.2-sol"] } }, events))
+      .toMatchObject({ costUsd: 4.0954, unpricedModels: [], usage: { inputTokens: 10, estimatedApiCostUsd: 4.0954064 } });
+    expect(traceMetrics({ ...task, usage: { inputTokens: 10, estimatedApiCostUsd: null, unpricedModels: ["halo-alpha"] } }, events))
+      .toMatchObject({ costUsd: null, unpricedModels: ["halo-alpha"] });
+    expect(traceMetrics(task, events)).toMatchObject({ costUsd: null, unpricedModels: [] });
   });
 
   it("summarizes the submitted plan and how many edged cuts were checked", () => {

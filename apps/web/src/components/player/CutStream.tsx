@@ -36,7 +36,14 @@ export function CutStream({ project, timeline, version, onStart, draft = false, 
   useLayoutEffect(() => {
     setStatus("idle");
     setError(undefined);
-    return () => { session.current?.dispose(); session.current = undefined; };
+    return () => {
+      // The transport lets go of the video first. Closing the stream stops it, and the transport would take a video
+      // stopped that way for one the editor paused, instead of playing on in the one put up in its place.
+      const el = video.current;
+      if (el && player.element() === el) player.detach();
+      session.current?.dispose();
+      session.current = undefined;
+    };
   }, [project.id, ranges, version]);
 
   useLayoutEffect(() => {

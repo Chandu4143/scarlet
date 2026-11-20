@@ -23,7 +23,9 @@ export function FramingPreview({ project, timeline, original, duration, before, 
     cutFrameUrl(project, shown, time, true, true) : undefined;
   useEffect(() => { if (playing && before) onAfter(); }, [playing, before, onAfter]);
   return <>
-    {!playing && frame !== undefined && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-black text-sm text-muted">
+    {/* On After the video under it already shows this moment: it stays in view until the composed frame is in, so a
+        pause doesn't flash black. */}
+    {!playing && frame !== undefined && <div className={`pointer-events-none absolute inset-0 grid place-items-center text-sm text-muted${url && !before ? "" : " bg-black"}`}>
       {url ? <ComparisonFrame key={url} url={url} before={before} /> : before && original.error ?
         <button type="button" className="btn-ghost pointer-events-auto" onClick={original.retry}>Retry Before frame</button> :
         <span role="status">{before && !original.timeline ? "Opening Before…" : "No matching frame at this position."}</span>}
@@ -41,9 +43,9 @@ function ComparisonFrame({ url, before }: { url: string; before: boolean }) {
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
   if (status === "failed") return <button type="button" className="btn-ghost pointer-events-auto" onClick={() => setStatus("loading")}>Retry frame</button>;
   return <>
-    {status === "loading" && <span role="status">Loading frame…</span>}
+    {status === "loading" && before && <span role="status">Loading frame…</span>}
     <img src={url} alt={before ? "Frame before the framing edit" : "Frame after the framing edit"}
-      className="absolute inset-0 h-full w-full object-contain" style={{ visibility: status === "ready" ? "visible" : "hidden" }}
+      className="absolute inset-0 h-full w-full bg-black object-contain" style={{ visibility: status === "ready" ? "visible" : "hidden" }}
       draggable={false} onLoad={() => setStatus("ready")} onError={() => setStatus("failed")} />
   </>;
 }

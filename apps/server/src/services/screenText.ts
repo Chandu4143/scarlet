@@ -12,7 +12,7 @@ import type { Ctx } from "../context.js";
 import { audioWorker } from "../transcribe/audioWorker.js";
 import { LocalWhisperModel } from "../transcribe/localModel.js";
 import { SCREEN_TEXT_MODELS, type ScreenLine } from "../transcribe/screenTextModel.js";
-import { pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
+import { pictureGrid, pictureReader, r3, withFrames, type VideoMedia } from "./pictureReading.js";
 
 /** Bump when the reading changes: the models, the sampling or how lines become spans. Kept readings are read again. */
 const SCREEN_TEXT_VERSION = 2;
@@ -20,28 +20,13 @@ const SCREEN_TEXT_VERSION = 2;
 const SCREEN_TEXT_CHUNK = 60;
 /** Frames a second looked at. Text shown for less than a second can be missed. */
 const SCREEN_TEXT_FPS = 1;
-/** Frames decoded and read in one go, so a recording that changes every second holds about 60 MB of frames at once. */
-const BATCH_SECONDS = 10;
+/** Frames handed to the reader in one go, so it holds about 60 MB of a recording that changes every second at once. */
+const BATCH_FRAMES = 10;
 /** A line the reader is less sure of than this is left out: on real screens, those were icons read as letters. */
 const MIN_CONFIDENCE = 0.7;
 
 /** A line of text on screen: source seconds, its words, and its box as fractions of the frame (left, top, right, bottom). */
 export interface ScreenTextSpan { start: number; end: number; text: string; box: [number, number, number, number]; confidence: number }
-
-/** Mean grey of each cell of a cols × rows grid over the frame, from every other pixel. */
-export function pictureGrid(rgb: Buffer, width: number, height: number, cols = 32, rows = 18): Float32Array {
-  const sums = new Float32Array(cols * rows), counts = new Uint32Array(cols * rows);
-  for (let y = 0; y < height; y += 2) {
-    const row = Math.min(rows - 1, Math.floor(y * rows / height));
-    for (let x = 0; x < width; x += 2) {
-      const p = (y * width + x) * 3, cell = row * cols + Math.min(cols - 1, Math.floor(x * cols / width));
-      sums[cell] = sums[cell]! + (rgb[p]! * 3 + rgb[p + 1]! * 6 + rgb[p + 2]!) / 10;
-      counts[cell] = counts[cell]! + 1;
-    }
-  }
-  for (let i = 0; i < sums.length; i++) sums[i] = counts[i] ? sums[i]! / counts[i]! : 0;
-  return sums;
-}
 
 /** Whether the picture changed enough to read again: any cell by 6 grey levels, about a word typed in a 60-pixel cell. */
 export function pictureChanged(before: Float32Array, after: Float32Array) {
@@ -153,26 +138,26 @@ function identity(media: MediaAsset) {
     Object.values(SCREEN_TEXT_MODELS).map(m => m.sha256), SCREEN_TEXT_FPS, SCREEN_TEXT_CHUNK])).digest("hex");
 }
 
-/** Read one window of a recording: decode it a second at a time, read the frames that changed, and make spans. */
+/**
+ * Read one window of a recording: decode it in one pass, a frame a second, and hand the frames that changed to the
+ * reader ten at a time while the rest decode. Ten seconds to a decode took six seeks a window, and each seek decodes
+ * up to the distance between keyframes again (withFrames).
+ */
 async function readWindow(ctx: Ctx, media: VideoMedia, file: string, { start, end }: { start: number; end: number }, signal: AbortSignal): Promise<ScreenTextSpan[]> {
   const source = media.width && media.height ? { width: media.width, height: media.height } : await probeMedia(file);
   const { width, height } = screenFrameSize(source.width, source.height);
   const [finder, reader, letters] = await Promise.all(modelsFor(ctx).map(m => m.get(signal))) as [string, string, string];
-  const read: Array<{ at: number; lines: ScreenLine[] }> = [];
   let last: Float32Array | undefined;
-  for (let from = start; from < end - 1e-6; from += BATCH_SECONDS) {
-    const to = Math.min(end, from + BATCH_SECONDS);
-    await withFrames(ctx, media, file, "screen-text", { start: from, end: to, fps: SCREEN_TEXT_FPS, width, height, signal }, (_, rgb) => {
-      const grid = pictureGrid(rgb, width, height);
-      if (last && !pictureChanged(last, grid)) return false;
-      last = grid;
-      return true;
-    }, async (frames, picked) => {
-      const lines = await audioWorker.request<ScreenLine[][]>({ kind: "screenText", frames, width, height, finder, reader, letters }, { signal });
-      picked.forEach((at, i) => read.push({ at, lines: lines[i] ?? [] }));
-    });
-  }
-  return spansFromFrames(read, end, width, height);
+  const read = await withFrames(ctx, media, file, "screen-text", { start, end, fps: SCREEN_TEXT_FPS, width, height, signal, batch: BATCH_FRAMES }, (_, rgb) => {
+    const grid = pictureGrid(rgb, width, height);
+    if (last && !pictureChanged(last, grid)) return false;
+    last = grid;
+    return true;
+  }, async (frames, picked) => {
+    const lines = await audioWorker.request<ScreenLine[][]>({ kind: "screenText", frames, width, height, finder, reader, letters }, { signal });
+    return picked.map((at, i) => ({ at, lines: lines[i] ?? [] }));
+  });
+  return spansFromFrames(read.flat(), end, width, height);
 }
 
 const reading = pictureReader<ScreenTextSpan[]>({ name: "screen-text", window: SCREEN_TEXT_CHUNK, identity, read: readWindow });
