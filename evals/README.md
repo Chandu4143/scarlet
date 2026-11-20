@@ -117,7 +117,9 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 
 **Trace.** This section covers the agent's process:
 
-- Active time, which excludes time spent waiting for the editor's answer.
+- Time to finish: from the request to the task's end on the wall clock, queue and the editor's answers included.
+- Active time, which excludes time spent waiting for the editor's answer. A task claimed again after a restart keeps
+  only its latest start, so active time and the times below count from its first event when that is earlier.
 - Time to the first change.
 - Time to the first call for the editor: when the first staged cut reached Needs your call. This is how soon
   the editor can start deciding. Also the time to the agent's first saved recommendation.
@@ -125,6 +127,9 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 - Listening calls (`source_audio`, or `includeAudio` on a check, inspect, or review), visual inspections,
   and level reads.
 - `task.usage` token counts when the engine records them.
+- Estimated cost: the engine's `estimatedApiCostUsd`, each run priced at its model's API list price and speed. Runs use
+  the editor's subscription, so this compares configurations; it isn't a bill. A model the engine has no price for
+  leaves the run without a cost and is named instead.
 - The submitted plan by kind and decision.
 - The share of edged cuts whose edges were checked with `dialogue_check_join`.
 

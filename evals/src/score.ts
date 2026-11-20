@@ -348,9 +348,12 @@ export function scoreRun(input: ScoreInput): Score {
       momentsWrong: momentCount("wrong"),
       toolCalls: trace?.toolCalls ?? null,
       toolErrors: trace?.errors ?? null,
+      finishMinutes: trace?.finishSeconds == null ? null : round(trace.finishSeconds / 60, 1),
       activeMinutes: trace?.activeSeconds == null ? null : round(trace.activeSeconds / 60, 1),
       firstCallMinutes: trace?.firstCallSeconds == null ? null : round(trace.firstCallSeconds / 60, 1),
       tokens,
+      outputTokens: usage?.outputTokens ?? null,
+      costUsd: trace?.costUsd ?? null,
     },
   };
 }

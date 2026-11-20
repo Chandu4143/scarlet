@@ -27,7 +27,7 @@ function score(o: { missing?: number; clipped?: number; dead?: number; joins?: n
     reference: reference ? { operatingPoints: { applied: { cut }, recommended: { cut }, proposed: { cut } } } : null,
     left: { kept: { m: [{ start: 0, end: 1200 }] }, removed: {}, staged: [] },
     ...(o.moments && { moments: o.moments.map((outcome, i) => ({ id: `m${i}`, outcome })) }),
-    headline: { needsYourCall: 2, tokens: 3_000_000, activeMinutes: 6 },
+    headline: { needsYourCall: 2, tokens: 3_000_000, activeMinutes: 6, finishMinutes: 8, costUsd: 0.034 },
   } as unknown as Score;
 }
 
@@ -172,6 +172,8 @@ describe("card", () => {
     expect(c.factors.linesKept).toMatchObject({ mean: 60, min: 40, max: 90, n: 4 });
     expect(c.trials).toBe(4);
     expect(c.facts.tokens!.mean).toBe(3_000_000);
+    expect(c.facts.finishMinutes!.mean).toBe(8);
+    expect(c.facts.cents!.mean).toBe(3.4);
     expect(c.mistakesPer10Min).toBeNull();
     expect(c.stylePer10Min).toBeNull();
   });
