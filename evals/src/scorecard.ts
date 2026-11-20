@@ -267,7 +267,7 @@ export interface Card {
   mistakeCounts: Record<"wronglyCut" | "longMissed" | "clippedWords" | "stutters" | "styleLeftIn" | "leftIn", Stat | null>;
   byCase: Record<string, Record<FactorId, Stat | null>>;
   /** Not scored: for the editor's eye. */
-  facts: { asks: Stat | null; tokens: Stat | null; minutes: Stat | null };
+  facts: { asks: Stat | null; tokens: Stat | null; minutes: Stat | null; finishMinutes: Stat | null; cents: Stat | null };
 }
 export interface Trial { caseId?: string; score: Score; detail?: CutDetail }
 
@@ -323,7 +323,9 @@ export function card(label: string, trials: readonly Trial[]): Card {
       styleLeftIn: count("styleLeftIn"),
       leftIn: count("leftIn"),
     },
-    facts: { asks: asks(), tokens: headline("tokens"), minutes: headline("activeMinutes") },
+    facts: { asks: asks(), tokens: headline("tokens"), minutes: headline("activeMinutes"), finishMinutes: headline("finishMinutes"),
+      // In cents, so the one-decimal mean keeps a cheap pass's cost.
+      cents: stat(numbers(trials.map(t => t.score.headline.costUsd)).map(v => v * 100)) },
   };
 }
 
@@ -417,7 +419,9 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
   }
   if (ledger) lines.push(`| Past mistakes | ${cards.map((_, i) => i === cards.length - 1 ? (ledger.pct === null ? "–" : `${ledger.pct}%`) : "").join(" | ")} |${two ? " |" : ""} every reported mistake with a free check still passes (${ledger.pass} of ${ledger.checked}, ${ledger.label}) |`);
   const fact = (s: Stat | null, digits = 1, scale = 1) => s ? (s.mean / scale).toFixed(digits) : "–";
-  lines.push("", "Not scored: " + cards.map(c => `${c.label}: ${fact(c.facts.asks)} calls and flags for the editor, ${fact(c.facts.minutes)} min, ${fact(c.facts.tokens, 2, 1e6)}M tokens a pass`).join(" · ") + ".");
+  lines.push("", "Not scored: " + cards.map(c => `${c.label}: ${fact(c.facts.asks)} calls and flags for the editor, ` +
+    `${fact(c.facts.finishMinutes)} min to finish (${fact(c.facts.minutes)} active), ${fact(c.facts.tokens, 2, 1e6)}M tokens, ` +
+    `${c.facts.cents ? `$${fact(c.facts.cents, 2, 100)}` : "no estimated cost"} a pass`).join(" · ") + ".");
   if (cards.some(c => c.trials < 4)) lines.push("", "Fewer than 4 passes a side: two passes of the same code differ by a few points, so read small differences as noise.");
   if (cards.some(c => c.cases.length < 3)) lines.push("", `Recordings: ${[...new Set(cards.flatMap(c => c.cases))].join(", ")}. With fewer than three, the figures describe these videos more than the cutting.`);
   if (cards.some(c => c.cases.length > 1)) {
