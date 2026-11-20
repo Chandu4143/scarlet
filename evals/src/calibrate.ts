@@ -24,6 +24,7 @@ import type { Evaluation } from "./evaluate.ts";
 import type { StoredEvidence } from "./evidence.ts";
 import { publishedGradingInputs } from "./gradingEvidence.ts";
 import { merge, type Range } from "./intervals.ts";
+import type { Word } from "./metrics.ts";
 import { classifyEdges, DEFAULT_EDGE_OPTIONS, joinEdges, type MediaEvidence } from "./metrics.ts";
 import { readJson, writeJson, writeText } from "./paths.ts";
 import type { PublishedPiece } from "./published.ts";
@@ -43,6 +44,7 @@ score: how many spots of each kind of flag the listener called real.`;
 export type Kind = "midword" | "control" | "wrong" | "retake" | "content";
 
 /** What the listener is asked about each kind of spot. Mid-word flags and unflagged joins share a question, so they're blind. */
+/** The question each kind of spot asks, before the page adds where in the clip to listen. */
 export const QUESTIONS: Record<Kind, string> = {
   midword: "Does Scarlet's cut chop off a word or a sound here?",
   control: "Does Scarlet's cut chop off a word or a sound here?",
@@ -56,6 +58,16 @@ export interface Spot {
   /** Source seconds of the recording. */
   at: number; end: number; text: string;
   scarlet: string; editor?: string;
+  /** Seconds into Scarlet's clip where the spot plays, and into the editor's where the same point in the line plays. */
+  offset?: number; editorOffset?: number;
+  /** Seconds both clips open with the same words. */
+  sharedSeconds?: number;
+  /** Their sound didn't confirm the two clips start on the same words: the editor's may start a little off. */
+  editorApprox?: true;
+  /** The editor cut all around the spot: their clip is where their video picks up, not the same words. */
+  editorElsewhere?: true;
+  /** How long the passage plays in Scarlet's clip, for a run it left in. */
+  runSeconds?: number;
 }
 
 /** A small seeded shuffle, so the same runs give the same sheet. */
@@ -91,6 +103,54 @@ export function playedAround(kept: readonly Range[], t: number, before = 4, afte
   return out;
 }
 
+/** Seconds into a cut's own playback where source second `t` plays, or where the next kept piece starts. */
+export function clockOf(kept: readonly Range[], t: number): number {
+  let clock = 0;
+  for (const p of merge(kept, 0.001)) {
+    if (t < p.end) return clock + Math.max(0, t - p.start);
+    clock += p.end - p.start;
+  }
+  return clock;
+}
+
+const plays = (w: Range, kept: readonly Range[]) => kept.some(r => r.start <= w.start + 0.02 && w.end - 0.02 <= r.end);
+
+/**
+ * Where both clips start: the run of words both cuts play, unbroken, that ends just before `t`, from its first word up to
+ * `lead` seconds back. Starting both on it puts the same sentence first, so the listener hears the two match and then
+ * where they part; neither clip opens partway through a word. `same(a, b)` says two words play in one stretch of each
+ * cut, with nothing taken out between them. Without an editor's cut it is the same run of Scarlet's alone.
+ */
+export function sharedLeadIn(words: readonly Word[], scarlet: readonly Range[], editor: readonly Range[] | undefined, t: number,
+  inPublished: (at: number) => boolean, same: (a: Word, b: Word) => boolean = () => true, lead = 3, reach = 12): { first: Word; last: Word } | undefined {
+  const both = (w: Word) => !!w.text.trim() && plays(w, scarlet) && (!editor || (plays(w, editor) && inPublished(w.start)));
+  const sorted = words.filter(w => w.text.trim()).slice().sort((a, b) => a.start - b.start);
+  let i = sorted.length - 1;
+  while (i >= 0 && !(sorted[i]!.end <= t - 0.15 && sorted[i]!.start >= t - reach && both(sorted[i]!))) i--;
+  if (i < 0) return undefined;
+  const last = sorted[i]!;
+  let first = last;
+  for (let j = i - 1; j >= 0; j--) {
+    const w = sorted[j]!;
+    if (!both(w) || !same(w, first) || first.start - w.end > 1 || last.end - w.start > lead) break;
+    first = w;
+  }
+  return { first, last };
+}
+
+/** The word both clips start on (see sharedLeadIn). */
+export function anchorWord(words: readonly Word[], scarlet: readonly Range[], editor: readonly Range[] | undefined, t: number,
+  inPublished: (at: number) => boolean, reach = 12): Word | undefined {
+  return sharedLeadIn(words, scarlet, editor, t, inPublished, undefined, 0, reach)?.last;
+}
+
+/** Stretch a clip's last range to the end of the word it stops inside, so it doesn't end partway through one. */
+export function endBetweenWords(ranges: Range[], words: readonly Word[]): Range[] {
+  const last = ranges.at(-1);
+  const inside = last && words.find(w => w.start < last.end && last.end < w.end);
+  return inside ? [...ranges.slice(0, -1), { start: last.start, end: inside.end + 0.08 }] : ranges;
+}
+
 /** The published video's second that plays source second `t`, or the end of the piece before it. */
 export function publishedAt(pieces: readonly PublishedPiece[], mediaId: string, t: number): number | undefined {
   const own = pieces.filter(p => p.mediaId === mediaId);
@@ -98,6 +158,39 @@ export function publishedAt(pieces: readonly PublishedPiece[], mediaId: string, 
   if (inside) return inside.finalStart + (t - inside.sourceStart) / inside.rate;
   const before = own.filter(p => p.sourceEnd < t).sort((a, b) => b.sourceEnd - a.sourceEnd)[0];
   return before?.finalEnd;
+}
+
+/** A stretch of a file's sound as a loudness envelope at 1 kHz: enough to line two copies of the same speech up by ear's measure. */
+function envelope(file: string, start: number, seconds: number): Float64Array {
+  const raw = execFileSync("ffmpeg", ["-v", "error", "-ss", Math.max(0, start).toFixed(3), "-t", seconds.toFixed(3), "-i", file, "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+    { maxBuffer: 64 * 1024 * 1024 });
+  const pcm = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
+  const out = new Float64Array(Math.floor(pcm.length / 8));
+  for (let i = 0; i < out.length; i++) { let sum = 0; for (let k = 0; k < 8; k++) sum += Math.abs(pcm[i * 8 + k]!); out[i] = sum / 8; }
+  return out;
+}
+
+/**
+ * Where in the published video the recording's sound from `source` (for `seconds`) plays, searched within `search` seconds
+ * of `guess`: the word match places a stretch to a few tenths of a second, the sound to a few thousandths. Undefined when
+ * no lag matches well.
+ */
+export function alignBySound(recording: string, source: number, published: string, guess: number, seconds = 2, search = 1): number | undefined {
+  const a = envelope(recording, source, seconds), b = envelope(published, guess - search, seconds + 2 * search);
+  const n = a.length;
+  if (n < 200 || b.length < n) return undefined;
+  const mean = (x: Float64Array, from: number) => { let s = 0; for (let i = 0; i < n; i++) s += x[from + i]!; return s / n; };
+  const ma = mean(a, 0);
+  let normA = 0; for (let i = 0; i < n; i++) normA += (a[i]! - ma) ** 2;
+  let best = -1, at = 0;
+  for (let lag = 0; lag + n <= b.length; lag++) {
+    const mb = mean(b, lag);
+    let dot = 0, normB = 0;
+    for (let i = 0; i < n; i++) { const y = b[lag + i]! - mb; dot += (a[i]! - ma) * y; normB += y * y; }
+    const r = dot / Math.sqrt(normA * normB || 1);
+    if (r > best) { best = r; at = lag; }
+  }
+  return best >= 0.6 ? guess - search + at / 1000 : undefined;
 }
 
 function clip(source: string, ranges: readonly Range[], out: string) {
@@ -167,22 +260,56 @@ export function buildSheet(paths: readonly string[], out: string, opts: { roots:
       ...shuffled(runs(point.detail.leftIn.filter(x => x.words >= 6 && x.retake)).map(x => ({ kind: "retake" as const, ...x })), opts.seed).slice(0, Math.ceil(opts.perVideo / 2)),
       ...shuffled(runs(point.detail.leftIn.filter(x => x.words >= 6 && !x.retake)).map(x => ({ kind: "content" as const, ...x })), opts.seed).slice(0, Math.ceil(opts.perVideo / 2)),
     ];
+    const words = (loaded.evidence.get(mediaId)?.words ?? []).filter(w => w.text.trim()).slice().sort((a, b) => a.start - b.start);
+    const scarletKept = merge(kept.get(mediaId) ?? [], 0.001), editorKept = merge(published.kept[mediaId] ?? [], 0.001);
+    const own = published.pieces.filter(x => x.mediaId === mediaId);
+    const pieceAt = (t: number) => own.find(x => x.sourceStart <= t && t <= x.sourceEnd);
+    const finalAt = (t: number) => { const x = pieceAt(t); return x && x.finalStart + (t - x.sourceStart) / x.rate; };
+    const publishedWords = published.played.filter(w => w.text.trim());
     for (const p of picks) {
       const id = `${caseId}-${p.kind}-${Math.round(p.at * 10)}`;
-      const scarlet = `clips/${id}-scarlet.m4a`;
-      // A join plays 4 s either side; a run Scarlet left in plays through from 2 s before it, up to 24 s.
       const long = p.kind === "retake" || p.kind === "content";
-      clip(recording, long ? playedAround(kept.get(mediaId) ?? [], p.at, 2, Math.min(22, p.end - p.at + 2)) : playedAround(kept.get(mediaId) ?? [], p.at),
-        join(out, scarlet));
-      let editor: string | undefined;
-      const from = publishedFile ? publishedAt(published.pieces, mediaId, p.at) : undefined;
-      if (publishedFile && from !== undefined) {
+      // Both clips start on a word both cuts play just before the spot. Where the editor cut all around it, Scarlet's
+      // clip starts on a word it plays, and the editor's is where their video picks up.
+      const rangeOf = (kept: readonly Range[], w: Word) => kept.findIndex(r => r.start <= w.start + 0.02 && w.end - 0.02 <= r.end);
+      const together = (a: Word, b: Word) => rangeOf(scarletKept, a) === rangeOf(scarletKept, b) && rangeOf(editorKept, a) === rangeOf(editorKept, b) &&
+        pieceAt(a.start) === pieceAt(b.start);
+      const lead = sharedLeadIn(words, scarletKept, editorKept, p.at, t => !!pieceAt(t), together);
+      const shared = lead?.first;
+      const anchor = shared ?? sharedLeadIn(words, scarletKept, undefined, p.at, () => true, (a, b) => rangeOf(scarletKept, a) === rangeOf(scarletKept, b))?.first;
+      const from = anchor ? anchor.start - 0.12 : undefined;
+      const startClock = from !== undefined ? clockOf(scarletKept, from) : Math.max(0, clockOf(scarletKept, p.at) - 3);
+      const offset = clockOf(scarletKept, p.at) - startClock;
+      const runSeconds = long ? clockOf(scarletKept, p.end) - clockOf(scarletKept, p.at) : undefined;
+      const seconds = Math.min(30, offset + (long ? runSeconds! + 2.5 : 4));
+      const scarlet = `clips/${id}-scarlet.m4a`;
+      const ranges = from !== undefined ? playedAround(scarletKept, from, 0, seconds) : playedAround(scarletKept, p.at, offset, seconds - offset);
+      clip(recording, endBetweenWords(ranges, words), join(out, scarlet));
+      let editor: string | undefined, editorOffset: number | undefined;
+      const landing = publishedAt(published.pieces, mediaId, p.at);
+      // The word match places the shared word to a few tenths of a second; its sound places it exactly.
+      const guess = shared ? finalAt(shared.start) : undefined;
+      // The words both play from the start of the lead-in to its last word are the same sound in both files.
+      const sharedSeconds = lead ? lead.last.end - lead.first.start : 0;
+      const heard = shared && publishedFile && guess !== undefined && sharedSeconds >= 0.6
+        ? alignBySound(recording, shared.start, publishedFile, guess, Math.min(3, sharedSeconds)) : undefined;
+      const editorFrom = shared ? heard ?? guess : landing !== undefined ? landing - 3 : undefined;
+      if (publishedFile && editorFrom !== undefined) {
         editor = `clips/${id}-editor.m4a`;
-        // A run the editor kept plays through; elsewhere the published video plays 4 s either side of the spot.
-        const span = p.kind === "wrong" ? Math.min(24, p.end - p.at + 8) : 8;
-        clip(publishedFile, [{ start: Math.max(0, from - 4), end: Math.max(0, from - 4) + span }], join(out, editor));
+        const start = Math.max(0, shared ? editorFrom - 0.12 : editorFrom);
+        // Where the editor's video reaches the same point: the spot itself when it plays it, else where its cut lands.
+        const reached = shared && guess !== undefined && editorFrom !== undefined && finalAt(p.at) !== undefined
+          ? finalAt(p.at)! + (editorFrom - guess) : finalAt(p.at) ?? publishedAt(published.pieces, mediaId, p.at);
+        editorOffset = reached !== undefined && reached >= start ? reached - start : undefined;
+        const span = Math.min(30, (editorOffset ?? offset) + (p.kind === "wrong" ? p.end - p.at + 4 : 4));
+        const played = publishedWords.map(w => ({ text: w.text, start: w.start, end: w.end }));
+        clip(publishedFile, endBetweenWords([{ start, end: start + span }], played), join(out, editor));
       }
-      spots.push({ id, kind: p.kind, caseId, mediaId, at: p.at, end: p.end, text: p.text, scarlet, editor });
+      spots.push({ id, kind: p.kind, caseId, mediaId, at: p.at, end: p.end, text: p.text, scarlet, editor,
+        offset: Math.round(offset * 10) / 10, ...(lead && { sharedSeconds: Math.round((lead.last.end - lead.first.start) * 10) / 10 }), ...(editorOffset !== undefined && { editorOffset: Math.round(editorOffset * 10) / 10 }),
+        ...(editor && !shared && { editorElsewhere: true as const }),
+        ...(editor && shared && heard === undefined && { editorApprox: true as const }),
+        ...(runSeconds !== undefined && { runSeconds: Math.round(runSeconds * 10) / 10 }) });
     }
   } } finally {
     if (before === undefined) delete process.env.SCARLET_EVAL_DATA; else process.env.SCARLET_EVAL_DATA = before;
@@ -208,13 +335,29 @@ const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
 function sheetHtml(spots: readonly Spot[], src: (path: string) => string = p => p): string {
+  const at = (t: number) => `0:${String(Math.floor(t)).padStart(2, "0")}`;
+  // What to listen for, and where: the clips start on the same words, a few seconds before the spot.
+  const where = (s: Spot) => {
+    const t = s.offset ?? 0;
+    switch (s.kind) {
+      case "midword": case "control": return `Listen to Scarlet's join at <b>${at(t)}</b>. Does it chop off a word or a sound there?`;
+      case "wrong": return `At <b>${at(t)}</b> Scarlet jumps over words your editor kept (below). Is leaving them out a mistake?`;
+      case "retake": return `From <b>${at(t)}</b> to <b>${at(t + (s.runSeconds ?? 0))}</b> Scarlet plays a line your editor cut for another take. Does a line play twice, or a restart stay in?`;
+      case "content": return `From <b>${at(t)}</b> to <b>${at(t + (s.runSeconds ?? 0))}</b> Scarlet plays a passage your editor cut (below). Should a dialogue pass have taken it out?`;
+    }
+  };
+  const player = (label: string, path: string, t: number | undefined) =>
+    `<div class="clip"><span>${label}</span><audio controls preload="none" src="${src(path)}"></audio>` +
+    (t === undefined ? "" : `<button class="jump" data-t="${Math.max(0, t - 1.5).toFixed(1)}">Play from ${at(Math.max(0, t - 1.5))}</button>`) + `</div>`;
   const rows = spots.map((s, i) => `
 <section data-id="${esc(s.id)}">
   <h2>${i + 1} of ${spots.length} <span>${esc(s.caseId)} · ${clock(s.at)} in the recording</span></h2>
-  <p class="q">${esc(QUESTIONS[s.kind])}</p>
+  <p class="q">${where(s)}</p>
   ${s.kind === "midword" || s.kind === "control" ? "" : `<p class="words">“${esc(s.text.slice(0, 220))}${s.text.length > 220 ? "…" : ""}”</p>`}
-  <div class="clips"><label>Scarlet <audio controls preload="none" src="${src(s.scarlet)}"></audio></label>
-  ${s.editor ? `<label>Your editor <audio controls preload="none" src="${src(s.editor)}"></audio></label>` : ""}</div>
+  <div class="clips">${player("Scarlet", s.scarlet, s.offset)}
+  ${s.editor ? player(s.editorElsewhere ? "Your editor cut this part: where their video picks up"
+      : s.editorApprox ? "Your editor, around the same words (couldn't line up exactly)" : "Your editor, same words first", s.editor, s.editorOffset)
+    : `<div class="clip"><span>No clip of your editor's version here</span></div>`}</div>
   <div class="answer" role="radiogroup">
     <button data-v="real">Yes, a real mistake</button><button data-v="fine">No, it's fine</button><button data-v="unsure">Not sure</button>
   </div>
@@ -230,7 +373,8 @@ h1{font-size:20px;margin:0 0 4px}.lead{color:var(--dim);margin:0 0 24px}
 section{border-top:1px solid var(--line);padding:18px 0}
 h2{font-size:14px;margin:0 0 6px}h2 span{color:var(--dim);font-weight:400;margin-left:8px}
 .q{margin:0 0 8px}.words{color:var(--dim);margin:0 0 10px;font-size:14px}
-.clips{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:10px}.clips label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}
+.clips{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:10px}.clip{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--dim)}
+.clip .jump{align-self:flex-start;font-size:13px;padding:3px 10px}.q b{color:var(--on)}
 audio{width:300px;max-width:100%}
 .answer{display:flex;flex-wrap:wrap;gap:8px}
 button{background:none;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
@@ -240,7 +384,7 @@ footer{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1p
 #done{color:var(--dim)}#save.ready{border-color:var(--green);color:var(--green)}
 </style></head><body><main>
 <h1>Flag check</h1>
-<p class="lead">${spots.length} spots the eval flagged, and a few it didn't. Play Scarlet's clip, then your editor's where there is one, and answer. Clips are rebuilt from the cut with a tiny fade, not rendered by Scarlet. Answers are kept in this browser until you save them. If saving doesn't download a file, copy the answers from the box that opens and paste them back.</p>
+<p class="lead">${spots.length} spots the eval flagged, and a few it didn't. Each spot says where to listen in Scarlet's clip; the button plays from just before it. Your editor's clip starts on the same words, so you can hear how they handled the same moment. Answer about Scarlet's clip only. Clips are rebuilt from the cut with a tiny fade, not rendered by Scarlet. Answers are kept in this browser until you save them. If saving doesn't download a file, copy the answers from the box that opens and paste them back.</p>
 ${rows}
 <textarea id="saved" readonly></textarea>
 </main><footer><span id="done"></span><button id="save">Save answers</button></footer>
@@ -250,15 +394,20 @@ let answers = {};
 try { answers = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch {}
 const sections = [...document.querySelectorAll("section")];
 function paint() {
-  for (const s of sections) for (const b of s.querySelectorAll("button")) b.classList.toggle("on", answers[s.dataset.id] === b.dataset.v);
+  for (const s of sections) for (const b of s.querySelectorAll(".answer button")) b.classList.toggle("on", answers[s.dataset.id] === b.dataset.v);
   const n = Object.keys(answers).length;
   document.getElementById("done").textContent = n + " of " + sections.length + " answered";
   document.getElementById("save").classList.toggle("ready", n === sections.length);
 }
-for (const s of sections) for (const b of s.querySelectorAll("button")) b.addEventListener("click", () => {
+for (const s of sections) for (const b of s.querySelectorAll(".answer button")) b.addEventListener("click", () => {
   answers[s.dataset.id] = b.dataset.v;
   try { localStorage.setItem(KEY, JSON.stringify(answers)); } catch {}
   paint();
+});
+for (const b of document.querySelectorAll(".jump")) b.addEventListener("click", () => {
+  const a = b.parentElement.querySelector("audio");
+  const go = () => { a.currentTime = Number(b.dataset.t); a.play(); };
+  if (a.readyState >= 1) go(); else { a.preload = "auto"; a.addEventListener("loadedmetadata", go, { once: true }); a.load(); }
 });
 for (const a of document.querySelectorAll("audio")) a.addEventListener("play", () => { for (const o of document.querySelectorAll("audio")) if (o !== a) o.pause(); });
 document.getElementById("save").addEventListener("click", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { playedAround, publishedAt, scoreAnswers, type Spot } from "../src/calibrate.ts";
+import { anchorWord, clockOf, endBetweenWords, playedAround, publishedAt, scoreAnswers, type Spot } from "../src/calibrate.ts";
 
 describe("calibrate", () => {
   it("finds what a cut plays either side of a source second, across its joins", () => {
@@ -25,5 +25,16 @@ describe("calibrate", () => {
     expect(result.midword).toMatchObject({ spots: 3, real: 1, fine: 1, unsure: 1, realShare: 50 });
     expect(result.control).toMatchObject({ real: 0, realShare: 0 });
     expect(result.wrong!.realShare).toBeNull();
+  });
+
+  it("starts both clips on the last word both cuts play before the spot, and ends them between words", () => {
+    const words = ["so", "today", "we", "look", "at", "carbon"].map((text, i) => ({ text, start: i, end: i + 0.8 }));
+    // Scarlet plays 0–3.9 and 5–6; the editor plays 0–2.9 and 5–6. The spot is Scarlet's join at 3.9.
+    const scarlet = [{ start: 0, end: 3.9 }, { start: 5, end: 6 }], editor = [{ start: 0, end: 2.9 }, { start: 5, end: 6 }];
+    expect(anchorWord(words, scarlet, editor, 3.9, () => true)!.text).toBe("we");
+    expect(anchorWord(words, scarlet, editor, 3.9, t => t < 1)!.text).toBe("so");
+    expect(clockOf(scarlet, 5.5)).toBeCloseTo(4.4, 6);
+    expect(endBetweenWords([{ start: 1, end: 3.5 }], words)).toEqual([{ start: 1, end: 3.88 }]);
+    expect(endBetweenWords([{ start: 1, end: 3.9 }], words)).toEqual([{ start: 1, end: 3.9 }]);
   });
 });
