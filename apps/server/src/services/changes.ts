@@ -1124,16 +1124,15 @@ export function reviseStagedCut(ctx: Ctx, user: User, named: Change, namedIndex:
     const updatedTask = scoped && task?.cutConflict && ctx.repos.tasks.get(task.id);
     if (updatedTask) saveTask(ctx, { ...updatedTask, cutConflict: undefined });
     if (!change.cutAssessments?.length && !placement.keep) return receipt(Object.keys(carried).length ? saveChange(ctx, { ...revised, ...carried }) : revised, target);
-    // Seeding a first assessment must preserve the implicit "cut" decisions of an unassessed pass.
-    const assessments: CutAssessment[] = change.cutAssessments?.length ? change.cutAssessments : cuts.map((c, i) => ({
-      index: i, ...c, verdict: "cut" as const, reason: change.cutReasons?.find(r => r.start >= c.start - 1e-6 && r.start < c.end)?.reason ?? change.description }));
     const verdict: CutAssessment["verdict"] = keepsForEditor ? "ask" : placement.keep ? "keep" : approved ? "cut" : "ask";
     const sentBack = scoped || was?.revised;
     // Moving an unchecked candidate invalidates its assessment. Only a recommendation on the new footage publishes it.
     const provisional = verdict === "ask" && autonomous;
     const updated: CutAssessment = { index, start, end, verdict, reason, summary, ...(provisional && { provisional: true }),
       ...(verdict === "ask" && sentBack && { revised: true }), ...(keepsForEditor && { proposes: "keep" as const }), ...(was?.askOrder && { askOrder: was.askOrder }) };
-    const cutAssessments = [...assessments.filter(a => a.index !== index), updated].sort((a, b) => a.index - b.index);
+    // The cuts Scarlet never checked stay unassessed: they are the editor's calls ("Not checked yet."), and keeping one
+    // of them doesn't settle the rest (2026-11-15).
+    const cutAssessments = [...(change.cutAssessments ?? []).filter(a => a.index !== index), updated].sort((a, b) => a.index - b.index);
     const decided = new Set(cutChoices.map(c => c.index));
     const done = cuts.every((_, i) => decided.has(i) || cutAssessments.some(a => a.index === i && a.verdict !== "ask"));
     const applyWhenDone = (placement.keep || approved) && done && scoped ? { userId: user.id, at: now() } : undefined;
