@@ -171,6 +171,27 @@ describe("cutDetail", () => {
     expect(d.pauses).toEqual({ total: 1, editorTrimmed: 1, scarletTrimmed: 0, bothTrimmed: 0 });
   });
 
+  it("marks the same words played from another saying as another take, not a line lost or left in", () => {
+    // “it is a very good model. it is a very good model, for the price”: the editor plays the first saying, Scarlet the second.
+    const said = "it is a very good model it is a very good model for the price".split(" ").map((text, i) => ({ text, start: i, end: i + 0.8 }));
+    const all = [{ start: 0, end: 16 }];
+    const d = cutDetail(said, all, [{ start: 6, end: 16 }], [{ start: 0, end: 6 }, { start: 12, end: 16 }]);
+    expect(d.wronglyCut).toMatchObject([{ text: "it is a very good model", otherTake: true }]);
+    expect(d.leftIn).toMatchObject([{ text: "it is a very good model", otherTake: true }]);
+    expect(mistakes(score(), { ...detail(), wronglyCut: d.wronglyCut, leftIn: d.leftIn })).toMatchObject({ wronglyCut: 0, longMissed: 0, styleLeftIn: 0, otherTake: 2 });
+  });
+
+  it("still counts a line nobody says again, and a saying left in beside the editor's", () => {
+    // Scarlet cuts “legal work nineteen percent”, said once; and plays both sayings of “we can compare them”.
+    const said = "it dominated legal work nineteen percent then we can compare them we can compare them".split(" ").map((text, i) => ({ text, start: i, end: i + 0.8 }));
+    const all = [{ start: 0, end: 15 }];
+    const d = cutDetail(said, all, [{ start: 0, end: 2 }, { start: 6, end: 15 }], [{ start: 0, end: 11 }]);
+    expect(d.wronglyCut).toEqual([expect.objectContaining({ text: "legal work nineteen percent" })]);
+    expect(d.wronglyCut[0]!.otherTake).toBeUndefined();
+    expect(d.leftIn).toEqual([expect.objectContaining({ text: "we can compare them" })]);
+    expect(d.leftIn[0]!.otherTake).toBeUndefined();
+  });
+
   it("counts a piece under a second between two cuts as a stutter", () => {
     const d = cutDetail(words, base, [{ start: 0, end: 2 }, { start: 3, end: 3.8 }, { start: 5, end: 8 }], base);
     expect(d.pieces).toMatchObject({ total: 3, short: 1, editorTotal: 1, editorShort: 0 });
@@ -285,11 +306,11 @@ describe("scorecard guards and eligibility", () => {
   it("rejects stale rubrics, non-done trials, missing trials.json dirs, and multi-config dirs", () => withTmpRun(dir => {
     const stale = join(dir, "stale.json");
     writeFileSync(stale, JSON.stringify(mkEval({ taskId: "tsk_old", rubric: "old-v1" })));
-    expect(() => readTrial(stale)).toThrow(/playable-v2/);
+    expect(() => readTrial(stale)).toThrow(/dialogue-playable-v3/);
 
     const unfinished = join(dir, "running.json");
     writeFileSync(unfinished, JSON.stringify(mkEval({ taskId: "tsk_run", state: "running" })));
-    expect(() => readTrial(unfinished)).toThrow(/playable-v2/);
+    expect(() => readTrial(unfinished)).toThrow(/dialogue-playable-v3/);
 
     expect(() => loadSide("empty", dir)).toThrow(/trials\.json/);
     expect(() => loadSide("missing", join(dir, "does-not-exist"))).toThrow(/No such file or folder/);

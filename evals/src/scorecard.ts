@@ -12,7 +12,7 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { cli, isMain, list, main } from "./args.ts";
 import type { Evaluation } from "./evaluate.ts";
-import { LONG_MISSED_WORDS, NOTICED_WORDS, STUTTER_SECONDS, type CutDetail } from "./cutDetail.ts";
+import { LONG_MISSED_WORDS, NOTICED_WORDS, STUTTER_SECONDS, type CutDetail, type Disagreement } from "./cutDetail.ts";
 import type { TrialRow } from "./report.ts";
 import { loadBoard, loadLedger, runChecks, type Verdict } from "./ledger.ts";
 import type { PacingSummary } from "./metrics.ts";
@@ -83,6 +83,11 @@ export type Factors = Record<FactorId, FactorValue>;
 /** A pause at a cut within this of the editor's is the same pause: three frames. */
 export const SAME_SPACE_MS = 100;
 
+/** Runs of NOTICED_WORDS or more that a viewer would hear differ: the same words played from another take don't. */
+const heard = (runs: readonly Disagreement[]) => runs.filter(x => x.words >= NOTICED_WORDS && !x.otherTake);
+/** Runs of NOTICED_WORDS or more where the two cuts kept different sayings of the same words. */
+const otherTakes = (d: CutDetail) => [...d.wronglyCut, ...d.leftIn].filter(x => x.words >= NOTICED_WORDS && x.otherTake).length;
+
 const clamp = (v: number) => Math.max(0, Math.min(100, v));
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const none = (detail: string): FactorValue => ({ pct: null, detail });
@@ -122,12 +127,12 @@ export function factors(score: Score, at: OperatingPoint = "recommended"): Facto
       ? { pct: rateScore(clipped, seconds, RATE_HALF_LIFE.wholeWords), detail: `${clipped} of ${edges} cut edges land inside a sounding word (${per10(clipped)}/10 min)` }
       : { pct: pctOf(edges - clipped, edges), detail: `${clipped} of ${edges} cut edges land inside a sounding word` };
 
-  const wrongRuns = detail ? detail.wronglyCut.filter(x => x.words >= NOTICED_WORDS).length : null;
+  const wrongRuns = detail ? heard(detail.wronglyCut).length : null;
   const noWrongCuts: FactorValue = !detail ? noDetail
     : seconds <= 0 ? none("kept duration not recorded")
       : { pct: rateScore(wrongRuns!, seconds, RATE_HALF_LIFE.noWrongCuts), detail: `${wrongRuns} runs of ${NOTICED_WORDS}+ words cut that the editor kept (${per10(wrongRuns!)}/10 min)` };
 
-  const longMissRuns = detail ? detail.leftIn.filter(x => x.words >= LONG_MISSED_WORDS).length : null;
+  const longMissRuns = detail ? heard(detail.leftIn).filter(x => x.words >= LONG_MISSED_WORDS).length : null;
   const noLongMisses: FactorValue = !detail ? noDetail
     : seconds <= 0 ? none("kept duration not recorded")
       : { pct: rateScore(longMissRuns!, seconds, RATE_HALF_LIFE.noLongMisses), detail: `${longMissRuns} runs of ${LONG_MISSED_WORDS}+ words left in that the editor cut (${per10(longMissRuns!)}/10 min)` };
@@ -215,19 +220,23 @@ export interface Mistakes {
   stylePer10Min: number | null;
   /** All left-in runs of NOTICED_WORDS+ words (longMissed + styleLeftIn). */
   leftIn: number;
+  /** Runs of NOTICED_WORDS+ words where Scarlet and the editor kept different sayings of the same words: not a mistake. */
+  otherTake: number;
 }
 
 /**
  * Hard bugs are: a run of 2+ words Scarlet cut that the editor kept, a long passage (6+ words) Scarlet left in that
  * the editor cut, a sounding word a join cuts into, and a stutter piece under 1 s. Short 2–5 word phrases the editor
  * trimmed ("kind of", "And so") are tracked separately as editorial tightenings, and single-word edge drift is ignored.
+ * Where the two cuts kept different sayings of the same words, the viewer hears the line either way: that is counted
+ * apart as another take, and in neither.
  */
 export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mistakes | null {
   const { detail, seconds, edges } = score.playable[at];
   if (!detail || edges.unknown || seconds <= 0) return null;
-  const wronglyCut = detail.wronglyCut.filter(x => x.words >= NOTICED_WORDS).length;
-  const longMissed = detail.leftIn.filter(x => x.words >= LONG_MISSED_WORDS).length;
-  const styleLeftIn = detail.leftIn.filter(x => x.words >= NOTICED_WORDS && x.words < LONG_MISSED_WORDS).length;
+  const wronglyCut = heard(detail.wronglyCut).length;
+  const longMissed = heard(detail.leftIn).filter(x => x.words >= LONG_MISSED_WORDS).length;
+  const styleLeftIn = heard(detail.leftIn).filter(x => x.words < LONG_MISSED_WORDS).length;
   const clippedWords = edges.clippedOnSound;
   const stutters = detail.pieces.short;
   const total = wronglyCut + longMissed + clippedWords + stutters;
@@ -241,6 +250,7 @@ export function mistakes(score: Score, at: OperatingPoint = "recommended"): Mist
     styleLeftIn,
     stylePer10Min: seconds > 0 ? r1(styleLeftIn / (seconds / 600)) : null,
     leftIn: longMissed + styleLeftIn,
+    otherTake: otherTakes(detail),
   };
 }
 
@@ -264,7 +274,7 @@ export interface Card {
   mistakesPer10Min: Stat | null;
   /** Short 2–5 word editorial tightenings left in per ten minutes: reported separately from hard bugs. */
   stylePer10Min: Stat | null;
-  mistakeCounts: Record<"wronglyCut" | "longMissed" | "clippedWords" | "stutters" | "styleLeftIn" | "leftIn", Stat | null>;
+  mistakeCounts: Record<"wronglyCut" | "longMissed" | "clippedWords" | "stutters" | "styleLeftIn" | "leftIn" | "otherTake", Stat | null>;
   byCase: Record<string, Record<FactorId, Stat | null>>;
   /** Not scored: for the editor's eye. */
   facts: { asks: Stat | null; tokens: Stat | null; minutes: Stat | null; finishMinutes: Stat | null; cents: Stat | null };
@@ -297,7 +307,7 @@ export function card(label: string, trials: readonly Trial[], at: OperatingPoint
     const fs = ts.map(t => factors(t.score, at));
     byCase[id] = Object.fromEntries(FACTORS.map(f => [f.id, fs.every(x => x[f.id].pct !== null) ? stat(numbers(fs.map(x => x[f.id].pct))) : null])) as Record<FactorId, Stat | null>;
     const ms = ts.map(t => mistakes(t.score, at)).filter((m): m is Mistakes => m !== null);
-    mistakesByCase.push(Object.fromEntries((["wronglyCut", "longMissed", "clippedWords", "stutters", "total", "per10Min", "styleLeftIn", "stylePer10Min", "leftIn"] as const)
+    mistakesByCase.push(Object.fromEntries((["wronglyCut", "longMissed", "clippedWords", "stutters", "total", "per10Min", "styleLeftIn", "stylePer10Min", "leftIn", "otherTake"] as const)
       .map(k => [k, ms.length === ts.length ? stat(numbers(ms.map(m => m[k]))) : null])) as Record<keyof Mistakes, Stat | null>);
   }
   const all = Object.fromEntries(FACTORS.map(f => [f.id, acrossCases(Object.values(byCase).map(c => c[f.id]))])) as Record<FactorId, Stat | null>;
@@ -329,6 +339,7 @@ export function card(label: string, trials: readonly Trial[], at: OperatingPoint
       stutters: count("stutters"),
       styleLeftIn: count("styleLeftIn"),
       leftIn: count("leftIn"),
+      otherTake: count("otherTake"),
     },
     facts: { asks: asks(), tokens: headline("tokens"), minutes: headline("activeMinutes"), finishMinutes: headline("finishMinutes"),
       // In cents, so the one-decimal mean keeps a cheap pass's cost.
@@ -433,7 +444,8 @@ export function scorecardMarkdown(cards: readonly Card[], ledger?: { label: stri
       row("Words a cut lands inside", c => c.mistakeCounts.clippedWords, "in the whole video"),
       row("Stutter cuts", c => c.mistakeCounts.stutters, `pieces under ${STUTTER_SECONDS} s between two cuts`),
       row("Short tightenings left in (per 10 min)", c => c.stylePer10Min, `${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} word runs the editor trimmed (taste/tightness, separate from hard mistakes)`),
-      row("Short tightenings left in", c => c.mistakeCounts.styleLeftIn, `runs of ${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} words, in the whole video`));
+      row("Short tightenings left in", c => c.mistakeCounts.styleLeftIn, `runs of ${NOTICED_WORDS}–${LONG_MISSED_WORDS - 1} words, in the whole video`),
+      row("Same words, another take", c => c.mistakeCounts.otherTake, `runs of ${NOTICED_WORDS} words or more Scarlet and the editor each played from a different saying, in the whole video; not a mistake`));
   }
   if (ledger) lines.push(`| Past mistakes | ${cards.map((_, i) => i === cards.length - 1 ? (ledger.pct === null ? "–" : `${ledger.pct}%`) : "").join(" | ")} |${two ? " |" : ""} every reported mistake with a free check still passes (${ledger.pass} of ${ledger.checked}, ${ledger.label}) |`);
   const fact = (s: Stat | null, digits = 1, scale = 1) => s ? (s.mean / scale).toFixed(digits) : "–";
@@ -482,7 +494,7 @@ export function readTrial(file: string, row?: TrialRow): Evaluation {
     }
   }
   if (ev.score.trace?.state !== "done" || ev.score.rubric !== RUBRIC || !ev.score.playable?.automatic || !ev.score.playable?.recommended) {
-    throw new Error("Not a completed playable-v2 evaluation; re-score the saved task first: " + file);
+    throw new Error(`Not a completed ${RUBRIC} evaluation; re-score the saved task first: ${file}`);
   }
   return ev;
 }
