@@ -702,7 +702,7 @@ describe("review notes", () => {
 describe("tool annotations", () => {
   // Every tool that saves an edit, a recommendation, a file or a message to the editor. A harness may retry or
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
-  const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
+  const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "screen_area", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
     "graphic_render", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
@@ -1162,6 +1162,40 @@ describe("faces", () => {
     expect(textOf(await call(c, "faces", { mediaId: "m1", track: 3 }))).toContain("No track 3 in 0.0-60.0 s; this range has tracks 1.");
     expect(textOf(await call(c, "faces", { mediaId: "m2" }))).toContain("only a video has faces to find");
     expect(textOf(await call(c, "faces", { mediaId: "nope" }))).toContain("Use project_get for media ids");
+  });
+});
+
+describe("lip_sync and timeline_picture_sync", () => {
+  it("passes the stretches asked for to the engine and returns its measurements as they are", async () => {
+    const c = await connect();
+    const measured = { mediaId: "m1", frameSeconds: 0.033, done: true, together: { soundLeads: 0.68, match: 0.26, matchInSync: 0.06, frames: 1800, stretches: 2 },
+      stretches: [{ from: 10, to: 40, face: { mouth: [0.45, 0.4, 0.55, 0.5], yaw: 0, seconds: 30 }, reading: { soundLeads: 0.7, match: 0.3, matchInSync: 0.05, frames: 900 } }] };
+    mock.state.extra = (req, res) => req.path.endsWith("/media/m1/lip-sync") ? reply(res, measured) : false;
+    expect(JSON.parse(textOf(await ok(c, "lip_sync", { mediaId: "m1", from: 10, to: 70, count: 2 })))).toEqual(measured);
+    const asked = sent("/projects/prj_test/media/m1/lip-sync", "GET").at(-1)!.query;
+    expect([asked.get("from"), asked.get("to"), asked.get("count"), asked.get("seconds")]).toEqual(["10", "70", "2", null]);
+    expect(textOf(await call(c, "lip_sync", { mediaId: "m2" }))).toContain("only a video has a picture");
+    expect(toolAnnotations("lip_sync").readOnlyHint).toBe(true);
+    await c.close();
+  });
+
+  it("moves the picture later in the recording as one proposal, leaving its sound where it was", async () => {
+    const tl = emptyTimeline("prj_test");
+    tl.version = "cut";
+    const talk = makeMediaClip("m1", 10, 20, 0);
+    tl.tracks[0]!.clips = [talk];
+    mock.state.timeline = tl;
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const result = await ok(c, "timeline_picture_sync", { mediaId: "m1", soundLeads: 0.65, reason: "The camera's sound runs 0.65 s ahead of its picture in every stretch measured." });
+      expect(textOf(result)).toContain("Moved the picture of 1 clip.");
+      const body = sent("/projects/prj_test/changes").at(-1)!.body as { ops: Array<{ op: string; clipId?: string; clip?: MediaClip; patch?: Record<string, unknown> }>; fromVersion: string; description: string };
+      expect(body).toMatchObject({ fromVersion: "cut", description: "Put the picture in time with its sound" });
+      expect(body.ops.find(o => o.op === "addClip")!.clip).toMatchObject({ mediaId: "m1", sourceIn: 10, sourceOut: 20, timelineIn: 0, volume: 1 });
+      expect(body.ops.find(o => o.op === "updateClip" && o.clipId === talk.id)!.patch).toMatchObject({ volume: 0, sourceIn: 10.65, sourceOut: 20.65, timelineIn: 0 });
+      expect(textOf(await call(c, "timeline_picture_sync", { mediaId: "m2", soundLeads: 0.2 }))).toContain("only a video");
+    } finally { await c.close(); }
   });
 });
 
