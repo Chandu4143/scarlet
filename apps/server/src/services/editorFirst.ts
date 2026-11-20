@@ -97,7 +97,7 @@ export class EditorFirst {
     child.once("error", release);
   }
 
-  /** Adopt a running process. The returned release forgets it and puts back its normal priority if it was lowered. */
+  /** Adopt a running process. The returned release forgets it; callers release once the process has exited, so no priority is put back. */
   adopt(pid: number, stillBackground: StillBackground): () => void {
     if (!this.apply) return () => {};
     const entry: Adopted = { stillBackground, lowered: false };

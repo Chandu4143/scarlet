@@ -66,7 +66,8 @@ export function ChatRail({ compact, children, id = "edit-chat", className = "wor
       }}
       onPointerUp={e => {
         const start = drag.current;
-        if (start?.pointer === e.pointerId) save(clamp(start.width + (e.clientX - start.x) * toward));
+        // A press that never moved is not a width the editor chose: the chat keeps following the window.
+        if (start?.pointer === e.pointerId && e.clientX !== start.x) save(clamp(start.width + (e.clientX - start.x) * toward));
         drag.current = null;
       }}
       onLostPointerCapture={() => { drag.current = null; }}

@@ -431,10 +431,11 @@ function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: Jo
     const i = levels ? Math.floor((t - levels.from) / levels.step) : -1;
     return !!levels && i >= 0 && i < levels.db.length && isDip(levels, i);
   });
-  // Not inside a word, and not past a whole one: a dip moves an edge to a word boundary, never across a word.
+  // Not inside a word, and not past a whole one or its middle: a dip moves an edge to a word boundary, never across a
+  // word, and so never takes out a word the range keeps or keeps one it takes out, as the trough's move above.
   const betweenWords = (timeline: number) => sources.every(s => {
     const t = timelineToSource(s.clip, timeline), from = Math.min(s.at, t), to = Math.max(s.at, t);
-    return !s.page.words.some(w => inWord(w, t) || (from <= w.start && w.end <= to));
+    return !s.page.words.some(w => inWord(w, t) || (from <= w.start && w.end <= to) || (from < (w.start + w.end) / 2 && (w.start + w.end) / 2 < to));
   });
   for (const next of [at, ...frames]) {
     if (Math.abs(next - at) > snapLimit + 1e-7 || (next !== at && crossesClip(at, next)) || !betweenWords(next)) continue;
@@ -1303,7 +1304,12 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
     // Below the level that counts as quiet, the recording cannot locate the word inside its timing.
     return peak && peak.db > dbfs(QUIET_RMS) ? peak.at : fallback;
   };
-  return { start: anchor(left, left.start), end: anchor(right, right.end) };
+  const bounds = { start: anchor(left, left.start), end: anchor(right, right.end) };
+  // A named word comes out when its middle does: that is how the cut's words, what it plays and the check for a word
+  // played twice all read it. A word too quiet to locate left its far end as the bound, and the edge went to the quiet
+  // after it: “nice you ‖ you can see” was placed past the “you” the model named, then refused for playing it twice (2026-11-17).
+  const named = (outer.start + outer.end) / 2;
+  return side === "start" ? { start: bounds.start, end: Math.min(bounds.end, named) } : { start: Math.max(bounds.start, named), end: bounds.end };
 }
 
 /**
@@ -1312,6 +1318,9 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
  * the default edge padding. `pageAt` returns measured evidence covering a source time. Without a kept
  * neighbor the edge runs to the start or end of the material.
  */
+/** Two words the transcript times this close are said as one: their edge goes where it parts them. */
+const RUN_ON_GAP = .06;
+
 export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number, pace: JoinPace = DEFAULT_PACE, voiceIn?: number): WordCut {
   const first = words[from]!, last = words[to]!;
   // The pause the join should play, word to word, and how much of it follows the cut, in the recording's seconds.
@@ -1382,9 +1391,20 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
       room[side] = low.room;
       return low.at;
     }
+    const at = lo <= hi ? (lo + hi) / 2 : side === "start" ? removed.start : removed.end;
+    // Spoken straight through, the words part where the transcript parts them: the published editor's cuts in running
+    // speech on Muse were 13–35 ms from it, all five, and the editor's own pick on another recording 12 ms, where the
+    // lowest level and the sharpest change in the sound were up to 96 ms off (2026-11-18). Held there instead, a pass
+    // cut other words to get round the join and nobody heard it. An edge whose words share one gap, or with no level
+    // reading, isn't placed from the recording, and stays the agent's to settle. So does a gap the transcript leaves
+    // between them that the recording fills with sound: that is not two words said as one.
+    if (page?.levels && !timed && hi - lo <= RUN_ON_GAP) {
+      dips.push(`No pause or low point between “${plain(side === "start" ? kept : removed)}” and “${plain(side === "start" ? removed : kept)}”: they run together, and the ${side} is where the transcript parts them.`);
+      return at;
+    }
     problems.push(`No measured silence between “${plain(side === "start" ? kept : removed)}” and “${plain(side === "start" ? removed : kept)}”${
       page ? "" : " (no level reading)"}. The ${side} uses the word timing.`);
-    return lo <= hi ? (lo + hi) / 2 : side === "start" ? removed.start : removed.end;
+    return at;
   };
   // A removed word the recording has no sound for takes no time, right after the word before it (the aligner puts a
   // word Whisper invented over a silence there). The removal's sound starts at its first word that has some: measured

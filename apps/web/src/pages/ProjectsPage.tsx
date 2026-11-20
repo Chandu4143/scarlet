@@ -122,10 +122,12 @@ function ProjectActions({ project }: { project: ProjectSummary }) {
         {close => <>
           <MenuItem onClick={() => { close(); setName(project.name); setError(""); setDialog("rename"); }}>Rename</MenuItem>
           <MenuItem onClick={() => { close(); void save({ archived: !project.archived }); }}>{project.archived ? "Unarchive" : "Archive"}</MenuItem>
-          <MenuItem disabled={busy} title={project.mediaPaused ? "Resume media processing" : "Pause media processing"}
-            onClick={() => { close(); void save({ mediaPaused: !project.mediaPaused }); }}>
-            {project.mediaPaused ? "Resume" : "Pause"}
-          </MenuItem>
+          {(project.mediaPaused || project.activity?.some(a => a.kind !== "editing")) && (
+            <MenuItem disabled={busy} title={project.mediaPaused ? "Resume media processing" : "Pause media processing"}
+              onClick={() => { close(); void save({ mediaPaused: !project.mediaPaused }); }}>
+              {project.mediaPaused ? "Resume" : "Pause"}
+            </MenuItem>
+          )}
           <MenuItem danger onClick={() => { close(); setError(""); setDialog("trash"); }}>Move to Trash</MenuItem>
         </>}
       </Dropdown>
@@ -388,7 +390,7 @@ function FirstEditGuide() {
         <li>
           <h3>Ask for an edit</h3>
           <p>Close Media, then type or say “Trim the silence before my first word.”</p>
-          <p>If prompted, connect Claude or ChatGPT under <strong>More → Set up a model</strong>.</p>
+          <p>If prompted, connect Claude, ChatGPT or Google under <strong>More → Set up a model</strong>.</p>
         </li>
         <li>
           <h3>Play it back</h3>
@@ -405,6 +407,10 @@ function FirstEditGuide() {
     </>
   );
 }
+
+
+/** One file chosen twice is listed once: a path is itself, a browser file its name, size and date. */
+const sourceKey = (source: ImportSource) => typeof source === "string" ? source : `${source.name}:${source.size}:${source.lastModified}`;
 
 export function ProjectsPage() {
   // Back at the library: a quit from here reopens the library, not the last project.
@@ -449,7 +455,7 @@ export function ProjectsPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const { notice } = useImportTranscription();
+  const { notice, local } = useImportTranscription();
   // Where the grid puts what the list has in its heading row: the box that selects every project beside the layout
   // switch, and what is selected over the title.
   const [selectAllSlot, setSelectAllSlot] = useState<HTMLElement | null>(null);
@@ -469,17 +475,22 @@ export function ProjectsPage() {
   };
 
   const selectFootage = (sources: ImportSource[]) => {
-    if (!sources.length) return;
     setFiles(sources);
     // Videos chosen in the dialog name the project as videos dropped on the library do. A name the editor typed stays.
-    const was = given.current, next = nameFrom(sources);
+    const was = given.current, next = sources.length ? nameFrom(sources) : "";
     given.current = next;
     setName(typed => !typed.trim() || typed === was ? next : typed);
   };
 
-  /** Videos dropped on the open dialog join the ones chosen. */
+  /** Videos chosen or dropped on the open dialog join the ones already there, once each. */
   const addFootage = (sources: ImportSource[]) => {
-    if (!busy) selectFootage([...files, ...sources.filter(source => !files.includes(source))]);
+    if (busy || !sources.length) return;
+    const has = new Set(files.map(sourceKey));
+    selectFootage([...files, ...sources.filter(source => !has.has(sourceKey(source)))]);
+  };
+
+  const removeFootage = (index: number) => {
+    if (!busy) selectFootage(files.filter((_, at) => at !== index));
   };
 
   const pick = async () => {
@@ -489,8 +500,7 @@ export function ProjectsPage() {
     }
     setErr(null);
     try {
-      const paths = await desktop.pickFiles();
-      selectFootage(paths);
+      addFootage(await desktop.pickFiles());
     } catch (e) {
       setErr(errorMessage(e));
     }
@@ -586,23 +596,28 @@ export function ProjectsPage() {
               <input id="np-name" className="field" value={name} required disabled={busy} onChange={e => setName(e.target.value)} placeholder="Enter a name" />
             </Field>
             <fieldset>
-              <legend className="label">Media files <span className="text-dim">(optional)</span></legend>
+              <legend className="label">Media files</legend>
               <input ref={fileInput} type="file" hidden multiple accept={ACCEPTED_MEDIA} onChange={e => {
-                if (e.target.files) selectFootage(Array.from(e.target.files));
+                if (e.target.files) addFootage(Array.from(e.target.files));
                 e.target.value = "";
               }} />
               <button type="button" className="btn-ghost" aria-describedby="np-file-types" disabled={busy} onClick={() => void pick()}>
-                {files.length ? "Change selection…" : "Choose files…"}
+                {files.length ? "Add files…" : "Choose files…"}
               </button>
-              {files.length > 0 && <button type="button" className="btn-quiet" disabled={busy} onClick={() => setFiles([])}>Clear</button>}
-              <p id="np-file-types" className="mt-2 text-[12px] text-muted">{MEDIA_FORMAT_HINT}</p>
+              {/* Each file has its own ×: Clear is for a longer list. */}
+              {files.length > 1 && <button type="button" className="btn-quiet" disabled={busy} onClick={() => selectFootage([])}>Clear</button>}
+              <p id="np-file-types" className="sr-only">{MEDIA_FORMAT_HINT}</p>
             </fieldset>
             {files.length > 0 && <>
-              <ul aria-label="Selected files" className="mt-2 max-h-28 overflow-y-auto text-[12px]">
-                {files.map((file, index) => <li key={index} className="break-all">{filename(file)}</li>)}
+              <ul aria-label="Selected files" className="new-project-files">
+                {files.map((file, index) => <li key={sourceKey(file)}>
+                  <span>{filename(file)}</span>
+                  <button type="button" className="new-project-file-remove" aria-label={`Remove ${filename(file)}`} title="Remove" disabled={busy}
+                    onClick={() => removeFootage(index)}><Icon name="x" size={11} /></button>
+                </li>)}
               </ul>
-              <p className="mt-2 text-[12px] text-muted">The project format will match the first video.</p>
-              <p className="mt-2 text-[12px] text-muted">{notice}</p>
+              {/* Said only when audio leaves this computer or can't be transcribed: local transcription is the quiet default. */}
+              {notice && !local && <p className="mt-2 text-[12px] text-muted">{notice}</p>}
             </>}
             <InlineError>{err}</InlineError>
           </Dropzone>

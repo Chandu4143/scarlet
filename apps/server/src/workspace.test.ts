@@ -7,7 +7,7 @@ import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it as vitestIt, vi, onTestFinished } from "vitest";
 import { partedIt } from "../../../test/parts";
 import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
-import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, threadRevision, type Render, type Task } from "@scarlet/shared";
+import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, taskRecoveryAction, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
 import { seedSkillList } from "./services/skills.js";
@@ -26,6 +26,7 @@ import { continueReadyRuns, continueWhenReady, recoverTasks } from "./services/t
 import { OpenAIProvider } from "./transcribe/openai.js";
 import { importTranscriptionPolicy } from "./transcribe/index.js";
 import { WhisperCppProvider } from "./transcribe/whispercpp.js";
+import { VERBATIM_PROMPT } from "./transcribe/saidWords.js";
 import { speakerAnalysisVersion } from "./transcribe/speakerLabels.js";
 import { alignmentVersion } from "./transcribe/wordAlign.js";
 import { LocalWhisperModel } from "./transcribe/localModel.js";
@@ -649,7 +650,10 @@ function twoTurnTranscription(onTurn: (turn: number) => void | Promise<void> = (
     const id = ctx.repos.projects.getMedia(media.id)?.transcriptId;
     return id ? ctx.repos.transcripts.get(id) : undefined;
   };
-  return { ctx, media, reader, linked, task: () => ctx.repos.tasks.select("kind = 'transcribe'", [], "created_at, rowid").at(-1)!,
+  // The audio recognized into a transcript. The reading in hesitant speech that follows alignment (saidWords.ts)
+  // only puts back words the first one tidied away, so it isn't one of these.
+  const recognitions = () => reader.mock.calls.filter(call => call[4] !== VERBATIM_PROMPT).length;
+  return { ctx, media, reader, recognitions, linked, task: () => ctx.repos.tasks.select("kind = 'transcribe'", [], "created_at, rowid").at(-1)!,
     restore: () => { worker.mockRestore(); speakers.mockRestore(); models.mockRestore(); reader.mockRestore(); decode.mockRestore(); } };
 }
 
@@ -705,7 +709,7 @@ it("resumes the remaining alignment turn when the library reopens", async () => 
     await t.ctx.close();
     workspace = openWorkspace();
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
-    expect(t.reader).toHaveBeenCalledOnce();
+    expect(t.recognitions()).toBe(1);
     // One completed turn, one interrupted attempt, and one turn on reopen.
     expect(turns).toBe(3);
     expect(workspace.ctx.repos.transcripts.get(id)).toMatchObject({ segments: [{ words: [{ start: 10.1 }] }, { words: [{ start: 400.1 }] }] });
@@ -864,7 +868,7 @@ it("finishes a legacy transcript left part-aligned without recognizing its audio
   try {
     expect(await (await api("GET", "/media/speech/transcript")).json()).toMatchObject({ id: linked.id, aligning: { through: 10.5 } });
     while (t.ctx.pending.size) await Promise.allSettled([...t.ctx.pending]);
-    expect(t.reader).not.toHaveBeenCalled();
+    expect(t.recognitions()).toBe(0);
     expect(t.linked()).toMatchObject({ segments: [{ id: "first", words: [{ start: 10.1 }] }, { id: "second", words: [{ start: 400.1 }] }] });
     expect(t.linked()?.aligning).toBeUndefined();
   } finally { t.restore(); }
@@ -886,7 +890,7 @@ it("places an older transcript's words again with the current aligner, keeping i
     expect(now.id).not.toBe(old.id);
     expect(now).toMatchObject({ alignment: alignmentVersion, speakerAnalysis: old.speakerAnalysis,
       segments: [{ id: "first", words: [{ text: "hello", start: 10.2, detectedSpeaker: 1 }, { text: "again", start: 11.1, detectedSpeaker: 1 }] }] });
-    expect(t.reader).not.toHaveBeenCalled();
+    expect(t.recognitions()).toBe(0);
     expect(await (await realign()).json()).toEqual({ state: "current" });
     expect(t.linked()!.id).toBe(now.id);
   } finally { t.restore(); }
@@ -961,7 +965,7 @@ it.each(["failure", "interruption"] as const)("keeps the complete transcript rea
     }
     while (ctx.pending.size) await Promise.allSettled([...ctx.pending]);
     expect(t.task()).toMatchObject({ state: "done", context: { localModel: "custom" } });
-    expect(t.reader).toHaveBeenCalledTimes(outcome === "interruption" ? 1 : 2);
+    expect(t.recognitions()).toBe(outcome === "interruption" ? 1 : 2);
     const replacement = await read();
     expect(replacement.id).not.toBe(old.id);
     expect(peer.ctx.repos.projects.getMedia(t.media.id)?.lastTranscription).toEqual({
@@ -1002,7 +1006,7 @@ it("keeps the times a transcript has when its alignment fails or can't be finish
     await api("PATCH", "/settings", { transcription: { provider: "none" } });
     expect((await (await api("GET", "/media/speech/transcript")).json()).aligning).toEqual({ through: 10.5 });
     expect((await (await api("GET", "/media/speech/transcript")).json()).aligning).toBeUndefined();
-    expect(t.reader).toHaveBeenCalledTimes(1);
+    expect(t.recognitions()).toBe(1);
   } finally { t.restore(); }
 });
 
@@ -2680,7 +2684,7 @@ it("keeps a part-aligned transcript's times, without transcribing again, after a
   try {
     await transcribeMedia(t.ctx, project.id, t.media);
     while (t.ctx.pending.size) await Promise.all([...t.ctx.pending]);
-    expect(t.reader).toHaveBeenCalledTimes(1);
+    expect(t.recognitions()).toBe(1);
     // A later run failed by itself, so the next one is the editor's Retry, not something a read starts.
     const failed = createTask(t.ctx, { projectId: project.id, kind: "transcribe", agent: "api", state: "running",
       instruction: "Transcribe Interview", context: { mediaId: t.media.id }, createdBy: { type: "scarlet", name: "Scarlet" } });
@@ -2698,7 +2702,7 @@ it("keeps a part-aligned transcript's times, without transcribing again, after a
     expect(await read()).toBeUndefined();
     expect(t.task().id).toBe(failed.id);
     expect(cloud).not.toHaveBeenCalled();
-    expect(t.reader).toHaveBeenCalledTimes(1);
+    expect(t.recognitions()).toBe(1);
   } finally { cloud.mockRestore(); t.restore(); }
 });
 
@@ -3648,6 +3652,38 @@ it.each(["a1", "alternate"])("requires an audio check of the version that plays,
   expect(ctx.repos.tasks.get(pass.id)).toMatchObject({ state: "done", repeatAudit: { version: repaired, returns: 1 } });
 });
 
+it("keeps a pass finished when its closing check can't run, and Retry runs the check again", async () => {
+  const { ctx } = workspace;
+  const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
+  const pass = createTask(ctx, { projectId: project.id, kind: "edit", agent: "codex", instruction: "/first-cut-dialogue", createdBy: { type: "human", name: "Editor" } });
+  const claim = async () => (await (await api("POST", `/hosts/${host.id}/claim`, { taskId: pass.id })).json()).task as Task;
+  await claim();
+  ctx.repos.projects.putMedia(project.id, { id: "mic", name: "Mic", path: "mic.wav", kind: "audio", hasAudio: true, duration: 20 }, "ready");
+  await micSpeech({ 30: "go|", 110: "go|" });
+  const version = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Assemble two takes", ops: [
+    { op: "addClip", trackId: "a1", clip: { id: "one", kind: "media", mediaId: "mic", sourceIn: 0, sourceOut: 1, timelineIn: 0 } },
+    { op: "addClip", trackId: "a1", clip: { id: "two", kind: "media", mediaId: "mic", sourceIn: 2, sourceOut: 8, timelineIn: 1 } },
+  ] }).change.toVersion;
+  const finished = await (await api("POST", `/tasks/${pass.id}/complete`, { state: "done", summary: "Saved a tighter first cut." })).json();
+  expect(finished.task).toMatchObject({ state: "queued", repeatAudit: { returns: 1 } });
+  await claim();
+  // 2026-11-18: the check's own session was refused sign-in. The pass's work and words stand.
+  const refused = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header";
+  const failed = (await (await api("POST", `/tasks/${pass.id}/complete`, { state: "failed", error: refused })).json()).task as Task;
+  expect(failed).toMatchObject({ state: "done", reply: "Saved a tighter first cut.", repeatAudit: { version, failed: refused } });
+  expect(failed.error).toBeUndefined();
+  expect(taskRecoveryAction(failed, true)).toBe("retry");
+  // Retry runs the check again as the same request, with its full allowance.
+  const retried = (await (await api("POST", `/tasks/${pass.id}/retry`, {})).json()).task as Task;
+  expect(retried).toMatchObject({ id: pass.id, state: "queued", reply: "Saved a tighter first cut.", repeatAudit: { version, returns: 1 } });
+  expect(retried.repeatAudit!.failed).toBeUndefined();
+  // A pass recorded as failed this way before is picked up the same way, not started over.
+  ctx.repos.tasks.put({ ...retried, state: "failed", error: refused, finishedAt: new Date().toISOString() });
+  const resumed = (await (await api("POST", `/tasks/${pass.id}/retry`, {})).json()).task as Task;
+  expect(resumed).toMatchObject({ id: pass.id, state: "queued", repeatAudit: { returns: 1 } });
+  expect(resumed.error).toBeUndefined();
+});
+
 it("holds a pass until each restart and long silence its edit still plays is cut or kept", async () => {
   const { ctx } = workspace;
   const { host } = await (await api("POST", "/hosts/register", { name: "Host", platform: "test", agents: [{ id: "codex", installed: true }] })).json();
@@ -3843,6 +3879,21 @@ it("hands a request held by a dialogue pass to a waiting host as soon as the edi
   const answer = await Promise.race([poll.then(r => r.json() as Promise<{ task: Task | null }>), late]);
   expect(answer).not.toBe("late");
   expect((answer as { task: Task | null }).task?.id).toBe(zoom.id);
+});
+
+it("tells a dialogue pass how many of its cuts the editor's setting asks them to check", async () => {
+  const { ctx } = workspace;
+  const pass = (await (await api("POST", projectsPath() + "/tasks", { agent: "codex", instruction: "/dialogue-pass" })).json()).task as Task;
+  const asked = async () => ((await (await api("GET", `/tasks/${pass.id}/prompt`)).json()).systemPrompt as string)
+    .match(/The editor asked to check (.*) of them: flag that many from the top of your order/)?.[1];
+  // Balanced until the editor says otherwise in Settings. The setting is the same for every project.
+  expect(ctx.settings().checkIn).toBe("balanced");
+  expect(await asked()).toBe("about one in four");
+  expect((await api("PATCH", "/settings", { checkIn: "more" })).status).toBe(200);
+  expect(await asked()).toBe("about half");
+  expect((await api("PATCH", "/settings", { checkIn: "less" })).status).toBe(200);
+  expect(await asked()).toBe("about one in ten");
+  ctx.repos.settings.update({ checkIn: "balanced" });
 });
 
 it("holds new requests while a dialogue pass's staged cuts wait for the editor, except ones about that pass", async () => {
@@ -4448,6 +4499,36 @@ it("lets no later cut replace one staged for the editor's ear, and says when a s
   expect(freed.status).toBe(201);
   expect(await freed.json()).not.toHaveProperty("heldForReview");
   expect(ctx.repos.projects.header(project.id)!.head).not.toBe(head);
+});
+
+it("keeps a cut held for its join where the model placed it when a later cut would move it onto other words by unsureJoins cut", async () => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit, listed } = dialoguePassInParts();
+  // "… really good. ‖ And so in this video": the join runs on, so Scarlet held the cut where the model placed it.
+  const { review } = await submit(base, [{ ...staged(8, 10), held: "The words named run on into the ones beside them at the end." }]);
+  // The closing save cuts "And so" as well, at another join Scarlet couldn't place, applied only as unsureJoins cut.
+  const moved = await submit(base, [{ ...staged(8, 10.3), review: false, appliedAsPlaced: true }]) as Awaited<ReturnType<typeof submit>> & { heldCutsStay?: unknown };
+  expect(moved.heldCutsStay).toEqual([{ asked: { start: 8, end: 10.3 }, staged: { start: 8, end: 10 }, why: expect.stringMatching(/staged cut at 8\.00–10\.00 s.*cut it there with unsureJoins cut, record keep, or ask/) }]);
+  expect(ctx.repos.projects.header(project.id)!.head).toBe(base);
+  expect(await listed(moved.review)).toEqual([[8, 10]]);
+  expect(moved.review.id).toBe(review.id);
+  // Cut where it was placed, it applies.
+  const placed = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: base, description: "Part",
+    cuts: [{ start: 8, end: 10, review: false, reason: "Retake.", appliedAsPlaced: true }] });
+  expect(placed.status).toBe(201);
+  expect(await placed.json()).not.toHaveProperty("heldCutsStay");
+  expect(ctx.repos.projects.header(project.id)!.head).not.toBe(base);
+});
+
+it("lets a cut sent with unsureJoins cut take the place of a staged cut that wasn't held for its join", async () => {
+  const { ctx } = workspace;
+  const { task, base, staged, submit } = dialoguePassInParts();
+  await submit(base, [staged(8, 10)]);
+  const res = await api("POST", projectsPath() + "/dialogue-cuts", { taskId: task.id, fromVersion: base, description: "Part",
+    cuts: [{ start: 8, end: 10.5, review: false, reason: "Retake.", appliedAsPlaced: true }] });
+  expect(res.status).toBe(201);
+  expect(await res.json()).not.toHaveProperty("heldCutsStay");
+  expect(ctx.repos.projects.header(project.id)!.head).not.toBe(base);
 });
 
 it("hands off one call while the pass can still trim and assess its other cuts", async () => {
@@ -7103,4 +7184,10 @@ it("records the editor's Keep on the edit's change, once, and tells the request'
   // Another request hears nothing of it, and an edit of another project can't be kept here.
   expect((await (await api("GET", `${projectsPath()}/kept-edits?thread=other`)).json()).kept).toEqual([]);
   expect((await keep([{ changeId: "chg_elsewhere", spot: 0 }])).status).toBe(404);
+  // ⌘Z takes the Keep back: the edit waits on the editor again and the runs hear of it no more. Taking it back twice is harmless.
+  const unkeep = () => api("POST", projectsPath() + "/kept-edits/undo", { threadId: task.id, edits: [{ changeId: saved.id, spot: 0 }] });
+  expect((await unkeep()).status).toBe(204);
+  expect((await unkeep()).status).toBe(204);
+  expect(ctx.repos.changes.get(saved.id)!.kept).toBeUndefined();
+  expect((await (await api("GET", `${projectsPath()}/kept-edits?thread=${task.id}`)).json()).kept).toEqual([]);
 });

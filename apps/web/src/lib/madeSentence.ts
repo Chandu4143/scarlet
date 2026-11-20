@@ -62,8 +62,13 @@ export function madeSentence(listed: readonly Listed[], length: (seconds: number
         const count = counts.get(noun[0]);
         if (count) count.n++; else counts.set(noun[0], { n: 1, noun });
       }
+      // Footage put back is said as what was done to it ("put back 1 passage"), never as a thing made.
+      const restored = counts.get(NOUNS.restore![0]);
+      counts.delete(NOUNS.restore![0]);
       const listed = [...counts.values()];
-      parts.push(cuts.length ? ", and made " : "Made ");
+      if (restored) parts.push(cuts.length ? (listed.length ? ", put back " : " and put back ") : "Put back ",
+        { strong: String(restored.n) }, ` ${restored.n === 1 ? "passage" : "passages"}`);
+      if (listed.length) parts.push(cuts.length ? ", and made " : restored ? " and made " : "Made ");
       listed.forEach(({ n, noun }, i) => {
         if (i) parts.push(i === listed.length - 1 ? " and " : ", ");
         parts.push({ strong: String(n) }, ` ${n === 1 ? noun[0] : noun[1]}`);

@@ -142,10 +142,10 @@ export class RecordingSpeakers {
     // Whatever happens before the lookup is placed, the next request is let go: it waits on this one.
     let file: string, info: Stats, pause: AbortSignal, always: AbortSignal;
     try {
-      await previous;
       pause = ctx.mediaSignal(projectId);
       // Trash, a quit and a change of the transcription settings stop an analysis whoever waits for it.
       always = AbortSignal.any([ctx.projectSignal(projectId), ctx.repos.settings.transcriptionSignal]);
+      await previous;
       if (!priority) pause.throwIfAborted();
       always.throwIfAborted();
       const source = await fileInDirectoryAsync(ctx.paths.media(projectId), media.path);
@@ -226,19 +226,17 @@ export class RecordingSpeakers {
         await Promise.all([!reuse && rm(wav, { force: true }), rm(tmp, { force: true })]);
       }
     };
-    return this.cache.get(key, async () => {
-      const stop = new AbortController();
-      const stopped = () => stop.abort(always.reason);
-      const paused = () => { if (!this.passWaits.has(media.id)) stop.abort(pause.reason); };
-      if (always.aborted) stopped(); else always.addEventListener("abort", stopped, { once: true });
-      if (pause.aborted) paused(); else pause.addEventListener("abort", paused, { once: true });
+    const pauseAbort = new AbortController();
+    const stop = () => { if (!this.passWaits.has(media.id)) pauseAbort.abort(pause.reason); };
+    if (!priority) {
+      pause.addEventListener("abort", stop, { once: true });
+      if (pause.aborted) stop();
+    }
+    const cacheSignal = priority ? always : AbortSignal.any([always, pauseAbort.signal]);
+    return this.cache.get(key, async (signal) => {
       // Nobody's to wait for until a pass reads the recording, so it yields to the editor's playback meanwhile.
-      try { return await editorFirst.run(() => !this.passWaits.has(media.id) && !audioLane(ctx).focusedOn(media.id), () => analyse(stop.signal)); }
-      finally {
-        always.removeEventListener("abort", stopped);
-        pause.removeEventListener("abort", paused);
-      }
-    }, { priority });
+      return editorFirst.run(() => !this.passWaits.has(media.id) && !audioLane(ctx).focusedOn(media.id), () => analyse(signal));
+    }, { priority, signal: cacheSignal }).finally(() => pause.removeEventListener("abort", stop));
   }
 
   /**
@@ -265,8 +263,9 @@ export class RecordingSpeakers {
    */
   begin(ctx: Ctx, projectId: string, media: MediaAsset): void {
     if (!this.beside || ctx.settings().transcription.provider === "none" || (!media.hasAudio && media.kind !== "audio")) return;
+    const pause = ctx.mediaSignal(projectId);
     void ctx.track(this.turns(ctx, projectId, media).catch(err => {
-      if (!ctx.mediaSignal(projectId).aborted) ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);
+      if (!pause.aborted && !ctx.mediaSignal(projectId).aborted) ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);
     }), projectId);
   }
 
@@ -283,6 +282,7 @@ export class RecordingSpeakers {
     if (running) return running;
     if ((this.retryAfter.get(key) ?? 0) > Date.now()) return Promise.resolve();
     const awaited = !!ctx.repos.projects.header(projectId)?.mediaPaused;
+    const stop = awaited ? ctx.projectSignal(projectId) : ctx.mediaSignal(projectId);
     const job = ctx.track((async () => {
       const turns = await this.turns(ctx, projectId, media, decoded, awaited);
       ctx.db.transaction(() => {
@@ -303,7 +303,7 @@ export class RecordingSpeakers {
       this.retryAfter.delete(key);
     })().catch(err => {
       // A pause can't have stopped an analysis made for a request under way, so its failure is one.
-      if (!(awaited ? ctx.projectSignal(projectId) : ctx.mediaSignal(projectId)).aborted) {
+      if (!stop.aborted && !(awaited ? ctx.projectSignal(projectId) : ctx.mediaSignal(projectId)).aborted) {
         if (this.retryAfter.size >= 256) this.retryAfter.delete(this.retryAfter.keys().next().value!);
         this.retryAfter.set(key, Date.now() + 5 * 60_000);
         ctx.log(`[speakers] ${media.id}: ${err instanceof Error ? err.message : err}`);

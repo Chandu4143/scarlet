@@ -5,13 +5,13 @@
  * Keep `exec --json` for CLI versions and authentication modes that cannot use
  * the isolated server. Answers reach a fresh run through the replayed Q&A.
  */
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm, stat, symlink } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { apiKeyVars, stripVars } from "../detect.js";
 import { privateDirectory, writePrivateFile } from "../private-files.js";
-import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, type CodexFallbackReason, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
+import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, type CodexFallbackReason, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, codexUsage, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
@@ -398,6 +398,7 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
     for (const e of parseCodexEvent(event, state)) opts.onEvent(e);
   };
 
+  let compactionItems = false;
   const notify = (method: string, params: Record<string, unknown>) => {
     const eventTurn = string(params.turnId) ?? string(object(params.turn)?.id);
     if (completed || !eventTurn || eventTurn !== turnId) return;
@@ -409,10 +410,19 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
         opts.onUsage?.(usage);
         break;
       }
+      // Codex compacted the thread's context. Newer versions report it as an item too, and that one counts.
+      case "thread/compacted":
+        if (!compactionItems) opts.onEvent(COMPACTED);
+        break;
       case "item/started":
       case "item/completed": {
         const item = object(params.item);
         if (!item) break;
+        if (item.type === "contextCompaction") {
+          compactionItems = true;
+          if (method === "item/completed") opts.onEvent(COMPACTED);
+          break;
+        }
         if (method === "item/completed") {
           const text = string(item.text)?.trim();
           if (item.type === "agentMessage" && item.phase === "final_answer" && text) finalMessage = text;

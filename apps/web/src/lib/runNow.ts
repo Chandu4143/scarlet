@@ -42,7 +42,7 @@ export function runNow(events: readonly TaskEvent[], aim?: string, callNumber?: 
       }
       case "log": {
         const kind = event.data?.kind;
-        if (kind === "init") return "Getting started";
+        if (kind === "init") return STARTING;
         if (kind === "reasoning") return "Thinking";
         if (kind === "connection") return "Reconnecting to the model";
         if (kind === "media_wait") {
@@ -62,6 +62,9 @@ export function runNow(events: readonly TaskEvent[], aim?: string, callNumber?: 
   }
   return undefined;
 }
+
+/** What a run says before its first call. */
+export const STARTING = "Getting started";
 
 /** The number of the call Scarlet made about a pass's cut, when it has asked the editor about that cut. */
 export type CallNumber = (changeId: unknown, index: number) => number | undefined;

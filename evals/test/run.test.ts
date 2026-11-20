@@ -31,9 +31,10 @@ it("averages only the trials that finished, and still lists the ones that didn't
     ({ caseId: "interview", config: "claude:default:high", trial, state, headline: { tokens }, error });
   // A trial cancelled for asking a question is scored from the untouched video: few tokens, no clipped words.
   const md = runMarkdown("Run", [row(1, "done", 1000), row(2, "done", 3000), row(3, "cancelled", 10, "ended cancelled")]);
-  const cells = md.split("\n").find(line => line.startsWith("| interview"))!.split("|").map(cell => cell.trim());
+  const cellsOf = (start: string) => md.split("\n").find(line => line.startsWith(start))!.split("|").map(cell => cell.trim());
+  const cells = cellsOf("| interview");
   expect(cells[3]).toBe("3 (2)");
-  expect(cells.at(-2)).toBe("2000.0 ± 1414.2");
+  expect(cells[cellsOf("| Case").indexOf("tokens")]).toBe("2000.0 ± 1414.2");
   expect(md).toContain("- interview · claude:default:high · trial 3: ended cancelled");
 });
 

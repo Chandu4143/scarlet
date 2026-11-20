@@ -3,9 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../../lib/client";
-import { sampleTemplates } from "../../lib/mock/fixtures";
 import { useSkillsStore } from "../../stores/skills";
-import { useTemplatesStore } from "../../stores/templates";
 import { SkillInstructions } from "./SkillInstructions";
 
 let root: Root;
@@ -13,10 +11,9 @@ let container: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: sampleTemplates() });
-  vi.spyOn(api, "skills").mockResolvedValue({ skills: [] });
-  useTemplatesStore.setState(useTemplatesStore.getInitialState());
-  useSkillsStore.setState({ skills: [], status: "idle", error: null });
+  const skills = [{ id: "skl_1", name: "dialogue-pass", description: "First cut of the dialogue.", content: "", scope: "team", ownerId: null, projectId: null, agents: [], enabled: true, version: 1 }] as never;
+  vi.spyOn(api, "skills").mockResolvedValue({ skills });
+  useSkillsStore.setState({ skills, status: "ready", error: null });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -29,11 +26,11 @@ afterEach(async () => {
 });
 
 it("moves the hover note to the other place a keyword is named when the pointer goes there", async () => {
-  const text = "Open with $lower-third, and close with $lower-third.";
+  const text = "Open with /dialogue-pass, and close with /dialogue-pass. $lower-third is plain.";
   await act(async () => root.render(<SkillInstructions value={text} onChange={() => {}} className="field" />));
   await act(async () => {});
   const words = [...container.querySelectorAll<HTMLElement>(".skill-instructions-text [data-keyword]")];
-  expect(words.map(w => w.textContent)).toEqual(["$lower-third", "$lower-third"]);
+  expect(words.map(w => w.textContent)).toEqual(["/dialogue-pass", "/dialogue-pass"]);
   // The first is on the first line, the second further along on the next.
   words.forEach((word, i) => vi.spyOn(word, "getClientRects").mockReturnValue([new DOMRect(40 + i * 100, 10 + i * 20, 80, 16)] as unknown as DOMRectList));
   const field = container.querySelector<HTMLTextAreaElement>("textarea")!;

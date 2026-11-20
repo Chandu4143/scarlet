@@ -326,7 +326,7 @@ it("says the model list couldn't be read, with Refresh to try again, when a sign
     await act(() => root.render(<MemoryRouter><AgentChip /><ModelSettings /></MemoryRouter>));
     const chip = container.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
     expect([chip.textContent?.trim(), chip.title]).toEqual(["Refresh models", "Couldn’t read the model list. Refresh models to try again."]);
-    expect(container.textContent).toContain("Couldn’t read the model list. Refresh models to try again, and update Claude Code or Codex if it still fails.");
+    expect(container.textContent).toContain("Couldn’t read the model list. Refresh models to try again, and update Claude Code, Codex or Gemini if it still fails.");
     expect(container.textContent).not.toContain("current-generation");
   } finally {
     await act(() => root.unmount());
@@ -391,7 +391,7 @@ it("installs Codex and signs in without leaving the project or clearing the draf
     await click("Set up a model");
     // The dialog is the sign-in card, in the card's words.
     expect(el.querySelector("dialog[open] h2")?.textContent).toBe("Sign in");
-    expect(el.querySelector("dialog[open] p")?.textContent).toBe("Choose Claude Code or Codex. Install it if needed, then sign in with your subscription.");
+    expect(el.querySelector("dialog[open] p")?.textContent).toBe("Choose Claude Code, Codex or Gemini. Install it if needed, then sign in with your subscription.");
     await click("Install Codex");
     expect(install).toHaveBeenCalledWith("codex");
     await click("Sign in with ChatGPT");

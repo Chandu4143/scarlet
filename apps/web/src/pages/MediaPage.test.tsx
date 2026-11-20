@@ -454,6 +454,36 @@ const jobs = (row: Element) => ({
   actions: [...row.querySelectorAll(".media-jobs button, .media-jobs a")].map(action => action.textContent),
 });
 
+it("hides Pause in the library toolbar until media processing is working or paused", async () => {
+  const button = (container: HTMLElement) => container.querySelector<HTMLButtonElement>('button[title$=" media processing"]');
+  // Empty library: nothing is working yet, so Pause is absent.
+  await showMedia({ media: [] }, async container => {
+    expect(button(container)).toBeNull();
+  });
+  // Ready files with no active preparation, caching, or transcription: still no Pause.
+  const ready = fixtureVideo({ id: "camera", name: "camera.mov", transcriptId: "trs_1" });
+  await showMedia({ media: [ready], caches: [{ mediaId: "camera", state: "ready" }] }, async container => {
+    expect(button(container)).toBeNull();
+  });
+  // Preparing a file shows Pause.
+  const reading = fixtureVideo({ id: "cam", name: "cam.mov", status: "ingesting", preparation: { stage: "waveform", fraction: 0.25 } });
+  await showMedia({ media: [reading] }, async container => {
+    expect(button(container)?.textContent).toBe("Pause");
+  });
+  // Active transcription shows Pause even without video caching.
+  const transcribing: Task = {
+    ...buildDb().tasks[0]!, id: "tr_1", projectId: PRJ, kind: "transcribe", agent: "api", state: "running",
+    context: { mediaId: ready.id }, instruction: "Transcribe camera.mov",
+  };
+  await showMedia({ media: [ready], tasks: [transcribing] }, async container => {
+    expect(button(container)?.textContent).toBe("Pause");
+  });
+  // While paused, Resume stays available even with no files.
+  await showMedia({ media: [], mediaPaused: true }, async container => {
+    expect(button(container)?.textContent).toBe("Resume");
+  });
+});
+
 it("pauses and resumes media processing from the library toolbar", async () => {
   const media = [fixtureVideo({ id: "camera", name: "camera.mov" })];
   await showMedia({ media, caches: [{ mediaId: "camera", state: "caching", progress: 0.42 }] }, async container => {

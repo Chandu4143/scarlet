@@ -5,8 +5,8 @@
 import { z } from "zod/v3";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ScarletApiError, type ProjectDetail, type ScarletClient, type ScarletToolName, type WaveformResponse } from "@scarlet/shared";
-import { timelineDuration, type Project, type Timeline, type TranscriptWord } from "@scarlet/timeline";
-import { auditJoin, formatTimelineTranscript, heardOnlyVerbatim, joinTook, newJoins, timelineJoins, timelineWords, type JoinAudit, type TimelineJoin, type TimelineWord } from "./timeline-perception.js";
+import { timelineDuration, type Project, type Timeline, type TimeRange, type TranscriptWord } from "@scarlet/timeline";
+import { auditJoin, formatTimelineTranscript, heardOnlyVerbatim, joinTook, newJoins, timelineJoins, timelineWords, type HeardOnly, type JoinAudit, type TimelineJoin, type TimelineWord } from "./timeline-perception.js";
 import { pictureEntranceReader } from "./picture-entrance.js";
 import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, noteEvidenceMiss, text } from "./tool-result.js";
@@ -29,8 +29,10 @@ interface PerceptionDeps {
   /** The portion of an edited transcript actually returned to the agent. */
   readPassage(version: string, range: { start: number; end: number }): void;
   getProject(): Promise<Pick<ProjectDetail, "project">>;
-  /** A media's words in transcript_get order (index = stable word index), or null without a transcript. */
-  /** With `through`, only words whose times are final up to that source second: it rejects while alignment hasn't reached it. */
+  /**
+   * A media's words in transcript_get order (index = stable word index), or null without a transcript.
+   * With `through`, only words whose times are final up to that source second: it rejects while alignment hasn't reached it.
+   */
   transcriptWords(mediaId: string, prepareMissing?: boolean, through?: number): Promise<TranscriptWord[] | null>;
   /** Of these words of a recording (transcript index, source seconds), the ones heard only on the input its dialogue isn't on. */
   otherInputWords?(mediaId: string, words: Array<{ index: number; start: number; end: number }>): Promise<Set<number>>;
@@ -432,7 +434,12 @@ export function registerPerception(deps: PerceptionDeps) {
     motionOn,
     besideOn,
     cutsOn,
-    /** Audit the joins at timeline times `at` on a version (e.g. a staged cut's join on its toVersion). */
+    /** Words the scan's saved word-for-word reading plays on `tl` in `range` that the transcript doesn't have. */
+    async heardOnlyOn(tl: Timeline, range: TimeRange): Promise<HeardOnly[]> {
+      const { project } = await deps.getProject();
+      const transcripts = await wordsFor(tl, project);
+      return transcripts.size ? heardOnly(tl, transcripts, timelineWords(tl, transcripts, range)) : [];
+    },
     /**
      * Audit the join a cut left at timeline time `at` on a version (e.g. a staged cut's join on its
      * toVersion). A crossfade counts when `at` falls inside its overlap. Without a join, `noJoin` says

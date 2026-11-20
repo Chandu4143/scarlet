@@ -23,6 +23,23 @@ node_modules/.bin/vitest run --config evals/vitest.config.ts
 node_modules/.bin/tsc -p evals/tsconfig.json
 ```
 
+## The dialogue ledger
+
+Every mistake the editor reports in a dialogue cut is an entry with a check, and every change to dialogue cutting is
+run against all of them: [DIALOGUE.md](DIALOGUE.md) says how. `ledger.ts check` runs the free checks (unit tests, and
+replays of the model's real requests through today's code) and compares with the last recorded run.
+
+## The dialogue scorecard
+
+`scorecard.ts` turns manifest-eligible `dialogue-playable-v2` passes into **Watchability** (four craft-bug factors
+scored by rate per 10 finished minutes: mid-word cuts, wrong cuts, long missed removals, and stutter cuts), **Editorial
+match** (cut decisions, take choice, lines kept, same cuts, pauses, dead air, cut count, space at a cut, restarts left
+in, known mistakes), a combined **Overall** (geometric mean of Watchability and Editorial match, withheld when required
+evidence is missing), and a count of automated flags vs. short editorial tightenings left in, read against the published
+video decision by decision (`cutDetail.ts`). Use `--point recommended` (default) or `--point automatic` to grade each
+playable cut separately, and `rescore.ts` to regrade saved runs offline without model tokens. See
+[DIALOGUE.md](DIALOGUE.md).
+
 ## What it measures
 
 Times are seconds on the dialogue recording's source clock, so runs from different versions can be compared.
@@ -102,7 +119,9 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 
 **Trace.** This section covers the agent's process:
 
-- Active time, which excludes time spent waiting for the editor's answer.
+- Time to finish: from the request to the task's end on the wall clock, queue and the editor's answers included.
+- Active time, which excludes time spent waiting for the editor's answer. A task claimed again after a restart keeps
+  only its latest start, so active time and the times below count from its first event when that is earlier.
 - Time to the first change.
 - Time to the first call for the editor: when the first staged cut reached Needs your call. This is how soon
   the editor can start deciding. Also the time to the agent's first saved recommendation.
@@ -110,6 +129,9 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 - Listening calls (`source_audio`, or `includeAudio` on a check, inspect, or review), visual inspections,
   and level reads.
 - `task.usage` token counts when the engine records them.
+- Estimated cost: the engine's `estimatedApiCostUsd`, each run priced at its model's API list price and speed. Runs use
+  the editor's subscription, so this compares configurations; it isn't a bill. A model the engine has no price for
+  leaves the run without a cost and is named instead.
 - The submitted plan by kind and decision.
 - The share of edged cuts whose edges were checked with `dialogue_check_join`.
 

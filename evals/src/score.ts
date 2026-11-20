@@ -2,12 +2,13 @@
  * Score one finished first-cut run: what it applied, what it staged for review, how clean its joins
  * are, how it compares with a reference cut, and what the agent did. Pure; evaluate.ts gathers inputs.
  */
-import type { Change, Timeline } from "../../packages/timeline/src/index.ts";
+import { applyOps, type Change, type Timeline } from "../../packages/timeline/src/index.ts";
+import { cutDetail, addCutDetails, type CutDetail } from "./cutDetail.ts";
 import type { ReviewChangeExport } from "./engine.ts";
 import { subtract, type Range } from "./intervals.ts";
 import {
   DEFAULT_EDGE_OPTIONS, classifyEdges, compareToDecisions, compareToReference, cutEdges, joinEdges, pacing, planMetrics, removedSource,
-  summarizeEdges, summarizeRemoval, traceMetrics, round, type CutRecord, type EdgeOptions, type EdgeReport, type EdgeSummary,
+  summarizeEdges, summarizeRemoval, toolName, traceMetrics, round, type CutRecord, type EdgeOptions, type EdgeReport, type EdgeSummary,
   type EventLike, type Kept, type LabeledRange, type MediaEvidence, type PacingGap, type PacingRepeat, type PacingSummary, type PlanMetrics,
   type ReferenceComparison, type RemovalSummary, type SubmittedPlan, type TaskLike, type TraceMetrics, type Word, overlap,
 } from "./metrics.ts";
@@ -15,7 +16,7 @@ import { pictureAt } from "./layout.ts";
 import { scoreMoments, type LeftEdit, type Moment, type MomentResult } from "./moments.ts";
 import { comparePicture, summarizePicture, type PictureComparison, type PictureSample, type PictureSummary } from "./picture.ts";
 import { comparePublishedJoinSpacing, type PublishedReference } from "./published.ts";
-import { dividedJoins, keptSource, playedWords, sourceSpan, sourceToTimeline, timelineRangeToSource, wordsWithout, type DividedJoin, type MediaInfo, type SourceRange } from "./timeline.ts";
+import { dividedJoins, keptSource, playedWords, sourceSpan, sourceToTimeline, timelineRangeToSource, type DividedJoin, type MediaInfo, type SourceRange } from "./timeline.ts";
 
 export interface ScoreInput {
   media: MediaInfo[];
@@ -88,7 +89,16 @@ interface PacingScore {
   /** The longest gaps of the edit the task left, when that is not the applied version. */
   finalGaps?: PacingGap[];
 }
+export const RUBRIC = "dialogue-playable-v2";
+export type OperatingPoint = "automatic" | "recommended";
+interface Playable {
+  seconds: number; kept: Record<string, Range[]>; edges: EdgeSummary; pacing: PacingSummary;
+  cut?: ScoredReference; detail?: CutDetail; moments?: MomentResult[];
+  sharedJoins?: ReturnType<typeof comparePublishedJoinSpacing>;
+}
 export interface Score {
+  rubric: typeof RUBRIC;
+  playable: Record<OperatingPoint, Playable>;
   versions: { source: string; applied: string; proposed: string; final?: string };
   applied: Tier;
   review: ReviewTier | null;
@@ -236,9 +246,11 @@ export function scoreRun(input: ScoreInput): Score {
   // they were staged on; one whose footage that edit no longer plays takes nothing out.
   const waiting = input.waiting ?? [];
   const staged = [...(input.review && input.reviewChange?.state !== "approved" ? input.review.cuts : []), ...waiting.flatMap(w => w.cuts)];
-  const pickedSources = staged.filter(c => c.assessment?.verdict === "cut").flatMap(c => c.sources);
-  const recommendedPacing = staged.length || timelines.final
-    ? summary(pacing(wordsWithout(leftWords, sourceToTimeline(left, media, pickedSources)))) : undefined;
+  const pickedSources = staged.filter(c => c.decision === "pending" && c.assessment?.verdict === "cut").flatMap(c => c.sources);
+  const deletions = sourceToTimeline(left, media, pickedSources).reverse();
+  const picked = deletions.length ? applyOps(left, deletions.map(range => ({ op: "rippleDelete", ...range }))) : left;
+  const pickedWords = picked === left ? leftWords : words(picked);
+  const recommendedPacing = picked === left ? leftPacing : summary(pacing(pickedWords));
   if (recommendedPacing) pacingScore.recommended = recommendedPacing;
 
   // The agent's own call, before the editor: what the task left, less the staged cuts it recommended cutting.
@@ -248,11 +260,12 @@ export function scoreRun(input: ScoreInput): Score {
     return out;
   };
   const kLeft = timelines.final ? keptSource(timelines.final, media) : kA;
-  const recommended = without(kLeft, pickedSources);
+  const recommended = picked === left ? kLeft : keptSource(picked, media);
   // Every staged item cut. Without later changes or staged cuts from other versions, the proposed version is exactly that.
   const kProposed = timelines.final || waiting.length ? without(kLeft, staged.flatMap(c => c.sources)) : kR;
 
   let reference: Score["reference"] = null;
+  let automaticCut: ScoredReference | undefined;
   if (input.reference && (input.reference.published || input.reference.timeline || input.reference.labels?.length)) {
     const kRef: Kept | undefined = published ? new Map(Object.entries(published.kept)) : input.reference.timeline && keptSource(input.reference.timeline, media);
     const point = (candidate: Kept) => {
@@ -265,6 +278,7 @@ export function scoreRun(input: ScoreInput): Score {
     };
     const { kept: _kept, played: _played, pieces: _pieces, picture: _picture, ...matched } = published ?? ({} as PublishedReference);
     reference = { label: input.reference.label, ...(published && { published: matched }), operatingPoints: { applied: point(kA), recommended: point(recommended), proposed: point(kProposed) } };
+    automaticCut = kLeft === kA ? reference.operatingPoints.applied.cut : point(kLeft).cut;
   }
 
   const measured = input.reference?.published?.picture;
@@ -285,11 +299,34 @@ export function scoreRun(input: ScoreInput): Score {
   const usage = trace?.usage as { totalTokens?: number; inputTokens?: number; outputTokens?: number } | undefined;
   const tokens = usage ? (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)) || null : null;
   const ranges = (kept: ReadonlyMap<string, readonly Range[]>) => Object.fromEntries([...kept].map(([id, rs]) => [id, rs.map(r => ({ start: round(r.start, 3), end: round(r.end, 3) }))]));
+  // Edits the pass flagged for the editor with edit_flag: applied, but the editor is asked to check them, so a mistake
+  // under one reaches the editor as a staged cut does. Each flag names a timeline range on the version it was made on.
+  const flagged = (input.events ?? []).flatMap(e => {
+    const input_ = e.data?.input as { version?: string; range?: Range } | undefined;
+    if (e.type !== "tool" || toolName(String(e.data?.tool ?? "")) !== "edit_flag" || !input_?.version || !input_.range) return [];
+    const tl = timelineAt(input_.version);
+    return tl ? timelineRangeToSource(tl, media, input_.range).filter(r => r.end > r.start) : [];
+  }).map(s => ({ mediaId: s.mediaId, start: round(s.start, 3), end: round(s.end, 3) }));
+  const flags = (input.events ?? []).filter(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "edit_flag").length;
   const leftEdit: LeftEdit = { kept: ranges(kLeft), removed: ranges(removedSource(kS, kLeft)),
-    staged: staged.flatMap(c => c.sources).map(s => ({ mediaId: s.mediaId, start: round(s.start, 3), end: round(s.end, 3) })) };
+    staged: staged.flatMap(c => c.sources).map(s => ({ mediaId: s.mediaId, start: round(s.start, 3), end: round(s.end, 3) })),
+    ...(flagged.length && { flagged }) };
   const moments = input.moments?.length ? scoreMoments(input.moments, evidence, leftEdit) : undefined;
   const momentCount = (outcome: MomentResult["outcome"]) => moments ? moments.filter(m => m.outcome === outcome).length : null;
+  const view = (tl: Timeline, kept: Kept, played: typeof leftWords, pace: PacingSummary, cut?: ScoredReference): Playable => {
+    const keys = [...kS.keys()];
+    const detail = published && keys.length && keys.every(id => evidence.get(id)?.words?.length && published.kept[id])
+      ? addCutDetails(keys.map(id => cutDetail(evidence.get(id)!.words!, kS.get(id)!, kept.get(id) ?? [], published.kept[id]!))) : undefined;
+    const keptRanges = Object.fromEntries([...kept].map(([id, entries]) => [id, [...entries]]));
+    return { seconds: duration(tl), kept: keptRanges, pacing: pace, cut, detail,
+      edges: summarizeEdges(classifyEdges(joinEdges(kS, kept), evidence, opts), opts),
+      ...(input.moments?.length && { moments: scoreMoments(input.moments, evidence, { kept: keptRanges, removed: {}, staged: [] }) }),
+      ...(published && { sharedJoins: comparePublishedJoinSpacing(published, played) }) };
+  };
+  const automatic = view(left, kLeft, leftWords, leftPacing, automaticCut);
+  const playable = { automatic, recommended: picked === left ? automatic : view(picked, recommended, pickedWords, recommendedPacing, reference?.operatingPoints.recommended.cut) };
   return {
+    rubric: RUBRIC, playable,
     versions: { source: timelines.source.version, applied: timelines.applied.version, proposed: timelines.proposed.version,
       ...(timelines.final && { final: timelines.final.version }) },
     applied, review, pacing: pacingScore, picture, plan, trace, reference, left: leftEdit, ...(moments && { moments }),
@@ -306,6 +343,8 @@ export function scoreRun(input: ScoreInput): Score {
       needsYourCall: review || waiting.length ? (review?.ai.ask ?? 0) + waiting.reduce((n, w) => n + w.cuts.filter(c => c.assessment?.verdict === "ask").length, 0) : null,
       // Staged cuts on other versions than the scored review's, still waiting for the editor.
       stagedWaiting: waiting.reduce((n, w) => n + w.cuts.length, 0),
+      // Applied edits the pass flagged for the editor to check (edit_flag).
+      flaggedForYou: flags,
       heldByScarlet: review?.heldByScarlet ?? null,
       // What the task left playing, with its own changes after its last dialogue part.
       gapsLeft: leftPacing.gaps.inside + leftPacing.gaps.atJoins,
@@ -324,7 +363,7 @@ export function scoreRun(input: ScoreInput): Score {
       sharedAppliedJoinGapMedianAbsErrorMs: pacingScore.sharedJoins?.applied.medianAbsErrorMs ?? null,
       layoutAgreement: picture?.applied.layoutAgreement ?? null,
       framingAgreement: picture?.applied.main?.sameFraming ?? null,
-      clippedWordsOnSound: applied.edges.clippedOnSound + (review?.edges.clippedOnSound ?? 0),
+      clippedWordsOnSound: playable.recommended.edges.clippedOnSound,
       checkJoinCoverage: plan?.checkJoinCoverage ?? null,
       wordF1: proposedRef?.words.f1 ?? null,
       timeF1: proposedRef?.time.f1 ?? null,
@@ -336,9 +375,12 @@ export function scoreRun(input: ScoreInput): Score {
       momentsWrong: momentCount("wrong"),
       toolCalls: trace?.toolCalls ?? null,
       toolErrors: trace?.errors ?? null,
+      finishMinutes: trace?.finishSeconds == null ? null : round(trace.finishSeconds / 60, 1),
       activeMinutes: trace?.activeSeconds == null ? null : round(trace.activeSeconds / 60, 1),
       firstCallMinutes: trace?.firstCallSeconds == null ? null : round(trace.firstCallSeconds / 60, 1),
       tokens,
+      outputTokens: usage?.outputTokens ?? null,
+      costUsd: trace?.costUsd ?? null,
     },
   };
 }

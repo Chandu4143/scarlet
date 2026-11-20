@@ -678,3 +678,25 @@ it("carries an edit's passage on playing when the element under it is replaced w
   expect(next.paused).toBe(false);
   next.remove();
 });
+
+it("tells who listens for the editor's pause, with the clock on the frame it stopped on, and not for a pause of its own", () => {
+  let paused = true;
+  vi.spyOn(video, "paused", "get").mockImplementation(() => paused);
+  vi.spyOn(video, "play").mockImplementation(async () => { paused = false; });
+  vi.spyOn(video, "pause").mockImplementation(() => { paused = true; });
+  const heard: number[] = [];
+  const stop = player.onEditorPause(() => heard.push(usePlayerStore.getState().time));
+  player.toggle();
+  // The clock is published a few times a second: it reads 4 s while the picture is already at 4.3 s.
+  reach(4);
+  video.currentTime = 4.3;
+  player.toggle();
+  expect(heard).toEqual([4.3]);
+  // The app pausing on its own is no pause of the editor's.
+  player.toggle();
+  player.pause();
+  stop();
+  player.toggle();
+  player.toggle();
+  expect(heard).toEqual([4.3]);
+});

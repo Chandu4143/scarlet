@@ -42,11 +42,11 @@ it("counts restarts and running tasks in words, not with (s)", async () => {
   }
 });
 
-it("names Claude Code and Codex in the sign-in card's sentence as its rows do, and signs in to both with one verb", async () => {
+it("names Claude Code, Codex and Gemini in the sign-in card's sentence as its rows do, and signs in to all three with one verb", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
   const host: HostStatus = { hostId: "local", running: [], connected: true, serverUrl: null, name: null, error: null, mcpCommand: null, configured: true, agents: [
-    { id: "claude", installed: true, loggedIn: false }, { id: "codex", installed: true, loggedIn: false }, { id: "gemini", installed: true, loggedIn: true }] };
+    { id: "claude", installed: true, loggedIn: false }, { id: "codex", installed: true, loggedIn: false }, { id: "gemini", installed: true, loggedIn: false }] };
   vi.spyOn(desktop, "onEngineStatus").mockResolvedValue(() => {});
   vi.spyOn(desktop, "engineStatus").mockResolvedValue({ state: "ready" } as EngineStatus);
   vi.spyOn(desktop, "onHostStatus").mockResolvedValue(() => {});
@@ -59,9 +59,9 @@ it("names Claude Code and Codex in the sign-in card's sentence as its rows do, a
     await act(async () => root.render(<DesktopAgents />));
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(container.querySelector("h3")?.textContent).toBe("Sign in");
-    expect(container.querySelector("p")?.textContent).toBe("Choose Claude Code or Codex. Install it if needed, then sign in with your subscription.");
+    expect(container.querySelector("p")?.textContent).toBe("Choose Claude Code, Codex or Gemini. Install it if needed, then sign in with your subscription.");
     expect([...container.querySelectorAll("li")].map(row => [row.querySelector("div > div")?.textContent, row.querySelector("button")?.textContent]))
-      .toEqual([["Claude Code", "Sign in with Claude"], ["Codex", "Sign in with ChatGPT"]]);
+      .toEqual([["Claude Code", "Sign in with Claude"], ["Codex", "Sign in with ChatGPT"], ["Gemini", "Sign in with Google"]]);
     expect(container.textContent).not.toMatch(/assistant|\bAI\b|Connect/);
   } finally {
     await act(async () => root.unmount());

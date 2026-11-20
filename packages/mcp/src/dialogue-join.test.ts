@@ -257,6 +257,20 @@ describe("native retake boundaries", () => {
     expect(cut.dips).toHaveLength(2);
     expect(cut.problems).toEqual(["No pause on either side of “the”: both edges sit between words that run together."]);
   });
+  it("keeps a start edge before the middle of a named word too quiet to locate", () => {
+    // “nice you can”: a faint “you” runs on from “nice” with no pause and the room is quiet for the last 40 ms of its
+    // timing. The edge went to that quiet, past the middle of the “you” the cut names, and the save was refused for
+    // playing “you” twice (2026-11-17).
+    const said = [{ start: 1, end: 1.5, text: "nice" }, { start: 1.5, end: 1.62, text: "you" }, { start: 1.62, end: 1.8, text: "can" }, { start: 2.6, end: 3, text: "see" }];
+    const rms = Array.from({ length: 250 }, (_, i) => i >= 50 && i < 75 ? .12 : i >= 75 && i < 79 ? .006 : i >= 79 && i < 81 ? .0002 : (i >= 81 && i < 90) || (i >= 130 && i < 150) ? .12 : .001);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: 1, end: 1.8 }, { start: 2.6, end: 3 }] });
+    const cut = wordCutRange(said, 1, 2, () => edges);
+    expect(cut.start).toBeLessThanOrEqual(1.56);
+    // The join check keeps it there too: the quiet is past the middle of “you”, and moving onto it would leave “you” playing.
+    const { p, tl } = fixture();
+    const joined = checkDialogueJoin(tl, p, { start: cut.start, end: cut.end }, [{ mediaId: "mic", start: 0, end: 5, edges }]);
+    expect(joined.start).toBeLessThanOrEqual(1.56);
+  });
   it("puts a dip edge in the middle of the room tone between two words, not on its last bucket before the next word", () => {
     // “one two”: room tone from 1.44 to 1.52 s, deepest in its last 20 ms, then “two” starts. A pause, then “three”.
     const said = [{ start: 1, end: 1.5, text: "one" }, { start: 1.5, end: 2, text: "two" }, { start: 2.6, end: 3, text: "three" }];
@@ -474,13 +488,15 @@ describe("native retake boundaries", () => {
     const deaf = wordCutRange(words, 1, 1, () => ({ ...page.edges!, quiet: [], valleys: [], levels: undefined }));
     expect(deaf.problems).toHaveLength(2);
     // A stray word with a gap before it and none after: “With” runs straight into “the”. Both edges used to find
-    // that one gap and the range came out empty. The gap is the start's; the end uses the word timing and says so.
+    // that one gap and the range came out empty. The gap is the start's; the end goes where the transcript parts the
+    // two words, which run together, and says so.
     const run = [{ start: 9.5, end: 9.7, text: "good." }, { start: 10.0, end: 10.28, text: "With" }, { start: 10.28, end: 10.5, text: "the" }];
     const stray = wordCutRange(run, 1, 1, () => ({ ...page.edges!, quiet: [{ start: 9.72, end: 9.98 }], valleys: [] }));
     expect(stray.start).toBeGreaterThan(9.72);
     expect(stray.start).toBeLessThan(9.98);
     expect(stray.end).toBeCloseTo(10.28);
-    expect(stray.problems).toEqual(["No measured silence between “With” and “the”. The end uses the word timing."]);
+    expect(stray.problems).toEqual([]);
+    expect(stray.dips).toEqual(["No pause or low point between “With” and “the”: they run together, and the end is where the transcript parts them."]);
     expect(deaf.problems[0]).toMatch(/No measured silence between “finish” and “first”/);
     expect(deaf.start).toBeCloseTo((1.38 + 1.8) / 2);
   });
@@ -519,13 +535,14 @@ describe("native retake boundaries", () => {
     expect(unread.start).toBeCloseTo(3 + AIR_AFTER_SPEECH);
     expect(unread.end).toBeCloseTo(17 - AIR_BEFORE_SPEECH);
     // A stray word after such a pause: “With” runs straight into “the”, so both its edges find the pause before it.
-    // That pause is still the start's, now placed beside “good.”, and the end uses the word timing and says so.
+    // That pause is still the start's, now placed beside “good.”, and the end is where the transcript parts “With” and “the”.
     const run = [{ start: 1, end: 1.4, text: "good." }, { start: 7, end: 7.28, text: "With" }, { start: 7.28, end: 7.5, text: "the" }];
     const sounding = [{ start: 1, end: 1.4 }, { start: 7, end: 7.5 }];
     const stray = wordCutRange(run, 1, 1, at([read(3, 8, sounding), read(0, 4, sounding)]));
     expect(stray.start).toBeCloseTo(1.4 + AIR_AFTER_SPEECH);
     expect(stray.end).toBeCloseTo(7.28);
-    expect(stray.problems).toEqual(["No measured silence between “With” and “the”. The end uses the word timing."]);
+    expect(stray.problems).toEqual([]);
+    expect(stray.dips).toEqual(["No pause or low point between “With” and “the”: they run together, and the end is where the transcript parts them."]);
     // A gap the middle reading shows from word to word is placed from that reading alone, as before. Here another page
     // has more around the end of “finish” and hears its voice run on to 1.5 s, where the middle's hears it stop at 1.44 s.
     const middle = read(1, 5, voice), beside = read(0, 2, [{ start: .98, end: 1.5 }, voice[1]!]);

@@ -11,7 +11,7 @@ import { useUiStore } from "../../stores/ui";
 import type { MediaAsset } from "@scarlet/timeline";
 import { TranscriptLine } from "../media/TranscriptionAction";
 import { UsageSettings } from "../shell/UsageSettings";
-import { RequestMetrics, RunBundle, runEnded, Said } from "./RunBundle";
+import { RequestMetrics, RunBundle, runEnded } from "./RunBundle";
 
 const task: Task = {
   id: "tsk_1", projectId: "prj_1", kind: "edit", agent: "claude", model: "opus", instruction: "Tighten the intro",
@@ -249,6 +249,16 @@ it("says what Scarlet is doing this moment on one line under its opening sentenc
   // A run not yet started says so; done, the sentence and the line go.
   bare.rerender(<RunBundle task={{ ...running, state: "claimed" }} events={[]} changes={[]} onStop={() => {}} />);
   expect(now(bare.host)).toBe("Getting started");
+  // A run that carries on after Scarlet closed or restarted says so until its first call, which then takes the line.
+  const again: Task = { ...running, id: "tsk_again", resumeRootId: running.id };
+  for (const state of ["claimed", "running"] as const) {
+    bare.rerender(<RunBundle task={{ ...again, state }} events={[]} changes={[]} onStop={() => {}} />);
+    expect(now(bare.host)).toBe("Picking up where it left off");
+  }
+  bare.rerender(<RunBundle task={again} events={[{ type: "log", at: at(1), text: "Claude Code session started", data: { kind: "init" } }]} changes={[]} onStop={() => {}} />);
+  expect(now(bare.host)).toBe("Picking up where it left off");
+  bare.rerender(<RunBundle task={again} events={reading} changes={[]} onStop={() => {}} />);
+  expect(now(bare.host)).toBe("Reading the dialogue at 12:34");
   bare.rerender(<RunBundle task={{ ...task, summary: "Cut the dialogue." }} events={spoken} changes={[]} banded />);
   expect(bare.host.querySelector(".req-lead, .req-now")).toBeNull();
   bare.unmount();

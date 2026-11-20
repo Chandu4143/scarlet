@@ -105,7 +105,8 @@ class Browser {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
   private readonly listeners = new Set<(m: CdpMessage) => void>();
-  private buffer = Buffer.alloc(0);
+  /** The pieces of a message still arriving. A 4K frame comes as hundreds of them, and they are joined once, at its end. */
+  private parts: Buffer[] = [];
   private exited: Error | undefined;
   private rejectGone: (error: Error) => void = () => undefined;
   /** Rejects once Chrome has exited or been closed, with why. */
@@ -149,10 +150,12 @@ class Browser {
   }
 
   private read(chunk: Buffer) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    for (let end = this.buffer.indexOf(0); end >= 0; end = this.buffer.indexOf(0)) {
-      const message = JSON.parse(this.buffer.subarray(0, end).toString("utf8")) as CdpMessage;
-      this.buffer = this.buffer.subarray(end + 1);
+    let from = 0;
+    for (let end = chunk.indexOf(0); end >= 0; end = chunk.indexOf(0, from)) {
+      this.parts.push(chunk.subarray(from, end));
+      const message = JSON.parse((this.parts.length === 1 ? this.parts[0]! : Buffer.concat(this.parts)).toString("utf8")) as CdpMessage;
+      this.parts = [];
+      from = end + 1;
       if (message.id !== undefined) {
         const waiter = this.pending.get(message.id);
         this.pending.delete(message.id);
@@ -160,6 +163,7 @@ class Browser {
         else waiter?.resolve(message.result ?? {});
       } else for (const listen of this.listeners) listen(message);
     }
+    if (from < chunk.length) this.parts.push(chunk.subarray(from));
   }
 
   private fail(error: Error) {
@@ -425,12 +429,28 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
     const ready = new Map<number, Buffer>();
     let written = 0;
     const waiting: Array<() => void> = [];
+    const waitDrain = () => new Promise<void>(resolve => {
+      const stdin = ffmpeg.stdin!;
+      if (stdin.destroyed || stdin.writableEnded || opts.signal?.aborted) return resolve();
+      const done = () => {
+        stdin.off("drain", done);
+        stdin.off("close", done);
+        stdin.off("error", done);
+        opts.signal?.removeEventListener("abort", done);
+        resolve();
+      };
+      stdin.once("drain", done);
+      stdin.once("close", done);
+      stdin.once("error", done);
+      opts.signal?.addEventListener("abort", done, { once: true });
+    });
     const write = async () => {
       while (ready.has(written)) {
+        if (ffmpeg.stdin!.destroyed || opts.signal?.aborted) { ready.clear(); break; }
         const png = ready.get(written)!;
         ready.delete(written);
         written++;
-        if (!ffmpeg.stdin!.write(png)) await new Promise(resolve => ffmpeg.stdin!.once("drain", resolve));
+        if (!ffmpeg.stdin!.write(png)) await waitDrain();
         opts.onProgress?.(written / total);
       }
       for (const resume of waiting.splice(0)) resume();
@@ -454,10 +474,10 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
     };
     try {
       await Promise.race([
-        held ? hold(held) : Promise.all(pages.map((page, w) => draw(page, w))),
+        held ? hold(held) : Promise.all(pages.map((page, w) => draw(page, w))).then(() => writing),
         finished.then(() => { throw new Error("ffmpeg stopped before the graphic was drawn."); }),
       ]);
-      await writing;
+      opts.signal?.throwIfAborted();
       ffmpeg.stdin!.end();
       await finished;
     } catch (error) {
@@ -476,7 +496,7 @@ export async function renderGraphic(opts: GraphicRenderOptions): Promise<Graphic
   });
 }
 
-/** Draw one moment of the page as a transparent PNG, scaled to `outputWidth` (a template's preview). */
+/** Draw one moment of the page as a transparent PNG, scaled to `outputWidth`. */
 export async function renderGraphicStill(opts: GraphicPageOptions & { time: number; outputWidth?: number }): Promise<{ png: Buffer; missingFonts: MissingFont[]; installedFonts: string[]; problems: string[] }> {
   return withBrowser(opts, async (browser, url) => {
     const scale = opts.outputWidth ? opts.outputWidth / opts.width : 1;

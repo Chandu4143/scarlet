@@ -13,28 +13,40 @@ const empty: ThreadEdit[] = [];
 /** Only project/thread/version-matched markers can start playback. Ignore replies from a previous view. */
 export function useThreadTimeline(projectId: string, head: string | null, thread: Thread | undefined, passes: Map<string, FirstCutDelivery> | undefined, passFocused: boolean) {
   const key = useThreadEditKey(projectId, head, thread);
-  const [result, setResult] = useState<{ key: string; edits?: ThreadEdit[]; error?: string }>();
+  const [result, setResult] = useState<{ key: string; edits?: ThreadEdit[]; rejected?: ThreadEdit[]; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   // `single`: one edit of a moment, picked from under its row, and not the moment it is in.
-  const [picked, setPicked] = useState<{ owner: string; ref: EditRef; request: number; single?: boolean }>();
+  // `leaving`: the editor rejected it a moment ago. It stays on its card as it was while it leaves the timeline.
+  const [picked, setPicked] = useState<{ owner: string; ref: EditRef; request: number; single?: boolean; leaving?: boolean }>();
   const owner = JSON.stringify([projectId, thread?.id]);
   useEffect(() => { setPicked(undefined); }, [owner]);
   useEffect(() => {
     if (!head || !thread) return;
     let live = true;
     requestThreadEdits(key, projectId, thread.id).then(({ edits, version }) => {
-      if (live) setResult(version === head ? { key, edits } : { key, error: "The project timeline has changed. Refresh the edit markers." });
+      // An edit the editor rejected is no longer in the video: it has no dot, no number and no place among the edits to
+      // step through. Its row in the chat's list still opens it, to show where it was.
+      if (live) setResult(version === head ? { key, edits: edits.filter(e => !e.rejected), rejected: edits.filter(e => e.rejected) }
+        : { key, error: "The project timeline has changed. Refresh the edit markers." });
     }, error => { if (live) setResult({ key, error: errorMessage(error) }); });
     return () => { live = false; };
   }, [key, attempt]);
   const current = key === result?.key ? result : undefined;
   // While the markers load again for a new working cut, the list that was showing stays: an open edit's card doesn't
   // blink out and come back, and its listen isn't played again. A list that failed to load shows nothing.
-  const last = useRef<{ owner: string; edits: ThreadEdit[] }>(undefined);
+  const last = useRef<{ owner: string; edits: ThreadEdit[]; rejected: ThreadEdit[] }>(undefined);
   const edits = current?.edits ?? (!current && !!head && last.current?.owner === owner ? last.current.edits : empty);
-  if (current?.edits) last.current = { owner, edits };
+  const rejected = current?.rejected ?? (!current && !!head && last.current?.owner === owner ? last.current.rejected : empty);
+  if (current?.edits) last.current = { owner, edits, rejected };
   else if (current?.error) last.current = undefined;
-  const selected = picked?.owner === owner ? edits.find(e => matchesEdit(e, picked.ref)) : undefined;
+  const found = picked?.owner === owner ? edits.find(e => matchesEdit(e, picked.ref)) ?? rejected.find(e => matchesEdit(e, picked.ref)) : undefined;
+  // One that is leaving stays the edit it was when the editor rejected it, on the version it was on: the list that
+  // comes in without it, a moment later, doesn't close its card or move the timeline under it.
+  const shownLast = useRef<{ owner: string; edit: ThreadEdit }>(undefined);
+  const leaving = picked?.owner === owner && picked.leaving && shownLast.current?.owner === owner && matchesEdit(shownLast.current.edit, picked.ref)
+    ? shownLast.current.edit : undefined;
+  const selected = leaving ?? found;
+  shownLast.current = selected ? { owner, edit: selected } : undefined;
   // An edit stays chosen while its markers load again, or failed to. Once they're in and it isn't among them, nothing is.
   const chosen = picked?.owner === owner && (!!selected || !current?.edits);
   const cutChange = selected?.beforeCut && thread?.changes.find(c => c.id === selected.changeId);
@@ -77,8 +89,12 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
     ...moment && { time: Math.min(...moment.edits.map(e => e.range.start)), end: Math.max(...moment.edits.map(e => e.range.end)),
       momentEdits: moment.edits.filter(e => e !== edit).map(e => ({ changeId: e.changeId, spot: e.spot, label: e.label })) },
   });
-  return { edits, rows, selected, chosen, originalChange: cutChange || (selected && originalChangeFor(selected)), cutReview, framingFor, framing: selected && framingFor(selected), selectedTarget: selected && replyTarget(selected, selectedMoment),
+  return { edits, rejected, rows, selected, chosen, leaving: !!leaving, originalChange: cutChange || (selected && originalChangeFor(selected)), cutReview, framingFor, framing: selected && framingFor(selected), selectedTarget: selected && replyTarget(selected, selectedMoment),
+    /** The open edit by itself, also when it is open as the edit its moment is named for. */
+    selectedAlone: selected && replyTarget(selected),
     moments, selectedMoment, single, threadId: thread?.id, request: picked?.request ?? 0,
+    /** The edits are placed on the working cut that's showing, not the list of the one before it. */
+    located: !!current?.edits,
     error: current?.error, loading: !!head && !!thread && !current,
     retry: () => { setResult(undefined); setAttempt(n => n + 1); },
     /**
@@ -94,6 +110,12 @@ export function useThreadTimeline(projectId: string, head: string | null, thread
       if (origin === "timeline" || !ui.agentDraft.trim()) ui.setAgentContext(ui.agentDraft.trim() ? replyTarget(edit, moment) : null);
       setPicked(prev => ({ owner, ref: { changeId: edit.changeId, spot: edit.spot }, request: (prev?.request ?? 0)+1, ...alone && { single: true } }));
     },
+    /**
+     * The editor rejected the open edit: it holds as it is, on the version it is on, from the press until another is
+     * chosen or it is let go. `stay` is for a rejection the engine didn't make after all.
+     */
+    leave: () => setPicked(prev => prev && { ...prev, leaving: true }),
+    stay: () => setPicked(prev => prev?.leaving ? { ...prev, leaving: false } : prev),
     clear: () => setPicked(undefined),
   };
 }

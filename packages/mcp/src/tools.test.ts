@@ -1,4 +1,5 @@
 /** Tools and failure paths server.test.ts leaves alone: sync, crossfades, comparisons, auditions, notes, annotations and what goes to stderr. */
+import "./cutSummaries.testkit.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -326,6 +327,28 @@ describe("timeline_framing", () => {
     } finally { await c.close(); }
   });
 
+  it("shows all an inset shows of its recording, close up, when an edit crops it anew", async () => {
+    const c = await connect();
+    try {
+      await ok(c, "timeline_get");
+      const tighter = { ...inset, cropTop: 0.02, cropBottom: 0.25, cropLeft: 0.2, cropRight: 0.2 };
+      const result = await ok(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "cam", patch: { transform: tighter } }],
+        description: "Tightened the camera inset", reason: "He asked for more of his face." });
+      const report = JSON.parse(textOf(result).split("\n")[0]!);
+      expect(report.insetLook).toEqual([{ mediaId: "m1", trackId: "v2", clips: 1, crop: [20, 2, 80, 75], at: [15] }]);
+      expect(report.insetLookNext).toContain("close up");
+      const asked = mock.requests.filter(r => r.path.endsWith("/media/m1/frame"));
+      expect(asked.map(r => Object.fromEntries(r.query))).toEqual([expect.objectContaining({ t: "15", w: "640", area: "20,2,80,75" })]);
+      expect(result.content.filter(part => part.type === "image")).toHaveLength(1);
+      // Moving it to another corner keeps its crop and size: nothing new to look at.
+      mock.requests.length = 0;
+      const moved = await ok(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "cam", patch: { transform: { ...inset, x: -0.326 } } }],
+        description: "Moved the camera inset left", reason: "The chart's legend is on the right." });
+      expect(JSON.parse(textOf(moved).split("\n")[0]!).insetLook).toBeUndefined();
+      expect(mock.requests.filter(r => r.path.endsWith("/media/m1/frame"))).toEqual([]);
+    } finally { await c.close(); }
+  });
+
   describe("with areas viewers may see on record", () => {
     // One window from 0 to 60 s of the screen recording: 10-80% across, 10-90% down. Nothing is set after that.
     const window = { at: 5, area: [0.1, 0.1, 0.8, 0.9], noLine: [], holds: [[0, 60]] };
@@ -416,25 +439,7 @@ describe("timeline_transition", () => {
     mock.state.timeline = tl;
   });
   const proposed = () => sent("/projects/prj_test/changes").map(r => r.body as { ops: Array<{ op: string; clipId: string; patch: Record<string, unknown> }>; description: string });
-  const swipe = { id: "tpl_swipe", kind: "transition", name: "swipe", title: "Swipe", description: "", fields: [], previewVersion: "1", createdAt: "2026-11-01T00:00:00.000Z",
-    updatedAt: "2026-11-01T00:00:00.000Z", html: "", sample: {}, width: 1920, height: 1080, duration: 0.4, previewAt: 0, transition: { type: "push", duration: 0.4, direction: "left" } };
-
-  it("puts a saved transition on the join it names by time, and says what the join got", async () => {
-    mock.state.extra = (req, res) => {
-      if (req.method === "GET" && req.path === "/templates/swipe") return reply(res, { template: swipe });
-      return false;
-    };
-    const c = await connect();
-    try {
-      await ok(c, "timeline_get");
-      const result = textOf(await ok(c, "timeline_transition", { joins: [{ at: 2 }], template: "$swipe",
-        reason: "The editor selected the swipe for this change of scene." }));
-      expect(proposed()[0]!.ops).toEqual([{ op: "updateClip", clipId: second.id, patch: { transitionIn: { type: "push", duration: 0.4, direction: "left", template: "swipe" } } }]);
-      expect(result).toContain("Joins:\n0:02.00: push over 0.40 s");
-    } finally { await c.close(); }
-  });
-
-  it("takes a type without a template, says where the nearest join is when none is at the time given, and takes a transition off", async () => {
+  it("takes a type and duration, says where the nearest join is when none is at the time given, and takes a transition off", async () => {
     const c = await connect();
     try {
       await ok(c, "timeline_get");
@@ -445,19 +450,6 @@ describe("timeline_transition", () => {
       await ok(c, "timeline_transition", { joins: [{ clipId: second.id }], none: true,
         reason: "The two angles show continuous action." });
       expect(proposed()[1]!.ops[0]!.patch).toEqual({ transitionIn: null });
-    } finally { await c.close(); }
-  });
-
-  it("won't put a graphic template on a join", async () => {
-    mock.state.extra = (req, res) => {
-      if (req.method === "GET" && req.path === "/templates/lower-third") return reply(res, { template: { ...swipe, kind: "graphic", name: "lower-third", transition: undefined } });
-      return false;
-    };
-    const c = await connect();
-    try {
-      await ok(c, "timeline_get");
-      expect(textOf(await call(c, "timeline_transition", { joins: [{ at: 2 }], template: "lower-third" }))).toContain("$lower-third is a graphic template, not a transition.");
-      expect(proposed()).toEqual([]);
     } finally { await c.close(); }
   });
 });
@@ -712,7 +704,7 @@ describe("tool annotations", () => {
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
   const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "screen_area", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
-    "graphic_render", "template_save", "style_guide_save", "shorts_plan"];
+    "graphic_render", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
 
   it("gives every tool an input schema a harness can convert: no array that lists an item per position", async () => {
@@ -840,6 +832,32 @@ describe("what goes to stderr when a read fails and the tool answers without it"
       expect(JSON.parse(textOf(await ok(broken, "timeline_join_audit"))).audits).toHaveLength(1);
       expect(logged()).toEqual(["[scarlet-mcp] failed to read the words of m1 for a join audit: Scarlet server error 500 (engine_error): The transcript file is unreadable."]);
     } finally { await broken.close(); }
+  });
+
+  it("lists the words the scan read in what a saved part still plays that the transcript has no word for", async () => {
+    const tl = emptyTimeline("prj_test");
+    tl.version = "tidied";
+    tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 12, 0)];
+    mock.state.timeline = tl;
+    // Said “And it just feel, uh. It just feels like this. [wait] Next.”; the transcript has “And it just feels like this. Next.”.
+    const stored = [["And", .5, .75], ["it", 1.1, 1.5], ["just", 5.3, 5.6], ["feels", 5.6, 5.9], ["like", 5.9, 6.1], ["this.", 6.1, 6.4], ["Next.", 9.4, 9.8]]
+      .map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+    const read = [["And", .5, .7], ["it", .7, .8], ["just", .95, 1.3], ["feel,", 1.4, 1.75], ["uh.", 1.75, 2.3], ["It", 5.2, 5.3], ["just", 5.3, 5.6], ["feels", 5.6, 5.9],
+      ["like", 5.9, 6.1], ["this.", 6.1, 6.4], ["Next.", 9.4, 9.8]].map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+    mock.state.transcripts = { m1: { ...transcript, segments: [{ ...transcript.segments[0]!, words: stored, text: stored.map(w => w.text).join(" "), end: 9.8 }] } };
+    const applied = { ...tl, version: "applied", tracks: tl.tracks.map((t, i) => i ? t : { ...t, clips: [makeMediaClip("m1", 0, 7, 0), makeMediaClip("m1", 9, 12, 7)] }) };
+    mock.state.extra = (req, res) => req.path.endsWith("/dialogue-cuts") ? reply(res, { changes: [{ id: "chg_1", intent: "requested", state: "approved", fromVersion: "tidied", toVersion: "applied", description: "Tightened" }], head: "applied" })
+      : req.path === "/projects/prj_test/timeline" && req.query.get("version") === "applied" ? reply(res, { timeline: applied })
+      : req.path.endsWith("/dialogue-verbatim") ? reply(res, { words: read }) : false;
+    const c = await connect();
+    try {
+      const result = await ok(c, "dialogue_apply_cuts", { version: "tidied", description: "Tightened", range: { start: 0, end: 12 },
+        cuts: [{ start: 7, end: 9, kind: "pause", decision: "cut", reason: "A long wait.", summary: "Shortened the wait before “Next”" }] });
+      const saved = JSON.parse((result.content[0] as { text: string }).text);
+      // The false start has no index in the transcript: it is named with where it plays, so a cut of it can be given in seconds.
+      expect(saved.heardNotInTranscript).toEqual([{ at: 0.95, seconds: 4.35, text: "just feel, uh. It", context: "And it just feel, uh. It just feels like this.",
+        mediaId: "m1", sourceSeconds: [0.95, 5.3] }]);
+    } finally { await c.close(); }
   });
 
   it("notes that a saved part's kept silences could not be placed, and saves the part all the same", async () => {

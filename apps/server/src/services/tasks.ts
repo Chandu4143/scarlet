@@ -268,8 +268,8 @@ export function queueRepeatCheck(ctx: Ctx, task: Task, version: string, changeId
   // A previously finished pass may predate the persisted clock. Its latest claim is still measurable.
   const workedMs = closed.workedMs ?? pausedWork(ctx, task) ?? (task.startedAt && task.finishedAt
     ? Math.max(0, Date.parse(task.finishedAt) - Date.parse(task.startedAt)) : undefined);
-  const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined,
-    repeatAudit: { ...receipt, version, noFindings: undefined, returns: (receipt?.returns ?? 0) + 1 } });
+  const queued = saveTask(ctx, { ...closed, workedMs, changeIds, state: "queued", hostId: null, session: undefined, finishedAt: undefined, error: undefined,
+    repeatAudit: { ...receipt, version, noFindings: undefined, failed: undefined, returns: (receipt?.returns ?? 0) + 1 } });
   ctx.db.afterCommit(() => ctx.log(`[task] repeat_check task=${logId(task.id)} project=${logId(task.projectId)} outcome=queued attempt=${queued.repeatAudit!.returns}`));
   ctx.bus.taskQueued({ taskId: task.id, projectId: task.projectId });
   return queued;
@@ -303,6 +303,14 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
   if (task.kind === "skill_from_change" && body.state === "done" && !task.resultSkillId) {
     body = { state: "failed", error: "The requested skill was not saved. Request it again from the approved change." };
   }
+  // The pass had finished and only its closing check was running (2026-11-18: Codex refused the check's sign-in). The
+  // pass's work and words stand, so it finishes as done; the check that didn't run is said beside it, with Retry.
+  const checkFailed = body.state === "failed" && !body.engineLost && isDialoguePass(task) && !!task.reply && !!task.repeatAudit
+    ? body.error?.trim() || "The closing check stopped." : undefined;
+  if (checkFailed) {
+    task = { ...task, repeatAudit: { ...task.repeatAudit!, failed: checkFailed } };
+    body = { state: "done", changeIds: body.changeIds };
+  }
   const changeIds = [...new Set([...task.changeIds, ...(body.changeIds ?? [])])];
   const own = () => changeIds.flatMap(id => {
     const change = ctx.repos.changes.get(id);
@@ -322,7 +330,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
     }
   }
   // Scheduled editor decisions above can advance playback too. The receipt must name the version that actually plays.
-  if (body.state === "done" && task.startedAt && (task.state === "claimed" || task.state === "running") && isDialoguePass(task)) {
+  if (body.state === "done" && !checkFailed && task.startedAt && (task.state === "claimed" || task.state === "running") && isDialoguePass(task)) {
     const project = ctx.repos.projects.get(task.projectId);
     if (project?.head && (!task.context.branch || project.branch === task.context.branch) && !unmetTranscriptWaits(ctx, task.id).length) {
       const timeline = resolveTimeline(ctx, project);
@@ -422,6 +430,12 @@ export function cancelTask(ctx: Ctx, task: Task): Task {
   ctx.log(`[task] ${task.id} cancelled while ${task.state}${ran ? ` after ${ran}` : ""}`);
   ctx.db.afterCommit(() => ctx.transcriptions.get(task.id)?.controller.abort());
   skillEditEnded(ctx, saved);
+  // A request taken back before it started is words withdrawn, as reworded ones are: a check still reading them stops.
+  if (task.state === "queued" && task.kind !== "learning_check") {
+    for (const check of ctx.repos.tasks.select("project_id = ? AND kind = 'learning_check' AND json_extract(json, '$.context.checksTaskId') = ?", [task.projectId, task.id])) {
+      if (!FINISHED_TASK.has(check.state)) cancelTask(ctx, check);
+    }
+  }
   ctx.bus.taskQueued({ taskId: saved.id, projectId: saved.projectId });
   return saved;
 }
@@ -501,6 +515,7 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,
     areaCheck: task.kind === "area_check" ? task.context.areaCheck : undefined,
+    checkIn: ctx.settings().checkIn,
     workDir: opts.workDir,
     timeLimitMinutes: opts.timeLimitMinutes,
     capabilities: { ...agentCapabilities(task.agent), plan: plans },
@@ -524,26 +539,15 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
 }
 
 /**
- * What the editor gave a request for its graphics: the files attached to it, the templates their words name with
- * $name, and the project's style guide. A request that edits no video is given none.
+ * What the editor gave a request for its graphics: the files attached to it and the project's style guide. A request that edits no video is given none.
  */
 function graphicsContext(ctx: Ctx, project: Project, task: Task) {
   if (task.kind === "skill_from_change" || isAsideTask(task)) return {};
   const attachments = (task.context.attachments ?? []).map(a => ({ ...a, mime: a.mime ?? mimeFor(a.name), path: join(ctx.paths.attachments(project.id), a.id, a.name) }));
-  const said = task.context.message ?? task.instruction;
-  const named = (text: string) => [...text.matchAll(/(?:^|[^\w$])\$([a-z0-9][a-z0-9-]*)/g)].map(m => m[1]!);
-  // A skill the editor chose can name templates too ("every time we go to the screen recording, use $swipe").
-  const chosen = (task.context.skillIds ?? []).map(id => ctx.repos.skills.get(id)).filter(s => !!s && s.enabled);
-  const fromSkill = new Map(chosen.flatMap(skill => named(skill!.content).map(name => [name, skill!.name] as const)).reverse());
-  const names = [...new Set([...named(said), ...fromSkill.keys()])];
-  const pickedTemplates = names.map(name => ctx.repos.templates.select("name = ?", [name])[0]).filter(t => !!t)
-    .map(t => ({ id: t.id, name: t.name, title: t.title, fields: t.fields, kind: t.kind, ...(t.transition && { transition: t.transition }),
-      ...(!named(said).includes(t.name) && fromSkill.has(t.name) && { skill: fromSkill.get(t.name) }) }));
   const guide = project.styleGuide;
   const guidePath = styleGuidePath(ctx, project.id, guide);
   return {
     ...(attachments.length && { attachments }),
-    ...(pickedTemplates.length && { pickedTemplates }),
     ...(guide && { styleGuide: { name: guide.name, text: guide.text, ...(guidePath && { path: guidePath, mime: mimeFor(guidePath) }) } }),
   };
 }

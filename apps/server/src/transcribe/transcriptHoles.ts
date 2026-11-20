@@ -327,8 +327,17 @@ export async function fillTranscriptHoles(input: { wav: string; segments: Transc
       input.log(`[transcribe] read ${holes.length} stretches without words again (${seconds.toFixed(0)} s): no speech in them`);
       return segments;
     }
-    const placed = (await input.align(heard)).filter(s => s.words.length);
-    input.log(`[transcribe] read ${holes.length} stretches without words again (${seconds.toFixed(0)} s) and found ${placed.reduce((n, s) => n + s.words.length, 0)} words in ${placed.length} of them`);
+    // The stretches are a cough, a laugh, music or the end of a word the aligner closed early, where Whisper most often
+    // writes a word nobody said. A found word goes in only where the aligner hears it; one it couldn't spell (a number)
+    // has no verdict and stays.
+    let unheard = 0;
+    const placed = (await input.align(heard)).map(s => {
+      const words = s.words.filter(w => alignerHeard.get(w) !== false);
+      unheard += s.words.length - words.length;
+      return words.length === s.words.length ? s
+        : { ...s, words, text: words.map(w => w.text).join(" "), ...(words.length && { start: words[0]!.start, end: words.at(-1)!.end }) };
+    }).filter(s => s.words.length);
+    input.log(`[transcribe] read ${holes.length} stretches without words again (${seconds.toFixed(0)} s) and found ${placed.reduce((n, s) => n + s.words.length, 0)} words in ${placed.length} of them${unheard ? `, leaving out ${unheard} the aligner didn't hear` : ""}`);
     return withHoleWords(segments, placed);
   } finally { await rm(laid, { force: true }); }
 }

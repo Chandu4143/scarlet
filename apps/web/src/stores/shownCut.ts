@@ -39,8 +39,6 @@ export interface CaughtUp { id: number; from: Timeline; to: Timeline; time: numb
 export const useCaughtUpStore = create<{ caughtUp?: CaughtUp; waiting?: boolean }>(() => ({}));
 
 let settle: ReturnType<typeof setTimeout> | undefined;
-/** Whether what's open follows every new working cut at once, as a pass's call does: it places its cut by them. */
-let follow = false;
 /** Whether the player shows the working cut itself, with nothing open, so its playhead goes by the working cut's clock. */
 let onWorkingCut = false;
 /** Whether a newer working cut is waiting behind the one on screen. */
@@ -58,7 +56,7 @@ function stillOf(video: HTMLVideoElement | undefined) {
 }
 
 function holds(shown: ShownCut, now: ShownCut) {
-  if (follow || !usePlayerStore.getState().playing || shown.projectId !== now.projectId) return false;
+  if (!usePlayerStore.getState().playing || shown.projectId !== now.projectId) return false;
   // Only a whole working cut is held: one whose timeline has been read.
   return !!shown.head && shown.timeline?.version === shown.head;
 }
@@ -108,16 +106,6 @@ usePlayerStore.subscribe((now, was) => {
   if (player.element()) queueMicrotask(sync);
   else settle = setTimeout(() => { settle = undefined; sync(); }, SETTLE_MS);
 });
-
-/**
- * A pass's call places its cut by the working cut its pass is staged on, and the pass stages each part on the newest.
- * While one is open the working cut on screen is the newest, and it follows each save as it comes.
- */
-export function followEveryWorkingCut(on: boolean) {
-  if (follow === on) return;
-  follow = on;
-  sync();
-}
 
 /** The player shows the working cut, with nothing open on it. */
 export function showingWorkingCut(on: boolean) {

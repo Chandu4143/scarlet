@@ -17,7 +17,7 @@ import { CaptionWord, duplicateClipId } from "./schema.js";
 import type { Clip, Marker, MediaClip, Timeline, TimeRange, Track } from "./schema.js";
 import { OpError, applyOp, applyOpInPlace, replayOnCopy, shiftClip, type TimelineOp } from "./ops.js";
 import { ZodError } from "zod/v3";
-import { clipEnd, JOIN_SLACK, meets, mergeRanges, sourceToTimeline, subtractRanges, timelineDuration } from "./time.js";
+import { clipEnd, JOIN_SLACK, meets, sourceToTimeline, subtractRanges, timelineDuration } from "./time.js";
 import { firstIndex, intervalCandidates } from "./intervals.js";
 import { sameJson, stableStringify } from "./ids.js";
 

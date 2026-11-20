@@ -5,7 +5,6 @@ import { useBlocker, useNavigate, useParams } from "react-router-dom";
 import type { Skill, SkillVersion, Task } from "@scarlet/shared";
 import { AgentChip, useAgentAvailability } from "../components/agent/AgentChip";
 import { api, errorMessage } from "../lib/client";
-import { isComposing } from "../lib/hotkeys";
 import { clockTime, dayName } from "../lib/format";
 import { diffLines, type DiffLine } from "../lib/textDiff";
 import { useAuthStore } from "../stores/auth";
@@ -485,7 +484,7 @@ export function SkillEditorPage({ onReturnToEdit }: { onReturnToEdit?: () => voi
               <div className="composer-input">
                 <div className="composer-box">
                   <div className="composer-row">
-                    <SkillCommandInput inputRef={box} value={ask} skills={[]} templatesOnly id={askId} disabled={boxOff}
+                    <SkillCommandInput inputRef={box} value={ask} skills={[]} plain id={askId} disabled={boxOff}
                       ariaLabel={question ? "Answer Scarlet" : "Tell Scarlet what to change in this skill"}
                       placeholder={question ? "Answer Scarlet…" : "Tell Scarlet what to change…"}
                       onChange={text => { setAsk(text); setAskErr(null); }} onSubmit={() => void send()} />

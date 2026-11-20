@@ -55,6 +55,21 @@ interface Recording<W> {
 /** Seconds or a fraction to the thousandth, as readings report them. */
 export const r3 = (n: number) => Math.round(n * 1000) / 1000;
 
+/** Mean grey of each cell of a cols × rows grid over the frame, from every `step`th pixel each way. */
+export function pictureGrid(rgb: Buffer, width: number, height: number, cols = 32, rows = 18, step = 2): Float32Array {
+  const sums = new Float32Array(cols * rows), counts = new Uint32Array(cols * rows);
+  for (let y = 0; y < height; y += step) {
+    const row = Math.min(rows - 1, Math.floor(y * rows / height));
+    for (let x = 0; x < width; x += step) {
+      const p = (y * width + x) * 3, cell = row * cols + Math.min(cols - 1, Math.floor(x * cols / width));
+      sums[cell] = sums[cell]! + (rgb[p]! * 3 + rgb[p + 1]! * 6 + rgb[p + 2]!) / 10;
+      counts[cell] = counts[cell]! + 1;
+    }
+  }
+  for (let i = 0; i < sums.length; i++) sums[i] = counts[i] ? sums[i]! / counts[i]! : 0;
+  return sums;
+}
+
 /** Recordings whose reading state a reader keeps. */
 const MAX_RECORDINGS = 32;
 

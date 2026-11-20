@@ -13,7 +13,7 @@ import { createApp, type ScarletApp } from "./app.js";
 import { accessToken, localUser } from "./auth.js";
 import { proposeChange } from "./services/changes.js";
 import { storeVersion } from "./services/timeline.js";
-import { pictureDecoder } from "./services/pictureWork.js";
+import { pictureDecoder, pictureLane } from "./services/pictureWork.js";
 import { previewPictures, previewIdentity } from "./services/previewPictures.js";
 import * as pictureCopies from "./services/previewPictures.js";
 import { createTask } from "./services/tasks.js";
@@ -93,8 +93,8 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     expect(setup.state).toBe("approved");
     expect(setup.reason).toBe(assembly.reason);
     const edit = await call("dialogue_apply_cuts", { version: setup.toVersion, description: "Review two pauses", cuts: [
-      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action." },
-      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?" },
+      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action.", summary: "Shortened the pause before the click." },
+      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?", summary: "Shortened the pause after the reaction." },
     ] });
     // While the editor auditions the first cut, the second undecided passage stays in the draft.
     const { draft } = await client.cutReview(edit.changes[0].id, [1]);
@@ -221,6 +221,31 @@ it("shares full-rate composite activity pictures while preserving a two-frame sc
     "-c:v", "libx264", "-threads", "1", file]);
   expect((await inspect(1.6, 2.4, "uniform")).jpeg).not.toBe(cached.jpeg);
   expect((await inspect(1.8, 2.6, "activity")).changedFrames).toBe(0);
+});
+
+it("decodes a sheet's stills side by side, as many at a time as the picture lane has room for", async () => {
+  const { ctx } = workspace;
+  const p = ctx.repos.projects.insert(createProject("Stills together", { width: 320, height: 180, fps: 25 }));
+  ctx.paths.ensureProject(p.id);
+  await copyFile(join(ctx.paths.media(projectId), "sample.mp4"), join(ctx.paths.media(p.id), "sample.mp4"));
+  ctx.repos.projects.putMedia(p.id, { id: "stills", kind: "video", name: "sample", path: "sample.mp4",
+    hasAudio: true, duration: 4, fps: 25, width: 320, height: 180 }, "ready");
+  const tl = emptyTimeline(p.id);
+  tl.tracks[0]!.clips = [makeMediaClip("stills", 0, 4, 0)];
+  const { version } = storeVersion(ctx, p.id, tl, { parent: null });
+  const lane = pictureLane(ctx), run = lane.run.bind(lane);
+  let active = 0, peak = 0;
+  const watched = vi.spyOn(lane, "run").mockImplementation((job, options) => run(async () => {
+    peak = Math.max(peak, ++active);
+    try { return await job(); } finally { active--; }
+  }, options));
+  try {
+    const sheet = await client.contactSheet(p.id, { from: 0, to: 4, version, mode: "uniform", count: 6 });
+    if (sheet.state !== "ready") throw new Error("Picture inspection queued a playable video.");
+    expect(sheet.windows[0]!.timestamps).toHaveLength(6);
+    // One after another, six stills waited for six decodes while the lane's other slots stood empty.
+    expect(peak).toBe(lane.slots);
+  } finally { watched.mockRestore(); }
 });
 
 it("classifies and caches source voice activity only on an explicit speech analysis request", async () => {

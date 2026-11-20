@@ -93,7 +93,8 @@ export function perceptionRoutes(ctx: Ctx) {
   r.post("/projects/:projectId/media/:mediaId/show-area", async c => {
     const media = videoFor(c);
     const body = await c.req.json().catch(() => null) as ShowAreaEdit | null;
-    if (!body || (body.set !== undefined && !Array.isArray(body.set)) || (body.remove !== undefined && !Array.isArray(body.remove))) {
+    const listOf = (value: unknown, fits: (item: any) => boolean) => value === undefined || (Array.isArray(value) && value.every(fits));
+    if (!body || !listOf(body.set, item => typeof item?.at === "number" && Array.isArray(item.area)) || !listOf(body.remove, at => typeof at === "number")) {
       throw badRequest("bad_request", "Send set: [{ at, area }] and/or remove: [at].");
     }
     await editShowAreas(ctx, media, body);

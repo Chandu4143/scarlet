@@ -130,7 +130,7 @@ async function encodeProxy(input: string, output: string, opts: ProxyOptions, ha
   const pictureDuration = probe.videoDuration ?? probe.duration;
   // Phone recordings whose frame rate drifts a little are saved in parts too, so a restart keeps them; only the
   // scrub previews need a steady rate to map a part's pictures back to source frames, and they check for it.
-  if (opts.checkpointDir && !opts.range && video && pictureDuration > 30 && probe.videoStartPts === 0 && probe.videoStart === 0) {
+  if (opts.checkpointDir && !opts.range && video && pictureDuration > 30 && probe.fps > 0 && probe.videoStartPts === 0 && probe.videoStart === 0) {
     // Align each boundary to a picture frame. Mux audio from the original once
     // so independent AAC encodes cannot introduce gaps at those boundaries.
     const dir = join(opts.checkpointDir, encoding.cacheKey + "-" + height);

@@ -7,7 +7,7 @@ import { ATTEMPT_HEADER, TASK_HEADER, queueOrder, queueWait, taskPlan, type Task
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { PLAN_STEPS } from "@scarlet/mcp/prompt";
-import { appendTaskEvent, createTask, pairQuestionsAndAnswers, queueRepeatCheck } from "./tasks.js";
+import { appendTaskEvent, createTask, pairQuestionsAndAnswers, queueRepeatCheck, saveTask } from "./tasks.js";
 import { recoverTasks } from "./taskRecovery.js";
 import { runAttemptIds } from "./runAttempts.js";
 import { learningCheckContext } from "./learnings.js";
@@ -513,6 +513,20 @@ it("counts a skill Scarlet writes or revises as under way, and not the learning 
   createTask(app.ctx, { projectId: project.id, kind: "skill_edit", agent: "claude", instruction: "Shorter pauses", state: "running", createdBy: scarlet });
   createTask(app.ctx, { projectId: project.id, kind: "skill_from_change", agent: "claude", instruction: "Write a SKILL.md", state: "running", createdBy: scarlet });
   expect(await underWay()).toEqual({ edits: 2, queued: 0, exports: 0 });
+});
+
+it("stops the rule check of a request taken back before it started, and keeps the check of one stopped while it ran", async () => {
+  const send = async (instruction: string) => (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { kind: "edit", agent: "claude", instruction })).body.task;
+  const checkOf = (id: string) => app.ctx.repos.tasks.select("kind = 'learning_check' AND json_extract(json, '$.context.checksTaskId') = ?", [id])[0]!;
+  // Taken back while it waits its turn: the editor withdrew the words, so nothing is learned from them.
+  const withdrawn = await send("Always cut the ums");
+  expect((await api("POST", `/tasks/${withdrawn.id}/cancel?queuedOnly=1`)).status).toBe(200);
+  expect(checkOf(withdrawn.id).state).toBe("cancelled");
+  // Stopped once it ran: the words still stand, and the check reading them carries on.
+  const stopped = await send("Keep my pauses under a second");
+  saveTask(app.ctx, { ...app.ctx.repos.tasks.get(stopped.id)!, state: "running", startedAt: new Date().toISOString() });
+  expect((await api("POST", `/tasks/${stopped.id}/cancel`)).status).toBe(200);
+  expect(checkOf(stopped.id).state).toBe("queued");
 });
 
 it("reads a message for a rule again when a quit cut the read short, and keeps a resumed request ahead of the calls it was started before", async () => {

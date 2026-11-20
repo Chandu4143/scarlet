@@ -12,7 +12,6 @@ A graphic is there to be read, then to get out of the way. Make each one legible
 
 - When the project has a style guide, follow it as written: its fonts, colors, sizes, placement and motion. Where it is silent, keep to the spirit of what it does say rather than adding a style of your own.
 - With no guide, take the look from what the editor has already approved in this project, so every graphic in a video reads as one family. A first graphic with nothing to go on stays plain: one clean sans-serif, white or near-black, one accent at most.
-- When a saved template fits what was asked, use it rather than drawing something new, and keep its look. Name a field's value as the editor would say it.
 
 ## Legibility on the actual picture
 
@@ -30,4 +29,4 @@ A graphic is there to be read, then to get out of the way. Make each one legible
 
 One graphic at a time, and only where it helps the viewer: who is speaking, where we are, a figure worth seeing. When in doubt, leave it out and say so to the editor.
 
-`graphic_render`, `template_list`, `graphic_get` and `timeline_propose` cover what this needs.
+`graphic_render`, `graphic_get` and `timeline_propose` cover what this needs.

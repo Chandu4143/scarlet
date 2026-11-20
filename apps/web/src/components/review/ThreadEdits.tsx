@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { historyLineage } from "@scarlet/timeline";
-import { matchesEdit, threadEditList, threadRevision, isThreadDone, REVISED_CHECK, type EditRef, type Thread, type ThreadEdit, type VersionSummary } from "@scarlet/shared";
+import { isRejectRequest, matchesEdit, threadEditList, threadRevision, isThreadDone, REJECT_MESSAGE, REVISED_CHECK, ScarletApiError, type EditRef, type Task, type Thread, type ThreadEdit, type VersionSummary } from "@scarlet/shared";
 import { recordEditReview, requestPosition } from "../../lib/editReviews";
 import { errorMessage } from "../../lib/client";
 import { requestThreadEdits, useThreadEditKey } from "./threadEditRequest";
@@ -12,53 +12,71 @@ import { useShownCutStore } from "../../stores/shownCut";
 import { Dropdown, MenuItem } from "../shell/WorkspaceNavigation";
 import { Icon } from "../ui/primitives";
 import { useAgentAvailability } from "../agent/AgentChip";
-import { useHotkeys } from "../../lib/hotkeys";
 import type { AgentContext } from "../../stores/ui";
 
-/** What Scarlet is asked to do when the editor saves a graphic from its card to use again. */
-export function saveTemplateInstruction(target: Pick<AgentContext, "editNumber" | "label">) {
+/** What Scarlet is asked to do when the editor rejects an edit the engine can't put back itself. One × is one edit. */
+export function rejectInstruction(target: Pick<AgentContext, "editNumber" | "label">) {
   const which = [target.editNumber && `edit ${target.editNumber}`, target.label && `“${target.label}”`].filter(Boolean).join(", ");
-  return `Save the graphic ${which ? `of ${which}` : "of this edit"} as a reusable template. Work out which parts of it change from one use to the next, ` +
-    "such as a name or a title, and make those its fields; keep everything else as it is. Give it a short name the editor can type after $. " +
-    "Leave the video as it is.";
+  return `The editor rejected ${which || "this edit"}. Put back exactly what it changed and leave every other edit as it is.`;
 }
 
+/** An edit as the engine needs it to put back what it changed: where it is in the video now and, for a cut, what it took out. */
+export type RejectedEdit = Parameters<ReturnType<typeof useProjectStore.getState>["rejectEdits"]>[2][number];
+
 /**
- * Save a graphic as a template: a small bookmark icon on a graphic's card, before Revise, named "Save as template (T)"
- * on hover, with T as its key. It sends Scarlet a request about just that edit, and the request reads
- * "Save as template" in the chat and in the queue; what Scarlet is asked to do is the instruction, which is for the agent.
+ * Reject an applied edit: a small × after Keep on its card, named "Reject edit" on hover, as a call's × skips it.
+ * Wherever the engine knows exactly what the edit changed it goes back there, at once and with no model: a cut's
+ * footage, a look an edit gave its clips, a whole request's only edit (`edits`, located on the version `editsOn`). An
+ * edit the engine can't put back itself, or one a later edit changed, is a request to Scarlet to put back just that
+ * edit, with the same agent and the same target as typing it would. On a moment's card it is the edit the card is
+ * named for, never the whole moment. The editor pressed the × and wrote nothing, so that request reads "Reject edit" under its edit's
+ * tag, in the chat and in the queue; what Scarlet is asked to do is the instruction, which is for the agent.
  */
-export function SaveAsTemplate({ projectId, thread, target, onSent }: { projectId: string; thread: Thread; target: AgentContext; onSent?(): void }) {
+export function RejectEdit({ projectId, thread, target, edits, editsOn, onEngine, onSent }: { projectId: string; thread: Thread; target: AgentContext;
+  edits?: RejectedEdit[]; editsOn?: string;
+  /** The engine is asked to put the edit back (`true`), or didn't after all (`false`): the video may change under the card meanwhile. */
+  onEngine?(asked: boolean): void;
+  onSent(sent: { task?: Task; version?: string }): void }) {
   const { effective, unavailableReason } = useAgentAvailability();
   const createTask = useProjectStore(s => s.createTask);
+  const rejectEdits = useProjectStore(s => s.rejectEdits);
   const head = useProjectStore(s => s.current?.project.head ?? undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  async function save() {
-    // One request per press: T held down, or pressed again while the first is on its way, sends nothing more.
+  async function reject() {
+    // One request per press: pressed again while the first is on its way, it sends nothing more.
     if (busy) return;
-    if (!effective) { setError(unavailableReason); return; }
     setBusy(true);
     setError("");
     try {
-      await createTask(projectId, { kind: "edit", ...effective, instruction: saveTemplateInstruction(target),
-        context: { version: head, ...requestPosition(target), threadId: thread.id, message: "Save as template" } });
-      onSent?.();
+      if (edits?.length && editsOn && editsOn === head) {
+        onEngine?.(true);
+        try {
+          const version = await rejectEdits(thread.id, editsOn, edits);
+          recordEditReview(projectId, target, "undo");
+          onSent({ version });
+          return;
+        } catch (e) {
+          onEngine?.(false);
+          // The engine says when an edit isn't its to put back, or the video moved on meanwhile: Scarlet is asked then.
+          if (!(e instanceof ScarletApiError) || e.status !== 409) throw e;
+        }
+      }
+      if (!effective) { setError(unavailableReason); return; }
+      const task = await createTask(projectId, { kind: "edit", ...effective, instruction: rejectInstruction(target),
+        context: { version: head, ...requestPosition(target), threadId: thread.id, message: REJECT_MESSAGE } });
+      recordEditReview(projectId, target, "undo");
+      onSent({ task });
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   }
-  useHotkeys(event => {
-    if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "t") return;
-    event.preventDefault();
-    void save();
-  });
   return <>
     {error && <span className="simple-error" role="alert">{error}</span>}
-    <button type="button" className="edit-card-icon edit-card-template" aria-label="Save as template" aria-keyshortcuts="T" aria-busy={busy || undefined}
-      title={busy ? "Saving…" : "Save as template (T)"} disabled={busy} onClick={() => void save()}><Icon name="bookmark" size={14} /></button>
+    <button type="button" className="edit-card-icon edit-card-reject" data-log-control="reject-edit" aria-label="Reject edit" aria-busy={busy || undefined}
+      title={busy ? "Rejecting…" : "Reject edit"} disabled={busy} onClick={e => { if (e.detail) e.currentTarget.blur(); void reject(); }}><Icon name="x" size={12} /></button>
   </>;
 }
 
@@ -130,7 +148,27 @@ export function useThreadEdits(projectId: string, thread: Thread | undefined, ne
   const kept = !needed && loaded?.threadId === thread?.id ? loaded?.edits : undefined;
   const edits = (current ? loaded.edits : previous ?? kept) ?? saved;
   useEffect(() => { if (current && loaded.edits) shown.current = { key, edits }; }, [current, loaded, key, edits]);
-  return { listed: applied ? edits : [], located: applied && current ? loaded.edits : undefined, head };
+  // An edit the editor rejected is out of the video: it is no edit to open, count or mark, only a row that says so.
+  const live = useMemo(() => edits.filter(e => !e.rejected), [edits]);
+  const rejected = useMemo(() => edits.filter(e => e.rejected), [edits]);
+  const located = useMemo(() => applied && current ? loaded.edits?.filter(e => !e.rejected) : undefined, [applied, current, loaded]);
+  return { listed: applied ? live : noEdits, rejected: applied ? rejected : noEdits, located, head };
+}
+
+const noEdits: ListedEdit[] = [];
+
+/** Whether the request on its way for an edit is the editor's rejection of it, so its row says Rejecting… and not Revising…. */
+export function useRejecting(thread: Thread | undefined) {
+  return useMemo(() => {
+    const pending = (thread?.tasks ?? []).flatMap(t => PENDING_TASK.has(t.state) && isRejectRequest(t) && t.context.changeId && t.context.editIndex !== undefined
+      ? [{ changeId: t.context.changeId, spot: t.context.editIndex }] : []);
+    return (edit: ListedEdit) => pending.some(ref => matchesEdit(edit as ThreadEdit, ref));
+  }, [thread]);
+}
+
+/** The × a rejected edit's row leads with, where a kept one has its tick. */
+export function RejectedMark() {
+  return <span className="simple-pass-tick is-rejected" role="img" aria-label="Rejected"><Icon name="x" size={10} /></span>;
 }
 
 /** Whether the editor has reviewed an edit: kept here, or decided cut by cut when the pass was applied. */
@@ -198,20 +236,24 @@ function removedLabel(edit: ListedEdit) {
  * left the chat. With `only`, the list is just the edits it picks, such as the ones that need the editor, each with
  * the number it has in the whole list.
  */
-export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover, under, only, spent }: {
+export function ThreadEdits({ projectId, thread, edits, rejected = noEdits, showing, onPlay, onHover, under, only, spent }: {
   projectId: string; thread: Thread; edits: ListedEdit[]; showing?: ThreadEdit;
+  /** Edits the editor rejected, which are out of the video: each keeps a row where it was, with a × and "Rejected". */
+  rejected?: ListedEdit[];
   onPlay(ref: EditRef): void; onHover?(ref?: EditRef): void; under?(edit: ListedEdit): ReactNode[]; only?(edit: ListedEdit): boolean;
   /** What the requests about an edit took, for the hover of the word its row ends on: their time and, when those show, tokens. */
   spent?(edit: ListedEdit): string | undefined;
 }) {
   const reviewed = useReviewed(projectId, thread);
   const revising = useRevising(thread);
+  const rejecting = useRejecting(thread);
   const opened = useRef<HTMLButtonElement>(null);
-  const open = edits.findIndex(edit => !!showing && matchesEdit(showing, edit));
+  // A rejected edit that's open is its own row: the edit that took its place in the video's order isn't lit for it.
+  const open = showing?.rejected ? -1 : edits.findIndex(edit => !!showing && matchesEdit(showing, edit));
   const openKey = open >= 0 ? editKey(edits[open]!) : undefined;
   // ← → and Keep move to another edit, so keep the open one in view.
   useEffect(() => { opened.current?.scrollIntoView?.({ block: "nearest" }); }, [openKey]);
-  if (!edits.length) return null;
+  if (!edits.length && !rejected.length) return null;
   // An edit made in several places is one row. It stands for the place that's open, else the first one asking for a
   // look, else the first.
   const rows = editGroups(edits).filter(({ members }) => !only || members.some(m => only(m.edit))).map(({ members }) => {
@@ -221,8 +263,23 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
     return { ...shown, n: members[0]!.i + 1, places: members.length, needs: members.filter(waiting).length, allKept: members.every(m => reviewed(m.edit)),
       nested: under ? members.flatMap(m => under(m.edit)) : [], took: spent ? members.flatMap(m => spent(m.edit) ?? [])[0] : undefined };
   });
+  // In the list of every edit, a rejected one keeps its place in the video's order, after the edits before it.
+  const gone = only ? [] : [...rejected].sort((a, b) => a.range.start - b.range.start);
+  // A press shows it again: where it was on the timeline, with its note, over the video as it plays without it.
+  const goneAfter = (from: number, to: number) => gone.filter(e => e.range.start >= from && e.range.start < to).map(e => {
+    // Lit for the edit it was, too, while that one is still on its card, leaving.
+    const on = !!showing && (matchesEdit(showing, e) || matchesEdit(e as ThreadEdit, showing));
+    return <li key={editKey(e)}><button type="button" className={on ? "simple-edit is-rejected is-on" : "simple-edit is-rejected"} aria-current={on || undefined}
+      data-log-control="open-edit" data-log-label="Rejected edit" aria-label={`${e.label}, rejected`}
+      onClick={event => { if (event.detail) event.currentTarget.blur(); onPlay(e); }}>
+      <span className="edit-badge is-rejected" aria-hidden="true"><Icon name="x" size={9} /></span>
+      <span className="simple-edit-title">{e.label}</span>
+      <span className="simple-edit-value">Rejected</span>
+    </button></li>;
+  });
   return <ol className="simple-edits" aria-label={only ? "Edits that need you" : "Edits in this thread"}>
-    {rows.map(({ edit, i, n, places, needs, allKept, nested, took }) => {
+    {goneAfter(-Infinity, rows[0]?.edit.range.start ?? Infinity)}
+    {rows.map(({ edit, i, n, places, needs, allKept, nested, took }, at) => {
       const on = i === open;
       const isKept = places > 1 ? allKept : reviewed(edit);
       // A revision on its way takes the edit off the editor's list until it comes back. Its row says so whether or not
@@ -238,7 +295,7 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
       // One that came back revised with no reason from Scarlet says so on its row until it is kept: its card has no
       // sentence for that.
       const revised = edit.check === REVISED_CHECK && !reviewed(edit) && !isRevising;
-      return <li key={editKey(edit)}><button type="button" ref={on ? opened : undefined} aria-current={on || undefined} data-log-control="open-edit" data-log-label="Edit"
+      return <Fragment key={editKey(edit)}><li><button type="button" ref={on ? opened : undefined} aria-current={on || undefined} data-log-control="open-edit" data-log-label="Edit"
         // Clicked, the row lets go of the focus (WebView2 leaves it there), or Space would press the row again and start
         // the edit over, instead of playing the video.
         className={on ? "simple-edit is-on" : "simple-edit"} onClick={e => { if (e.detail) e.currentTarget.blur(); onPlay(edit); }}
@@ -251,9 +308,9 @@ export function ThreadEdits({ projectId, thread, edits, showing, onPlay, onHover
         <span className="simple-edit-title">{title}{version > 0 && places === 1 && <EditVersion n={version} hover={took} />}</span>
         {/* What the row ends on says on hover what the requests about this edit took: their time and tokens, nothing else. */}
         {value && <span className="simple-edit-value" title={took}>{value}</span>}
-        {isRevising ? <span className={busy ? "simple-edit-check is-kept working-text" : "simple-edit-check is-kept"} title={took}>Revising…</span>
+        {isRevising ? <span className={busy ? "simple-edit-check is-kept working-text" : "simple-edit-check is-kept"} title={took}>{rejecting(edit) ? "Rejecting…" : "Revising…"}</span>
           : revised && <span className="simple-edit-check" title={took}>{edit.check}</span>}
-      </button>{nested}</li>;
+      </button>{nested}</li>{goneAfter(edit.range.start, rows[at + 1]?.edit.range.start ?? Infinity)}</Fragment>;
     })}
   </ol>;
 }

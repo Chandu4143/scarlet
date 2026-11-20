@@ -219,6 +219,24 @@ it("says why the host stopped a run and offers Resume, keeping what it saved", (
   expect(notice(legacy)).toMatchObject({ tone: "warn", text: "The edit ran out of time. What it saved is kept.", action: { taskId: legacy.id, label: "Resume agent" } });
 });
 
+it("offers Resume for a run that failed after saving an edit", () => {
+  const failed = task("broke", "failed", { error: "unexpected status 500", changeIds: ["saved"] });
+  const saved = change("saved", "approved", { taskId: failed.id });
+  const [thread] = buildThreads({ tasks: [failed], changes: [saved], notes: [] });
+  expect(threadConversation(thread!, []).entries).toContainEqual(expect.objectContaining({ kind: "system", action: { taskId: failed.id, label: "Resume agent" } }));
+});
+
+it("keeps a pass finished when its closing check couldn't run, and offers Retry for the check", () => {
+  const pass = task("pass", "done", { changeIds: ["cuts"], reply: "Saved a tighter first cut.",
+    repeatAudit: { version: "v2", returns: 1, failed: "unexpected status 401 Unauthorized" } });
+  const cuts = change("cuts", "approved", { taskId: pass.id });
+  const [thread] = buildThreads({ tasks: [pass], changes: [cuts], notes: [] });
+  const { entries } = threadConversation(thread!, []);
+  expect(entries).toContainEqual(expect.objectContaining({ kind: "system", text: "The closing check for repeats didn’t run.", tone: "warn",
+    action: { taskId: pass.id, label: "Retry edit" } }));
+  expect(entries.some(e => e.kind === "system" && /couldn’t finish/.test(e.text))).toBe(false);
+});
+
 it("keeps a pending proposal reviewable alongside Resume, then shows a single continued conversation", () => {
   const original = task("original", "failed", { interrupted: true, changeIds: ["draft"] });
   const draft = change("draft", "ready", { taskId: original.id });

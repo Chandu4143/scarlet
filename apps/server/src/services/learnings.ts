@@ -55,8 +55,8 @@ export function startLearningCheck(ctx: Ctx, task: Task): Task | undefined {
       projectId: task.projectId, kind: "learning_check", agent: task.agent, model: task.model, fast: task.fast,
       instruction: wordsOf(task), context: { checksTaskId: task.id }, createdBy: task.createdBy,
     });
-  } catch {
-    ctx.log(`[learning] ${task.id} wasn’t read for a rule`);
+  } catch (err) {
+    ctx.log(`[learning] ${task.id} wasn’t read for a rule: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
