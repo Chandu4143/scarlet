@@ -53,8 +53,9 @@ export function migrateDialogueSettings(ctx: Ctx) {
     preservePendingSuggestions(ctx, legacy.aiCuts);
     const lines = editorialPreferences(legacy);
     const guides = ctx.repos.skills.select(`name = 'dialogue-pass' OR json_extract(json, '$.bundledName') IN ('first-cut-dialogue', 'dialogue-pass')`);
-    // Scarlet used to add the default two-frame crossfade at every join by itself. The stock guide now asks for it; an
-    // editor's own guide that says nothing about crossfades would lose it, so it is written into that guide.
+    // Scarlet used to add the default two-frame crossfade at every join by itself, and no longer does: a join is a
+    // straight cut unless a skill asks for a crossfade. An editor's own guide that says nothing about crossfades would
+    // lose the one they had, so it is written into that guide. The stock guide states its own.
     const frames = legacy.crossfadeFrames;
     const defaultFade = frames === undefined || frames === 2;
     const preferencesFor = (guide: { content: string; source?: string }) =>

@@ -4,9 +4,9 @@
  * event emitter that plays the role of the WebSocket: renders progress,
  * tasks stream log lines, a change becomes ready, uploads finish ingesting.
  */
-import { dialogueCommand, AGENT_LABEL, beginRevision, buildThreads, restoredReviewState, threadRevision, threadTimeline, countReviewDecisions, fullRenderContext, taskNeedsTranscripts, taskRecoveryAction, splitAgentTarget, ScarletApiError, SkillSlug, isAsideTask, isSkillEdit, ReviseLearningRequest } from "@scarlet/shared";
+import { dialogueCommand, AGENT_LABEL, beginRevision, buildThreads, restoredReviewState, threadRevision, threadTimeline, countReviewDecisions, fullRenderContext, taskNeedsTranscripts, taskRecoveryAction, splitAgentTarget, ScarletApiError, SkillSlug, isAsideTask, isProjectEditTask, isSkillEdit, ReviseLearningRequest, queueAdmission, sameRun } from "@scarlet/shared";
 import { appliedCutReview, appliedReviewChange, applyReviewRemovals, makeStagedCutMapper, contentHash, planCutReview, reviewedTimeline } from "@scarlet/timeline";
-import type { ApproveLearningRequest, EditSkillRequest, Learning, RunChoice, UsageGroupBy, UsageResponse, UsageTotals } from "@scarlet/shared";
+import type { ApproveLearningRequest, EditSkillRequest, Learning, MakeShortsRequest, RunChoice, UsageGroupBy, UsageResponse, UsageTotals } from "@scarlet/shared";
 import type {
   AgentHost,
   AgentId,
@@ -22,7 +22,6 @@ import type {
   ServerSettings,
   Skill,
   SkillVersion,
-  GraphicTemplateSummary,
   TaskAttachment,
   Task,
   TaskEvent,
@@ -32,10 +31,10 @@ import type {
   WsEvent,
 } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript } from "@scarlet/timeline";
-import { planRevert, toOtio, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
-import type { ActivityEntry, ApproveResponse, TrashedProject } from "@scarlet/shared";
+import { planRevert, toOtio, toFcpxml, usedMedia, handoffFileNames, handoffLosses, handoffReadMe, toSrt, captionTracks, exactRate, type HandoffSource, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
+import type { ActivityEntry, ApproveResponse, HandoffFile, HandoffResponse, TrashedProject } from "@scarlet/shared";
 import type { ScarletApi } from "../api";
-import { buildDb, mc, SAMPLE_TRANSCRIPTION_MODEL, templatePreviewSvg, type MockDb } from "./fixtures";
+import { buildDb, mc, SAMPLE_TRANSCRIPTION_MODEL, type MockDb } from "./fixtures";
 import sampleWaveform from "./sample-waveform.json";
 
 class Emitter {
@@ -134,12 +133,17 @@ export class MockClient implements ScarletApi {
   private summary(projectId: string): ProjectSummary {
     const s = this.db.summaries[projectId];
     if (!s) throw notFound("Project");
+    const project = this.projectById(projectId);
+    const tasks = this.db.tasks.filter(t => t.projectId === projectId);
     s.pendingChanges = countReviewDecisions({
       changes: this.db.changes.filter(c => c.projectId === projectId),
-      tasks: this.db.tasks.filter(t => t.projectId === projectId),
+      tasks,
       notes: this.db.notes.filter(n => n.projectId === projectId),
-    }, this.projectById(projectId).completedThreads);
-    const head = this.db.timelines[this.projectById(projectId).head ?? ""];
+    }, project.completedThreads);
+    s.mediaPaused = project.mediaPaused;
+    const editing = tasks.filter(task => isProjectEditTask(task) && (task.state === "claimed" || task.state === "running")).length;
+    s.activity = editing ? [{ kind: "editing", count: editing }] : undefined;
+    const head = this.db.timelines[project.head ?? ""];
     s.duration = head && timelineDuration(head);
     return s;
   }
@@ -175,7 +179,8 @@ export class MockClient implements ScarletApi {
   // --- projects -----------------------------------------------------------------
   async projects(): Promise<{ projects: ProjectSummary[] }> {
     this.requireAuth();
-    return this.latency({ projects: this.db.projects.filter((p) => !this.trashed.some((t) => t.project.id === p.id)).map((p) => this.summary(p.id)) }, 200);
+    const projects = this.db.projects.filter(p => !this.trashed.some(t => t.project.id === p.id)).map(p => ({ ...this.summary(p.id) }));
+    return this.latency({ projects }, 200);
   }
   async createProject(body: { name: string; settings?: Partial<Project["settings"]> }): Promise<{ project: Project }> {
     this.requireAuth();
@@ -202,6 +207,36 @@ export class MockClient implements ScarletApi {
     return this.latency({ project: { ...project, media: this.db.media[id] ?? [] },
       timeline: project.head ? this.db.timelines[project.head] ?? null : null }, 180);
   }
+  async stopEditing(id: string): Promise<{ project: Project; tasks: Task[] }> {
+    this.requireAuth();
+    const project = this.setEditingPaused(id, true);
+    // Only a run at work is stopped. A question, and an answered run back in line, hold no worker and wait for Continue.
+    const active = this.db.tasks.filter(task => task.projectId === id && isProjectEditTask(task)
+      && ["claimed", "running"].includes(task.state));
+    const tasks = active.flatMap(task => {
+      const retry = this.retryAttempt(task, {}, "resume");
+      this.stopTask(task, retry.id);
+      this.updateTask(retry, { resumesAfterProjectStop: true, cutConflict: task.cutConflict });
+      this.runRetry(retry);
+      return [{ ...task }, { ...retry }];
+    });
+    return this.latency({ project, tasks });
+  }
+  async resumeEditing(id: string): Promise<{ project: Project; tasks: Task[] }> {
+    this.requireAuth();
+    const wasPaused = this.projectById(id).editingPaused;
+    const project = this.setEditingPaused(id, false);
+    const tasks = wasPaused ? this.db.tasks.filter(task => task.projectId === id && task.state === "queued" && task.resumesAfterProjectStop) : [];
+    return this.latency({ project, tasks: tasks.map(task => ({ ...task })) });
+  }
+  private setEditingPaused(id: string, editingPaused: boolean): Project {
+    const project = this.projectById(id);
+    if (Boolean(project.editingPaused) === editingPaused) return { ...project };
+    project.editingPaused = editingPaused;
+    const saved = { ...project };
+    this.emit({ type: "project.updated", projectId: id, project: saved });
+    return saved;
+  }
   private projectThread(id: string, threadId: string) {
     const thread = buildThreads({ changes: this.db.changes.filter(c => c.projectId === id),
       tasks: this.db.tasks.filter(t => t.projectId === id), notes: this.db.notes.filter(n => n.projectId === id) }).find(t => t.id === threadId);
@@ -210,6 +245,9 @@ export class MockClient implements ScarletApi {
   }
 
   async recordEditReview(): Promise<void> { /* The demo has no analytics engine. */ }
+  /** The demo has no runs to tell: this window remembers its Keeps. */
+  async keepEdits(): Promise<void> {}
+  async unkeepEdits(): Promise<void> {}
   async threadEdits(id: string, threadId: string) {
     const project = this.projectById(id);
     const thread = this.projectThread(id, threadId);
@@ -231,12 +269,33 @@ export class MockClient implements ScarletApi {
     return { completedThreads };
   }
 
+  /** As the engine does, without copying files: each short is a project on the long video's footage and finished edit. */
+  async makeShorts(id: string, body: MakeShortsRequest): Promise<{ projects: Project[]; task: Task }> {
+    this.requireAuth();
+    const source = this.projectById(id);
+    const dims = ASPECT_PRESETS[body.aspect]!;
+    const projects: Project[] = [];
+    for (let index = 1; index <= body.count; index++) {
+      const { project } = await this.createProject({ name: `Short ${index} of ${body.count}`, settings: { ...source.settings, ...dims, aspect: body.aspect } });
+      Object.assign(project, { head: source.head, media: source.media, source: { projectId: source.id, name: source.name, notice: true } });
+      this.db.media[project.id] = this.db.media[source.id] ?? [];
+      this.db.versions[project.id] = (this.db.versions[source.id] ?? []).filter(v => v.version === source.head);
+      Object.assign(this.db.summaries[project.id]!, { head: source.head, mediaCount: source.media.length, source: project.source });
+      projects.push(project);
+    }
+    const task = this.makeTask(projects[0]!.id, { kind: "edit", agent: body.agent, model: body.model, effort: body.effort, serviceTier: body.serviceTier,
+      instruction: `Make ${body.count === 1 ? "a vertical short" : `up to ${body.count} vertical shorts, each`} under ${body.maxSeconds} s${body.captions ? "" : ", without captions"}.`,
+      context: { short: { index: 1, count: body.count, sourceProjectId: source.id, sourceName: source.name, sourceVersion: source.head ?? "", aspect: body.aspect,
+        maxSeconds: body.maxSeconds, captions: body.captions, projectIds: projects.map(p => p.id) } } });
+    return this.latency({ projects, task }, 400);
+  }
   async updateProject(id: string, body: Record<string, unknown>): Promise<{ project: Project }> {
     this.requireAuth();
     const project = this.projectById(id);
     const s = this.summary(id);
     const expected = body.expectedFormat as Pick<Project, "head" | "settings"> | undefined;
     if (expected && (project.head !== expected.head || JSON.stringify(project.settings) !== JSON.stringify(expected.settings))) return { project };
+    if (body.sourceNotice === false && project.source) project.source = { ...project.source, notice: undefined };
     if (typeof body.mediaPaused === "boolean") project.mediaPaused = body.mediaPaused;
     if (typeof body.archived === "boolean") {
       project.archived = body.archived;
@@ -330,8 +389,12 @@ export class MockClient implements ScarletApi {
     void this.simulateIngest(projectId, media, file.size);
     return this.latency({ media }, 200);
   }
-  async importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string }): Promise<{ media: MediaAsset }> {
+  async importMedia(projectId: string, body: { path?: string; url?: string; kind?: string; importId?: string }, signal?: AbortSignal): Promise<{ media: MediaAsset }> {
     this.requireAuth();
+    if (signal) {
+      await sleep(400);
+      signal.throwIfAborted();
+    }
     const saved = body.importId && this.db.media[projectId]?.find(asset => asset.importId === body.importId);
     if (saved) return { media: saved };
     const src = body.url ?? body.path ?? "import";
@@ -343,7 +406,7 @@ export class MockClient implements ScarletApi {
     this.projectById(projectId).media = this.db.media[projectId] ?? [];
     this.refreshCounts(projectId);
     void this.simulateIngest(projectId, media, 50_000_000);
-    return this.latency({ media }, 400);
+    return signal ? { media } : this.latency({ media }, 400);
   }
   async removeMedia(projectId: string, mediaId: string): Promise<Record<string, never>> {
     this.requireAuth();
@@ -480,6 +543,11 @@ export class MockClient implements ScarletApi {
     const list = (this.db.versions[projectId] ?? []).map((v) => ({ ...v, isHead: v.version === head }));
     return this.latency({ versions: list });
   }
+  /** The sample project has no engine to put an edit back: the × asks Scarlet, as it does wherever the engine can't. */
+  async rejectEdits(): Promise<{ project: Project; change: Change }> {
+    this.requireAuth();
+    throw new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was.");
+  }
   async historyEdit(projectId: string, target: string, action: "revert" | "restore", expectedHead: string, branch: string) {
     this.requireAuth();
     const project = this.projectById(projectId);
@@ -528,6 +596,31 @@ export class MockClient implements ScarletApi {
     const tl = this.db.timelines[version === "head" ? (project.head ?? "") : version];
     const otio = tl ? toOtio({ ...project, media: this.db.media[projectId] ?? project.media }, tl, { mediaRoot: "C:/scarlet/media" }) : {};
     return `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(otio, null, 2))}`;
+  }
+
+  /** The demo's folder for another app: real timeline files, with the sample video standing in for every clip. */
+  async handoff(projectId: string, version: string, folder: string): Promise<HandoffResponse> {
+    const stored = this.projectById(projectId);
+    const project = { ...stored, media: this.db.media[projectId] ?? stored.media };
+    const tl = this.db.timelines[version === "head" ? (project.head ?? "") : version];
+    if (!tl) throw notFound("Version");
+    const base = folder.split(/[\\/]/).filter(Boolean).pop() || project.name;
+    const assets = usedMedia(project, tl);
+    const names = handoffFileNames(assets.map(a => a.name));
+    const sources = new Map<string, HandoffSource>(assets.map((a, i) => [a.id, {
+      url: `file://${encodeURI(`${folder}/Media/${names[i]}`)}`, fileName: names[i]!, hasVideo: a.kind !== "audio", hasAudio: a.hasAudio !== false,
+      rate: a.fps ? exactRate(a.fps).rate : undefined, width: a.width, height: a.height, duration: a.duration ?? 0,
+    }]));
+    const captions = captionTracks(tl).map(({ cues }) => ({ path: `${base} captions.srt`, text: toSrt(cues) })).slice(0, 1);
+    const files: HandoffFile[] = [
+      { path: `${base}.fcpxml`, text: toFcpxml(project, tl, sources) },
+      { path: `${base}.otio`, text: JSON.stringify(toOtio(project, tl, { sources }), null, 2) },
+      ...captions,
+      { path: "Read me.txt", text: handoffReadMe({ projectName: project.name, timelineFiles: { fcpxml: `${base}.fcpxml`, otio: `${base}.otio` },
+        captionFiles: captions.map(c => c.path), losses: handoffLosses(project, tl, sources), warnings: [] }) },
+      ...names.map(name => ({ path: `Media/${name}`, source: "/sample.mp4", size: 0 })),
+    ];
+    return this.latency({ files, mediaBytes: 0 }, 250);
   }
 
   // --- changes -------------------------------------------------------------------------
@@ -618,6 +711,9 @@ export class MockClient implements ScarletApi {
   async approveChange(changeId: string, spots?: number[], restoredCuts?: number[]): Promise<ApproveResponse> {
     this.requireAuth();
     await sleep(350);
+    return this.applyChange(changeId, spots, restoredCuts);
+  }
+  private async applyChange(changeId: string, spots?: number[], restoredCuts?: number[]): Promise<ApproveResponse> {
     const change = this.db.changes.find((c) => c.id === changeId);
     if (!change) throw notFound("Change");
     const project = this.projectById(change.projectId);
@@ -958,18 +1054,19 @@ export class MockClient implements ScarletApi {
     this.emit({ type: "task.updated", projectId: task.projectId, task: { ...task } });
   }
   /** Simulated agent run: claim → log lines → propose change → renders → ready → done. */
-  private async runTask(task: Task, opts: { fromVersion: string; description: string; noteIds?: string[]; supersedes?: Change; previewOnly?: boolean }) {
+  private async runTask(task: Task, opts: { fromVersion?: string; description: string; noteIds?: string[]; supersedes?: Change; previewOnly?: boolean }) {
     const isCancelled = () => task.state === "cancelled";
     await sleep(600);
-    // A request whose words the editor is changing waits until they're saved.
-    while (task.state === "queued" && task.rewordingUntil && Date.parse(task.rewordingUntil) > Date.now()) await sleep(300);
+    // Use the same claim order as the queue tray. The mock stores its tasks newest first.
+    while (task.state === "queued" && ((task.rewordingUntil && Date.parse(task.rewordingUntil) > Date.now())
+      || (isProjectEditTask(task) && (this.projectById(task.projectId).editingPaused
+        || !queueAdmission([...this.db.tasks].reverse(), this.db.changes, id => this.db.changes.find(change => change.id === id))(task))))) await sleep(300);
     if (isCancelled()) return;
     if (!task.hostId) {
-      await sleep(400);
-      if (isCancelled()) return;
       this.updateTask(task, { state: "failed", error: `No online agent host has ${AGENT_NAMES[task.agent]} signed in.`, finishedAt: now() });
       return;
     }
+    const fromVersion = opts.fromVersion && this.db.timelines[opts.fromVersion] ? opts.fromVersion : this.projectById(task.projectId).head ?? "";
     this.updateTask(task, { state: "claimed" });
     await sleep(700);
     if (isCancelled()) return;
@@ -981,10 +1078,10 @@ export class MockClient implements ScarletApi {
     await sleep(1400);
     if (isCancelled()) return;
     this.pushEvent(task, "log", "I’m checking the timeline before preparing your edit.", { kind: "editor_progress" });
-    await sleep(1200);
+    await sleep(opts.previewOnly ? 1200 : 1550);
     if (isCancelled()) return;
 
-    const base = this.db.timelines[opts.fromVersion] ?? (this.projectById(task.projectId).head ? this.db.timelines[this.projectById(task.projectId).head!] : undefined);
+    const base = this.db.timelines[fromVersion];
     if (!base) {
       this.updateTask(task, { state: "failed", error: "Project has no timeline yet. Upload media first.", finishedAt: now() });
       return;
@@ -1030,32 +1127,25 @@ export class MockClient implements ScarletApi {
       opts.supersedes.updatedAt = now();
       this.emit({ type: "change.updated", projectId: task.projectId, change: { ...opts.supersedes } });
     }
-    const result = opts.previewOnly ? change : (await this.approveChange(change.id)).change;
+    const result = opts.previewOnly ? change : (await this.applyChange(change.id)).change;
     if (isCancelled()) return;
     this.updateTask(task, { state: "done", summary: result.description, finishedAt: now() });
 
   }
   async createTask(projectId: string, body: CreateTaskRequest): Promise<{ task: Task }> {
     this.requireAuth();
-    const project = this.projectById(projectId);
+    this.projectById(projectId);
     if (body.kind === "skill_from_change") throw new ScarletApiError(400, "use_skill_from_change", "Create skill tasks from an approved change");
     if (body.kind === "skill_edit") throw new ScarletApiError(400, "use_skill_edit", "Ask for a change to a skill from its page");
     if (body.kind === "learning_check") throw new ScarletApiError(400, "not_a_request", "Scarlet starts this check itself, with each request.");
     const followUp = body.context?.threadId;
-    const ahead = followUp ? this.db.tasks.filter(t => t.projectId === projectId && (t.context.threadId ?? t.id) === followUp) : [];
     this.log(projectId, "request.created", `${this.currentUser().name} asked ${AGENT_NAMES[body.agent]}: “${body.context?.message ?? body.instruction}”${followUp ? " (follow-up)" : ""}`);
     // As the engine does: what the person said is the request itself, unless the app sent their words apart from what
-    // it asks of the agent. Undo edit reads "Undo" in the chat and the queue.
+    // it asks of the agent.
     const said = body.context?.message ?? body.instruction;
     const task = this.makeTask(projectId, { kind: body.kind ?? "edit", agent: body.agent, model: body.model, effort: body.effort, serviceTier: body.serviceTier, instruction: body.instruction,
       context: { ...(body.context ?? {}), ...(followUp ? { message: said, asked: said === body.instruction ? undefined : body.instruction } : {}) } });
-    void (async () => {
-      // A follow-up waits until nothing else is running in its thread.
-      while (task.state === "queued" && task.context.threadId === followUp && ahead.some(t =>
-        (t.context.threadId ?? t.id) === followUp && ["queued", "claimed", "running", "waiting_for_user"].includes(t.state))) await sleep(500);
-      if (task.state !== "queued") return;
-      await this.runTask(task, { fromVersion: project.head ?? "", description: body.instruction.length > 90 ? `${body.instruction.slice(0, 87)}…` : body.instruction });
-    })();
+    void this.runTask(task, { description: body.instruction.length > 90 ? `${body.instruction.slice(0, 87)}…` : body.instruction });
     return this.latency({ task }, 200);
   }
   async tasks(projectId: string, state?: string, events?: "conversation") {
@@ -1083,13 +1173,19 @@ export class MockClient implements ScarletApi {
     const events = scope === "all" ? this.db.taskEvents[taskId] ?? [] : this.conversation(taskId);
     return this.latency({ task, events });
   }
-  async cancelTask(taskId: string): Promise<{ task: Task }> {
+  private stopTask(task: Task, retryTaskId?: string) {
+    this.updateTask(task, { state: "cancelled", finishedAt: now(), retryTaskId });
+    this.pushEvent(task, "log", "Cancelled by user");
+  }
+  async cancelTask(taskId: string, queuedOnly = false): Promise<{ task: Task }> {
     this.requireAuth();
     const task = this.db.tasks.find((t) => t.id === taskId);
     if (!task) throw notFound("Task");
     if (["done", "failed", "cancelled"].includes(task.state)) return { task };
-    this.updateTask(task, { state: "cancelled", finishedAt: now() });
-    this.pushEvent(task, "log", "Cancelled by user");
+    if (queuedOnly && (task.state !== "queued" || task.startedAt || (task.resumeRootId && !task.resumesAfterProjectStop))) {
+      throw new ScarletApiError(409, "already_started", "Scarlet has already started on this request.");
+    }
+    this.stopTask(task);
     return this.latency({ task });
   }
   /** The engine's rule: only a request that hasn't begun has words left to change. */
@@ -1156,22 +1252,33 @@ export class MockClient implements ScarletApi {
     if (task.retryTaskId) return this.task(task.retryTaskId);
     const action = taskRecoveryAction(task, this.db.changes.some(c => c.taskId === taskId));
     if (!action) throw new ScarletApiError(409, "not_retryable", "This request cannot be retried.");
-    const run = body.agent ? { agent: body.agent, model: body.model, effort: body.effort, fast: body.fast, serviceTier: body.serviceTier } : {};
+    const retry = this.retryAttempt(task, body, action);
+    this.updateTask(task, { retryTaskId: retry.id });
+    this.runRetry(retry);
+    return { task: retry };
+  }
+  private retryAttempt(task: Task, body: RunChoice, action: "resume" | "retry") {
+    const run = body.agent ? { agent: body.agent, model: body.model, effort: body.effort, serviceTier: body.serviceTier } : {};
     const retry = this.makeTask(task.projectId, { ...task, ...run, context: { ...task.context, threadId: task.context.threadId ?? task.id } });
+    Object.assign(retry, { createdBy: task.createdBy, fast: body.agent ? body.fast : task.fast, startsBeforeCalls: task.startsBeforeCalls,
+      stagedCutRevision: task.stagedCutRevision });
     if (action === "resume") retry.resumeRootId = task.resumeRootId ?? task.id;
+    return retry;
+  }
+  private runRetry(task: Task) {
     const proposal = task.kind === "revise" ? this.db.changes.find(c => c.id === task.context.changeId && c.projectId === task.projectId) : undefined;
     if (proposal && proposal.state !== "approved" && proposal.state !== "revising") {
-      Object.assign(proposal, beginRevision(proposal, retry), { updatedAt: now() });
+      Object.assign(proposal, beginRevision(proposal, task), { updatedAt: now() });
       this.emit({ type: "change.updated", projectId: task.projectId, change: { ...proposal } });
     }
-    this.updateTask(task, { retryTaskId: retry.id });
-    void this.runTask(retry, { fromVersion: this.projectById(task.projectId).head ?? "", description: task.context.message ?? task.instruction, supersedes: proposal });
-    return { task: retry };
+    void this.runTask(task, { description: task.context.message ?? task.instruction, noteIds: task.context.noteIds, supersedes: proposal,
+      previewOnly: this.chatLayouts && task.resumeRootId === "task_running" });
   }
   async answerTask(taskId: string, text: string, skillIds?: string[]): Promise<{ task: Task }> {
     this.requireAuth();
     const task = this.db.tasks.find((t) => t.id === taskId);
     if (!task) throw notFound("Task");
+    if (task.state !== "waiting_for_user") throw new ScarletApiError(409, "not_waiting", "This request isn’t waiting for an answer.");
     if (skillIds?.length) task.context.skillIds = [...new Set([...(task.context.skillIds ?? []), ...skillIds])];
     const operation = dialogueCommand(text, this.db.skills);
     if (operation && operation !== task.context.dialogueOperation) {
@@ -1179,12 +1286,19 @@ export class MockClient implements ScarletApi {
       task.repeatAudit = undefined;
     }
     this.pushEvent(task, "answer", text);
-    this.updateTask(task, { state: "running", question: null });
+    // An answer given while editing is stopped waits in line for Continue.
+    this.updateTask(task, { state: "queued", question: null });
     void (async () => {
+      while (task.state === "queued" && this.projectById(task.projectId).editingPaused) await sleep(300);
+      if (task.state !== "queued") return;
+      this.updateTask(task, { state: "running" });
       await sleep(1500);
+      if ((task.state as Task["state"]) !== "running") return;
       this.pushEvent(task, "log", `Applying your answer: “${text}”`);
       await sleep(1500);
-      const change = this.db.changes.find((c) => task.changeIds.includes(c.id));
+      if ((task.state as Task["state"]) !== "running") return;
+      const attempts = this.db.tasks.filter(attempt => sameRun(task, attempt));
+      const change = this.db.changes.find(c => attempts.some(attempt => attempt.changeIds.includes(c.id)));
       if (change && change.state === "rendering") {
         const pending = this.db.renders.filter((r) => r.changeId === change.id && r.state !== "done");
         for (const r of pending) {
@@ -1212,15 +1326,7 @@ export class MockClient implements ScarletApi {
     this.requireAuth();
     return this.latency({ skills: this.db.skills }, 150);
   }
-  // --- graphic templates and attachments -------------------------------------------------
-  async listTemplates(): Promise<{ templates: GraphicTemplateSummary[] }> {
-    this.requireAuth();
-    return this.latency({ templates: this.db.templates }, 120);
-  }
-  templatePreviewUrl(templateId: string): string {
-    const template = this.db.templates.find(t => t.id === templateId);
-    return template ? templatePreviewSvg(template) : "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
-  }
+  // --- attachments ----------------------------------------------------------------------
   async uploadAttachment(projectId: string, file: Blob | { path: string }, name?: string): Promise<{ attachment: TaskAttachment }> {
     this.requireAuth();
     this.projectById(projectId);
@@ -1279,7 +1385,7 @@ export class MockClient implements ScarletApi {
       current.version += 1;
       current.updatedAt = now();
       (this.db.skillVersions[skillId] ??= []).push({ version: current.version, content: current.content,
-        author: { type: "agent", id: task.agent, name: AGENT_NAMES[task.agent], model: task.model }, createdAt: current.updatedAt });
+        author: { type: "agent", id: task.agent, name: AGENT_NAMES[task.agent], model: task.model }, createdAt: current.updatedAt, note: body.prompt.trim(), from: "request" });
       this.emit({ type: "skill.updated", skill: { ...current } });
       this.updateTask(task, { state: "done", resultSkillId: skillId, summary: "Added it as a section at the end of the instructions.", finishedAt: now() });
     })();
@@ -1316,7 +1422,7 @@ export class MockClient implements ScarletApi {
       skill.version += 1;
       skill.updatedAt = now();
       (this.db.skillVersions[skill.id] ??= []).push({ version: skill.version, content: skill.content,
-        author: { type: "agent", id: "claude", name: AGENT_NAMES.claude }, createdAt: skill.updatedAt });
+        author: { type: "agent", id: "claude", name: AGENT_NAMES.claude }, createdAt: skill.updatedAt, note: learning.rule, from: "learning" });
       this.emit({ type: "skill.updated", skill: { ...skill } });
       learning.state = "saved";
       this.emit({ type: "learning.updated", projectId, learning: { ...learning } });
@@ -1349,7 +1455,8 @@ export class MockClient implements ScarletApi {
     Object.assign(skill, body, { scope: "team", projectId: null, ownerId: null, agents: [], updatedAt: now() });
     if (contentChanged) {
       skill.version += 1;
-      (this.db.skillVersions[skillId] ??= []).push({ version: skill.version, content: skill.content, author: this.human(), createdAt: now() });
+      // The engine names a save by the parts it changed; the demo says only that the editor changed it.
+      (this.db.skillVersions[skillId] ??= []).push({ version: skill.version, content: skill.content, author: this.human(), createdAt: now(), note: "Changed the skill" });
     }
     this.emit({ type: "skill.updated", skill: { ...skill } });
     return this.latency({ skill }, 200);
@@ -1416,7 +1523,7 @@ export class MockClient implements ScarletApi {
   async updateSettings(body: Partial<ServerSettings>): Promise<{ settings: ServerSettings }> {
     this.requireAuth();
     const previous = this.db.settings.render;
-    this.db.settings = { ...this.db.settings, ...body, editingTools: { ...this.db.settings.editingTools, ...body.editingTools }, transcription: { ...this.db.settings.transcription, ...body.transcription }, noteCleanup: { ...this.db.settings.noteCleanup, ...body.noteCleanup }, render: { ...this.db.settings.render, ...body.render } };
+    this.db.settings = { ...this.db.settings, ...body, transcription: { ...this.db.settings.transcription, ...body.transcription }, noteCleanup: { ...this.db.settings.noteCleanup, ...body.noteCleanup }, render: { ...this.db.settings.render, ...body.render } };
     if (previous.hwaccel !== this.db.settings.render.hwaccel || previous.previewHeight !== this.db.settings.render.previewHeight) this.emit({ type: "render.settings.updated" });
     return this.latency({ settings: this.db.settings }, 250);
   }

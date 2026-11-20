@@ -3,7 +3,7 @@ import type { Render } from "@scarlet/shared";
 import { planPlaybackSegments, type Change, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { api, errorMessage, IS_MOCK } from "../../lib/client";
 import { openCutStream, playbackLoader } from "../../lib/cutStream";
-import { playbackLog } from "../../lib/playbackLog";
+import { logPlayRefusal, playbackLog } from "../../lib/playbackLog";
 import { ignorePageShortcut } from "../../lib/hotkeys";
 import { pct } from "../../lib/format";
 import { selectRender, useProjectStore } from "../../stores/project";
@@ -164,7 +164,8 @@ export function ChangeClip({ change, active = true, loading, clock: pageClock, p
     if (video.current && local >= 0 && local < rangeEnd - rangeStart && video.current.readyState >= 1) video.current.currentTime = local;
   }
   function play(el: HTMLVideoElement) {
-    void el.play().catch(() => {
+    void el.play().catch(error => {
+      logPlayRefusal(el, "comparison", error);
       if (video.current !== el || !el.paused) return;
       wantPlay.current = false;
       setPlaying(false);
@@ -224,6 +225,9 @@ export function ChangeClip({ change, active = true, loading, clock: pageClock, p
     scrub: hold,
   }));
 
+  // Space plays as the play button does now, also after the picture changed which file it plays from.
+  const toggleNow = useRef(toggle);
+  toggleNow.current = toggle;
   useEffect(() => {
     if (!active) {
       video.current?.pause();
@@ -234,7 +238,7 @@ export function ChangeClip({ change, active = true, loading, clock: pageClock, p
       if (ignorePageShortcut(e, video.current)) return;
       if (e.key === " ") {
         e.preventDefault();
-        if (!e.repeat) toggle();
+        if (!e.repeat) toggleNow.current();
       }
     };
     window.addEventListener("keydown", down);

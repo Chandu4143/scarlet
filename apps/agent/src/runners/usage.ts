@@ -34,6 +34,11 @@ export function addUsage(a: AgentUsage | undefined, b: AgentUsage | undefined): 
   };
 }
 
+/** A run's usage, named for the model the run asked for when the CLI didn't say which model it used. */
+export function usageWithModel(usage: AgentUsage | undefined, model: string | undefined): AgentUsage | undefined {
+  return usage && !usage.model && model ? { ...usage, model } : usage;
+}
+
 /** Claude Code `usage` (result or per-message): input already excludes the cache. */
 export function claudeUsage(raw: unknown, model?: string): AgentUsage | undefined {
   const u = record(raw);
@@ -50,20 +55,34 @@ export function claudeUsage(raw: unknown, model?: string): AgentUsage | undefine
 /** Codex `turn.completed.usage`: input includes cached input; output includes reasoning. */
 export function codexUsage(raw: unknown, model?: string): AgentUsage | undefined {
   const u = record(raw);
-  if (!has(u, "input_tokens", "output_tokens", "cached_input_tokens")) return undefined;
+  if (!has(u, "input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens")) return undefined;
   const cached = tokenCount(u!.cached_input_tokens);
+  const written = tokenCount(u!.cache_write_input_tokens);
   return {
     ...emptyUsage(model),
-    inputTokens: Math.max(0, tokenCount(u!.input_tokens) - cached),
+    inputTokens: Math.max(0, tokenCount(u!.input_tokens) - cached - written),
     outputTokens: tokenCount(u!.output_tokens),
     cacheReadTokens: cached,
+    cacheWriteTokens: written,
     reasoningTokens: tokenCount(u!.reasoning_output_tokens),
   };
 }
 
-/** Gemini `result.stats`: `input_tokens` includes `cached`; `input` (newer CLIs) is the uncached part. */
+/** Gemini usage: ACP `PromptResponse.usage` (camelCase) or legacy `result.stats` (snake_case). */
 export function geminiUsage(raw: unknown, model?: string): AgentUsage | undefined {
   const s = record(raw);
+  if (has(s, "inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens")) {
+    const cached = tokenCount(s!.cachedReadTokens);
+    const written = tokenCount(s!.cachedWriteTokens);
+    return {
+      ...emptyUsage(model),
+      inputTokens: Math.max(0, tokenCount(s!.inputTokens) - cached - written),
+      outputTokens: tokenCount(s!.outputTokens),
+      cacheReadTokens: cached,
+      cacheWriteTokens: written,
+      reasoningTokens: tokenCount(s!.thoughtTokens),
+    };
+  }
   if (!has(s, "input_tokens", "output_tokens", "input", "cached")) return undefined;
   const cached = tokenCount(s!.cached);
   return {

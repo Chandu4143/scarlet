@@ -13,7 +13,7 @@ import { createApp, type ScarletApp } from "./app.js";
 import { accessToken, localUser } from "./auth.js";
 import { proposeChange } from "./services/changes.js";
 import { storeVersion } from "./services/timeline.js";
-import { pictureDecoder } from "./services/pictureWork.js";
+import { pictureDecoder, pictureLane } from "./services/pictureWork.js";
 import { previewPictures, previewIdentity } from "./services/previewPictures.js";
 import * as pictureCopies from "./services/previewPictures.js";
 import { createTask } from "./services/tasks.js";
@@ -81,7 +81,8 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     await call("project_get");
     const { secondaryStartRelativeToReference: offset } = await call("audio_sync", { referenceId: "m2-camera", secondaryId: "m1-screen" });
     expect(offset).toBeCloseTo(0.74, 4);
-    const assembly = { intent: "requested", description: "Align and compose the two recordings", ops: [
+    const assembly = { intent: "requested", description: "Align and compose the two recordings",
+      reason: "The selected screen recording and the presenter share the same speech.", ops: [
       { op: "addTrack", track: { id: "screen", kind: "video", name: "Selected screen" } },
       { op: "addClip", trackId: "v1", clip: makeMediaClip("m2-camera", 0, 4, 0, { id: "presenter" }) },
       { op: "addClip", trackId: "screen", clip: makeMediaClip("m1-screen", 0, 2.4, offset, { id: "desktop", volume: 0 }) },
@@ -90,9 +91,10 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     expect(unframed.state).toBe("ready");
     const setup = await call("timeline_propose", { ...assembly, pictureLayout: { screenClipId: "desktop", cameraClipId: "presenter" } });
     expect(setup.state).toBe("approved");
+    expect(setup.reason).toBe(assembly.reason);
     const edit = await call("dialogue_apply_cuts", { version: setup.toVersion, description: "Review two pauses", cuts: [
-      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action." },
-      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?" },
+      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action.", summary: "Shortened the pause before the click." },
+      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?", summary: "Shortened the pause after the reaction." },
     ] });
     // While the editor auditions the first cut, the second undecided passage stays in the draft.
     const { draft } = await client.cutReview(edit.changes[0].id, [1]);
@@ -221,6 +223,31 @@ it("shares full-rate composite activity pictures while preserving a two-frame sc
   expect((await inspect(1.8, 2.6, "activity")).changedFrames).toBe(0);
 });
 
+it("decodes a sheet's stills side by side, as many at a time as the picture lane has room for", async () => {
+  const { ctx } = workspace;
+  const p = ctx.repos.projects.insert(createProject("Stills together", { width: 320, height: 180, fps: 25 }));
+  ctx.paths.ensureProject(p.id);
+  await copyFile(join(ctx.paths.media(projectId), "sample.mp4"), join(ctx.paths.media(p.id), "sample.mp4"));
+  ctx.repos.projects.putMedia(p.id, { id: "stills", kind: "video", name: "sample", path: "sample.mp4",
+    hasAudio: true, duration: 4, fps: 25, width: 320, height: 180 }, "ready");
+  const tl = emptyTimeline(p.id);
+  tl.tracks[0]!.clips = [makeMediaClip("stills", 0, 4, 0)];
+  const { version } = storeVersion(ctx, p.id, tl, { parent: null });
+  const lane = pictureLane(ctx), run = lane.run.bind(lane);
+  let active = 0, peak = 0;
+  const watched = vi.spyOn(lane, "run").mockImplementation((job, options) => run(async () => {
+    peak = Math.max(peak, ++active);
+    try { return await job(); } finally { active--; }
+  }, options));
+  try {
+    const sheet = await client.contactSheet(p.id, { from: 0, to: 4, version, mode: "uniform", count: 6 });
+    if (sheet.state !== "ready") throw new Error("Picture inspection queued a playable video.");
+    expect(sheet.windows[0]!.timestamps).toHaveLength(6);
+    // One after another, six stills waited for six decodes while the lane's other slots stood empty.
+    expect(peak).toBe(lane.slots);
+  } finally { watched.mockRestore(); }
+});
+
 it("classifies and caches source voice activity only on an explicit speech analysis request", async () => {
   const wf = await client.waveform("m", 0, 1, 50);
   expect(wf.speechActivity).toBeUndefined();
@@ -236,7 +263,8 @@ it("classifies and caches source voice activity only on an explicit speech analy
   workspace.ctx.repos.projects.update(projectId, { mediaPaused: true });
   try {
     expect((await client.waveform("m", 1.2, 2, 40, true, true)).speechActivity).toBeInstanceOf(Array);
-    expect(spawnStats.ffmpeg).toBeGreaterThan(decodes);
+    // Another window is read from the recording's one decode, with no decode of its own.
+    expect(spawnStats.ffmpeg).toBe(decodes);
     // A pass's inspection of a cut reads levels and voice in one request, which prepares a waveform that isn't
     // cached yet. The timeline's drawing asks for no voice, and its waveform waits for resume.
     for (const id of ["drawn", "inspected"]) workspace.ctx.repos.projects.putMedia(projectId, { id, kind: "video", name: id, path: "sample.mp4",
@@ -380,8 +408,8 @@ it("reads a cut's pictures from the originals when a preview copy goes missing b
     expect(sheet).toMatchObject({ clock: "timeline", id: version });
     expect(sheet!.timestamps.length).toBeGreaterThan(0);
     // Each reader says it went back to the originals, and why, once for all the pictures that took.
-    expect(lines.filter(line => line.includes("again from the originals"))).toEqual([
-      expect.stringMatching(new RegExp(`^\\[render\\] reading a frame of ${version} again from the originals on the CPU: .+`)),
+    expect(lines.filter(line => line.startsWith("[render] frame_fallback") || line.includes("again from the originals"))).toEqual([
+      `[render] frame_fallback project=${p.id} version=${version} reason=decode_retry frame=4`,
       expect.stringMatching(new RegExp(`^\\[inspection\\] reading ${version} again from the originals on the CPU: .+`)),
     ]);
   } finally { ctx.log = log; copies.mockRestore(); }
@@ -639,4 +667,46 @@ it("selects a four-frame menu that opens and disappears between normal screen th
   expect(sheet.windows[0]?.changedFrames).toBeGreaterThanOrEqual(2);
   expect(sheet.windows[0]?.timestamps.some(t=>t>=11/30-0.00001 && t<0.5)).toBe(true);
   await expect(client.contactSheet(projectId,{mediaId:"menu",from:0,to:13,mode:"activity"})).rejects.toMatchObject({status:400});
+});
+
+it("frames a recording on an area so the renderer fills the video with it, and shows the framed video before saving", async () => {
+  const { ctx } = workspace;
+  const editor = new Client({ name: "test", version: "1" });
+  const [engineSide, editorSide] = InMemoryTransport.createLinkedPair();
+  const server = createScarletMcpServer(client, { projectId, agent: "claude", author: { type: "agent", name: "Claude" } });
+  await server.connect(engineSide);
+  await editor.connect(editorSide);
+  const file = join(ctx.paths.media(projectId), "sample.mp4");
+  /** A JPEG as 32x18 grey levels, coarse enough that resampling differences don't count. */
+  const coarse = async (jpeg: Buffer) => (await runCapture(resolveFfmpeg(), ["-v", "error", "-f", "image2pipe", "-c:v", "mjpeg", "-i", "pipe:0",
+    "-vf", "scale=32:18:flags=area,format=gray", "-f", "rawvideo", "pipe:1"], { stdin: jpeg })).stdout;
+  const apart = (a: Buffer, b: Buffer) => a.reduce((sum, level, i) => sum + Math.abs(level - b[i]!), 0) / a.length;
+  try {
+    const head = ctx.repos.projects.get(projectId)!.head;
+    // The bottom-right quarter of the picture, then a pull back to all of it.
+    const framings = [{ at: 0, show: [50, 50, 100, 100] }, { at: 1, show: [0, 0, 100, 100], over: 1 }];
+    const preview = await editor.callTool({ name: "timeline_framing", arguments: { mediaId: "m", framings, preview: true, fromVersion: base } }) as CallToolResult;
+    expect(preview.isError, JSON.stringify(preview.content.find(block => block.type === "text"))).toBeFalsy();
+    const report = JSON.parse((preview.content.find(block => block.type === "text" && block.text.includes('"framings"')) as { text: string }).text);
+    expect(report).toMatchObject({ preview: true, saved: false, clips: 1, video: "320x180" });
+    expect(report.framings.map((f: { frame: number[]; zoom: number; arrives: string }) => [f.frame, f.zoom, f.arrives])).toEqual([[[50, 50, 100, 100], 2, "cut"], [[0, 0, 100, 100], 1, "move"]]);
+    expect(ctx.repos.projects.get(projectId)!.head).toBe(head);
+    const pictures = preview.content.filter(block => block.type === "image").map(block => Buffer.from((block as { data: string }).data, "base64"));
+    expect(pictures).toHaveLength(2);
+    // What the renderer drew is that quarter of the source, filling the video, and then the whole picture.
+    const quarter = await coarse(await extractFrame(file, 0.08, { width: 320, area: [0.5, 0.5, 1, 1] }));
+    const whole = await coarse(await extractFrame(file, 2.08, { width: 320 }));
+    expect(apart(await coarse(pictures[0]!), quarter)).toBeLessThan(6);
+    expect(apart(await coarse(pictures[0]!), await coarse(await extractFrame(file, 0.08, { width: 320 })))).toBeGreaterThan(15);
+    expect(apart(await coarse(pictures[1]!), whole)).toBeLessThan(6);
+
+    const saved = await editor.callTool({ name: "timeline_framing", arguments: { mediaId: "m", framings, fromVersion: base, intent: "requested",
+      description: "Framed the corner, then pulled back", reason: "The corner is what the narration is about." } }) as CallToolResult;
+    expect(saved.isError, JSON.stringify(saved.content.find(block => block.type === "text"))).toBeFalsy();
+    const change = JSON.parse((saved.content[0] as { text: string }).text);
+    const made = ctx.repos.versions.get(projectId, change.toVersion)!.timeline;
+    const clip = made.tracks[0]!.clips[0]!;
+    expect(clip.kind === "media" && clip.keyframes?.map(k => [k.time, k.transform.scale, k.ease])).toEqual([[1, 2.006, "easeInOut"], [2, 1.003, "linear"]]);
+    expect(change.backgroundShows).toBeUndefined();
+  } finally { await editor.close(); }
 });

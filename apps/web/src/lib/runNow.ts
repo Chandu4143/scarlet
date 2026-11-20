@@ -42,7 +42,7 @@ export function runNow(events: readonly TaskEvent[], aim?: string, callNumber?: 
       }
       case "log": {
         const kind = event.data?.kind;
-        if (kind === "init") return "Getting started";
+        if (kind === "init") return STARTING;
         if (kind === "reasoning") return "Thinking";
         if (kind === "connection") return "Reconnecting to the model";
         if (kind === "media_wait") {
@@ -62,6 +62,9 @@ export function runNow(events: readonly TaskEvent[], aim?: string, callNumber?: 
   }
   return undefined;
 }
+
+/** What a run says before its first call. */
+export const STARTING = "Getting started";
 
 /** The number of the call Scarlet made about a pass's cut, when it has asked the editor about that cut. */
 export type CallNumber = (changeId: unknown, index: number) => number | undefined;
@@ -107,6 +110,9 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
       const query = field(input, "query");
       return typeof query === "string" && query.trim() ? `Searching the screen for “${query.trim().slice(0, 40)}”` : `Reading the text on screen${span(input, "from", "to")}`;
     }
+    case "screen_motion": return `Watching where the screen changes${span(input, "from", "to")}`;
+    case "screen_reading": return `Finding where the screen is read aloud${span(input, "from", "to")}`;
+    case "faces": return `Finding where the faces are${span(input, "from", "to")}`;
     case "frame_contact_sheet": return `Looking at the picture${span(input)}`;
     case "frame_contact_sheet_batch": {
       const n = count(field(input, "windows"));
@@ -139,6 +145,7 @@ function toolWords(name: string, raw: unknown, callNumber?: CallNumber): string 
     case "timeline_get": case "timeline_summary": case "timeline_at": return "Looking at the timeline";
     case "timeline_transcript": return "Reading the video’s words";
     case "timeline_propose": return "Making the edit";
+    case "timeline_framing": return field(input, "preview") === true ? "Trying a framing" : "Framing the picture";
     case "captions_generate": return "Making captions";
     case "render_request": return "Rendering a preview";
     case "render_status": return "Waiting for the preview";

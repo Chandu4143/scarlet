@@ -47,6 +47,17 @@ describe("diffTimelines", () => {
     ]);
   });
 
+  it("counts the clips that only slid along the timeline instead of naming each", () => {
+    const before = base();
+    const after = applyOps(before, [{ op: "updateClip", clipId: "a", patch: { volume: 0.5 } }, { op: "moveClip", clipId: "b", timelineIn: 12 }, { op: "moveClip", clipId: "music", timelineIn: 3 }]);
+    const lines = describeDiff(diffTimelines(before, after));
+    expect(lines).toContain("Moved 2 clips along the timeline with nothing else changed (now 3.00–12.00)");
+    expect(lines).toContain("Changed volume on Intro at 0.00");
+    expect(lines.filter(l => l.startsWith("Changed timelineIn"))).toEqual([]);
+    // One slid clip is still named.
+    expect(describeDiff(diffTimelines(before, applyOps(before, [{ op: "moveClip", clipId: "b", timelineIn: 12 }])))).toEqual(["Changed timelineIn on b at 12.00", "Duration 20.00 → 22.00"]);
+  });
+
   it("does not call a clip changed when its nested values are equal but not the same objects", () => {
     const before = base();
     (before.tracks[0]!.clips[0] as { effects: unknown[] }).effects = [{ type: "blur", enabled: true, params: { radius: 2, mode: { a: 1, b: 2 } } }];

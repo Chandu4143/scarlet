@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProject, makeMediaClip, type Project, type Timeline } from "@scarlet/timeline";
 import { execFile } from "node:child_process";
-import { ChromeNotFound, chromeCandidates, findChrome, graphicCoverage, hasChrome, pdfPageCount, pdfPages, renderPdfDocument, probeMedia, renderGraphic, renderGraphicStill, renderTimelineFrame, runCapture } from "./index.js";
+import { ChromeNotFound, chromeCandidates, findChrome, graphicCoverage, graphicOver, hasChrome, pdfPageCount, pdfPages, renderPdfDocument, probeMedia, renderGraphic, renderGraphicStill, renderTimelineFrame, runCapture } from "./index.js";
 
 let dir: string;
 
@@ -35,13 +35,60 @@ describe("finding Chrome", () => {
   });
 });
 
+describe.skipIf(process.platform === "win32")("a Chrome that never answers", () => {
+  it("stops at once when cancelled while Chrome starts, and leaves no process or profile behind", async () => {
+    const html = path.join(dir, "silent.html");
+    await fs.writeFile(html, "<!doctype html><p>hi</p>");
+    const seen = path.join(dir, "silent-chrome.txt");
+    const chrome = path.join(dir, "silent-chrome");
+    await fs.writeFile(chrome, `#!/bin/sh\nfor a; do case "$a" in --user-data-dir=*) echo "\${a#--user-data-dir=}" > "${seen}";; esac; done\necho $$ >> "${seen}"\nexec sleep 60\n`, { mode: 0o755 });
+    const controller = new AbortController();
+    const drawing = renderGraphicStill({ htmlFile: html, width: 64, height: 64, time: 0, chromePath: chrome, signal: controller.signal });
+    drawing.catch(() => undefined);
+    // Stopped once the browser is up and waiting to answer.
+    for (let i = 0; i < 200 && (await fs.readFile(seen, "utf8").catch(() => "")).trim().split("\n").length < 2; i++) await new Promise(r => setTimeout(r, 25));
+    const stopped = Date.now();
+    controller.abort();
+    await expect(drawing).rejects.toThrow(/abort/i);
+    expect(Date.now() - stopped).toBeLessThan(5000);
+    const [profile, pid] = (await fs.readFile(seen, "utf8")).trim().split("\n");
+    await expect(fs.stat(profile!)).rejects.toThrow();
+    expect(() => process.kill(Number(pid), 0)).toThrow();
+  });
+});
+
 describe.skipIf(!hasChrome())("drawing a graphic", () => {
+  it("writes a graphic's colours with the BT.709 matrix the footage uses, and shows them so laid over a picture", async () => {
+    const html = path.join(dir, "red.html");
+    await fs.writeFile(html, "<!doctype html><html><body style=\"margin:0;background:#ff0000\"></body></html>");
+    const output = path.join(dir, "red.mov");
+    await renderGraphic({ htmlFile: html, width: 64, height: 64, fps: 30, duration: 1 / 30, output });
+    const { stdout: tags } = await runCapture("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space,color_primaries,color_transfer,color_range", "-of", "csv=p=0", output]);
+    // Some ffmpeg builds don't write the range into a ProRes movie; unknown reads as limited range, as tv does.
+    const [range, ...matrix] = tags.toString().trim().split(",");
+    expect(["tv", "unknown"]).toContain(range);
+    expect(matrix).toEqual(["bt709", "bt709", "bt709"]);
+    // Read as BT.709 video, as the footage it is laid over is, the red is still red.
+    const { stdout } = await runCapture("ffmpeg", ["-v", "error", "-i", output, "-vf", "scale=in_color_matrix=bt709:in_range=tv,format=rgb24", "-frames:v", "1", "-f", "rawvideo", "pipe:1"]);
+    const [r, g, b] = [stdout[32 * 64 * 3 + 96]!, stdout[32 * 64 * 3 + 97]!, stdout[32 * 64 * 3 + 98]!];
+    expect(r).toBeGreaterThan(245);
+    expect(Math.max(g, b)).toBeLessThan(10);
+    // The check picture over grey shows the same red.
+    const jpeg = path.join(dir, "red-over.jpg");
+    await fs.writeFile(jpeg, await graphicOver(output, 0, null, { width: 64, height: 64 }));
+    const [jr, jg, jb] = await pixel(jpeg, 32, 32);
+    expect(jr).toBeGreaterThan(235);
+    expect(Math.max(jg, jb)).toBeLessThan(25);
+  });
+
   it("writes every frame with alpha, steps CSS animations by the frame's time, and names a font it couldn't find", async () => {
     const html = path.join(dir, "bar.html");
     await fs.writeFile(html, PAGE);
     const output = path.join(dir, "bar.mov");
     const result = await renderGraphic({ htmlFile: html, width: 320, height: 180, fps: 10, duration: 1, output });
     expect(result.frames).toBe(10);
+    // A page with an animation is drawn at every frame.
+    expect(result.drawn).toBe(10);
     expect(result.missingFonts).toEqual([{ family: "Scarlet Test Missing Face", sample: "Hi" }]);
     const probe = await probeMedia(output);
     expect(probe).toMatchObject({ hasAlpha: true, width: 320, height: 180, fps: 10 });
@@ -76,6 +123,28 @@ describe.skipIf(!hasChrome())("drawing a graphic", () => {
     const [r2, , b2] = await pixel(frame, 250, 30);
     expect(b2).toBeGreaterThan(200);
     expect(r2).toBeLessThan(60);
+  });
+
+  it("draws a page that doesn't change twice and holds it for its length, and draws one a script changes in full", async () => {
+    const card = `<!doctype html><html><head><style>html,body{margin:0;background:transparent}
+      .card{position:absolute;left:10%;top:20%;width:40%;height:60%;background:rgb(255,0,0)}</style></head><body><div class="card"></div></body></html>`;
+    const html = path.join(dir, "card.html");
+    await fs.writeFile(html, card);
+    const output = path.join(dir, "card.mov");
+    const result = await renderGraphic({ htmlFile: html, width: 320, height: 180, fps: 10, duration: 3, output });
+    expect(result).toMatchObject({ frames: 30, drawn: 2 });
+    const probe = await probeMedia(output);
+    expect(probe).toMatchObject({ hasAlpha: true, width: 320, height: 180, fps: 10 });
+    expect(probe.duration).toBeCloseTo(3, 1);
+    const [start, end] = await graphicCoverage(output, [0, 2.9], { width: 320, height: 180 });
+    expect(start!.box).toMatchObject({ left: expect.closeTo(0.1, 1), right: expect.closeTo(0.5, 1), top: expect.closeTo(0.2, 1), bottom: expect.closeTo(0.8, 1) });
+    expect(end!.box).toEqual(start!.box);
+
+    // The same card moved by the page's own clock is not a still, though it has no CSS animation.
+    const moved = path.join(dir, "moved.html");
+    await fs.writeFile(moved, card.replace("</body>", `<script>window.scarletSeek = s => { document.querySelector(".card").style.left = (10 + s * 10) + "%"; };</script></body>`));
+    const all = await renderGraphic({ htmlFile: moved, width: 320, height: 180, fps: 10, duration: 1, output: path.join(dir, "moved.mov") });
+    expect(all).toMatchObject({ frames: 10, drawn: 10 });
   });
 
   it("draws one moment as a transparent PNG at the size asked", async () => {

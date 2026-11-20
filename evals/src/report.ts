@@ -26,6 +26,10 @@ export function evaluationMarkdown(ev: Evaluation): string {
   lines.push(`Versions: source ${score.versions.source} → applied ${score.versions.applied} → proposed ${score.versions.proposed}. ` +
     `Edge level: loudest level frame ${ev.edgeOptions.window === "around" ? `within ±${ev.edgeOptions.windowSeconds * 1000} ms` : `over ${ev.edgeOptions.windowSeconds * 1000} ms on the kept side`}` +
     ` (${ev.evidence.map(e => `${e.mediaId}: ${e.levels ?? "no levels"}, ${e.words} words`).join("; ")}).`, "");
+  if (score.headline.verifiedPictureCuts !== undefined) {
+    const h = score.headline;
+    lines.push(`Picture-to-first-word timing matched ${h.matchedPictureEntrances} of ${h.eligibleEditorEntrances} eligible editor entrances (${h.verifiedPictureCuts} verified pictures). Mean absolute timing error: ${h.pictureEntranceErrorMs ?? "—"} ms. See [individual entrances](picture-entrances.json).`, "");
+  }
   lines.push("| | Applied | Review |", "|---|---|---|");
   lines.push(`| Cuts | ${a.removal.cuts} | ${r ? `${r.removal.cuts} (${r.items} review items)` : "–"} |`);
   lines.push(`| Removed | ${col(t => s(t.removal.seconds))} |`);
@@ -47,13 +51,15 @@ export function evaluationMarkdown(ev: Evaluation): string {
   }
   if (r) lines.push(`Of the ${r.removal.cuts} staged cuts, the agent submitted ${r.heldByScarlet} as cuts and Scarlet held them.`, "");
   {
-    const p = score.pacing, cols = [p.source, p.applied, p.proposed, p.reference];
+    const p = score.pacing, cols = [p.source, p.applied, p.recommended, p.proposed, p.reference];
     const row = (label: string, fn: (x: NonNullable<(typeof cols)[number]>) => string) => `| ${label} | ${cols.map(c => c ? fn(c) : "–").join(" | ")} |`;
     lines.push("## Pacing", "", "A gap is half a second or more without a word. Dead air is the time in gaps over a quarter-second beat.", "",
-      "| | Source | Applied | Proposed | Reference |", "|---|---|---|---|---|");
+      "| | Source | Applied | With Scarlet's picks | Proposed | Reference |", "|---|---|---|---|---|---|");
     lines.push(row("Gaps inside kept footage", x => String(x.gaps.inside)));
     lines.push(row("Gaps at joins (of joins)", x => `${x.gaps.atJoins} of ${x.joins}`));
     lines.push(row("Gaps of 1 s or more", x => String(x.gaps.long)));
+    lines.push(row("Silences of 2 s or more", x => String(x.silences)));
+    lines.push(row("Phrases that play again within a moment", x => String(x.restarts)));
     lines.push(row("Dead air", x => s(x.gaps.excessSeconds)));
     lines.push(row("Median gap at a join", x => x.medianJoinGapSeconds === null ? "–" : `${x.medianJoinGapSeconds.toFixed(2)} s`));
     lines.push(row("Doubled words / phrases", x => `${x.repeats.singleWords} / ${x.repeats.phrases}`));
@@ -73,6 +79,10 @@ export function evaluationMarkdown(ev: Evaluation): string {
     if (p.appliedRepeats.length) {
       lines.push(`**Doubled in the applied cut (${p.appliedRepeats.length}).** ` +
         p.appliedRepeats.map(x => `${clock(x.at)} “${x.text.replace(/\|/g, "/")}”${x.join ? " (join)" : ""}`).join(" · "), "");
+    }
+    if (p.appliedDividedJoins?.length) {
+      lines.push(`**Joins that divide a sentence in the applied cut (${p.appliedDividedJoins.length}), to read.** ` +
+        p.appliedDividedJoins.map(x => `${clock(x.at)} “${x.before.split(" ").slice(-6).join(" ")} ‖ ${x.after.split(" ").slice(0, 6).join(" ")}”`).join(" · "), "");
     }
     if (p.appliedGaps.length) {
       lines.push(`**Longest gaps in the applied cut.** ` +
@@ -110,14 +120,17 @@ export function evaluationMarkdown(ev: Evaluation): string {
   }
   if (score.trace) {
     const t = score.trace;
-    lines.push(`**Trace.** ${t.state}, ${t.activeSeconds === null ? "–" : `${(t.activeSeconds / 60).toFixed(1)} min`} active` +
+    lines.push(`**Trace.** ${t.state}, finished ${t.finishSeconds === null ? "–" : `${(t.finishSeconds / 60).toFixed(1)} min`} after the request, ` +
+      `${t.activeSeconds === null ? "–" : `${(t.activeSeconds / 60).toFixed(1)} min`} active` +
       `${t.waitingSeconds ? ` (+${(t.waitingSeconds / 60).toFixed(1)} min waiting for the editor)` : ""}, first change after ${t.firstChangeSeconds === null ? "–" : `${(t.firstChangeSeconds / 60).toFixed(1)} min`}, ` +
       `first call for the editor after ${t.firstCallSeconds === null ? "–" : `${(t.firstCallSeconds / 60).toFixed(1)} min`}, ` +
       `first recommendation after ${t.firstRecommendationSeconds === null ? "–" : `${(t.firstRecommendationSeconds / 60).toFixed(1)} min`}. ` +
       `${t.toolCalls} tool calls (${Object.entries(t.byTool).slice(0, 8).map(([k, v]) => `${k} ${v}`).join(", ")}), ${t.errors} errors` +
       `${t.errors ? ` (${Object.entries(t.errorsByTool).map(([k, v]) => `${k} ${v}`).join(", ")})` : ""}. ` +
       `Listened ${t.inspection.listened}×, visual inspections ${t.inspection.visual}, level reads ${t.inspection.levels}. ` +
-      `Tokens: ${t.usage ? Object.entries(t.usage).map(([k, v]) => `${k} ${v}`).join(", ") : "not recorded"}.`, "");
+      `Tokens: ${t.usage ? Object.entries(t.usage).filter(([k]) => k !== "estimatedApiCostUsd").map(([k, v]) => `${k} ${v}`).join(", ") : "not recorded"}. ` +
+      `Estimated cost: ${t.costUsd !== null ? `$${t.costUsd.toFixed(2)} at API list prices`
+        : t.unpricedModels.length ? `none, no price for ${t.unpricedModels.join(", ")}` : "not recorded"}.`, "");
   }
   if (score.reference) {
     lines.push(`## Against ${score.reference.label}`, "");
@@ -157,9 +170,20 @@ export interface TrialRow { caseId: string; config: string; trial: number; taskI
 export function runMarkdown(title: string, rows: TrialRow[]): string {
   const groups = new Map<string, TrialRow[]>();
   for (const row of rows) groups.set(`${row.caseId}\u0000${row.config}`, [...(groups.get(`${row.caseId}\u0000${row.config}`) ?? []), row]);
-  const keys = ["appliedSeconds", "reviewSeconds", "appliedSpeechEdges", "reviewSpeechEdges", "clippedWordsOnSound", "needsYourCall", "heldByScarlet", "gapsLeft", "looseJoins",
-    "deadAirSeconds", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
-    "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "activeMinutes", "tokens"];
+  const keys = ["appliedSeconds", "reviewSeconds", "appliedSpeechEdges", "reviewSpeechEdges", "clippedWordsOnSound", "needsYourCall", "heldByScarlet", "stagedWaiting", "gapsLeft", "looseJoins",
+    "deadAirSeconds", "recommendedDeadAirSeconds", "recommendedLooseJoins", "restartsLeft", "silencesLeft", "dividedJoins", "repeatsLeft", "repeatsAtJoins", "sharedAppliedJoins", "sharedAppliedJoinGapMedianAbsErrorMs", "checkJoinCoverage",
+    "wordF1", "timeF1", "edgeF1At20ms", "requiredLinesMissing", "toolErrors", "finishMinutes", "activeMinutes", "tokens", "outputTokens", "costUsd"];
+  if (rows.some(r => typeof r.headline?.momentsRight === "number")) keys.push("momentsRight", "momentsAsked", "momentsWrong");
+  if (rows.some(r => r.headline?.verifiedPublishedWords !== undefined))
+    keys.push("verifiedPublishedWords", "missingVerifiedWords", "verifiedWordRecall");
+  if (rows.some(r => r.headline?.labeledSourceWords !== undefined))
+    keys.push("labeledSourceWords", "retainedSkippedWords", "differingLabeledWords", "differingWordFraction");
+  if (rows.some(r => r.headline?.editorWordRemovingCuts !== undefined))
+    keys.push("recoveredWordRemovingCuts", "editorWordRemovingCuts", "matchedAudioJoins", "matchedPauseErrorMs");
+  if (rows.some(r => r.headline?.editorEdgesShared !== undefined))
+    keys.push("editorEdgesShared", "editorEdgesInWindow", "editorEdgeSpeechMisses", "editorEdgeSpeechMissesOver100Ms", "editorEdgePlaysRemovedSpeech", "editorEdgeDropsKeptSpeech");
+  if (rows.some(r => r.headline?.verifiedPictureCuts !== undefined))
+    keys.push("verifiedPictureCuts", "eligibleEditorEntrances", "matchedPictureEntrances", "pictureEntranceErrorMs", "pictureEntranceBiasMs", "candidateTrimmedEntrances", "candidateEntrancesInFade");
   const lines = [`# ${title}`, "", `| Case | Config | Trials (done) | ${keys.join(" | ")} |`, `|---|---|---|${keys.map(() => "---").join("|")}|`];
   for (const [key, group] of groups) {
     const [caseId, config] = key.split("\u0000");

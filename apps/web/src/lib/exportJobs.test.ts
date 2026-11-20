@@ -94,6 +94,19 @@ it("saves a timeline file straight from the engine, with no render", async () =>
   expect(useUiStore.getState().exportStarNotice).toBe("unseen");
 });
 
+it("saves a folder for another app: asks the engine what goes in it, linked where it will be, and has the app write it", async () => {
+  vi.mocked(desktop.chooseVideoExport).mockResolvedValue({ ticket: 14, path: "/Users/me/Exports/Interview" });
+  const files = [{ path: "Interview.fcpxml", text: "<fcpxml/>" }, { path: "Media/cam.mov", source: "/lib/cam.mov", size: 3 }];
+  const handoff = vi.spyOn(api, "handoff").mockResolvedValue({ files, mediaBytes: 3 });
+  const write = vi.spyOn(desktop, "finishFolderExport").mockResolvedValue("/Users/me/Exports/Interview");
+  await exportFile(project, { name: "Interview", format: "folder", video: { kind: "export", quality: "delivery" } });
+  expect(asked.request).not.toHaveBeenCalled();
+  expect(handoff).toHaveBeenCalledExactlyOnceWith(PRJ, project.project.head!, "/Users/me/Exports/Interview");
+  expect(write).toHaveBeenCalledExactlyOnceWith(14, files);
+  expect(job()).toMatchObject({ phase: "done", path: "/Users/me/Exports/Interview" });
+  expect(useUiStore.getState().exportStarNotice).toBe("unseen");
+});
+
 it.each([
   ["failed", "ffmpeg ran out of disk", "ffmpeg ran out of disk"],
   ["failed", undefined, "The render stopped."],
@@ -289,6 +302,45 @@ it("treats a left-over export whose destination is gone as already settled, with
   await vi.waitFor(() => expect(asked.release).toHaveBeenCalledTimes(1));
   expect(job()).toBeUndefined();
   expect(lines).toEqual([]);
+});
+
+it("leaves settlement to the other Scarlet window when it already has the resumed export", async () => {
+  const kept: Render = { ...render, state: "done", export: { owner: "11111111-1111-4111-8111-111111111111", name: NAME, ...DESTINATION } };
+  vi.spyOn(api, "exports").mockResolvedValue({ renders: [kept] });
+  asked.save.mockRejectedValue("Export is already saving in another Scarlet window.");
+  await resumeExports();
+  await vi.waitFor(() => expect(job()).toBeUndefined());
+  expect(asked.save).toHaveBeenCalledTimes(1);
+  expect(asked.release).not.toHaveBeenCalled();
+  expect(asked.discard).not.toHaveBeenCalled();
+  expect(lines).toEqual([]);
+});
+
+it("leaves settlement to another Scarlet window that resumed an export this window started", async () => {
+  // The other window picked up every export the engine owed, this one too, and claimed its save first.
+  render = { ...render, state: "done", progress: 1 };
+  asked.save.mockRejectedValue("Export is already saving in another Scarlet window.");
+  await exportFile(project, video);
+  expect(job()).toBeUndefined();
+  expect(asked.release).not.toHaveBeenCalled();
+  expect(asked.discard).not.toHaveBeenCalled();
+  expect(lines).toEqual([]);
+});
+
+it.each([["a new export", false], ["a resumed export", true]])("lets go of %s whose destination record can't be read, so a failure shown never saves later", async (_, resumed) => {
+  render = { ...render, state: "done", progress: 1 };
+  asked.save.mockRejectedValue("Export destinations could not be saved or read.");
+  // Even when the engine can't hear that the export is settled, the destination is given up.
+  asked.release.mockRejectedValue(new TypeError("Load failed"));
+  if (resumed) {
+    vi.spyOn(api, "exports").mockResolvedValue({ renders: [{ ...render, export: { owner: "11111111-1111-4111-8111-111111111111", name: NAME, ...DESTINATION } }] });
+    await resumeExports();
+  } else {
+    await exportFile(project, video);
+  }
+  await vi.waitFor(() => expect(asked.discard).toHaveBeenCalledExactlyOnceWith(DESTINATION.ticket));
+  expect(job()).toMatchObject({ phase: "failed", error: "Export destinations could not be saved or read." });
+  expect(asked.release).toHaveBeenCalledExactlyOnceWith("rnd_export", resumed ? "11111111-1111-4111-8111-111111111111" : asked.request.mock.calls[0]![1].owner);
 });
 
 it("counts an export's percent only while it moves", () => {

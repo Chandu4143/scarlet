@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import * as ffmpeg from "../render/ffmpeg.js";
 import { decodedRecording } from "../services/recordingAudio.js";
+import { newId } from "@scarlet/timeline";
 import { bundledWhisperOnGpu, parseWhisperJson, WhisperCppProvider, whisperThreads } from "./whispercpp.js";
+import { seamWindows } from "./seams.js";
 import type { TranscribeResult } from "./index.js";
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -233,6 +235,22 @@ it("joins whisper's tokens into words: pieces onto the word before, punctuation 
   expect(parseWhisperJson({})).toEqual([]);
 });
 
+it("leaves out a last line that only writes the end of the line before again, after it was said", () => {
+  const token = (text: string, from: number, to: number) => ({ text, offsets: { from, to }, p: 0.9 });
+  const line = (from: number, to: number, ...words: Array<[string, number, number]>) =>
+    ({ offsets: { from, to }, text: words.map(w => w[0]).join(""), tokens: words.map(w => token(...w)) });
+  const said = line(116_900, 120_780, [" behind", 117_000, 117_500], [" it", 117_500, 117_600], [" at", 117_600, 117_700], [" $3.26.", 117_700, 120_700]);
+  const copy = line(122_920, 123_380, [" $3.26.", 122_920, 123_380]);
+  expect(parseWhisperJson({ transcription: [said, copy] }).map(s => s.text)).toEqual(["behind it at $3.26."]);
+  // Said again before the window's end, or as more than a few words, it is speech.
+  expect(parseWhisperJson({ transcription: [said, copy, line(124_000, 125_000, [" Next", 124_000, 124_500])] })).toHaveLength(3);
+  const sentence = line(130_000, 132_000, [" it", 130_000, 130_100], [" at", 130_100, 130_200], [" $3.26", 130_200, 131_000], [" now", 131_000, 131_200], [" today.", 131_200, 132_000]);
+  const again = line(133_000, 135_000, [" it", 133_000, 133_100], [" at", 133_100, 133_200], [" $3.26", 133_200, 134_000], [" now", 134_000, 134_200], [" today.", 134_200, 135_000]);
+  expect(parseWhisperJson({ transcription: [sentence, again] })).toHaveLength(2);
+  // A copy that starts before its line ends is Whisper's overlap, read on its own merits elsewhere.
+  expect(parseWhisperJson({ transcription: [said, line(120_000, 121_000, [" $3.26.", 120_000, 121_000])] })).toHaveLength(2);
+});
+
 it("decodes a recording's audio for whisper, keeps the decode only where the caller asked, and reads a dialogue window as it is", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scarlet-whisper-"));
   try {
@@ -271,72 +289,117 @@ it("counts the bundled whisper as a GPU build only on Apple silicon", () => {
   expect(bundledWhisperOnGpu("win32", "arm64")).toBe(false);
 });
 
-it("saves finished local windows at pauses, then resumes on the recording's clock with the detected language", async () => {
+/** A WAV whose samples say where they are: 1000 + tenths of a second, silent over `quiet` [from, to) seconds. */
+function clockWav(seconds: number, quiet: Array<[number, number]> = []) {
+  const rate = 16000, wav = Buffer.alloc(44 + seconds * rate * 2);
+  wav.write("RIFF"); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write("data", 36); wav.writeUInt32LE(wav.length - 44, 40);
+  for (let i = 0; i < seconds * rate; i++) {
+    const t = i / rate;
+    wav.writeInt16LE(quiet.some(([a, b]) => t >= a && t < b) ? 0 : 1000 + Math.floor(t * 10), 44 + i * 2);
+  }
+  return wav;
+}
+
+/**
+ * Whisper reading a window of a clockWav: a word for each whole second it heard, said at that second, except that it
+ * leaves out the first word it hears and finishes the window with a word nobody said, as it does when the audio stops
+ * mid-sentence. `ends` is where the recording ends: a window that reaches it ends on a real word.
+ */
+async function windowReading(path: string, ends: number) {
+  const window = await readFile(path), rate = 16000;
+  const length = window.readUInt32LE(40) / 2 / rate;
+  const from = (window.readInt16LE(44) - 1000) / 10;
+  const words = [];
+  for (let s = Math.ceil(from) + 1; s < from + length; s++) words.push({ text: `w${s}`, start: s - from + 0.1, end: s - from + 0.6, confidence: 0.9 });
+  if (from + length < ends - 0.01) words.push({ text: "insane.", start: length - 0.12, end: length, confidence: 0.1 });
+  return { length, segments: [{ id: newId("seg"), start: 0, end: length, text: words.map(w => w.text).join(" "), words }] };
+}
+
+it("reads each window on past both of its seams and hands over at a word both readings have, so nothing made up at a window's edge stays", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scarlet-whisper-resume-"));
   try {
-    const seconds = 300, rate = 16000;
-    const wav = Buffer.alloc(44 + seconds * rate * 2);
-    wav.write("RIFF"); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVEfmt ", 8);
-    wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
-    wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
-    wav.write("data", 36); wav.writeUInt32LE(wav.length - 44, 40);
-    // A pause at 122 s, two seconds after the first target. Areas between pauses contain sustained sound.
-    wav.fill(42, 44);
-    wav.fill(0, 44 + 122 * rate * 2, 44 + 123 * rate * 2);
+    const seconds = 300;
+    // A pause at 122 s, two seconds after the first target.
+    const wav = clockWav(seconds, [[122, 123]]);
     const extract = vi.spyOn(ffmpeg, "extractWav").mockImplementation(async (_file, path) => writeFile(path, wav));
     const whisper = new WhisperCppProvider({ binary: "custom-adapter", language: "auto" });
     const lengths: number[] = [];
     const calls = vi.spyOn(whisper, "transcribeWav").mockImplementation(async (path, _tmp, _signal, _lang, _prompt, onProgress) => {
-      const window = await readFile(path);
-      lengths.push(window.readUInt32LE(40) / 2 / rate);
+      const { length, segments } = await windowReading(path, seconds);
+      lengths.push(length);
       onProgress?.(1);
-      const n = lengths.length;
-      return { language: "fr", modelLabel: "example/model", segments: n === 2 ? [] : [
-        { id: "s" + n, start: 1, end: 2, text: "Bonjour", words: [{ text: "Bonjour", start: 1.1, end: 1.9, confidence: 0.9 }] },
-        // Local adapters can round the final stamp to just beyond the WAV's last sample.
-        { id: "tail" + n, start: lengths[n - 1]! - 0.5, end: lengths[n - 1]! + 0.003, text: "fin", words: [
-          { text: "fin", start: lengths[n - 1]! - 0.4, end: lengths[n - 1]! + 0.003, confidence: 0.8 },
-        ] },
-      ] };
+      return { language: "fr", modelLabel: "example/model", segments };
     });
     const keepWavAt = join(dir, "kept.wav");
     // The last 40 s of video has no audio.
     const input = { path: "interview.mov", tmpDir: dir, duration: seconds + 40, keepWavAt };
+    const said = Array.from({ length: seconds }, (_, s) => `w${s}`).slice(1);
+    const texts = (r: TranscribeResult) => r.segments.flatMap(s => s.words.map(w => w.text));
+
     const saved: Array<{ through: number; chunk: TranscribeResult; fraction?: number }> = [];
     const save = (through: number, chunk: TranscribeResult, fraction?: number) => saved.push({ through, chunk, fraction });
+    const progress: number[] = [];
+    const whole = await whisper.transcribe({ ...input, checkpoint: { through: 0, result: { segments: [] }, save }, onProgress: f => progress.push(f) });
+    expect(texts(whole)).toEqual(said);
+    expect(whole.segments.every(s => s.text === s.words.map(w => w.text).join(" "))).toBe(true);
+    // Windows end at the quietest moment near two minutes, and each reads 8 s on past both ends.
+    expect(lengths.map(Math.round)).toEqual([130, 132, 70]);
+    expect(saved.map(s => s.through).at(-1)).toBe(seconds);
+    expect(saved.map(s => s.through)).toEqual([...saved.map(s => s.through)].sort((a, b) => a - b));
+    expect(saved.map(s => s.fraction)).toEqual(saved.map(s => s.through / seconds));
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress.at(-1)).toBe(1);
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect(calls.mock.calls.map(args => args[3])).toEqual([undefined, "fr", "fr"]);
+
+    // Quit after the first save, then resume on the recording's clock from what was saved.
+    saved.length = 0;
     const first = new AbortController();
     await expect(whisper.transcribe({ ...input, signal: first.signal, checkpoint: { through: 0, result: { segments: [] },
       save(through, chunk, fraction) { save(through, chunk, fraction); first.abort(new Error("quit")); } } })).rejects.toThrow("quit");
     const { through, chunk } = saved[0]!;
-    expect(through).toBeGreaterThan(122);
-    expect(through).toBeLessThan(123);
-    const progress: number[] = [];
-    const resumed = await whisper.transcribe({ ...input, checkpoint: { through, result: chunk, save }, onProgress: f => progress.push(f) });
-    expect(extract).toHaveBeenCalledTimes(2); // One source decode per attempt; every window came from that decode.
-    expect(calls.mock.calls.map(args => args[3])).toEqual([undefined, "fr", "fr"]);
-    expect(lengths[0]).toBeCloseTo(through);
-    expect(lengths.reduce((sum, n) => sum + n, 0)).toBeCloseTo(seconds);
-    expect(saved[1]!.chunk.segments).toEqual([]);
-    expect(saved[2]!.through).toBe(seconds);
-    expect(saved.map(s => s.fraction)).toEqual(saved.map(s => s.through / seconds));
-    expect(progress.every(f => f >= through / seconds)).toBe(true);
-    expect(progress.at(-1)).toBe(1);
-    expect(resumed).toEqual({ modelLabel: "example/model", language: "fr", segments: [...chunk.segments, ...saved[2]!.chunk.segments] });
-    expect(chunk.segments[1]).toMatchObject({ id: "tail1", text: "fin", end: through, words: [{ text: "fin", end: through, confidence: 0.8 }] });
-    expect(resumed.segments.at(-1)).toMatchObject({ end: seconds, words: [{ end: seconds }] });
-    const tail = resumed.segments[2]!;
-    expect(tail.start).toBeCloseTo(saved[1]!.through + 1);
-    expect(tail.words[0]!.end).toBeCloseTo(saved[1]!.through + 1.9);
+    // The first window's words are saved up to 8 s before its seam, in the pause at 122 s, as soon as it is read.
+    expect(through).toBeGreaterThan(114);
+    expect(through).toBeLessThan(115);
+    const resumed = await whisper.transcribe({ ...input, checkpoint: { through, result: chunk, save } });
+    // The resumed window's first word is the one Whisper leaves out, so only that word can go missing at a resume.
+    expect(texts(resumed).filter(t => !t.startsWith("w") || said.includes(t))).toEqual(texts(resumed));
+    expect(new Set(texts(resumed)).size).toBe(texts(resumed).length);
+    expect(said.filter(t => !texts(resumed).includes(t)).length).toBeLessThanOrEqual(1);
     expect(await whisper.transcribe({ ...input, checkpoint: { through: seconds, result: resumed, save } })).toEqual(resumed);
-    expect(calls).toHaveBeenCalledTimes(3);
     expect(await readdir(dir)).toEqual(["kept.wav"]);
     // A short recording is still transcribed as one file with the adapter's original timestamps.
     const short = join(dir, "short.wav");
     await (await decodedRecording(keepWavAt)).writeWindow(short, 0, 9.997);
     extract.mockImplementation(async (_file, target) => copyFile(short, target));
     const unsplit = await whisper.transcribe({ ...input, path: short, checkpoint: { through: 0, result: { segments: [] }, save } });
-    expect(unsplit.segments.at(-1)!.end).toBeCloseTo(10, 6);
+    expect(unsplit.segments.at(-1)!.end).toBeCloseTo(9.997, 2);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+it("hands two windows over at the word they share nearest the seam, whatever times each gave it", () => {
+  const seg = (words: Array<[string, number]>) => ({ id: newId("seg"), start: words[0]![1], end: words.at(-1)![1] + 0.3,
+    text: words.map(w => w[0]).join(" "), words: words.map(([text, start]) => ({ text, start, end: start + 0.3 })) });
+  // The earlier window heard "it is" at its end and finished the sentence; the later one heard how it went on, with
+  // its times a little off, and missed the first word it heard.
+  const before = [seg([["about", 113.8], ["Astra", 114.2], ["first", 114.5], ["is", 115.6], ["that", 115.8], ["it", 116.1], ["is", 116.4]]),
+    seg([["a", 116.8], ["fine", 117.2], ["model", 118], ["insane.", 124.5]])];
+  const after = [seg([["Astra", 114.0], ["first", 114.6], ["is", 115.7], ["that", 115.9], ["it", 116.2], ["is", 116.6], ["a", 117.0],
+    ["fine", 117.3], ["model,", 118.1], ["but", 119.2]])];
+  const joined = seamWindows(before, after, 116.7);
+  const words = [...joined.before, ...joined.after].flatMap(s => s.words.map(w => w.text));
+  expect(words).toEqual(["about", "Astra", "first", "is", "that", "it", "is", "a", "fine", "model,", "but"]);
+  // "is" is the shared word nearest the seam: the earlier reading runs to it, the later one goes on after it.
+  expect(joined.through).toBeCloseTo(116.7);
+  expect(joined.before.map(s => s.text)).toEqual(["about Astra first is that it is"]);
+  expect(joined.after[0]).toMatchObject({ text: "a fine model, but", start: 117 });
+  // Readings with no word in common near the seam keep the words whose middle is on their own side of it.
+  const apart = seamWindows([seg([["one", 110], ["two", 116.5]])], [seg([["three", 116.6], ["four", 118]])], 116.7);
+  expect([...apart.before, ...apart.after].flatMap(s => s.words.map(w => w.text))).toEqual(["one", "two", "three", "four"]);
+  expect(apart.through).toBe(116.7);
 });
 
 it("gives the CrisperWhisper adapter, which loads its model in a new Python process each window, ten-minute windows", async () => {
@@ -362,8 +425,8 @@ it("gives the CrisperWhisper adapter, which loads its model in a new Python proc
       expect(saved.at(-1)).toBe(seconds);
       return lengths.map(Math.round);
     };
-    expect(await windows(new WhisperCppProvider({ binary: "python", crisperScript: "crisper_cli.py" }))).toEqual([600, 100]);
-    // whisper-cli's windows stay two minutes long.
-    expect(await windows(new WhisperCppProvider({ binary: "whisper-cli" }))).toEqual([120, 120, 120, 120, 120, 100]);
+    expect(await windows(new WhisperCppProvider({ binary: "python", crisperScript: "crisper_cli.py" }))).toEqual([608, 108]);
+    // whisper-cli's windows write two minutes each, and read 8 s on past both ends.
+    expect(await windows(new WhisperCppProvider({ binary: "whisper-cli" }))).toEqual([128, 136, 136, 136, 136, 108]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

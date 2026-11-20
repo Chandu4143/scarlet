@@ -54,20 +54,48 @@ function audioSpans({ source, timeline, media, original }: WaveformMedia, start:
   return spans;
 }
 
+/** How many source windows are kept, the latest used last. */
+const KEPT_PEAKS = 32;
 // Completed and in-flight source windows are shared by the cut and comparison views.
-const peakCache = new Map<string, Promise<WaveformResponse>>();
-function sourcePeaks(id: string, from: number, to: number) {
+const peakCache = new Map<string, { id: string; from: number; to: number; points: number; read: Promise<WaveformResponse> }>();
+const peakPoints = (from: number, to: number) => Math.min(8192, Math.max(128, Math.ceil((to - from) * 100)));
+
+/** The part of a window read already that covers `from`–`to`, on the read's own buckets. */
+function peaksWithin(wave: WaveformResponse, from: number, to: number): WaveformResponse {
+  const rate = wave.peaks.length / (wave.to - wave.from);
+  const lo = Math.max(0, Math.floor((from - wave.from) * rate + 1e-9));
+  const hi = Math.min(wave.peaks.length, Math.max(lo, Math.ceil((to - wave.from) * rate - 1e-9)));
+  return { mediaId: wave.mediaId, from: wave.from + lo / rate, to: wave.from + hi / rate,
+    peaks: wave.peaks.slice(lo, hi), ...(wave.rms && { rms: wave.rms.slice(lo, hi) }) };
+}
+
+/**
+ * A recording's peaks over one source window. A window read already that holds this one at least as finely answers
+ * it without a read: zooming in, and back out to a window seen before, ask the engine for nothing.
+ */
+export function sourcePeaks(id: string, from: number, to: number) {
   const key = JSON.stringify([id, from, to]);
-  const cached = peakCache.get(key);
-  if (cached) return cached;
-  const points = Math.min(8192, Math.max(128, Math.ceil((to - from) * 100)));
-  const read = api.waveform(id, from, to, points).catch(error => {
-    if (peakCache.get(key) === read) peakCache.delete(key);
-    throw error;
-  });
-  if (peakCache.size >= 32) peakCache.delete(peakCache.keys().next().value!);
-  peakCache.set(key, read);
-  return read;
+  const points = peakPoints(from, to);
+  let entry = peakCache.get(key);
+  let within = false;
+  if (!entry) {
+    entry = [...peakCache.values()].findLast(held => held.id === id && held.from <= from && held.to >= to
+      && held.points / (held.to - held.from) >= points / (to - from));
+    within = !!entry;
+  }
+  if (!entry) {
+    const read = api.waveform(id, from, to, points).catch(error => {
+      if (peakCache.get(key)?.read === read) peakCache.delete(key);
+      throw error;
+    });
+    entry = { id, from, to, points, read };
+  }
+  // The one used last is the last to go.
+  const held = JSON.stringify([entry.id, entry.from, entry.to]);
+  peakCache.delete(held);
+  peakCache.set(held, entry);
+  while (peakCache.size > KEPT_PEAKS) peakCache.delete(peakCache.keys().next().value!);
+  return within ? entry.read.then(wave => peaksWithin(wave, from, to)) : entry.read;
 }
 
 /** Read each recording once per visible window, even when a dialogue edit has hundreds of cuts. */
@@ -209,7 +237,7 @@ export const TimelineWaveform = memo(function TimelineWaveform({ timeline, sourc
       // After a wait the bars grow out of the line the ripple ran along.
       <svg className={arriving ? "is-arriving" : undefined} width="100%" height="100%" viewBox={`${x} 0 ${(count || 1) * scale} 100`} preserveAspectRatio="none">
         <path d={paths?.peak} stroke="currentColor" strokeWidth={0.7 * scale} opacity={paths?.rms ? ".83" : "1"} />
-        {paths?.rms && <path d={paths.rms} stroke="currentColor" strokeWidth=".7" />}
+        {paths?.rms && <path d={paths.rms} stroke="currentColor" strokeWidth={0.7 * scale} />}
         <line x2={count} y1="50" y2="50" stroke="currentColor" opacity=".3" vectorEffect="non-scaling-stroke" />
       </svg>}
   </div>;

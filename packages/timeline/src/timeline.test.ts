@@ -192,7 +192,8 @@ describe("otio", () => {
     project.media.push({ id: "m1", kind: "video", name: "a.mp4", path: "a.mp4", duration: 60, fps: 30 });
     const tl = timelineFromKeepRanges(project.id, "m1", [{ start: 1, end: 3 }, { start: 5, end: 8 }]);
     const otio = toOtio(project, tl, { mediaRoot: "C:/media" }) as { tracks: { children: unknown[] } };
-    expect(otio.tracks.children.length).toBe(2);
+    // V1, A1, and V1's sound on an audio track of its own: other apps play sound from audio tracks only.
+    expect(otio.tracks.children.length).toBe(3);
     const json = JSON.stringify(otio);
     expect(json).toContain("ExternalReference.1");
     expect(json).toContain("file:///C:/media/a.mp4");
@@ -275,7 +276,8 @@ describe("otio", () => {
       const own = (c: MediaClip) => [Math.round(c.sourceIn * fps), Math.round((c.sourceOut - c.sourceIn) * fps), fps, fps];
       for (const [i, track] of (toOtio(pass, cut) as Doc).tracks.children.entries()) {
         expect(track.children).toHaveLength(41);
-        expect(track.children.map(c => numbers(c.source_range))).toEqual((cut.tracks[i]!.clips as MediaClip[]).map(own));
+        // The third track is V1's sound, cut as V1 is.
+        expect(track.children.map(c => numbers(c.source_range))).toEqual((cut.tracks[i === 2 ? 0 : i]!.clips as MediaClip[]).map(own));
       }
     }
   });
@@ -351,11 +353,11 @@ describe("otio", () => {
     expect(overlaps.length).toBeGreaterThan(0);
     expect(Math.max(...overlaps)).toBeLessThan(1e-9);
     const otio = toOtio(project, cut) as { tracks: { children: Array<{ name: string; children: Array<{ OTIO_SCHEMA: string }> }> } };
-    expect(otio.tracks.children.map(t => t.name)).toEqual(["V1", "A1"]);
+    expect(otio.tracks.children.map(t => t.name)).toEqual(["V1", "A1", "V1 sound"]);
     for (const track of otio.tracks.children) expect(track.children.map(c => c.OTIO_SCHEMA)).toEqual(Array(41).fill("Clip.2"));
     // A real overlap still gets its own layer.
     const stacked = applyOps(cut, [{ op: "addClip", trackId: "v1", clip: makeMediaClip("v", 0, 2, 1) }]);
-    expect((toOtio(project, stacked) as typeof otio).tracks.children.map(t => t.name)).toEqual(["V1", "V1 (layer 2)", "A1"]);
+    expect((toOtio(project, stacked) as typeof otio).tracks.children.map(t => t.name)).toEqual(["V1", "V1 (layer 2)", "A1", "V1 sound", "V1 sound (layer 2)"]);
   });
 });
 
@@ -371,6 +373,20 @@ describe("captions", () => {
       expect(captionsFromWords(words, limit).map(({ text, start, end }) => [text, start, end]))
         .toEqual([["Well", 0, 1], ["Yes Right", 1, 1.5], ["Then", 1.5, 2]]);
     }
+  });
+  it("holds a cue until it can be read, short of the next, and ends a cue with its sentence when asked", () => {
+    const words = [
+      { text: "Absolutely.", start: 0, end: 0.4 }, { text: "That", start: 0.5, end: 0.7 }, { text: "works", start: 0.7, end: 1 },
+      { text: "Next", start: 3, end: 3.3 },
+    ];
+    // Without the options, the sentence end doesn't split the cue and each cue ends with its last word.
+    expect(captionsFromWords(words).map(c => [c.text, c.start, c.end])).toEqual([["Absolutely. That works", 0, 1], ["Next", 3, 3.3]]);
+    const cues = captionsFromWords(words, { sentences: true, readingRate: 10 });
+    expect(cues.map(c => c.text)).toEqual(["Absolutely.", "That works", "Next"]);
+    // 11 characters at 10 a second wants 1.1 s, but the next cue starts at 0.5 s.
+    expect(cues[0]!.end).toBe(0.5);
+    // 10 characters wants 1 s from 0.5 s: held to 1.5 s, past its last word.
+    expect(cues[1]!.end).toBeCloseTo(1.5, 10);
   });
   it("ends a full cue before the next one even while an earlier word continues", () => {
     const words = [
@@ -518,5 +534,25 @@ describe("playback sections", () => {
     // Sections after the cut start at the same source moments as before it.
     expect(sources(cut).filter(s => s > 12)).toEqual(sources(tl).filter(s => s > 12));
     expect(sourceClockAnchors(cut, 4).slice(0, 3)).toEqual([4, 6.5, 10.5]);
+  });
+});
+
+describe("transitions", () => {
+  it("clamps lead-in sourceIn to 0 when transitioning into a still image", async () => {
+    const { planTransitions } = await import("./transitions.js");
+    const tl = emptyTimeline(createProject("Still").id);
+    tl.tracks[0]!.clips = [
+      makeMediaClip("cam", 0, 5, 0, { id: "cam_0" }),
+      makeMediaClip("still", 0, 4, 5, { id: "still_0", transitionIn: { type: "dissolve", duration: 1 } }),
+    ];
+    const media = new Map([
+      ["cam", { kind: "video" as const, duration: 10 }],
+      ["still", { kind: "image" as const, duration: 0 }],
+    ]);
+    const plan = planTransitions(tl, media, 30);
+    const leadIn = plan.timeline.tracks[0]!.clips.find(c => c.kind === "media" && c.mediaId === "still" && c.timelineIn < 5) as MediaClip | undefined;
+    expect(leadIn).toBeDefined();
+    expect(leadIn!.sourceIn).toBe(0);
+    expect(leadIn!.sourceOut).toBeCloseTo(0.5, 6);
   });
 });

@@ -1,23 +1,23 @@
 /**
- * Motion graphics: pages Scarlet draws into movies with alpha, templates saved from them, the files an editor attaches
- * to a message, and a project's style guide.
+ * Motion graphics: pages Scarlet draws into movies with alpha, the files an editor attaches to a message, and a
+ * project's style guide.
  *
  * A graphic's page and every file it links to are kept in one folder of the project (`graphics/<id>/index.html`), so
- * any later request, by any model, can read and revise it. A template keeps its page and files in a library folder
- * (`templates/<id>/`), so a template saved in one project fills the same way in another.
+ * any later request, by any model, can read and revise it.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findChrome, graphicCoverage, graphicOver, renderPdfDocument, renderGraphic, renderGraphicStill, renderTimelineFrame, type MissingFont } from "@scarlet/render";
-import { GraphicTemplate, type GraphicRenderRequest, type GraphicRenderResponse, type GraphicTemplateSummary, type SaveStyleGuideRequest, type SaveTemplateRequest, type TaskAttachment, type User } from "@scarlet/shared";
+import { findChrome, graphicCoverage, graphicOver, renderPdfDocument, renderGraphic, renderTimelineFrame } from "@scarlet/render";
+import type { GraphicRenderRequest, GraphicRenderResponse, SaveStyleGuideRequest, TaskAttachment, User } from "@scarlet/shared";
 import { newId, type MediaAsset, type Project, type StyleGuide } from "@scarlet/timeline";
 import type { Ctx } from "../context.js";
 import { now } from "../db.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { actorFor, logActivity, quote } from "./activity.js";
 import { ingestMedia } from "./ingest.js";
+import { safeFileName } from "./fileName.js";
 import { previewPictures } from "./previewPictures.js";
 import { resolveTimeline } from "./timeline.js";
 
@@ -34,7 +34,7 @@ const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
 /** A file name kept as the editor gave it, minus anything that could leave its folder or hide it. */
 export function attachmentName(name: string): string {
-  const base = basename(name.replace(/\\/g, "/")).replace(/[\u0000-\u001f<>:"|?*]/g, "_").replace(/^\.+/, "").trim().slice(0, 200);
+  const base = safeFileName(basename(name.replace(/\\/g, "/")), "_").replace(/^\.+/, "").trim().slice(0, 200);
   return base || "attachment";
 }
 
@@ -102,10 +102,13 @@ export async function saveStyleGuide(ctx: Ctx, projectId: string, body: SaveStyl
     const found = await findAttachment(ctx, projectId, body.attachmentId);
     if (!found) throw badRequest("unknown_attachment", "That attachment isn't in this project. Ask the editor to attach the guide again.");
     const staging = `${folder}.${randomUUID()}`;
-    await mkdir(staging, { recursive: true, mode: 0o700 });
-    await cp(found.path, join(staging, found.attachment.name));
-    await rm(folder, { recursive: true, force: true });
-    await rename(staging, folder);
+    try {
+      await mkdir(staging, { recursive: true, mode: 0o700 });
+      await cp(found.path, join(staging, found.attachment.name));
+      await swapInFolder(staging, folder);
+    } finally {
+      await rm(staging, { recursive: true, force: true });
+    }
     file = relative(ctx.paths.project(projectId), join(folder, found.attachment.name)).split(sep).join("/");
   } else await rm(folder, { recursive: true, force: true });
   const guide: StyleGuide = { name: body.name, ...(body.text?.trim() && { text: body.text }), ...(file && { file }), savedAt: now() };
@@ -122,6 +125,25 @@ export async function removeStyleGuide(ctx: Ctx, projectId: string, user: User |
   const project = ctx.repos.projects.get(projectId);
   if (project) ctx.bus.publish({ type: "project.updated", projectId, project });
   logActivity(ctx, { projectId, actor: actorFor(user), type: "project.style_guide", summary: "The style guide was removed" });
+}
+
+/**
+ * Put a folder made beside `folder` in its place. The folder there before is moved aside first and put back if the new
+ * one can't go in, so `folder` is never left missing while the database points at it. The one aside is then removed.
+ */
+export async function swapInFolder(staging: string, folder: string) {
+  const aside = `${folder}.old-${randomUUID()}`;
+  const hadOld = await rename(folder, aside).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  try {
+    await rename(staging, folder);
+  } catch (error) {
+    if (hadOld) await rename(aside, folder).catch(() => undefined);
+    throw error;
+  }
+  if (hadOld) await rm(aside, { recursive: true, force: true }).catch(() => undefined);
 }
 
 /** Where the guide's file is, when it is a file. */
@@ -150,32 +172,45 @@ export function assetPath(name: string): string {
   return parts.join("/");
 }
 
-const LINKS = /(\b(?:src|href)\s*=\s*["']|url\(\s*["']?)([^"')\s>]+)/gi;
+/** A link in a page: a quoted attribute or `url()` up to its closing quote (spaces and all), or an unquoted one. */
+const LINKS = /(\b(?:src|href)\s*=\s*|url\(\s*)(?:"([^"]*)"|'([^']*)'|([^"')\s>]+))/gi;
+
+/** The file a link names, when it names one by absolute path or file URL. A file URL is decoded by its parser. */
+function linkedFile(link: string): string | undefined {
+  try {
+    if (/^file:/i.test(link)) return resolve(fileURLToPath(link));
+  } catch { return undefined; }
+  if (!isAbsolute(link) || link.startsWith("//")) return undefined;
+  // The page reads a plain path as a URL, so `%20` is a space. A `%` that isn't an escape (`100%.png`) stays as written.
+  try { return resolve(decodeURIComponent(link)); } catch { return resolve(link); }
+}
 
 /**
  * Bring the files of this library that a page links to by absolute path or file URL (an attachment, a style guide's
  * font, another graphic's picture) into its folder, and link them there. A graphic keeps working when the attachment
  * or the project it came from is gone.
  */
-async function adoptLinkedFiles(html: string, folder: string, roots: string[]): Promise<string> {
+export async function adoptLinkedFiles(html: string, folder: string, roots: string[]): Promise<string> {
   const copies = new Map<string, string>();
   for (const match of html.matchAll(LINKS)) {
-    const link = match[2]!;
-    let file: string | undefined;
-    try {
-      if (/^file:/i.test(link)) file = fileURLToPath(link);
-      else if (isAbsolute(link) && !link.startsWith("//")) file = link;
-    } catch { continue; }
-    if (!file || copies.has(link)) continue;
-    file = resolve(decodeURIComponent(file));
-    if (!roots.some(root => inside(root, file!))) continue;
+    const link = (match[2] ?? match[3] ?? match[4] ?? "").trim();
+    if (!link || copies.has(link)) continue;
+    let file = linkedFile(link);
+    // A path with a literal `%` that decoding read as an escape is the file as written.
+    if (file && !(await stat(file).catch(() => null))?.isFile() && !/^file:/i.test(link) && resolve(link) !== file) file = resolve(link);
+    if (!file || !roots.some(root => inside(root, file!))) continue;
     if (!(await stat(file).catch(() => null))?.isFile()) continue;
-    const name = `linked/${createHash("sha256").update(file).digest("hex").slice(0, 8)}-${basename(file)}`;
+    const name = `${createHash("sha256").update(file).digest("hex").slice(0, 8)}-${basename(file)}`;
     await mkdir(join(folder, "linked"), { recursive: true });
-    await cp(file, join(folder, name));
-    copies.set(link, name);
+    await cp(file, join(folder, "linked", name));
+    copies.set(link, `linked/${encodeURIComponent(name)}`);
   }
-  return copies.size ? html.replace(LINKS, (all, lead: string, link: string) => copies.has(link) ? lead + copies.get(link) : all) : html;
+  if (!copies.size) return html;
+  return html.replace(LINKS, (all, lead: string, double?: string, single?: string, bare?: string) => {
+    const copy = copies.get((double ?? single ?? bare ?? "").trim());
+    if (!copy) return all;
+    return lead + (double !== undefined ? `"${copy}"` : single !== undefined ? `'${copy}'` : copy);
+  });
 }
 
 /** Copy a folder's files, except its page, into another. */
@@ -197,107 +232,6 @@ async function writeAssets(folder: string, assets: Map<string, Buffer>) {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, data);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Templates
-// ---------------------------------------------------------------------------
-
-/** The `{{Field}}` placeholders in a page, as written. */
-export function placeholders(html: string): string[] {
-  return [...new Set([...html.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map(m => m[1]!))];
-}
-
-const escapeHtml = (text: string) => text.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-
-/** The page with each field's value in place of its placeholder, as text. */
-export function fillTemplate(template: Pick<GraphicTemplate, "html" | "fields" | "name">, values: Record<string, string>): string {
-  const unknown = Object.keys(values).filter(k => !template.fields.includes(k));
-  const missing = template.fields.filter(f => values[f] === undefined);
-  if (unknown.length || missing.length) {
-    throw badRequest("template_fields", `$${template.name} has the fields ${template.fields.map(f => quote(f)).join(", ")}.` +
-      (missing.length ? ` Give a value for ${missing.map(f => quote(f)).join(", ")} (an empty one leaves it blank).` : "") +
-      (unknown.length ? ` It has no ${unknown.map(f => quote(f)).join(", ")}.` : ""));
-  }
-  return template.html.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (all, field: string) => values[field] !== undefined ? escapeHtml(values[field]!) : all);
-}
-
-export function templateSummary(t: GraphicTemplate): GraphicTemplateSummary {
-  const { html: _h, sample: _s, width: _w, height: _ht, duration: _d, previewAt: _p, ...summary } = t;
-  return summary;
-}
-
-/** A template by id, or by the name the editor types after $. */
-export function findTemplate(ctx: Ctx, idOrName: string): GraphicTemplate | null {
-  const name = idOrName.replace(/^\$/, "");
-  return ctx.repos.templates.get(idOrName) ?? ctx.repos.templates.select("name = ?", [name])[0] ?? null;
-}
-
-export function templatePreviewPath(ctx: Ctx, t: GraphicTemplate) {
-  return join(ctx.paths.template(t.id), `preview-${t.previewVersion}.png`);
-}
-
-/** Preview images are this wide; their height follows the template's frame. */
-export const TEMPLATE_PREVIEW_WIDTH = 640;
-
-/**
- * Save a template, or replace the one with the same name. Its page and the files it links to go in its library folder,
- * and its preview is drawn with the sample values.
- */
-export async function saveTemplate(ctx: Ctx, body: SaveTemplateRequest, user: User | null, signal?: AbortSignal): Promise<{ template: GraphicTemplate; missingFonts: MissingFont[]; problems: string[]; preview: string }> {
-  const fields = [...new Set(body.fields)];
-  const found = placeholders(body.html);
-  const unused = fields.filter(f => !found.includes(f));
-  const undeclared = found.filter(f => !fields.includes(f));
-  if (unused.length || undeclared.length) {
-    throw badRequest("template_fields", [unused.length && `The page has no {{${unused[0]}}} placeholder for ${unused.map(f => quote(f)).join(", ")}.`,
-      undeclared.length && `The page has placeholders that aren't fields: ${undeclared.map(f => `{{${f}}}`).join(", ")}.`].filter(Boolean).join(" "));
-  }
-  const missingSample = fields.filter(f => body.sample[f] === undefined);
-  if (missingSample.length) throw badRequest("template_sample", `Give a sample value for ${missingSample.map(f => quote(f)).join(", ")}: the preview is drawn with them.`);
-  const existing = ctx.repos.templates.select("name = ?", [body.name])[0];
-  const project = body.projectId ? ctx.repos.projects.get(body.projectId) : null;
-  if (body.projectId && !project) throw notFound(`project ${body.projectId}`);
-  const based = body.basedOn ? graphicMedia(ctx, body.projectId ?? "", body.basedOn) : undefined;
-  const id = existing?.id ?? newId("tpl");
-  const folder = ctx.paths.template(id);
-  const staging = `${folder}.${randomUUID()}`;
-  await mkdir(staging, { recursive: true, mode: 0o700 });
-  try {
-    if (based) await copyFiles(dirname(based.page), staging);
-    else if (existing) await copyFiles(folder, staging);
-    const roots = [ctx.paths.templates, ...(project ? [ctx.paths.project(project.id)] : [])];
-    const html = await adoptLinkedFiles(body.html, staging, roots);
-    const width = body.width ?? project?.settings.width ?? 1920, height = body.height ?? project?.settings.height ?? 1080;
-    const duration = body.duration ?? 5, previewAt = Math.min(body.previewAt ?? duration / 2, duration);
-    await writeFile(join(staging, "template.html"), html);
-    // The preview is drawn from a filled copy beside the template's files.
-    const filled = join(staging, ".preview.html");
-    await writeFile(filled, fillTemplate({ html, fields, name: body.name }, body.sample));
-    const previewVersion = randomUUID().slice(0, 8);
-    const still = await renderGraphicStill({ htmlFile: filled, width, height, time: previewAt, outputWidth: TEMPLATE_PREVIEW_WIDTH, chromePath: chrome(ctx), signal });
-    await rm(filled, { force: true });
-    await writeFile(join(staging, `preview-${previewVersion}.png`), still.png);
-    const stamp = now();
-    const template = GraphicTemplate.parse({
-      id, name: body.name, title: body.title, description: body.description, fields, previewVersion,
-      createdAt: existing?.createdAt ?? stamp, updatedAt: stamp, html, sample: body.sample, width, height, duration, previewAt,
-    });
-    await rm(folder, { recursive: true, force: true });
-    await rename(staging, folder);
-    ctx.repos.templates.put(template);
-    logActivity(ctx, { projectId: body.projectId ?? null, actor: actorFor(user), type: "template.saved",
-      summary: `${existing ? "Replaced" : "Saved"} the graphic template $${template.name}`, data: { templateId: template.id } });
-    return { template, missingFonts: still.missingFonts, problems: still.problems, preview: still.png.toString("base64") };
-  } finally {
-    await rm(staging, { recursive: true, force: true });
-  }
-}
-
-export async function deleteTemplate(ctx: Ctx, template: GraphicTemplate, user: User | null) {
-  ctx.repos.templates.remove(template.id);
-  await rm(ctx.paths.template(template.id), { recursive: true, force: true });
-  logActivity(ctx, { projectId: null, actor: actorFor(user), type: "template.deleted", summary: `Deleted the graphic template $${template.name}`, data: { templateId: template.id } });
 }
 
 // ---------------------------------------------------------------------------
@@ -334,16 +268,11 @@ export interface GraphicInput {
 export async function renderProjectGraphic(ctx: Ctx, project: Project, input: GraphicInput, user: User | null, checkAttempt: () => void, signal: AbortSignal): Promise<GraphicRenderResponse> {
   const o = input.options;
   const based = o.basedOn ? graphicMedia(ctx, project.id, o.basedOn) : undefined;
-  const templateRef = o.template ?? (input.html === undefined ? based?.media.graphic?.templateId : undefined);
-  const template = templateRef ? findTemplate(ctx, templateRef) : null;
-  if (templateRef && !template) throw notFound(`template ${templateRef}`);
-  if (input.html !== undefined && o.template) throw badRequest("page_or_template", "Send a page or name a template, not both.");
-  if (input.html === undefined && !template) throw badRequest("missing_page", "Send the graphic's page as html, or name a template to fill.");
-  const fields = template ? (o.fields ?? (based?.media.graphic?.templateId === template.id ? based.media.graphic.fields : undefined) ?? {}) : undefined;
+  if (input.html === undefined) throw badRequest("missing_page", "Send the graphic's page as html.");
 
   const fps = o.fps ?? project.settings.fps;
   const width = o.width ?? project.settings.width, height = o.height ?? project.settings.height;
-  const duration = o.duration ?? template?.duration ?? based?.media.duration;
+  const duration = o.duration ?? based?.media.duration;
   if (!duration) throw badRequest("missing_duration", "Say how many seconds the graphic lasts.");
 
   ctx.paths.ensureProject(project.id);
@@ -355,10 +284,8 @@ export async function renderProjectGraphic(ctx: Ctx, project: Project, input: Gr
   let kept = false;
   try {
     if (based) await copyFiles(dirname(based.page), folder);
-    if (template) await copyFiles(ctx.paths.template(template.id), folder);
     await writeAssets(folder, input.assets);
-    const roots = [ctx.paths.project(project.id), ctx.paths.templates];
-    const html = await adoptLinkedFiles(template ? fillTemplate(template, fields!) : input.html!, folder, roots);
+    const html = await adoptLinkedFiles(input.html, folder, [ctx.paths.project(project.id)]);
     const page = join(folder, "index.html");
     await writeFile(page, html);
 
@@ -390,7 +317,7 @@ export async function renderProjectGraphic(ctx: Ctx, project: Project, input: Gr
     if (drawn.missingFonts.length) return base;
 
     const source = relative(ctx.paths.project(project.id), page).split(sep).join("/");
-    const name = o.name ?? (template ? `${template.title}${fields && Object.values(fields).find(Boolean) ? ` – ${Object.values(fields).find(Boolean)}` : ""}` : "Graphic");
+    const name = o.name ?? "Graphic";
     const hash = await ctx.render.hashFile(movie, undefined, signal);
     const media = await ingestMedia(ctx, project, { type: "upload", path: movie, hash }, {
       name: `${name}.mov`.replace(/\.mov\.mov$/, ".mov"), kind: "graphic", checkAttempt,
@@ -398,7 +325,7 @@ export async function renderProjectGraphic(ctx: Ctx, project: Project, input: Gr
       by: { by: "agent", name: o.provenance?.name ?? user?.name, model: o.provenance?.model, prompt: o.provenance?.prompt, createdAt: now() },
       uploadedBy: user?.id,
     });
-    const graphic = { source, ...(template && { templateId: template.id, fields }) };
+    const graphic = { source };
     const saved = ctx.db.transaction(() => {
       const current = ctx.repos.projects.getMedia(media.id);
       if (!current) throw conflict("graphic_removed", "The graphic was removed while it was being added.");
@@ -429,12 +356,9 @@ async function ready(ctx: Ctx, mediaId: string) {
 export async function graphicSource(ctx: Ctx, projectId: string, mediaId: string) {
   const { media, page } = graphicMedia(ctx, projectId, mediaId);
   const html = await readFile(page, "utf8").catch(() => { throw notFound("graphic page"); });
-  const template = media.graphic?.templateId ? ctx.repos.templates.get(media.graphic.templateId) : null;
   const files = (await listFiles(dirname(page))).filter(f => f !== "index.html");
   return {
     mediaId, name: media.name, html, source: page, files, duration: media.duration, width: media.width, height: media.height, fps: media.fps,
-    ...(template && { template: { id: template.id, name: template.name, title: template.title } }),
-    ...(media.graphic?.fields && { fields: media.graphic.fields }),
   };
 }
 

@@ -1,5 +1,4 @@
 import { useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
 import type { SourceCacheStatus } from "@scarlet/shared";
 import type { MediaAsset } from "@scarlet/timeline";
 import { api, errorMessage, IS_DESKTOP } from "../lib/client";
@@ -13,6 +12,7 @@ import { UploadList, type useUploader } from "../components/media/UploadDropzone
 import { ImportProgress, preparationStep } from "../components/media/ImportProgress";
 import { MediaStatusLine } from "../components/media/MediaStatusLine";
 import { cacheLabel, cachePercent, useSourceCaches } from "../components/media/sourceCaches";
+import { useMediaProcessing } from "../components/media/useMediaProcessing";
 import { ConfirmDialog, EmptyState, Icon, InlineError } from "../components/ui/primitives";
 import { ImportUrlModal } from "./ProjectsPage";
 
@@ -49,8 +49,9 @@ function SourceCache({ cache, name, paused, onCache }: { cache?: SourceCacheStat
   if (cache.state === "ready") return <MediaStatusLine name={name} status={{ text: label.text, tone: "done" }} />;
   const startable = !paused && (cache.state === "failed" || (cache.state === "uncached" && !cache.queued));
   const percent = cachePercent(cache);
-  return <MediaStatusLine name={name} status={cache.state === "caching" ? { text: percent ? "Caching" : "Caching…", tone: "busy" } : label}
-    bar={cache.state === "caching" ? { label: `Caching ${name}`, fraction: cache.progress, percent } : undefined}>
+  const caching = !paused && cache.state === "caching";
+  return <MediaStatusLine name={name} status={caching ? { text: percent ? "Caching" : "Caching…", tone: "busy" } : label}
+    bar={caching ? { label: `Caching ${name}`, fraction: cache.progress, percent } : undefined}>
     {startable && <button type="button" className="simple-link" onClick={onCache}>{cache.state === "failed" ? "Retry" : "Cache now"}</button>}
   </MediaStatusLine>;
 }
@@ -66,7 +67,6 @@ export function MediaPage({ uploads, onPlay }: {
   const importTranscription = useImportTranscription();
   const { available: transcriptionAvailable, notice: importNotice, local } = importTranscription;
   const notice = local ? "" : importNotice;
-  const importErrors: string[] = useLocation().state?.importErrors ?? [];
   const [pickerError, setPickerError] = useState("");
   // The unreadable file the editor is asked about before it is taken out.
   const [removal, setRemoval] = useState<MediaAsset | null>(null);
@@ -79,6 +79,7 @@ export function MediaPage({ uploads, onPlay }: {
   const adding = picking || (!!localImport && !isLink(localImport.path));
   const caches = useSourceCaches();
   const [cacheError, setCacheError] = useState("");
+  const processing = useMediaProcessing();
   if (!current) return null;
   const paused = !!current.project.mediaPaused;
   const addFiles = async () => {
@@ -104,6 +105,10 @@ export function MediaPage({ uploads, onPlay }: {
   return (
     <>
       <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+        {processing.available && <button type="button" className="btn-quiet mr-auto aria-disabled:opacity-60" aria-disabled={processing.busy}
+          title={processing.description} onClick={() => void processing.toggle()}>
+          <Icon name={processing.icon} size={12} />{processing.label}
+        </button>}
         <button className="btn-ghost" onClick={() => setImportOpen(true)}>
           <Icon name="link" size={12} /> Add from a link
         </button>
@@ -122,8 +127,7 @@ export function MediaPage({ uploads, onPlay }: {
           <ImportProgress localImport={localImport} />
         </div>
       )}
-      {importErrors.length > 0 && <InlineError><ul>{importErrors.map((message, i) => <li key={i}>{message}</li>)}</ul></InlineError>}
-      <InlineError>{pickerError || cacheError}</InlineError>
+      <InlineError>{processing.error || pickerError || cacheError}</InlineError>
       <UploadList items={items} onDismiss={dismiss} />
       {media.length === 0 ? (
         !localImport && <EmptyState title="Add your first file" body={`Drop files here (${MEDIA_FORMATS}).`} action={

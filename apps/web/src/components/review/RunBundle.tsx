@@ -1,19 +1,110 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { callNumbers, taskNeedsTranscripts, type SpeakerProgress, type Task, type TaskEvent, type UsageTotals } from "@scarlet/shared";
 import type { Change } from "@scarlet/timeline";
+import { useShallow } from "zustand/react/shallow";
 import { tokenBreakdown, tokenLabel } from "../../lib/format";
 import { useProjectStore } from "../../stores/project";
 import { useUiStore } from "../../stores/ui";
 import { runProgress } from "../../lib/runProgress";
-import { runNow } from "../../lib/runNow";
+import { runNow, STARTING } from "../../lib/runNow";
 import { runningTranscription, transcriptionProgressLabel, transcriptsProgress } from "../../lib/transcriptionProgress";
-import { runAim, runIsActive, runItems, runLines, runSummary, type RunItem, type RunLine } from "../../lib/taskRun";
+import { runAim, runIsActive, runItems, runLines, runSummary, workTime, workTimeLabel, type RunItem, type RunLine } from "../../lib/taskRun";
 import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
 
-/** Tokens the agent used on this request, with the full breakdown on hover. Shown only when turned on in Settings → Usage. */
-function Tokens({ usage }: { usage?: UsageTotals }) {
-  if (!usage?.totalTokens) return null;
-  return <span className="run-dim run-tokens" title={tokenBreakdown(usage)}>{tokenLabel(usage.totalTokens)}</span>;
+/**
+ * Hovering or focusing the count shows the token breakdown and estimated API cost.
+ * Shown only when turned on in Settings → Usage.
+ * The note is placed against the window, so the pinned request's scrolling box doesn't clip it.
+ */
+type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens" | "runs">;
+const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+
+function listOf(items: string[]) {
+  return items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
+}
+
+function formatEstimatedCost(estimate: RunUsage["estimatedApiCostUsd"]) {
+  if (estimate == null) return "Unavailable";
+  return estimate > 0 && estimate < 0.01 ? `<${usd.format(0.01)}` : usd.format(estimate);
+}
+
+function Tokens({ usage, className, time, details = [] }: {
+  usage?: RunUsage; className?: string; time?: string; details?: [label: string, value: string][];
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLSpanElement>(null);
+  const id = useId();
+  const [mode, setMode] = useState<"preview" | "pinned" | null>(null);
+  const open = mode !== null && !!usage?.totalTokens;
+  // While the note is open it follows the count, which moves when the pinned request grows or the chat scrolls.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const anchor = ref.current!;
+    const details = panel.current!;
+    let frame = 0;
+    const place = () => {
+      const box = anchor.getBoundingClientRect();
+      const { offsetHeight: height, offsetWidth: width } = details;
+      const above = box.top - 6 - height;
+      const top = above >= 8 ? above : Math.min(box.bottom + 6, window.innerHeight - height - 8);
+      details.style.top = `${Math.max(8, top)}px`;
+      details.style.left = `${Math.max(8, Math.min(box.right - width, window.innerWidth - width - 8))}px`;
+      frame = requestAnimationFrame(place);
+    };
+    place();
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+  useEffect(() => {
+    if (!open) { setMode(null); return; }
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!ref.current?.contains(target) && !panel.current?.contains(target)) setMode(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMode(null);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [open]);
+  if (!usage?.totalTokens) return time ? <span className={`run-dim ${className ?? ""}`} title="Active time">
+    <span className="sr-only">Active time </span><span className="run-work-time">{time}</span>
+  </span> : null;
+  const parts: [string, number][] = [
+    ["Input", usage.inputTokens], ["Output", usage.outputTokens], ["Cache read", usage.cacheReadTokens],
+    ["Cache write", usage.cacheWriteTokens],
+  ];
+  const label = tokenLabel(usage.totalTokens);
+  const [count, unit] = label.split(" ");
+  const breakdown = tokenBreakdown({ ...usage, runs: undefined });
+  const cost = formatEstimatedCost(usage.estimatedApiCostUsd);
+  const costDescription = usage.estimatedApiCostUsd == null
+    ? usage.unpricedModels?.length ? `No price for ${listOf(usage.unpricedModels)} yet.` : "API pricing is unavailable for some or all of the reported usage."
+    : "Reported tokens at standard API rates for short context and default cache duration.";
+  const accessibleDetails = [...details.map(([name, value]) => `${name}: ${value}`), `Estimated API cost: ${cost}`].join(", ");
+  return <><button ref={ref} type="button" className={`run-dim run-tokens${className ? ` ${className}` : ""}`} title=""
+    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}. ${accessibleDetails}`} data-breakdown={breakdown}
+    aria-description={costDescription} aria-expanded={open} aria-controls={open ? id : undefined}
+    onPointerEnter={e => { if (e.pointerType !== "touch") setMode(value => value ?? "preview"); }}
+    onPointerLeave={() => { if (!ref.current?.matches(":focus-visible")) setMode(value => value === "preview" ? null : value); }}
+    onFocus={() => setMode(value => value ?? "preview")} onBlur={() => setMode(null)}
+    onClick={() => setMode(value => value === "pinned" ? null : "pinned")}>
+    {time && <><span className="run-work-time">{time}</span> <span className="unit-metrics-dot" aria-hidden>·</span>{" "}</>}
+    {count}<span className="unit-token-word"> {unit}</span>
+  </button>{open && createPortal(<span ref={panel} id={id} className="tokens-tip" aria-hidden data-escape-owner>
+      {time && <span><span>Active time</span><b>{time}</b></span>}
+      {details.map(([name, value]) => <span key={name}><span>{name}</span><b>{value}</b></span>)}
+      {parts.filter(([label, n]) => n || label === "Input" || label === "Output").map(([label, n]) =>
+        <span key={label}><span>{label}</span><b>{n.toLocaleString()}</b></span>)}
+      <span className="tokens-tip-total"><span>Total</span><b>{usage.totalTokens.toLocaleString()}</b></span>
+      <span title={costDescription} style={mode === "pinned" ? { pointerEvents: "auto" } : undefined}><span>Est Cost</span><b>{cost}</b></span>
+    </span>, document.body)}</>;
 }
 
 const voicePhase: Record<SpeakerProgress["phase"], string> = {
@@ -26,7 +117,7 @@ const voicePhase: Record<SpeakerProgress["phase"], string> = {
  * next, as a card's note does: there is no button, only the pointer changes over it, and the reply ends in an ellipsis
  * while it's folded. However much Scarlet writes, a request stays a few lines tall.
  */
-export function Said({ text, className }: { text: string; className?: string }) {
+export function Said({ text, lead, className, children }: { text: string; lead?: ReactNode; className?: string; children?: ReactNode }) {
   const ref = useRef<HTMLParagraphElement>(null);
   const [clipped, setClipped] = useState(false);
   const [open, setOpen] = useState(false);
@@ -42,7 +133,7 @@ export function Said({ text, className }: { text: string; className?: string }) 
   }, [text, open]);
   const opens = clipped || open;
   return <p ref={ref} className={`${className ? `${className} ` : ""}said${open ? " is-open" : clipped ? " is-clipped" : ""}`}
-    title={clipped && !open ? "Show all of it" : undefined} aria-expanded={opens ? open : undefined} onClick={opens ? () => setOpen(!open) : undefined}>{text}</p>;
+    title={clipped && !open ? "Show all of it" : undefined} aria-expanded={opens ? open : undefined} onClick={opens ? () => setOpen(!open) : undefined}>{lead}{children ?? text}</p>;
 }
 
 /**
@@ -60,7 +151,7 @@ export function Said({ text, className }: { text: string; className?: string }) 
  * - When a run stops early: the row that says what it saved, with its one action.
  * - `say`: Scarlet's words, when it has any for the editor.
  * - `result`: what the request made. A run with nothing listed gets one row of its own: what it amounts to.
- *   A finished request has no time and no steps: it is its heading and what it made.
+ *   A finished request is its heading with its final metrics, and what it made.
  */
 interface RunBundleProps {
   task: Task;
@@ -81,14 +172,16 @@ interface RunBundleProps {
   listedAbove?: boolean;
   /** The block's heading says how the run ended ("Stopped"), so its rows don't say it again. */
   banded?: boolean;
-  /** Stop is in the heading above these rows, at its right, so no row here carries it. */
-  stopAbove?: boolean;
+  /** The project's editing is paused, so a run in line waits for Continue. */
+  paused?: boolean;
   /** Show what a finished run made, from its own row; or put it away again while it's `showing`. */
   onOpen?(): void;
   showing?: boolean;
   /** Pick a stopped or failed run up again. */
   recovery?: { label: string; run(): void };
   onStop?(): void;
+  /** Edit actions for Scarlet's own request, which has no heading. */
+  actions?: ReactNode;
   /** Resume a run that ended without its transcripts, now that they're ready. */
   onResume?(): void;
   /** Resume it once its transcripts are ready, or stop waiting to. */
@@ -108,22 +201,64 @@ export function RunBundle(props: RunBundleProps) {
   return runIsActive(props.task) ? <WaitingRun {...props} /> : <FinishedRun {...props} />;
 }
 
-function useRunUsage(taskId: string) {
-  const show = useUiStore(s => s.showRunTokens);
+/** The tokens a run used, when those show. A run under a heading has them in the heading, so its rows don't. */
+function useRunUsage(taskId: string, shown = true) {
+  const show = useUiStore(s => s.showRunTokens) && shown;
   return useProjectStore(s => show ? s.current?.taskUsage?.[taskId] : undefined);
 }
 
-/**
- * The tokens a request has used so far, in its heading before Stop while Scarlet has it. The host reports the count as
- * each of the agent's messages lands, so it climbs while Scarlet works. Shown only when turned on in Settings → Usage.
- */
-export function LiveTokens({ taskId }: { taskId: string }) {
-  const usage = useRunUsage(taskId);
-  if (!usage?.totalTokens) return null;
-  return <span className="run-dim run-tokens unit-tokens" title={tokenBreakdown(usage)}>{tokenLabel(usage.totalTokens)}</span>;
+function runModelName(id: string) {
+  // Format versioned Claude IDs without resolving aliases against today's catalog.
+  const [, family, major, minor] = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)-(\d+)$/.exec(id) ?? [];
+  return family ? `Claude ${family.charAt(0).toUpperCase()}${family.slice(1)} ${major}.${minor}` : id;
 }
 
-function WorkingRun({ task, events: all, changes, callNumber, say, result, stopAbove, onStop }: RunBundleProps) {
+/**
+ * Active time and reported tokens for the whole request, including any attempts that carried it on.
+ * Only the running request needs a ticking clock.
+ */
+export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]; events: Record<string, readonly TaskEvent[]> }) {
+  const show = useUiStore(s => s.showRunTokens);
+  const reports = useProjectStore(useShallow(s => show ? attempts.map(task => s.current?.taskUsage?.[task.id]) : []));
+  const working = attempts.some(task => task.state === "claimed" || task.state === "running");
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!working) return;
+    setNow(Date.now());
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(tick);
+  }, [working]);
+
+  const durations = attempts.flatMap(task => {
+    const duration = workTime(task, events[task.id] ?? [], now);
+    return duration === undefined ? [] : [duration];
+  });
+  const time = durations.length ? workTimeLabel(durations.reduce((total, ms) => total + ms, 0), working) : undefined;
+  const sum = (key: Exclude<keyof RunUsage, "unpricedModels">) => reports.reduce((total, usage) => total + (usage?.[key] ?? 0), 0);
+  const totalTokens = sum("totalTokens");
+  const usage = totalTokens ? {
+    inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+    cacheReadTokens: sum("cacheReadTokens"), cacheWriteTokens: sum("cacheWriteTokens"),
+    totalTokens,
+    estimatedApiCostUsd: reports.some(report => report?.totalTokens && report.estimatedApiCostUsd == null)
+      ? null : sum("estimatedApiCostUsd"),
+    unpricedModels: [...new Set(reports.flatMap(report => report?.unpricedModels ?? []))],
+  } : undefined;
+  const models = new Set<string>();
+  const efforts = new Set<string>();
+  for (const [i, task] of attempts.entries()) {
+    const report = reports[i];
+    if (!report) continue;
+    for (const model of report.models?.length ? report.models : [task.model ?? "Unknown"]) models.add(runModelName(model));
+    efforts.add(task.effort ? task.effort.charAt(0).toUpperCase() + task.effort.slice(1) : "Provider default");
+  }
+  return <Tokens usage={usage} time={time} className="unit-tokens" details={[
+    [models.size > 1 ? "Models" : "Model", [...models].join(", ")],
+    ["Thinking effort", [...efforts].join(", ")],
+  ]} />;
+}
+
+function WorkingRun({ task, events: all, changes, callNumber, say, result, onStop, actions }: RunBundleProps) {
   // A pass sent back to check the finished cut for repeats runs again as the same request, in a new session. Its line
   // and its first sentence are that session's: what it said an hour ago on the first run isn't what it is doing now.
   const events = useMemo(() => sinceRerun(task, all), [task, all]);
@@ -149,23 +284,27 @@ function WorkingRun({ task, events: all, changes, callNumber, say, result, stopA
     const progress = transcriptsProgress(tasks ?? [], media ?? [], ids);
     return progress && progress.stage !== "queued" ? transcriptionProgressLabel(progress) : undefined;
   }, [doing, events, tasks, media]);
+  // A run cut short, by Scarlet closing or restarting or by a pause, carries on under a new task. Until that attempt
+  // makes its first call the line says so: the editor who just reopened Scarlet sees the edit wasn't started over.
+  const pickingUp = !!task.resumeRootId && !rerun && !voice && (!doing || doing === STARTING);
   const words = transcripts ? `Transcribing the recordings · ${transcripts}`
-    : doing ?? (voice ? voicePhase[voice.phase] : task.state === "claimed" ? "Getting started" : WORKING);
+    : pickingUp ? PICKING_UP
+    : doing ?? (voice ? voicePhase[voice.phase] : task.state === "claimed" ? STARTING : WORKING);
   return <div className="req" data-state="working" aria-label="Scarlet’s work" aria-busy>
     {aim && <div className="req-said req-lead"><Said className="req-say" text={aim.text} /></div>}
     <div className="req-row req-now">
       <StepMark state="working" />
       {/* The words shimmer while Scarlet works. A narrow chat shortens them to two lines; hovering says them whole. */}
       <span role="status" title={words} className="req-now-text working-text">{words}</span>
-      {!stopAbove && onStop && <span className="req-right"><button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button></span>}
+      {(actions || onStop) && <div className="req-right">{actions || <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>}</div>}
     </div>
     {say}
     {result?.(undefined)}
   </div>;
 }
 
-function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunBundleProps) {
-  const usage = useRunUsage(task.id);
+function WaitingRun({ task, events, changes, say, result, banded, paused, onStop, actions }: RunBundleProps) {
+  const usage = useRunUsage(task.id, !banded);
   const asking = task.state === "waiting_for_user";
   const waiting = task.state === "queued";
   const [open, setOpen] = useState(false);
@@ -175,22 +314,24 @@ function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunB
     return shownItems(runItems(task, events, changes).filter(item => !(item.kind === "note" && item.text === aim?.note)));
   }, [asking, banded, task, events, changes]);
   const lines = useMemo(() => open ? tidy(runLines(task, events, shown, Date.now())) : [], [open, task, events, shown]);
-  // A request in line again says Queued, the word its cut's card and the tray use.
-  const label = waiting ? "Queued" : "Needs your answer";
-  // A question's steps open from its line. A question under a heading has no such line: the heading's dot, the question and Answer say it.
-  const line = !(banded && asking);
+  // A request in line again says Queued, the word its cut's card and the tray use, or Paused while it waits for Continue.
+  const label = waiting ? paused ? "Paused" : "Queued" : "Needs your answer";
+  // A question's steps open from its line. A question under a heading has no such line: the heading's dot, the question
+  // and Answer say it. Nor has a paused request: its heading says Paused.
+  const line = !(banded && (asking || (waiting && paused)));
   const opens = asking && shown.length > 0;
   return <div className="req" data-state={asking ? "asking" : "working"} aria-label="Scarlet’s work" aria-busy={!asking}>
     {line && <div className="req-row req-status">
       <button type="button" className="req-toggle" aria-expanded={opens ? open : undefined} disabled={!opens}
         title={opens ? open ? "Hide the details" : "Show the details" : undefined} onClick={() => setOpen(!open)}>
         {asking && <span className="req-dot" aria-hidden />}
-        <span role="status" title={label} className={asking ? "req-ask" : undefined}>{label}</span>
+        <span role="status" title={waiting && paused ? "Editing is paused. Continue, above the message box, picks this up where it left off." : label}
+          className={asking ? "req-ask" : undefined}>{label}</span>
       </button>
-      <span className="req-right">
+      <div className="req-right">
         {asking && <Tokens usage={usage} />}
-        {onStop && <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>}
-      </span>
+        {actions || (onStop && <button type="button" className="simple-link run-stop" onClick={onStop}>Stop</button>)}
+      </div>
     </div>}
     {line && lines.length > 0 && <RunList lines={lines} />}
     {say}
@@ -199,13 +340,13 @@ function WaitingRun({ task, events, changes, say, result, banded, onStop }: RunB
 }
 
 function FinishedRun({ task, finalChange, say, told, result, recovery, summary, listedAbove, showing, banded, onOpen, onResume, onWaitForTranscripts }: RunBundleProps) {
-  const usage = useRunUsage(task.id);
+  const usage = useRunUsage(task.id, !banded);
   // Finished. A run that ended without the transcripts it waited for says so, since what it saved is only part of the request.
   const paused = taskNeedsTranscripts(task);
   const stopped = task.state === "cancelled";
   const failed = task.state === "failed";
   const state = runEnded(task);
-  const aside = <Tokens usage={usage} />;
+  const aside = usage?.totalTokens ? <Tokens usage={usage} /> : undefined;
   const rows = result?.(aside);
   const action = !paused && recovery && <button type="button" className="simple-link req-recover" onClick={recovery.run}>{recovery.label}</button>;
   const made = summary ?? (state ? stoppedSummary(task, finalChange) : runSummary(task, finalChange));
@@ -245,6 +386,7 @@ function FinishedRun({ task, finalChange, say, told, result, recovery, summary, 
 
 /** What the line says when nothing names the work of the moment. */
 const WORKING = "Working on your edit";
+const PICKING_UP = "Picking up where it left off";
 
 /** How a run that didn't finish ended, in the words its block says: paused for its transcripts, stopped, or failed. */
 export function runEnded(task: Task) {

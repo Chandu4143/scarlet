@@ -96,7 +96,7 @@ pub fn exit_error(cli: &str, outcome: &SpawnOutcome) -> String {
     format!("{cli} exited with code {}{}", outcome.code.map(|c| c.to_string()).unwrap_or("null".into()), stderr_tail(&outcome.stderr))
 }
 
-fn stderr_tail(stderr: &str) -> String {
+pub(super) fn stderr_tail(stderr: &str) -> String {
     let t = stderr.trim();
     if t.is_empty() {
         String::new()
@@ -209,7 +209,8 @@ mod tests {
         // Real ids pass the check and reach the runner, which then finds no CLI.
         for (agent, model) in [("claude", "claude-opus-4-1[1m]"), ("codex", "gpt-5.5"), ("gemini", "models/gemini-2.5-pro"), ("claude", "us.anthropic.claude-sonnet-4@20250514")] {
             let result = run(agent, Some(model), Some("xhigh"), Some("fast")).await;
-            assert_eq!(result.error, Some(format!("{agent} CLI not found on PATH")), "{model}");
+            let bin = crate::host::detect::cli_binary(agent);
+            assert_eq!(result.error, Some(format!("{bin} CLI not found on PATH")), "{model}");
         }
         let unknown = run("cursor", None, None, None).await;
         assert_eq!((unknown.ok, unknown.error.as_deref()), (false, Some("no runner for agent \"cursor\"")));

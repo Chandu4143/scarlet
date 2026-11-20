@@ -5,10 +5,11 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router-d
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { isDialogueGuide } from "@scarlet/shared";
 import { api } from "../../lib/client";
-import { buildDb, PRJ, sampleTemplates } from "../../lib/mock/fixtures";
+import { buildDb, PRJ } from "../../lib/mock/fixtures";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore } from "../../stores/attachments";
-import { useTemplatesStore } from "../../stores/templates";
+import { usePictureMarksStore } from "../../stores/pictureMarks";
+import * as markedFrame from "../../lib/markedFrame";
 import { buildThreads } from "../../lib/threads";
 import { useHostsStore } from "../../stores/hosts";
 import { usePlayerStore } from "../../stores/player";
@@ -18,12 +19,11 @@ import { playheadPoints, useUiStore, type AgentContext } from "../../stores/ui";
 import { NO_AGENT_REASON } from "./AgentChip";
 import * as mic from "./MicButton";
 import { Composer, NEW_EDIT_HINT } from "./Composer";
-import { ARRIVAL_MS } from "./ComposerAim";
 import { NotePopover } from "./NotePopover";
 import { ProjectLayout } from "../shell/ProjectLayout";
 
 const stores = [useProjectStore.getState(), useUiStore.getState(), usePlayerStore.getState(), useHostsStore.getState(), useSkillsStore.getState(),
-  useTemplatesStore.getState(), useAttachmentsStore.getState()] as const;
+  useAttachmentsStore.getState()] as const;
 const db = buildDb();
 const project = db.projects.find(p => p.id === PRJ)!;
 const current: ProjectData = { id: PRJ, project, timeline: db.timelines[project.head!]!,
@@ -49,8 +49,8 @@ afterEach(async () => {
   usePlayerStore.setState(stores[2], true);
   useHostsStore.setState(stores[3], true);
   useSkillsStore.setState(stores[4], true);
-  useTemplatesStore.setState(stores[5], true);
-  useAttachmentsStore.setState(stores[6], true);
+  useAttachmentsStore.setState(stores[5], true);
+  usePictureMarksStore.setState({ marking: null, byProject: {} });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -248,6 +248,14 @@ it.each(["click", "keyboard"])("creates a skill from the picker by %s and return
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(instructions, "Keep the quiet after a difficult question.");
       instructions.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    const modelPicker = editor.querySelector<HTMLButtonElement>('.skill-editor-toolbar button[aria-label="Choose model"]')!;
+    await act(() => modelPicker.click());
+    expect(editor.querySelector('[aria-label="Model selector"]')).not.toBeNull();
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(() => document.activeElement!.dispatchEvent(esc));
+    expect(esc.defaultPrevented).toBe(true);
+    expect(editor.open).toBe(true);
+    expect(editor.querySelector('[aria-label="Model selector"]')).toBeNull();
     if (method === "click") {
       await act(() => editor.querySelector<HTMLButtonElement>("[data-close]")!.click());
       expect(container.textContent).toContain("Save your skill changes?");
@@ -350,21 +358,15 @@ it("only ever sends: stopping a running edit is on its card, not in the message 
   expect(cancelTask).not.toHaveBeenCalled();
 });
 
-it("offers the displayed cut time and includes it in the request only after the editor presses Edit here", async () => {
+it("tags the box with a picked moment and sends it with the request", async () => {
   useHostsStore.setState({ hosts: [] });
   await show();
   const tag = () => container.querySelector('.composer-context-row .composer-scope');
-  const action = () => container.querySelector<HTMLButtonElement>('button[aria-label="Edit here at 7:23"]');
   expect(tag()).toBeNull();
-  expect(action()).toBeNull();
+  expect(container.querySelector(".composer-edit-here")).toBeNull();
   const picked = { time: 443.25, version: project.head!, clipIds: [] };
-  await show({ editHere: { time: "7:23", onSelect: () => useUiStore.getState().setAgentContext(picked) } });
   await type("Cut here");
-  expect(action()?.textContent).toBe("Edit here");
-  expect(tag()).toBeNull();
-  await act(async () => action()!.click());
-  expect(document.activeElement).toBe(container.querySelector("textarea"));
-  expect(action()).toBeNull();
+  await act(async () => useUiStore.getState().setAgentContext(picked));
   expect(tag()?.textContent).toBe("7:23.250");
   expect(useUiStore.getState().agentDraft).toBe("Cut here");
   expect(container.querySelector<HTMLButtonElement>(".composer-input button.btn-primary")?.disabled).toBe(true);
@@ -373,6 +375,35 @@ it("offers the displayed cut time and includes it in the request only after the 
   await submit();
   expect(useProjectStore.getState().createNote).toHaveBeenCalledWith(PRJ, expect.objectContaining({ text: "Cut here", time: 443.25, version: project.head }));
   expect(tag()).toBeNull();
+});
+
+it("takes the tag off on Backspace in an empty box, but not on a held Backspace, and puts it back on ⌘Z", async () => {
+  const onClearTarget = vi.fn();
+  const onRestoreTarget = vi.fn(() => true);
+  await show({ targetTag: "At 0:07", targetIsPoint: true, onClearTarget, onRestoreTarget });
+  const press = (key: string, init: KeyboardEventInit = {}) => act(async () => {
+    container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+  });
+  await type("Zoom");
+  await press("Backspace");
+  expect(onClearTarget).not.toHaveBeenCalled();
+  // ⌘Z with words in the box is the words' own undo.
+  await press("z", { metaKey: true });
+  expect(onRestoreTarget).not.toHaveBeenCalled();
+  await type("");
+  // Holding Backspace to clear the words stops at the empty box.
+  await press("Backspace", { repeat: true });
+  expect(onClearTarget).not.toHaveBeenCalled();
+  await press("Backspace");
+  expect(onClearTarget).toHaveBeenCalledTimes(1);
+  await press("z", { metaKey: true });
+  expect(onRestoreTarget).toHaveBeenCalledTimes(1);
+  // A cut or an edit the box revises comes off the same way.
+  await show({ targetTag: "Cut at 2:05", targetIsPoint: false, onClearTarget, onRestoreTarget });
+  await press("Backspace");
+  expect(onClearTarget).toHaveBeenCalledTimes(2);
+  await press("z", { ctrlKey: true });
+  expect(onRestoreTarget).toHaveBeenCalledTimes(2);
 });
 
 it("sends the version of an explicitly attached point even when the project head has advanced", async () => {
@@ -689,6 +720,30 @@ it("sends words chosen in a call's passage as a revision of that one cut, where 
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
 });
 
+it("shows where the editor paused in an open cut's tag, and sends the message to the cut with that frame", async () => {
+  const ready = buildThreads(current).find(t => t.needs === "decision")!;
+  useUiStore.getState().setAgentContext({ changeId: ready.latest!.id, cutIndex: 0, version: project.head!, time: 2.3, end: 2.5, clipIds: [], label: "Cut at 0:02" });
+  await show({ thread: ready, targetTag: "Cut at 0:02", pausedAt: { time: 37.12, version: "ver_before" } });
+  // One time in the box: where the video stopped. The tag's full name still says which cut the message goes to.
+  expect(aimName()?.textContent).toBe("0:37");
+  expect(aimName()?.title).toBe("About Cut at 0:02, stopped at 0:37");
+  expect(container.querySelector("textarea")!.value).toBe("");
+  await type("trim more here");
+  await submit();
+  expect(useProjectStore.getState().revise).toHaveBeenCalledWith(ready.latest!.id, expect.objectContaining({ text: "trim more here",
+    position: expect.objectContaining({ cutIndex: 0, time: 2.3, messageTime: { time: 37.12, version: "ver_before" } }) }));
+});
+
+it("names the open cut by its own time and sends no stopped frame without a pause", async () => {
+  const ready = buildThreads(current).find(t => t.needs === "decision")!;
+  useUiStore.getState().setAgentContext({ changeId: ready.latest!.id, cutIndex: 0, version: project.head!, time: 2.3, end: 2.5, clipIds: [], label: "Cut at 0:02" });
+  await show({ thread: ready, targetTag: "Cut at 0:02" });
+  expect(aimName()?.textContent).toBe("0:02");
+  await type("trim more");
+  await submit();
+  expect(vi.mocked(useProjectStore.getState().revise).mock.calls[0]![1].position).not.toHaveProperty("messageTime");
+});
+
 it("clears a sent message's text and its own target, and keeps a target the box was aimed at since", () => {
   const ui = useUiStore.getState();
   const captions = { changeId: "chg_1", editIndex: 1, time: 0.2, clipIds: [], label: "captions" };
@@ -945,91 +1000,153 @@ it("puts a spoken message that couldn't be sent back with the request it was sai
   expect(useUiStore.getState().agentDraft).toBe("Keep the last word");
 });
 
-/** The edit-point icon at the start of the box, its card opened by a click, and that card's rows. */
-const aimIcon = () => container.querySelector<HTMLButtonElement>(".composer-box .composer-row > .composer-aim .composer-aim-icon");
-const openAim = () => act(async () => { if (aimIcon()!.getAttribute("aria-expanded") !== "true") aimIcon()!.click(); });
-const aimRows = () => [...container.querySelectorAll(".composer-aim-row")].map(row => [row.querySelector(".composer-aim-name")?.textContent, row.querySelector(".composer-aim-detail")?.textContent]);
-const aimClear = (name: string) => [...container.querySelectorAll(".composer-aim-row")].find(row => row.querySelector(".composer-aim-name")?.textContent === name)!
-  .querySelector<HTMLButtonElement>(".composer-aim-clear")!;
+const aimButton = () => container.querySelector<HTMLButtonElement>(".composer-aim-line .composer-aim-button");
+const aimName = () => container.querySelector<HTMLElement>(".composer-aim-line .composer-aim-name");
+const aimCard = () => container.querySelector(".composer-aim-card");
+const aimRowLabel = (name: string) => aimCard()?.querySelector(`.composer-aim-row[aria-label="${name}"] > span`);
+const aimField = () => container.querySelector<HTMLTextAreaElement>(".composer-message textarea")!;
+const clickAim = () => act(async () => aimButton()!.click());
+const aimClear = (label: string) => container.querySelector<HTMLButtonElement>(`.composer-aim-clear[aria-label="${label}"]`);
+const clearCut = "Start a new edit instead of revising cut at 2:05";
+const clearRange = "Take the marked range 0:42 – 0:51 off the message";
 
-it("folds what the message revises into an edit-point icon, whose card's × hands the choice back to the page", async () => {
-  // With nothing aimed the box is as it always was.
+it("names and clears the cut beside the draft", async () => {
   await show();
-  expect(aimIcon()).toBeNull();
-  expect(container.querySelector(".composer-tag")).toBeNull();
-  // The icon sits in the box's row, before the text, and says on itself what the message is about.
+  expect(aimName()).toBeNull();
   const onClearTarget = vi.fn();
   await show({ targetTag: "Cut at 2:05", onClearTarget });
-  expect(container.querySelector(".composer-row")?.firstElementChild?.classList.contains("composer-aim")).toBe(true);
-  expect(aimIcon()!.getAttribute("aria-label")).toBe("About Cut at 2:05");
-  expect(container.querySelector(".composer-aim-card")).toBeNull();
-  // Its card lists it, with a × that takes it off.
-  await openAim();
-  expect(aimRows()).toEqual([["Cut at 2:05", "the cut that’s open"]]);
-  expect(aimClear("Cut at 2:05").getAttribute("aria-label")).toBe("Start a new edit instead of revising cut at 2:05");
-  // The page decides what taking it off means; the box keeps what was typed and its own target as they are.
+  // Where the message goes is a line of its own on top of the box, so the box keeps its width for the words.
+  expect(container.querySelector(".composer-aim-line")?.nextElementSibling?.classList.contains("composer-box")).toBe(true);
+  expect(container.querySelector(".composer-row .composer-aim")).toBeNull();
+  expect(aimName()?.textContent).toBe("2:05");
+  expect(aimName()?.title).toBe("About Cut at 2:05");
+  expect(aimButton()).toBeNull();
+  expect(aimCard()).toBeNull();
   await type("Keep the laugh");
-  await act(async () => aimClear("Cut at 2:05").click());
+  await act(async () => aimClear(clearCut)!.click());
   expect(onClearTarget).toHaveBeenCalledTimes(1);
   expect(useUiStore.getState().agentDraft).toBe("Keep the laugh");
-  // "Answer" and "Reply" say in words who the message goes to, and stay a tag.
+  expect(document.activeElement).toBe(aimField());
+  expect(aimCard()).toBeNull();
   await show({ targetTag: "Reply", thread: buildThreads(current)[0] });
-  expect([aimIcon(), container.querySelector(".composer-tag-name")?.textContent]).toEqual([null, "Reply"]);
+  expect([aimName(), container.querySelector(".composer-tag-name")?.textContent]).toEqual([null, "Reply"]);
 });
 
-it("holds a stretch marked on the timeline in the same icon, whose own × takes off the stretch alone", async () => {
+it("clears a marked stretch independently of the cut the message is about", async () => {
   const cut: AgentContext = { changeId: "chg_1", cutIndex: 0, version: "v1", time: 125, end: 127, clipIds: [], label: "Cut at 2:05" };
   await act(async () => useUiStore.getState().setAgentContext({ ...cut, markedRange: { start: 42, end: 51.5, version: "v2" } }));
   await show({ targetTag: "Cut at 2:05" });
-  // One icon for both, the same size as for one: its card lists the cut, then the stretch.
-  expect(container.querySelectorAll(".composer-aim-icon")).toHaveLength(1);
-  expect(aimIcon()!.getAttribute("aria-label")).toBe("About Cut at 2:05 and 0:42 – 0:51");
-  await openAim();
-  expect(aimRows()).toEqual([["Cut at 2:05", "the cut that’s open"], ["0:42 – 0:51", "9.5 s you marked"]]);
-  expect(aimClear("0:42 – 0:51").getAttribute("aria-label")).toBe("Take the marked range 0:42 – 0:51 off the message");
-  await act(async () => aimClear("0:42 – 0:51").click());
-  // The message is still about the cut, at the cut's own time.
+  expect(aimName()?.textContent).toBe("2:05");
+  expect(aimButton()?.textContent).toContain("+1");
+  expect(aimButton()?.getAttribute("aria-label")).toBe("Show Range 0:42 – 0:51");
+  await clickAim();
+  expect(aimRowLabel("Range 0:42 – 0:51")?.textContent).toBe("0:42–0:51");
+  expect(aimRowLabel("Range 0:42 – 0:51")?.getAttribute("title")).toBe("Range 0:42 – 0:51");
+  expect(aimRowLabel("Cut at 2:05")).toBeNull();
+  expect(aimClear(clearCut)).not.toBeNull();
+  expect(aimClear(clearCut)?.closest(".composer-aim-card")).toBeNull();
+  expect(aimCard()?.querySelector(`[aria-label="${clearCut}"]`)).toBeNull();
+  await act(async () => aimClear(clearRange)!.click());
   expect(useUiStore.getState().agentContext).toEqual(cut);
-  await openAim();
-  expect(aimRows()).toEqual([["Cut at 2:05", "the cut that’s open"]]);
-  // A stretch marked with nothing open is the whole aim: taking it off leaves a new edit about the whole video.
+  expect(aimName()?.textContent).toBe("2:05");
+  expect(aimName()?.title).toBe("About Cut at 2:05");
+  expect(aimButton()).toBeNull();
+  expect(aimCard()).toBeNull();
+  expect(document.activeElement).toBe(aimField());
+  // Taking the only target off leaves a new edit about the whole video.
   await act(async () => useUiStore.getState().setAgentContext({ time: 42, end: 51.5, clipIds: [], markedRange: { start: 42, end: 51.5 } }));
   await show();
-  await openAim();
-  expect(aimRows()).toEqual([["0:42 – 0:51", "9.5 s you marked"]]);
-  await act(async () => aimClear("0:42 – 0:51").click());
+  expect(aimName()?.textContent).toBe("0:42–0:51");
+  expect(aimName()?.title).toBe("About Range 0:42 – 0:51");
+  expect(aimButton()).toBeNull();
+  await act(async () => aimClear(clearRange)!.click());
   expect(useUiStore.getState().agentContext).toBeNull();
-  expect(aimIcon()).toBeNull();
+  expect(aimName()).toBeNull();
 });
 
-it("shows the icon's card by itself for a moment when something is attached, then folds it with a pulse", async () => {
-  vi.useFakeTimers();
-  try {
-    const cut: AgentContext = { changeId: "chg_1", cutIndex: 0, version: "v1", time: 125, end: 127, clipIds: [], label: "Cut at 2:05" };
-    await act(async () => useUiStore.getState().setAgentContext(cut));
-    await show({ targetTag: "Cut at 2:05" });
-    // What the box was aimed at when it opened doesn't arrive.
-    expect(container.querySelector(".composer-aim-card")).toBeNull();
-    await act(async () => useUiStore.getState().setAgentContext({ ...cut, markedRange: { start: 42, end: 51.5 } }));
-    const lit = () => [...container.querySelectorAll(".composer-aim-row.is-new .composer-aim-name")].map(n => n.textContent);
-    expect(lit()).toEqual(["0:42 – 0:51"]);
-    expect(aimIcon()!.getAttribute("aria-expanded")).toBe("true");
-    await act(async () => { vi.advanceTimersByTime(ARRIVAL_MS); });
-    expect(container.querySelector(".composer-aim-card")).toBeNull();
-    expect(aimIcon()!.classList.contains("is-pulsing")).toBe(true);
-    // Swapping one cut for another, as ↑ and ↓ do, stays folded.
-    await show({ targetTag: "Cut at 3:10" });
-    expect(container.querySelector(".composer-aim-card")).toBeNull();
-    // Open, it lights what it holds on the timeline; closed, it doesn't.
-    expect(useUiStore.getState().aimLit).toBe(false);
-    await openAim();
-    expect(useUiStore.getState().aimLit).toBe(true);
-  } finally {
-    vi.useRealTimers();
-  }
+it.each([
+  ["Cut 2", "Cut 2"],
+  ["Edit at 0:11", "0:11"],
+])("labels %s beside the draft as %s", async (targetTag, displayName) => {
+  await show({ targetTag });
+  expect(aimName()?.textContent).toBe(displayName);
+  expect(aimName()?.title).toBe(`About ${targetTag}`);
+  expect(aimClear(`Start a new edit instead of revising ${targetTag.toLowerCase()}`)).not.toBeNull();
+  expect(aimButton()).toBeNull();
+  expect(aimCard()).toBeNull();
 });
 
-it("keeps the icon's × from taking the box elsewhere while a spoken message is in it, which would drop the recording", async () => {
+async function showTargetWithRange() {
+  await act(async () => useUiStore.getState().setAgentContext({ time: 42, end: 51.5, clipIds: [], markedRange: { start: 42, end: 51.5 } }));
+  await show({ targetTag: "Cut at 2:05" });
+}
+
+it("toggles the target card from its button and dismisses it with Escape", async () => {
+  await showTargetWithRange();
+  await act(async () => { aimField().focus(); aimField().click(); });
+  expect(aimCard()).toBeNull();
+  expect(document.activeElement).toBe(aimField());
+  await act(async () => aimButton()!.focus());
+  expect(aimButton()?.getAttribute("aria-expanded")).toBe("false");
+  await clickAim();
+  expect(aimButton()?.getAttribute("aria-expanded")).toBe("true");
+  expect(aimButton()?.getAttribute("aria-controls")).toBe(aimCard()?.id);
+  await clickAim();
+  expect(aimCard()).toBeNull();
+  await clickAim();
+  await act(async () => aimClear(clearRange)!.focus());
+  expect(aimCard()).not.toBeNull();
+  const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  await act(async () => aimClear(clearRange)!.dispatchEvent(escape));
+  expect(escape.defaultPrevented).toBe(true);
+  expect(aimCard()).toBeNull();
+  expect(aimButton()?.getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(aimButton());
+});
+
+it("dismisses the target card on an outside pointer press or when focus moves to the draft", async () => {
+  await showTargetWithRange();
+  await clickAim();
+  expect(aimCard()).not.toBeNull();
+  await act(async () => aimField().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+  expect(aimCard()).toBeNull();
+  await clickAim();
+  expect(aimCard()).not.toBeNull();
+  await act(async () => aimButton()!.focus());
+  await act(async () => aimField().focus());
+  expect(aimCard()).toBeNull();
+});
+
+it("keeps a picked moment, and a whole-video choice, through a time typed in the message", async () => {
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek: vi.fn() };
+  await show({ messageClock });
+  const picked = { time: 10, version: project.head!, clipIds: [] };
+  await selectPoint(picked);
+  await type("Match the look at 1:30");
+  expect(useUiStore.getState().agentContext).toBe(picked);
+  await type("Match the look");
+  expect(useUiStore.getState().agentContext).toBe(picked);
+  // Once the editor took the aim off, a time typed doesn't put one back.
+  await act(async () => useUiStore.getState().setAgentContext("whole"));
+  await type("Match the look at 1:30");
+  expect(useUiStore.getState().agentContext).toBe("whole");
+  await submit();
+  expect(useProjectStore.getState().createTask).toHaveBeenLastCalledWith(PRJ, expect.objectContaining({
+    instruction: "Match the look at 1:30", context: { version: project.head },
+  }));
+});
+
+it("answers Scarlet's question with a stretch marked on the ruler beside it, still tagged Answer", async () => {
+  const asking = buildThreads(current).find(t => t.question)!;
+  await act(async () => useUiStore.getState().setAgentContext({ time: 42, end: 51.5, clipIds: [], markedRange: { start: 42, end: 51.5 } }));
+  await show({ thread: asking, targetTag: "Answer" });
+  expect(container.querySelector(".composer-tag-name")?.textContent).toBe("Answer");
+  await type("Yes, this part");
+  await submit();
+  expect(useProjectStore.getState().answerTask).toHaveBeenCalledWith(asking.question!.id, expect.stringMatching(/^At 0:42.*0:51 — Yes, this part$/), undefined);
+});
+
+it("keeps the target's × from taking the box elsewhere while a spoken message is in it", async () => {
   let micProps!: ComponentProps<typeof mic.MicButton>;
   vi.spyOn(mic, "MicButton").mockImplementation(props => { micProps = props; return <></>; });
   let heard!: (result: { text: string }) => void;
@@ -1038,12 +1155,12 @@ it("keeps the icon's × from taking the box elsewhere while a spoken message is 
   const thread = buildThreads(current).find(t => t.needs === "decision")!;
   await act(async () => useUiStore.getState().openDraft(PRJ, thread.id));
   await show({ thread, targetTag: "Cut at 2:05", onClearTarget });
-  await openAim();
-  const clear = () => aimClear("Cut at 2:05");
+  const clear = () => aimClear(clearCut)!;
   expect(clear().disabled).toBe(false);
   // While it records, and while what was said is written down and sent, the × waits.
   await act(async () => { micProps.onStart?.(); micProps.onRecording?.(true); });
   expect(clear().disabled).toBe(true);
+  expect(clear().getAttribute("aria-description")).toBe("Waits until what you’re saying is sent");
   await act(async () => clear().click());
   expect(onClearTarget).not.toHaveBeenCalled();
   await act(async () => { micProps.onRecording?.(false); micProps.onResult({ blob: new Blob(["voice"]), seconds: 1, mimeType: "audio/mp4" }); });
@@ -1083,7 +1200,7 @@ it("changes a queued request's words in the box, across its whole width, saving 
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
   // What was said takes their place.
   await act(async () => { micProps.onStart?.(); micProps.onResult({ blob: new Blob(["voice"]), seconds: 1, mimeType: "audio/mp4" }); });
-  expect(rewording.onSave).toHaveBeenLastCalledWith("Keep the breath too");
+  expect(rewording.onSave).toHaveBeenLastCalledWith("Keep the breath too", undefined);
   expect(useUiStore.getState().agentContext).toBeNull();
   // Esc leaves them as they were.
   await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
@@ -1114,13 +1231,13 @@ it("saves a queued request's new words with the skills their /commands name, as 
   expect(container.querySelector(".composer-dock")?.textContent).toContain("No enabled skill named /no-such-skill.");
 });
 
-it("words a point in the icon's card as the moment the message is about, and its × as the whole video", async () => {
+it("names the moment beside the draft and clears it for a whole-video request", async () => {
   const onClearTarget = vi.fn();
   await show({ targetTag: "At 18:28", targetIsPoint: true, onClearTarget });
-  await openAim();
-  expect(aimRows()).toEqual([["At 18:28", "the moment you picked"]]);
-  expect(aimClear("At 18:28").getAttribute("aria-label")).toBe("Take “At 18:28” off: the message is about the whole video");
-  await act(async () => aimClear("At 18:28").click());
+  expect(aimName()?.textContent).toBe("18:28");
+  expect(aimName()?.title).toBe("About 18:28");
+  expect(aimButton()).toBeNull();
+  await act(async () => aimClear("Take “At 18:28” off: the message is about the whole video")!.click());
   expect(onClearTarget).toHaveBeenCalledTimes(1);
 });
 
@@ -1154,14 +1271,13 @@ it("keeps an explicit range or whole-video choice when text is erased", async ()
   expect(useUiStore.getState().agentContext).toBe("whole");
 });
 
-it("dictates for the whole video while a time is offered, including after an abandoned hold", async () => {
+it("dictates for the whole video with no moment picked, including after an abandoned hold", async () => {
   let micProps!: ComponentProps<typeof mic.MicButton>;
   vi.spyOn(mic, "MicButton").mockImplementation(props => { micProps = props; return <></>; });
   const createVoiceNote = vi.fn();
   useProjectStore.setState({ createVoiceNote });
   vi.spyOn(api, "speechToText").mockResolvedValue({ text: "Fix the levels throughout" });
-  const onSelect = vi.fn();
-  await show({ editHere: { time: "0:03", onSelect } });
+  await show();
   await act(async () => { micProps.onStart?.(); });
   expect(useUiStore.getState().agentContext).toBeNull();
   await act(async () => usePlayerStore.getState().setTime(300));
@@ -1171,7 +1287,6 @@ it("dictates for the whole video while a time is offered, including after an aba
   expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
     instruction: "Fix the levels throughout", voiceTranscript: "Fix the levels throughout", context: { version: project.head },
   }));
-  expect(onSelect).not.toHaveBeenCalled();
   expect(createVoiceNote).not.toHaveBeenCalled();
 });
 
@@ -1326,6 +1441,33 @@ it("drops dictation for a closed rewording when the same request is reopened", a
   expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
 });
 
+it("resolves skill commands in a dictated reword and leaves it alone if closed during lookup", async () => {
+  let micProps!: ComponentProps<typeof mic.MicButton>;
+  vi.spyOn(mic, "MicButton").mockImplementation(props => { micProps = props; return <></>; });
+  vi.spyOn(api, "speechToText").mockResolvedValue({ text: "/dialogue-pass Keep the intro." });
+  const skill = db.skills.find(isDialogueGuide)!;
+  let finish!: (result: { skills: typeof db.skills }) => void;
+  const load = vi.spyOn(api, "skills").mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  useSkillsStore.setState({ skills: [], status: "idle" });
+  const first = { id: "task_queued", text: "Trim the intro.", onChange: vi.fn(), onSave: vi.fn(), onCancel: vi.fn() };
+  const next = { ...first, onSave: vi.fn() };
+  const dictate = () => act(async () => {
+    micProps.onStart?.();
+    micProps.onResult({ blob: new Blob(["voice"]), seconds: 1, mimeType: "audio/mp4" });
+  });
+  await show({ rewording: first });
+  await dictate();
+  expect(load).toHaveBeenCalledTimes(1);
+  await show();
+  await show({ rewording: next });
+  await act(async () => finish({ skills: [skill] }));
+  expect(first.onSave).not.toHaveBeenCalled();
+  expect(next.onSave).not.toHaveBeenCalled();
+  await dictate();
+  expect(next.onSave).toHaveBeenCalledExactlyOnceWith("/dialogue-pass Keep the intro.", [skill.id]);
+  expect(useProjectStore.getState().createTask).not.toHaveBeenCalled();
+});
+
 it("sends a message being spoken as itself when a queued request's words take the box meanwhile, and drops words said for ones put back", async () => {
   let micProps!: ComponentProps<typeof mic.MicButton>;
   vi.spyOn(mic, "MicButton").mockImplementation(props => { micProps = props; return <></>; });
@@ -1400,71 +1542,21 @@ it("says what went wrong with the microphone on the line over the box, until the
   expect(line()).toBe(denied);
 });
 
-it("asks for a new edit, with the skills and templates it takes, in an empty box", async () => {
+it("asks for a new edit, with the skills it takes, in an empty box", async () => {
   await show();
-  expect(container.querySelector("textarea")!.placeholder).toBe("Describe an edit, / skills, $ templates");
-  expect(NEW_EDIT_HINT).toBe("Describe an edit, / skills, $ templates");
+  expect(container.querySelector("textarea")!.placeholder).toBe("Describe an edit, / skills");
+  expect(NEW_EDIT_HINT).toBe("Describe an edit, / skills");
 });
 
-it("lists the graphic templates with $, as / lists the skills, and puts the chosen one's name in the box", async () => {
-  const templates = sampleTemplates();
-  const list = vi.spyOn(api, "listTemplates").mockResolvedValue({ templates });
+it("opens no list for $: the words are sent as written", async () => {
   await show();
   const field = container.querySelector("textarea")!;
   await act(() => field.focus());
-  const key = (key: string) => act(() => { field.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
-  const rows = () => Array.from(container.querySelectorAll('.composer-templates [role="option"].composer-template'));
   await type("$");
-  expect(list).toHaveBeenCalledTimes(1);
-  const box = container.querySelector('[role="listbox"]')!;
-  expect(box.getAttribute("aria-label")).toBe("Graphic templates");
-  expect(box.classList.contains("composer-skills")).toBe(true);
-  expect(box.querySelector(".eyebrow")?.textContent).toBe("Templates");
-  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Lower third", "Title card", "Pull quote"]);
-  // Each row: its picture over the frame under the playhead, its title, and its fields under it.
-  expect(rows()[0]!.querySelectorAll(".composer-template-thumb img")).toHaveLength(2);
-  expect(rows()[0]!.querySelector(".composer-template-fields")?.textContent).toBe("Name, Title");
-  // The project's style guide is the list's last line.
-  expect(box.lastElementChild?.textContent).toBe("Style guideBrand guide.pdf");
-  // The lit row's picture is over the player's.
-  expect(useTemplatesStore.getState().lit?.id).toBe("tpl_lower");
-  await key("ArrowDown");
-  expect(rows()[1]!.getAttribute("aria-selected")).toBe("true");
-  expect(useTemplatesStore.getState().lit?.id).toBe("tpl_title");
-  await key("Escape");
-  expect(container.querySelector('[role="listbox"]')).toBeNull();
-  expect(useTemplatesStore.getState().lit).toBeNull();
-  // What follows $ filters the list. Enter puts the name in the box in place of what was typed, with a space after it.
-  await type("Add a $quo");
-  expect(list).toHaveBeenCalledTimes(2);
-  expect(rows().map(r => r.querySelector(".composer-template-title")?.textContent)).toEqual(["Pull quote"]);
-  await key("Enter");
-  expect(field.value).toBe("Add a $pull-quote ");
-  expect(container.querySelector('[role="listbox"]')).toBeNull();
-  // A $ that isn't a template is the editor's own words.
-  await type("Budget is $9");
-  expect(container.textContent).toContain("No matching templates.");
-  await type("$");
-  await key("ArrowUp");
-  expect(container.querySelector(".composer-skill-footer [role='option']")?.getAttribute("aria-selected")).toBe("true");
-  await key("Enter");
-  expect(field.value).toBe("Make a template ");
-  expect(field.selectionStart).toBe("Make a template ".length);
   expect(container.querySelector('[role="listbox"]')).toBeNull();
   await type("$lower-third for Daniel");
   await submit();
   expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({ instruction: "$lower-third for Daniel" }));
-});
-
-it("says the library has no templates yet, and how to make one", async () => {
-  vi.spyOn(api, "listTemplates").mockResolvedValue({ templates: [] });
-  await act(() => useProjectStore.setState({ current: { ...current, project: { ...project, styleGuide: undefined } } }));
-  await show();
-  const field = container.querySelector("textarea")!;
-  await act(() => field.focus());
-  await type("$");
-  expect(container.querySelector('[role="listbox"] [role="status"]')?.textContent).toBe("No templates yet. Ask Scarlet to make one, or save a graphic from its card.");
-  expect(container.querySelector(".composer-style-guide")).toBeNull();
 });
 
 it("attaches files dropped or pasted on the box to the next message, in a line on top of the box", async () => {
@@ -1506,6 +1598,45 @@ it("says why a file couldn't be attached", async () => {
   expect(container.querySelector(".composer-file.is-failed")?.textContent).toContain("The file is too large.");
 });
 
+it("carries the frame the editor drew on with the next message: its picture as a file, and the marks", async () => {
+  const picture = new Blob(["png"], { type: "image/png" });
+  const draw = vi.spyOn(markedFrame, "markedFramePicture").mockResolvedValue(picture);
+  const upload = vi.spyOn(api, "uploadAttachment").mockResolvedValue({ attachment: { id: "att_frame", name: "Marked frame 0.07.png", size: 3, mime: "image/png" } });
+  const ring = { kind: "draw" as const, box: { x: 0.55, y: 0.4, w: 0.1, h: 0.2 }, points: [[0.55, 0.5], [0.6, 0.4], [0.65, 0.5], [0.6, 0.6]] as [number, number][] };
+  const point = { kind: "point" as const, box: { x: 0.7, y: 0.3, w: 0, h: 0 } };
+  usePictureMarksStore.setState({ marking: null, byProject: { [PRJ]: { time: 7, version: project.head!, picture: "frame://7", marks: [ring, point] } } });
+  await show();
+  // The marked frame is a row of the line on top of the box, with its picture, and a × that takes it off.
+  const row = container.querySelector(".composer-files .composer-file.is-marked-frame")!;
+  expect(row.querySelector(".composer-file-name")?.textContent).toBe("Marked frame 0:07");
+  expect(row.querySelector(".composer-file-state")?.textContent).toBe("2 marks");
+  expect(row.querySelector("img")?.getAttribute("src")).toBe("frame://7");
+  await type("Blur 1 and swap 2 for the new logo");
+  await submit();
+  expect(draw).toHaveBeenCalledWith("frame://7", [ring, point]);
+  expect(upload).toHaveBeenCalledWith(PRJ, expect.any(File));
+  expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    instruction: "Blur 1 and swap 2 for the new logo",
+    context: expect.objectContaining({
+      attachments: [{ id: "att_frame", name: "Marked frame 0.07.png", size: 3, mime: "image/png" }],
+      pictureMarks: { attachmentId: "att_frame", time: 7, version: project.head, marks: [ring, point] },
+    }),
+  }));
+  // Sent, the marks leave the box.
+  expect(usePictureMarksStore.getState().byProject[PRJ]).toBeUndefined();
+  expect(container.querySelector(".composer-files")).toBeNull();
+});
+
+it("takes the marked frame off the message with its ×", async () => {
+  usePictureMarksStore.setState({ marking: null, byProject: { [PRJ]: { time: 7, version: project.head!, picture: "frame://7", marks: [{ kind: "box", box: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }] } } });
+  await show();
+  const remove = container.querySelector<HTMLButtonElement>(".composer-file.is-marked-frame .composer-file-remove")!;
+  expect(remove.getAttribute("aria-label")).toBe("Remove Marked frame 0:07");
+  await act(async () => remove.click());
+  expect(usePictureMarksStore.getState().byProject[PRJ]).toBeUndefined();
+  expect(container.querySelector(".composer-files")).toBeNull();
+});
+
 it("sends a message about a moment that carries files as a request about that moment, since a note takes none", async () => {
   vi.spyOn(api, "uploadAttachment").mockResolvedValue({ attachment: { id: "att_logo", name: "logo.png", size: 3 } });
   await show();
@@ -1517,4 +1648,92 @@ it("sends a message about a moment that carries files as a request about that mo
   expect(useProjectStore.getState().createTask).toHaveBeenCalledWith(PRJ, expect.objectContaining({
     instruction: "Put this logo in the corner here", context: expect.objectContaining({ time: 11, attachments: [{ id: "att_logo", name: "logo.png", size: 3 }] }),
   }));
+});
+
+it("marks timestamps as the editor types and sends the first one with the original words", async () => {
+  const seek = vi.fn();
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek };
+  await show({ messageClock });
+  const text = "The audio drops at 1:42. Compare 2:02.";
+  await type(text);
+  const jumps = Array.from(container.querySelectorAll<HTMLButtonElement>(".composer-timestamp"));
+  expect(jumps.map(button => button.textContent)).toEqual(["1:42", "2:02"]);
+  expect(seek).not.toHaveBeenCalled();
+  await act(() => jumps[1]!.click());
+  expect(seek).toHaveBeenCalledExactlyOnceWith(122);
+  expect(container.querySelector("textarea")!.value).toBe(text);
+  await act(() => usePlayerStore.setState({ time: 15 }));
+  await submit();
+  expect(useProjectStore.getState().createNote).toHaveBeenCalledWith(PRJ, expect.objectContaining({
+    time: 102, text, version: project.head,
+  }));
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+  expect(useUiStore.getState().agentContext).toBeNull();
+});
+
+it("keeps a timestamp on the original source while browsing and releases it when removed", async () => {
+  const messageClock = { duration: 20, version: project.head!, seek: vi.fn() };
+  await show({ messageClock: { ...messageClock, mediaId: "camera-a" } });
+  await type("Audio drops at 0:06.250");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 6.25, mediaId: "camera-a" });
+  await show({ messageClock });
+  await type("Audio drops at 0:06.250 on the mic");
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 6.25, mediaId: "camera-a" });
+  await type("Audio drops at 0:10");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 10, mediaId: undefined });
+  await type("Audio drops");
+  expect(useUiStore.getState().agentContext).toBeNull();
+});
+
+it("leaves an explicit range on the message and out-of-bounds or incomplete clocks as text", async () => {
+  const messageClock = { duration: 20, version: project.head!, seek: vi.fn() };
+  await show({ messageClock });
+  await type("1: 4:5 0:60 1:92:04 12:00:foo 0:20 5:24.1234");
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+  expect(useUiStore.getState().agentContext).toBeNull();
+  const range = { time: 2, end: 8, version: project.head!, clipIds: [] };
+  await act(() => useUiStore.getState().setAgentContext(range));
+  await type("Compare this with 0:10");
+  await submit();
+  expect(useProjectStore.getState().createNote).toHaveBeenCalledWith(PRJ, expect.objectContaining({ time: 2, end: 8 }));
+});
+
+it("updates the note target when a timestamp is edited and recognizes an hour clock in pasted prose", async () => {
+  const messageClock = { duration: 8000, version: project.head!, seek: vi.fn() };
+  await show({ messageClock });
+  await type("Look here (1:05:02.125).");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 3902.125 });
+  await type("Look here (1:05:03), then at 1:05:04.");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 3903 });
+  await type("Look here a little later");
+  expect(useUiStore.getState().agentContext).toBeNull();
+  expect(container.querySelector(".composer-timestamp")).toBeNull();
+});
+
+it("keeps the frame a pause picked when the box starts with its time in whole seconds", async () => {
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek: vi.fn() };
+  await act(async () => {
+    useUiStore.getState().setAgentDraft("0:04 ");
+    useUiStore.getState().setAgentContext({ time: 4.162, version: project.head!, clipIds: [], fromMessage: true });
+  });
+  await show({ messageClock });
+  expect(container.querySelector("textarea")!.value).toBe("0:04 ");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 4.162, fromMessage: true });
+  // A different time typed in its place aims the message there, as any typed time does.
+  await type("0:09 zoom in");
+  expect(useUiStore.getState().agentContext).toMatchObject({ time: 9, fromMessage: true });
+});
+
+it("has nothing to send while the box holds only a time", async () => {
+  const messageClock = { version: project.head!, duration: 150, timeline: current.timeline, seek: vi.fn() };
+  await show({ messageClock });
+  await type("0:04 ");
+  expect(container.querySelector(".composer-send")).toBeNull();
+  // Enter sends nothing either.
+  await act(async () => { container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  expect(useProjectStore.getState().createNote).not.toHaveBeenCalled();
+  expect(container.querySelector("textarea")!.value).toBe("0:04 ");
+  await type("0:04 zoom in");
+  expect(container.querySelector(".composer-send")).not.toBeNull();
 });

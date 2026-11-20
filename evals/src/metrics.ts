@@ -5,6 +5,7 @@
  * Conventions: every time is in SOURCE seconds of one recording unless a name says "timeline". An edge
  * is a point where kept audio stops ("out", a removal starts) or resumes ("in", a removal ends).
  */
+import { findRestarts } from "../../packages/shared/src/restarts.ts";
 import { normalizeTranscriptToken as token } from "../../packages/shared/src/transcriptSearch.ts";
 import { covered, intersect, median, merge, quantile, subtract, total, overlap, type Range } from "./intervals.ts";
 
@@ -402,6 +403,10 @@ export interface PacingSummary {
   medianJoinGapSeconds: number | null;
   /** A word or a run of words said twice in a row. A count to compare between cuts: deliberate emphasis is in it too. */
   repeats: { total: number; singleWords: number; phrases: number; atJoins: number };
+  /** Phrases that play again within a moment, as the pass's closing check finds them: restarts, retakes left in, deliberate parallels. */
+  restarts: number;
+  /** Stretches of two seconds or more without a word. */
+  silences: number;
 }
 export interface Pacing extends PacingSummary { gapList: PacingGap[]; repeatList: PacingRepeat[] }
 
@@ -410,7 +415,7 @@ const endsSentence = (text: string) => /[.?!]["'”’)\]]*$/u.test(text.trim())
 /** Gaps and doubled words in what a version plays. Each recording is read on its own, in playback order. */
 export function pacing(played: readonly PlayedWord[], opts: PacingOptions = DEFAULT_PACING_OPTIONS): Pacing {
   const gapList: PacingGap[] = [], repeatList: PacingRepeat[] = [], joinGaps: number[] = [];
-  let words = 0, joins = 0;
+  let words = 0, joins = 0, restarts = 0;
   const streams = new Map<string, PlayedWord[]>();
   for (const w of played) {
     if (!token(w.text) || /^\[.*\]$/.test(w.text.trim())) continue;
@@ -421,6 +426,7 @@ export function pacing(played: readonly PlayedWord[], opts: PacingOptions = DEFA
     const stream = unsorted.slice().sort((a, b) => a.start - b.start);
     const tokens = stream.map(w => token(w.text));
     words += stream.length;
+    restarts += findRestarts(tokens, stream.map(w => w.start), stream.map(w => w.end)).length;
     // The last word to finish holds the outgoing edge, as in overlapping speech.
     let left = stream[0];
     for (const right of stream.slice(1)) {
@@ -457,6 +463,7 @@ export function pacing(played: readonly PlayedWord[], opts: PacingOptions = DEFA
       excessSeconds: round(gapList.reduce((sum, g) => sum + g.seconds - opts.beatSeconds, 0), 1) },
     medianJoinGapSeconds: joinGaps.length ? round(median(joinGaps)!, 3) : null,
     repeats: { total: repeatList.length, singleWords: count(repeatList, r => r.words === 1), phrases: count(repeatList, r => r.words > 1), atJoins: count(repeatList, r => r.join) },
+    restarts, silences: count(gapList, g => g.seconds >= 2 - 1e-9),
     gapList, repeatList,
   };
 }
@@ -466,6 +473,7 @@ export function pacing(played: readonly PlayedWord[], opts: PacingOptions = DEFA
 // ---------------------------------------------------------------------------
 
 export interface TaskLike {
+  workedMs?: number;
   id: string;
   state: string;
   agent?: string;
@@ -492,6 +500,8 @@ export interface TraceMetrics {
   agent?: string;
   model?: string;
   effort?: string;
+  /** From the request to the task's end on the wall clock, queue and the editor's answers included: how long the editor waited for it. */
+  finishSeconds: number | null;
   activeSeconds: number | null;
   queueSeconds: number | null;
   waitingSeconds: number;
@@ -506,10 +516,17 @@ export interface TraceMetrics {
   errorsByTool: Record<string, number>;
   questions: number;
   usage: Record<string, number> | null;
+  /** The engine's estimate of the run at its models' API list prices; null when it has none or a model has no price. */
+  costUsd: number | null;
+  /** Models the engine couldn't price, so the run has no cost. */
+  unpricedModels: string[];
   inspection: { listened: number; listenedByTool: Record<string, number>; visual: number; levels: number; usedAudio: boolean; usedVisual: boolean };
 }
 
-const ms = (a?: string, b?: string) => a && b ? (Date.parse(b) - Date.parse(a)) / 1000 : null;
+const ms = (a?: string, b?: string) => {
+  const delta = a && b ? (Date.parse(b) - Date.parse(a)) / 1000 : NaN;
+  return Number.isFinite(delta) && delta >= 0 ? delta : null;
+};
 
 /** Numeric token counts from `task.usage`, whatever its exact shape (flat or nested one level). */
 function usageNumbers(usage: unknown): Record<string, number> | null {
@@ -551,22 +568,30 @@ export function traceMetrics(task: TaskLike, events: readonly EventLike[]): Trac
     }
   }
   if (asked) waiting += ms(asked, task.finishedAt) ?? 0;
-  const span = ms(task.startedAt, task.finishedAt);
+  // A task claimed again (a worker restart, a resume) keeps only its latest startedAt, so the work began at its first event if that is earlier.
+  const start = [task.startedAt, ...events.map(e => e.at)].filter((t): t is string => !!t).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+  const span = ms(start, task.finishedAt);
+  const active = task.workedMs != null ? (Number.isFinite(task.workedMs) && task.workedMs >= 0 ? task.workedMs / 1000 : null)
+    : span !== null && span >= waiting ? span - waiting : null;
   const listened = Object.values(listenedByTool).reduce((a, b) => a + b, 0);
+  const raw = (task.usage && typeof task.usage === "object" ? task.usage : {}) as { estimatedApiCostUsd?: unknown; unpricedModels?: unknown };
   return {
     state: task.state, agent: task.agent, model: task.model, effort: task.effort,
-    activeSeconds: span === null ? null : round(span - waiting, 1),
-    queueSeconds: r1(ms(task.createdAt, task.startedAt)),
+    finishSeconds: r1(ms(task.createdAt, task.finishedAt)),
+    activeSeconds: r1(active),
+    queueSeconds: r1(ms(task.createdAt, start)),
     waitingSeconds: round(waiting, 1),
-    firstChangeSeconds: r1(ms(task.startedAt, firstChange)),
-    firstCallSeconds: r1(ms(task.startedAt, firstCall)),
-    firstRecommendationSeconds: r1(ms(task.startedAt, firstRecommendation)),
+    firstChangeSeconds: r1(ms(start, firstChange)),
+    firstCallSeconds: r1(ms(start, firstCall)),
+    firstRecommendationSeconds: r1(ms(start, firstRecommendation)),
     toolCalls: Object.values(byTool).reduce((a, b) => a + b, 0),
     byTool: sortCounts(byTool),
     errors: Object.values(errorsByTool).reduce((a, b) => a + b, 0),
     errorsByTool: sortCounts(errorsByTool),
     questions,
     usage: usageNumbers(task.usage),
+    costUsd: typeof raw.estimatedApiCostUsd === "number" && Number.isFinite(raw.estimatedApiCostUsd) ? round(raw.estimatedApiCostUsd, 4) : null,
+    unpricedModels: Array.isArray(raw.unpricedModels) ? raw.unpricedModels.filter((m): m is string => typeof m === "string") : [],
     inspection: { listened, listenedByTool, visual, levels, usedAudio: listened > 0, usedVisual: visual > 0 },
   };
 }
@@ -586,12 +611,17 @@ interface PlanCut extends Range {
   productionQuote?: string;
   reason?: string;
 }
-export interface SubmittedPlan { version: string; cuts: PlanCut[]; range?: Range; only?: string; crossfadeFrames?: number; at?: string }
+export interface SubmittedPlan {
+  version: string; cuts: PlanCut[]; range?: Range; only?: string; crossfadeFrames?: number; at?: string;
+  /** The room tone the model asked joins to leave, and what to do with a join Scarlet can't place cleanly. */
+  pace?: { after: number; before: number }; unsureJoins?: "ask" | "cut";
+}
 
 export function submittedPlans(events: readonly EventLike[]): SubmittedPlan[] {
   return events.filter(e => e.type === "tool" && toolName(String(e.data?.tool ?? "")) === "dialogue_apply_cuts").flatMap(e => {
     const input = e.data?.input as Partial<SubmittedPlan> | undefined;
-    return input?.version && Array.isArray(input.cuts) ? [{ version: input.version, cuts: input.cuts, range: input.range, only: input.only, crossfadeFrames: input.crossfadeFrames, at: e.at }] : [];
+    return input?.version && Array.isArray(input.cuts) ? [{ version: input.version, cuts: input.cuts, range: input.range, only: input.only, crossfadeFrames: input.crossfadeFrames, at: e.at,
+      ...(input.pace && { pace: input.pace }), ...(input.unsureJoins && { unsureJoins: input.unsureJoins }) }] : [];
   });
 }
 

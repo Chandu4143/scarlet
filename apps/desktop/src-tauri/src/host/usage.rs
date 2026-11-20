@@ -79,20 +79,41 @@ pub fn claude_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsa
 
 /// Codex `turn.completed.usage`: input includes cached input; output includes reasoning.
 pub fn codex_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsage> {
-    let u = counts(raw, &["input_tokens", "output_tokens", "cached_input_tokens"])?;
-    let cached = token_count(u.get("cached_input_tokens"));
+    normalize_codex_usage(raw, model, ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens"])
+}
+
+/// Codex App Server reports the cumulative usage of the ephemeral thread.
+pub fn codex_app_server_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsage> {
+    normalize_codex_usage(raw, model, ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteInputTokens", "reasoningOutputTokens"])
+}
+
+fn normalize_codex_usage(raw: Option<&Value>, model: Option<&str>, keys: [&str; 5]) -> Option<AgentUsage> {
+    let u = counts(raw, &keys)?;
+    let [input, output, cached, written, reasoning] = keys.map(|key| token_count(u.get(key)));
     Some(AgentUsage {
         model: model_name(model),
-        input_tokens: token_count(u.get("input_tokens")).saturating_sub(cached),
-        output_tokens: token_count(u.get("output_tokens")),
+        input_tokens: input.saturating_sub(cached).saturating_sub(written),
+        output_tokens: output,
         cache_read_tokens: cached,
-        reasoning_tokens: token_count(u.get("reasoning_output_tokens")),
-        ..Default::default()
+        cache_write_tokens: written,
+        reasoning_tokens: reasoning,
     })
 }
 
-/// Gemini `result.stats`: `input_tokens` includes `cached`; `input` (newer CLIs) is the uncached part.
+/// Gemini usage: ACP `PromptResponse.usage` (camelCase) or legacy `result.stats` (snake_case).
 pub fn gemini_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsage> {
+    if let Some(s) = counts(raw, &["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens"]) {
+        let cached = token_count(s.get("cachedReadTokens"));
+        let written = token_count(s.get("cachedWriteTokens"));
+        return Some(AgentUsage {
+            model: model_name(model),
+            input_tokens: token_count(s.get("inputTokens")).saturating_sub(cached).saturating_sub(written),
+            output_tokens: token_count(s.get("outputTokens")),
+            cache_read_tokens: cached,
+            cache_write_tokens: written,
+            reasoning_tokens: token_count(s.get("thoughtTokens")),
+        });
+    }
     let s = counts(raw, &["input_tokens", "output_tokens", "input", "cached"])?;
     let cached = token_count(s.get("cached"));
     let input = if s.get("input").is_some_and(Value::is_number) {
@@ -128,6 +149,22 @@ mod tests {
         let gemini = gemini_usage(Some(&json!({"input_tokens": 1200, "output_tokens": 300, "cached": 1000, "input": 200})), Some("gemini-3-pro"));
         assert_eq!(gemini, Some(AgentUsage { model: Some("gemini-3-pro".into()), input_tokens: 200, output_tokens: 300, cache_read_tokens: 1000, ..Default::default() }));
         assert_eq!(gemini_usage(Some(&json!({"input_tokens": 1200, "cached": 1000})), None).map(|u| u.input_tokens), Some(200));
+
+        let gemini_acp = gemini_usage(
+            Some(&json!({"inputTokens": 1500, "outputTokens": 250, "cachedReadTokens": 900, "cachedWriteTokens": 100, "thoughtTokens": 80})),
+            Some("gemini-3.1-pro"),
+        );
+        assert_eq!(
+            gemini_acp,
+            Some(AgentUsage {
+                model: Some("gemini-3.1-pro".into()),
+                input_tokens: 500,
+                output_tokens: 250,
+                cache_read_tokens: 900,
+                cache_write_tokens: 100,
+                reasoning_tokens: 80,
+            })
+        );
     }
 
     #[test]

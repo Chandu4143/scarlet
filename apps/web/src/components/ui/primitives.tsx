@@ -284,7 +284,7 @@ function CloseIcon() {
   );
 }
 
-export type IconName = "fullscreen" | "more" | "undo" | "refresh" | "play" | "pause" | "mic" | "stop" | "plus" | "chevron" | "check" | "x" | "note" | "diff" | "down" | "upload" | "export" | "link" | "trash" | "search" | "zoom" | "settings" | "help" | "compare" | "film" | "library" | "history" | "clock" | "stack" | "audio" | "image" | "arrow" | "monitor" | "review" | "star" | "trim" | "captions" | "scissors" | "bulb" | "pencil" | "bookmark" | "file";
+export type IconName = "fullscreen" | "portrait" | "more" | "undo" | "refresh" | "play" | "pause" | "mic" | "stop" | "plus" | "chevron" | "check" | "x" | "note" | "diff" | "down" | "upload" | "export" | "link" | "trash" | "search" | "zoom" | "settings" | "help" | "compare" | "film" | "library" | "history" | "clock" | "stack" | "audio" | "image" | "arrow" | "monitor" | "review" | "star" | "trim" | "captions" | "scissors" | "bulb" | "pencil" | "box" | "point" | "file";
 
 const iconPaths: Record<IconName, ReactNode> = {
   scissors: <><circle cx="4" cy="4" r="2" /><circle cx="4" cy="12" r="2" /><path d="M5.4 5.4 8 8m5.3-5.3-7.9 7.9m4.4-.7 3.5 3.5" /></>,
@@ -302,6 +302,8 @@ const iconPaths: Record<IconName, ReactNode> = {
   check: <path d="M3 8.5l3 3 7-7" />,
   x: <path d="M3 3l10 10M13 3L3 13" />,
   pencil: <path d="M10.5 2.5l3 3L6 13H3v-3zM9 4l3 3" />,
+  box: <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" />,
+  point: <><circle cx="8" cy="7" r="4.5" /><path d="M8 11.5V14" /></>,
   refresh: <path d="M13.5 6a5.8 5.8 0 1 0 .2 3.5M13.5 2.5V6H10" />,
   undo: <path d="M4 6.5h5.5a3.25 3.25 0 0 1 0 6.5H6.5M6.5 4 4 6.5 6.5 9" />,
   note: <path d="M12.8 8v4.5H7L3.5 15v-2.5H2V3h6m4-2v6m-3-3h6" />,
@@ -322,14 +324,13 @@ const iconPaths: Record<IconName, ReactNode> = {
   audio: <path d="M2 6v4m3-7v10m3-8v6m3-10v14m3-9v4" />,
   image: <><rect x="2" y="2" width="12" height="12" rx="2" /><path d="m3 12 4-4 2 2 2-3 3 4" /><circle cx="5.5" cy="5.5" r=".6" /></>,
   arrow: <path d="M3 8h10m-5-5 5 5-5 5" />,
+  portrait: <rect x="4.75" y="1.75" width="6.5" height="12.5" rx="1.5" />,
   monitor: <><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" /><path d="M8 12v2m-3 0h6" /></>,
   review: <><rect x="2" y="2" width="12" height="12" rx="2" /><path d="m5 8 2 2 4-4" /></>,
   help: <path d="M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM6 6.5a2 2 0 1 1 3 1.7c-.7.4-1 .8-1 1.5M8 12h.01" />,
   // A frame split down the middle, its earlier half filled: the footage as it was before an edit.
   compare: <><path d="M2.75 5.25A1.75 1.75 0 0 1 4.5 3.5H8v9H4.5a1.75 1.75 0 0 1-1.75-1.75z" fill="currentColor" stroke="none" opacity=".45" /><rect x="2.75" y="3.5" width="10.5" height="9" rx="1.75" /><path d="M8 1.75v12.5" /></>,
   bulb: <path d="M5.6 10.4a4.2 4.2 0 1 1 4.8 0c-.4.3-.6.8-.6 1.3H6.2c0-.5-.2-1-.6-1.3zM6.6 14h2.8" />,
-  /** Save as template: a bookmark with a small plus. */
-  bookmark: <path d="M4 2.5h8v11.5l-4-3-4 3zM8 4.75v3.5M6.25 6.5h3.5" />,
   file: <path d="M9.5 1.75H4.25a1 1 0 0 0-1 1v10.5a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V5zm0 0V5h3.25" />,
 };
 

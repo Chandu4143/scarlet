@@ -283,11 +283,22 @@
   background: rgb(16 16 16 / 86%);
 }
 .monitor-controls button:enabled { color: #f4f0e8; }
-.monitor-controls .preference-select.compact {
-  min-height: 28px; padding: 0 4px 0 8px; gap: 3px; border: 0; background: none;
-  font: 11px var(--font-mono); font-variant-numeric: tabular-nums;
+.playback-speed-trigger {
+  width: auto; height: 28px; padding: 0 7px; gap: 4px; font: 12px/1 var(--font-mono);
 }
-.monitor-controls .preference-select:enabled:hover, .monitor-controls .preference-select[aria-expanded="true"] { background: rgb(255 255 255 / 10%); }
+.playback-speed-trigger[aria-expanded="true"] { background: var(--color-raised); }
+.playback-speed button:focus-visible { outline-offset: -2px; }
+.playback-speed-panel {
+  position: absolute; bottom: calc(100% + 4px); right: 0; display: flex; align-items: center;
+  width: max-content; max-width: calc(100cqw - 12px); padding: 3px; border: 1px solid #4b4a48; border-radius: 7px;
+  background: #1c1c1b; box-shadow: 0 3px 12px #0005;
+}
+.playback-speed-panel .btn-icon { width: 28px; min-width: 0; height: 28px; font-size: 16px; }
+.playback-speed-panel .btn-icon:disabled { color: #969693; opacity: 1; }
+.playback-speed-panel output { flex: none; width: 5ch; text-align: center; color: #f4f0e8; font: 12px/1 var(--font-mono); }
+@container (max-width: 280px) {
+  .playback-speed-panel { top: calc(100% + 4px); bottom: auto; }
+}
 .mic-ready {
   background: var(--color-raised);
   color: var(--color-accent-soft);
@@ -338,18 +349,171 @@
 .media-thumb { flex: none; width: 68px; height: 40px; border-radius: 5px; }
 .media-glyph { display: grid; place-items: center; background: var(--color-raised); color: var(--color-muted); }
 .settings-page { max-width: 930px; }
+.transcription-preferences { container-type: inline-size; }
+.transcription-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 32%);
+  align-items: center;
+  gap: 20px;
+  padding: 18px 20px 16px;
+}
+.transcription-heading { display: flex; align-items: center; gap: 12px; }
+.transcription-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-raised);
+}
+.transcription-heading h2 { font-size: 18px; line-height: 1.25; font-weight: 600; letter-spacing: -.025em; }
+.transcription-heading p { margin-top: 3px; font-size: 12px; color: var(--color-muted); }
+.transcription-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 18px;
+  padding: 11px 13px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-raised) 57%, var(--color-panel));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.transcription-status > [role="status"] { flex: 1 1 225px; }
+.transcription-privacy { display: flex; align-items: center; gap: 7px; color: var(--color-muted); }
+.transcription-privacy svg, .transcription-setup-row > svg { flex: none; color: var(--color-dim); }
+.transcription-setup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-line);
+  border-radius: 0 0 12px 12px;
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.transcription-setup-row::-webkit-details-marker { display: none; }
+.transcription-setup-row:hover { background: var(--color-raised); }
+.transcription-setup[open] > summary { border-radius: 0; }
+.transcription-setup[open] > summary > svg { transform: rotate(90deg); }
+.transcription-instructions {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  max-width: 75ch;
+  padding: 0 20px 18px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.transcription-instructions .underline { color: var(--color-fg); text-underline-offset: 3px; }
+.transcription-preferences > [role="status"], .transcription-preferences > [role="alert"] { margin: 0 20px 12px; }
+@container (max-width: 570px) {
+  .transcription-header { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .transcription-status { flex-direction: column; align-items: flex-start; }
+  .transcription-status > [role="status"] { flex: none; }
+}
+.about-settings { display: grid; gap: 20px; }
+.about-build {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 22px 24px;
+}
+.about-identity { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.about-identity img { flex: none; width: 72px; height: 72px; }
+.about-identity h2 { font-size: 32px; font-weight: 650; line-height: 1.05; letter-spacing: -.045em; }
+.about-identity dl { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 9px; }
+.about-identity dl div { display: flex; align-items: baseline; gap: 6px; }
+.about-identity dt { color: var(--color-dim); }
+.about-identity dd { font-variant-numeric: tabular-nums; }
+.about-identity code { font-size: 12px; }
+.about-updates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 260px;
+}
+.about-updates [role="status"] { flex-basis: 100%; color: var(--color-muted); text-align: end; overflow-wrap: anywhere; }
+.about-updates [role="status"]:empty { position: absolute; }
+.about-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(235px, 31%);
+  gap: 20px;
+  align-items: start;
+}
+.about-changelog, .about-telemetry { min-width: 0; padding: 20px; }
+.about-changelog h2, .about-telemetry h2 { font-size: 17px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
+.about-release-day h3 { margin: 14px 0 4px; font-size: 12px; font-weight: 500; color: var(--color-dim); }
+.about-release-day ul { list-style: disc; padding-inline-start: 15px; }
+.about-release-day li { padding-block: 9px; color: var(--color-muted); line-height: 1.55; }
+.about-release-day li::marker { color: var(--color-dim); }
+.about-release-day li + li { border-top: 1px solid var(--color-line); }
+.about-telemetry { color: var(--color-muted); line-height: 1.55; overflow-wrap: anywhere; }
+.about-telemetry h2 { color: var(--color-fg); margin-bottom: 12px; }
+.about-telemetry-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-fg);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 7px;
+  background: var(--color-raised);
+}
+.about-telemetry-toggle button { flex: none; }
+.about-telemetry > p + p { margin-top: 8px; }
+.about-disclosure { margin-top: 10px; border-top: 1px solid var(--color-line); }
+.about-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  margin: 4px -6px -6px;
+  padding: 0 6px;
+  border-radius: 5px;
+  color: var(--color-muted);
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.about-disclosure > summary::-webkit-details-marker { display: none; }
+.about-disclosure > summary:hover { color: var(--color-fg); background: var(--color-raised); }
+.about-disclosure > summary svg { flex: none; }
+.about-disclosure[open] > summary svg { transform: rotate(90deg); }
+.about-telemetry-details { display: grid; gap: 10px; margin-top: 14px; }
+.about-telemetry-details code { font-size: 11px; }
+.about-credit { margin: 12px 2px 0; font-size: 12px; line-height: 1.5; color: var(--color-dim); }
+.about-credit a { color: var(--color-muted); text-underline-offset: 2px; }
+.about-credit a:hover { color: var(--color-fg); }
+@media (max-width: 680px) {
+  .about-content { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .about-build { padding: 16px; }
+  .about-updates { justify-content: flex-start; }
+  .about-updates [role="status"] { text-align: start; }
+}
 /* Esc with unsaved settings lands on Save instead of leaving, so Save shows that the keyboard is on it. Focus set from a key handler isn't always :focus-visible.
    A skill's page does the same: Esc lands on its Save while something is unsaved, or on Send while a request is typed and not sent. Its page marks the
    button Esc landed on, so a click on Save or Send shows no outline. */
 .settings-page form[data-unsaved] button[type="submit"]:focus,
 .skill-editor-toolbar[data-unsaved] > .btn-primary[data-esc-focus]:focus,
 .skill-chat .composer-send[data-esc-focus]:focus { outline: 2px solid var(--color-muted); outline-offset: 2px; }
-.tools-subheading, .tool-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.tools-subheading { margin-bottom: 8px; }
-.tools-subheading h4 { font-size: 14px; font-weight: 600; }
-.tools-subheading p, .tool-inventory p { color: var(--color-muted); font-size: 12px; }
-.tool-setting-row { padding-block: 12px; }
-.tool-inventory { margin-top: 8px; border-top: 1px solid var(--color-line); font-size: 12px; }
+.tool-settings { margin-top: 28px; }
+.tool-setting-row { padding: 12px 14px; }
+.tool-inventory { font-size: 12px; }
 .tool-inventory summary { padding-top: 12px; color: var(--color-muted); cursor: pointer; }
 .tool-inventory dl { display: grid; gap: 12px; margin: 15px 0; }
 .tool-inventory dt { display: flex; align-items: baseline; gap: 6px; font-weight: 500; }
@@ -392,8 +556,49 @@
 /* The heading over the instructions. After it, when the skill was saved again since the editor's unsaved changes were
    made: one line that says so, then its two actions as plain text links. The line is no taller than the heading. */
 .skill-instructions-head { display: flex; align-items: center; gap: 14px; flex: none; min-width: 0; padding: 8px 16px; border-bottom: 1px solid var(--color-line); background: var(--color-panel); }
+.skill-instructions-head:has(.skill-find) { flex-wrap: wrap; }
+.skill-instructions-head:has(.skill-find-replace:not([hidden])) { align-items: flex-start; }
+.skill-instructions-head:has(.skill-find-replace:not([hidden])) > .eyebrow { padding-top: 6px; }
+.skill-find, .skill-find-trigger { margin-inline-start: auto; }
+.skill-find { flex: 0 1 390px; min-width: 240px; max-width: 100%; }
+.skill-find-row { display: flex; align-items: center; gap: 3px; }
+.skill-find-row .field { flex: 1 1 auto; min-width: 0; padding-block: 5px; }
+.skill-find-row .btn-icon { flex: none; width: 28px; height: 28px; }
+.skill-find-count { color: var(--color-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; padding-inline: 4px; }
+.skill-find-replace { margin-block-start: 4px; margin-inline-start: 31px; }
+.skill-find-replace .btn-ghost { min-height: 28px; padding: 4px 9px; font-size: 12px; }
+.skill-find-feedback { display: flex; flex: none; justify-content: space-between; align-items: center; padding: 7px 16px;
+  font-size: 12px; color: var(--color-muted); border-top: 1px solid var(--color-line); }
+.skill-find-match { color: inherit; background: #ffffff29; }
+.skill-find-match[data-active] { background: #edc28555; box-shadow: inset 0 -1px var(--color-warn); }
+/* A skill's instructions: the field's own text is clear over the same words drawn under it, where each /skill of the
+   editor's has a faint fill that doesn't move the text. */
+.skill-instructions { position: relative; display: flex; flex: 1; min-height: 0; }
+.skill-instructions > .skill-instructions-text, .skill-instructions > .skill-instructions-field { position: absolute; inset: 0; margin: 0; overflow-y: auto;
+  white-space: pre-wrap; overflow-wrap: break-word; border: 0; scrollbar-gutter: stable; }
+.skill-instructions > .skill-instructions-text { color: var(--color-fg); pointer-events: none; scrollbar-color: transparent transparent; }
+.skill-instructions > .skill-instructions-field { background: transparent; color: transparent; caret-color: var(--color-fg); outline: none; }
+.skill-instructions > .skill-instructions-field::selection { background: rgba(255, 255, 255, .22); color: transparent; }
+.skill-keyword { border-radius: 3px; background: rgba(255, 255, 255, .09); box-shadow: 0 0 0 2px rgba(255, 255, 255, .09); color: var(--color-fg); white-space: nowrap; }
+.skill-keyword.is-hover { background: rgba(255, 255, 255, .16); box-shadow: 0 0 0 2px rgba(255, 255, 255, .16); }
+/* Over a keyword, what it is: its name and its kind. */
+.skill-keyword-note { position: absolute; z-index: 10; display: flex; align-items: center; gap: 10px; max-width: 420px; padding: 6px 12px; transform: translateY(-100%);
+  border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-panel); box-shadow: 0 6px 20px #0005; font-size: 13px; line-height: 1.35;
+  color: var(--color-fg); pointer-events: none; }
+.skill-keyword-words { display: grid; min-width: 0; }
+.skill-keyword-words small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--color-dim); }
 .skill-kept { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: 12.5px; line-height: 15px; color: var(--color-muted); white-space: nowrap; }
 .skill-kept .simple-link { color: var(--color-fg); }
+/* A version picked from the history: what it changed is marked in its text, which can't be edited. */
+.skill-instructions-head > .simple-link { font-size: 12.5px; color: var(--color-fg); }
+.skill-version-said { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-muted); }
+.skill-details > .skill-version-text { grid-column: 1 / -1; }
+.skill-version-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.skill-version-text [data-changed] { box-shadow: -10px 0 0 -8px var(--color-muted); }
+/* "When to use it" is one line in a field: its marks say enough without the bar. */
+.skill-details > .skill-version-text [data-changed] { box-shadow: none; }
+.skill-version-text ins { text-decoration: none; border-radius: 2px; background: rgb(126 212 179 / 16%); }
+.skill-version-text del { color: var(--color-bad); text-decoration-color: rgb(255 160 156 / 70%); opacity: .8; }
 .version-row {
   padding: 10px 12px;
   border: 1px solid var(--color-line);
@@ -435,6 +640,16 @@
   min-height: 32px; padding: 5px 8px; border-radius: 6px; cursor: pointer; overflow-wrap: anywhere;
 }
 .preference-options svg { flex: none; }
+/* A list by day, such as a skill's history: a small heading over each day's rows. */
+.preference-options .preference-group { padding: 10px 8px 3px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-dim); cursor: default; }
+.preference-options .preference-group:first-child { padding-top: 6px; }
+.preference-options [data-detailed] { align-items: flex-start; max-width: 26rem; padding-block: 6px 7px; }
+.preference-option-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.preference-option-text > :first-child { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 18px; }
+.preference-option-detail { font-size: 11.5px; line-height: 16px; color: var(--color-dim); }
+.preference-option-tag { flex: none; margin-left: 8px; font-size: 11.5px; line-height: 18px; color: var(--color-muted); }
+.preference-options [data-detailed] svg { margin-top: 2px; }
+.preference-options .preference-more { margin-top: 4px; border-top: 1px solid var(--color-line); border-radius: 0 0 6px 6px; color: var(--color-muted); font-size: 12.5px; }
 .preference-options [data-active="true"] { background: var(--color-raised); }
 
 /* Each edit a version made, such as every cut of a dialogue pass, with its revisions. */
@@ -450,3 +665,17 @@
 /* The full history's entries keep one colour. A small mark before the words says which were approved, put back or went wrong. */
 .history-mark { display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; vertical-align: 0.14em; }
 .import-transcription-notice .simple-link { font-size: inherit; color: var(--color-fg); }
+/* A short sits under the video it was made from, set in from it. */
+.list .project-card.is-short { margin-left: 44px; }
+
+/* The files a new project will import, one row each, each with its own ×. */
+/* Names start on the label's and button's edge, and each × ends on the name field's: the hover fill reaches past both. */
+.new-project-files { margin: 8px -8px 0; max-height: 168px; overflow-y: auto; font-size: 12px; }
+.new-project-files li { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 2px 0 8px; border-radius: 6px; }
+.new-project-files li:hover { background: var(--color-raised); }
+.new-project-files li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.new-project-file-remove { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: none;
+  color: var(--color-dim); cursor: pointer; }
+.new-project-files li:hover .new-project-file-remove, .new-project-file-remove:focus-visible { color: var(--color-muted); }
+.new-project-file-remove:hover { background: var(--color-line); color: var(--color-fg); }
+.new-project-file-remove:disabled { visibility: hidden; }

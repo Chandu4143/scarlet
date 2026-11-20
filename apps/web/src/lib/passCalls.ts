@@ -1,5 +1,5 @@
 import { requestText, type Task, type ThreadEdit } from "@scarlet/shared";
-import { canStartCutReview, isPublishedCall, makeTimeMap, rebaseOp, RebaseConflict, reviewReasons, type Change, type CutAssessment, type CutReview, type TimeMap, type TimeRange, type Timeline } from "@scarlet/timeline";
+import { canStartCutReview, isPublishedCall, makeTimeMap, rebaseOp, RebaseConflict, reviewCutSummaries, reviewReasons, type Change, type CutAssessment, type CutReview, type TimeMap, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { requestRoots, stagingTask } from "./requestRuns";
 import { runIsActive } from "./taskRun";
 import { isRecheck, stagedCuts, type Thread } from "./threads";
@@ -44,6 +44,7 @@ export type Call = CutAssessment & { unchecked?: boolean };
 export function reviewCalls(change: Change, cuts: ReadonlyArray<Pick<CutReview["cuts"][number], "removed">> | undefined, over: boolean, prior?: Call): Call[] {
   const assessments = change.cutAssessments ?? [];
   const decided = new Set(change.cutChoices?.map(c => c.index));
+  const summaries = cuts && reviewCutSummaries(change, cuts);
   const calls: Call[] = assessments.filter(a => isPublishedCall(a) || (!a.provisional && a.askOrder !== undefined && decided.has(a.index)));
   if (over) {
     for (const a of assessments) if (a.provisional && a.verdict === "ask") calls.push({ ...a, unchecked: true });
@@ -61,24 +62,41 @@ export function reviewCalls(change: Change, cuts: ReadonlyArray<Pick<CutReview["
     if (at >= 0) calls[at] = prior;
     else calls.push(prior);
   }
-  return calls.sort((a, b) => (a.askOrder ?? Infinity) - (b.askOrder ?? Infinity) || a.index - b.index);
+  return calls.map(call => call.summary || !summaries?.[call.index] ? call : { ...call, summary: summaries[call.index] })
+    .sort((a, b) => (a.askOrder ?? Infinity) - (b.askOrder ?? Infinity) || a.index - b.index);
 }
 
-/** Where Keep goes from an edit Scarlet didn't flag, the one on `rows[shown]`: the next row of the list in time order,
+const editAt = (e: ThreadEdit) => e.at ?? e.range.start;
+const rowAt = (row: readonly ThreadEdit[]) => Math.min(...row.map(editAt));
+
+/** Where Keep goes from an edit on `rows[shown]` in the full ("See all") list: the next row of the list in time order,
  * past the shown one and wrapping to earlier ones, with an edit that `still` waits or a call that does. A row is
- * one edit made in several places, and goes by its first place that still waits. */
+ * one edit made in several places (or a moment), and goes by its first place that still waits. */
 export function keepGoesTo<C>(rows: readonly (readonly ThreadEdit[])[], shown: number, still: (e: ThreadEdit) => boolean,
   calls: readonly { call: C; at: number }[]): { edit: ThreadEdit } | { call: C } | undefined {
-  const timeOf = (e: ThreadEdit) => e.at ?? e.range.start;
-  const here = rows[shown]?.[0];
-  if (!here) return;
-  const from = timeOf(here);
+  const here = rows[shown];
+  if (!here?.length) return;
+  const from = rowAt(here);
   const items = [
     ...rows.flatMap((row, i) => {
       const edit = i === shown ? undefined : row.find(still);
-      return edit ? [{ at: timeOf(row[0]!), after: i > shown, next: { edit } }] : [];
+      return edit ? [{ at: rowAt(row), after: i > shown, next: { edit } }] : [];
     }),
-    ...calls.map(c => ({ at: c.at, after: c.at > from, next: { call: c.call } })),
+    ...calls.map(c => ({ at: c.at, after: c.at >= from, next: { call: c.call } })),
+  ].sort((a, b) => a.at - b.at);
+  return (items.find(n => n.at > from || (n.at === from && n.after)) ?? items[0])?.next;
+}
+
+/** Where Approve or Skip goes from a call in the full ("See all") list: the next row in time order, past the decided
+ * call at `from` and wrapping to earlier ones, whether it is an edit that `still` waits or another call that does. */
+export function callGoesTo<C>(rows: readonly (readonly ThreadEdit[])[], still: (e: ThreadEdit) => boolean,
+  calls: readonly { call: C; at: number; after: boolean }[], from: number): { edit: ThreadEdit } | { call: C } | undefined {
+  const items = [
+    ...rows.flatMap(row => {
+      const edit = row.find(still);
+      return edit ? [{ at: rowAt(row), after: false, next: { edit } }] : [];
+    }),
+    ...calls.map(c => ({ at: c.at, after: c.after, next: { call: c.call } })),
   ].sort((a, b) => a.at - b.at);
   return (items.find(n => n.at > from || (n.at === from && n.after)) ?? items[0])?.next;
 }

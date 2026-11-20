@@ -5,10 +5,10 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findChrome, hasChrome } from "@scarlet/render";
 import { createProject, type Project } from "@scarlet/timeline";
-import type { GraphicRenderResponse, GraphicTemplate, GraphicTemplateSummary, Task, TaskAttachment, TaskPrompt } from "@scarlet/shared";
+import type { GraphicRenderResponse, Task, TaskAttachment, TaskPrompt } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
-import { createTask } from "../services/tasks.js";
+import { createTask, saveTask } from "../services/tasks.js";
 import { purgeTrash } from "../services/trash.js";
 
 let directory: string;
@@ -75,6 +75,21 @@ describe("attachments", () => {
     expect(await refused.text()).toContain("attached in this project");
   });
 
+  it("keeps the marks drawn on a frame with the request, tells the model what and where they are, and wants their picture attached", async () => {
+    const frame = await attach("Marked frame 0.07.png", "png", "image/png");
+    const marks = [{ kind: "box", box: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } }];
+    const created = await api("POST", `/projects/${project.id}/tasks`, { agent: "claude", instruction: "blur this",
+      context: { attachments: [frame], pictureMarks: { attachmentId: frame.id, time: 7, marks } } });
+    expect(created.status).toBe(201);
+    const { task } = await created.json() as { task: Task };
+    expect(task.context.pictureMarks).toEqual({ attachmentId: frame.id, time: 7, marks });
+    expect(await prompt(task)).toContain(`- The editor drew a mark on the picture at timeline 7.00 s (0:07.00), in fractions of the frame from its top left: a box over 0.10–0.40 across and 0.20–0.60 down. The frame with the marks drawn on it is attachment ${frame.id} ("Marked frame 0.07.png").`);
+    const unattached = await api("POST", `/projects/${project.id}/tasks`, { agent: "claude", instruction: "blur this",
+      context: { pictureMarks: { attachmentId: frame.id, time: 7, marks } } });
+    expect(unattached.status).toBe(400);
+    expect(await unattached.text()).toContain("Mark the frame again");
+  });
+
   it("reads a text attachment back, and goes when its project is removed for good", async () => {
     const note = await attach("notes.txt", "Accent #E11D48");
     const read = await api("POST", `/projects/${project.id}/documents/read`, { attachmentId: note.id });
@@ -83,6 +98,26 @@ describe("attachments", () => {
     purgeTrash(workspace.ctx, Date.now() + 31 * 24 * 60 * 60 * 1000);
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
     expect(existsSync(workspace.ctx.paths.attachments(project.id))).toBe(false);
+  });
+
+  it("sandboxes attachment downloads and forces active types like HTML and SVG to download", async () => {
+    const html = await attach("poc.html", "<script>alert(1)</script>", "text/html");
+    const svg = await attach("icon.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml");
+    const png = await attach("frame.png", "png", "image/png");
+    for (const active of [html, svg]) {
+      const res = await api("GET", `/projects/${project.id}/attachments/${active.id}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
+      expect(res.headers.get("Content-Disposition")).toBe("attachment");
+      expect(res.headers.get("Content-Security-Policy")).toBe("sandbox; default-src 'none'");
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    }
+    const img = await api("GET", `/projects/${project.id}/attachments/${png.id}`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("Content-Type")).toBe("image/png");
+    expect(img.headers.get("Content-Disposition")).toBeNull();
+    expect(img.headers.get("Content-Security-Policy")).toBe("sandbox; default-src 'none'");
+    expect(img.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });
 
@@ -117,7 +152,7 @@ describe("the style guide", () => {
   });
 });
 
-describe.skipIf(!hasChrome())("graphics and templates", () => {
+describe.skipIf(!hasChrome())("graphics", () => {
   async function render(options: Record<string, unknown>, html?: string) {
     const form = new FormData();
     form.append("options", JSON.stringify(options));
@@ -165,43 +200,24 @@ describe.skipIf(!hasChrome())("graphics and templates", () => {
     expect(workspace.ctx.repos.projects.listMedia(project.id)).toEqual([]);
     expect(existsSync(workspace.ctx.paths.graphics(project.id)) ? (await import("node:fs")).readdirSync(workspace.ctx.paths.graphics(project.id)) : []).toEqual([]);
   });
+});
 
-  it("saves a template with a preview, fills it by name and names the template a request picks with $", async () => {
-    const saved = await api("POST", "/templates", { name: "lower-third", title: "Lower third", description: "A name and a role", fields: ["Name", "Title"],
-      html: LOWER_THIRD, sample: { Name: "Ada Lovelace", Title: "Guest" }, projectId: project.id, width: 320, height: 180, duration: 1 });
-    expect(saved.status).toBe(201);
-    const { template } = await saved.json() as { template: GraphicTemplate };
-    const list = await (await api("GET", "/templates")).json() as { templates: GraphicTemplateSummary[] };
-    expect(list.templates).toEqual([expect.objectContaining({ id: template.id, name: "lower-third", fields: ["Name", "Title"], previewVersion: template.previewVersion })]);
-    expect(list.templates[0]).not.toHaveProperty("html");
-    const preview = await api("GET", `/templates/${template.id}/preview`);
-    expect(preview.headers.get("content-type")).toBe("image/png");
-    const png = Buffer.from(await preview.arrayBuffer());
-    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([640, 360]);
+describe("what a run may change", () => {
+  it("keeps a skill's run, and a run that has ended, from adding attachments", async () => {
+    const editor = { type: "human", name: "Ed" } as const;
+    const skill = createTask(workspace.ctx, { projectId: project.id, kind: "skill_edit", agent: "claude", instruction: "Shorter pauses", state: "running", createdBy: editor });
+    const edit = createTask(workspace.ctx, { projectId: project.id, kind: "edit", agent: "claude", instruction: "Tighten it", state: "running", createdBy: editor });
+    const startedAt = new Date().toISOString();
+    for (const task of [skill, edit]) saveTask(workspace.ctx, { ...task, startedAt });
+    const as = (taskId: string, started: string) => ({ "X-Scarlet-Task": taskId, "X-Scarlet-Task-Started-At": started });
+    const send = (method: string, path: string, headers: Record<string, string>, body?: FormData) =>
+      workspace.app.request("/api" + path, { method, body, headers: { ...auth(), ...headers } });
+    const form = () => { const f = new FormData(); f.append("file", new Blob(["notes"], { type: "text/plain" }), "notes.txt"); return f; };
 
-    // A placeholder that isn't a field is refused.
-    const bad = await api("POST", "/templates", { name: "broken", title: "Broken", fields: ["Name"], html: "<p>{{Name}} {{Role}}</p>", sample: { Name: "x" } });
-    expect(bad.status).toBe(400);
-
-    const { status, body } = await render({ template: "lower-third", fields: { Name: "Daniel <Reyes>", Title: "Head of Product" } });
-    expect(status).toBe(201);
-    expect(readFileSync(body.source!, "utf8")).toContain("Daniel &lt;Reyes&gt;<br><small>Head of Product</small>");
-    expect(body.media).toMatchObject({ name: "Lower third – Daniel <Reyes>.mov", graphic: { templateId: template.id, fields: { Name: "Daniel <Reyes>", Title: "Head of Product" } } });
-    expect((await render({ template: "lower-third", fields: { Name: "x" } })).status).toBe(400);
-
-    const task = createTask(workspace.ctx, { projectId: project.id, kind: "edit", agent: "claude", instruction: "$lower-third for Daniel, and $nothing-here", createdBy: { type: "human", name: "Ed" } });
-    const text = await prompt(task);
-    expect(text).toContain(`- The editor picked the graphic template $lower-third: "Lower third" (template ${template.id}), with the fields "Name", "Title".`);
-    expect(text).not.toContain("$nothing-here:");
-
-    // Saving the name again replaces it, keeping its id and drawing a new preview.
-    const again = await (await api("POST", "/templates", { name: "lower-third", title: "Lower third v2", fields: ["Name"], html: "<b style='color:#fff'>{{Name}}</b>", sample: { Name: "Ada" } })).json() as { template: GraphicTemplate };
-    expect(again.template.id).toBe(template.id);
-    expect(again.template.previewVersion).not.toBe(template.previewVersion);
-    expect((await (await api("GET", "/templates")).json() as { templates: unknown[] }).templates).toHaveLength(1);
-
-    expect((await api("DELETE", `/templates/${template.id}`)).status).toBe(200);
-    expect((await api("GET", `/templates/${template.id}/preview`)).status).toBe(404);
-    expect(existsSync(workspace.ctx.paths.template(template.id))).toBe(false);
+    expect((await send("POST", `/projects/${project.id}/attachments`, as(skill.id, startedAt), form())).status).toBe(403);
+    expect((await send("POST", `/projects/${project.id}/attachments`, as(edit.id, "2020-01-01T00:00:00.000Z"), form())).status).toBe(409);
+    // The edit's own live run, and the editor, may.
+    expect((await send("POST", `/projects/${project.id}/attachments`, as(edit.id, startedAt), form())).status).toBe(201);
+    expect((await send("POST", `/projects/${project.id}/attachments`, {}, form())).status).toBe(201);
   });
 });

@@ -10,7 +10,7 @@ import { errorMessage, IS_MOCK } from "../../lib/client";
 import { plural } from "../../lib/format";
 import { AGENT_LABEL, isConfiguredAgent } from "../../stores/hosts";
 import { AgentSignIn, authLabel, canSignIn, useLocalHost } from "./AgentSignIn";
-import { Field, InlineError, Loading, SectionTitle } from "../ui/primitives";
+import { InlineError, Loading, SectionTitle } from "../ui/primitives";
 
 const ENGINE_LABEL: Record<EngineStatus["state"], string> = {
   starting: "starting…",
@@ -40,7 +40,7 @@ function useDesktopStatus() {
   return { engine, host };
 }
 
-/** General → Sign in: Claude Code and Codex, nothing else. */
+/** General → Sign in: Claude Code, Codex and Gemini. */
 export function DesktopAgents({ onConnected }: { onConnected?: () => void }) {
   const { engine, host } = useDesktopStatus();
   const agents = host?.agents.filter((a) => canSignIn(a.id)) ?? [];
@@ -57,13 +57,13 @@ export function DesktopAgents({ onConnected }: { onConnected?: () => void }) {
   return (
     <div className={onConnected ? "" : "card p-5"} id="hosts">
       {!onConnected && <SectionTitle>Sign in</SectionTitle>}
-      <p className="text-[13px] text-muted mb-4">Choose Claude Code or Codex. Install it if needed, then sign in with your subscription.</p>
+      <p className="text-[13px] text-muted mb-4">Choose Claude Code, Codex or Gemini. Install it if needed, then sign in with your subscription.</p>
       {engine?.state === "error" && <InlineError>Scarlet hit a problem starting up. Try quitting and reopening the app.</InlineError>}
       {host?.error && <InlineError>{host.error}</InlineError>}
       {!host ? (
         <Loading />
       ) : agents.length === 0 ? (
-        <div className="text-muted text-[12.5px]">Looking for Claude Code and Codex on this computer…</div>
+        <div className="text-muted text-[12.5px]">Looking for Claude Code, Codex and Gemini on this computer…</div>
       ) : (
         <ul className="divide-y divide-line/60">
           {agents.map((a) => (
@@ -192,7 +192,7 @@ export function ExportLogs() {
           <button className="btn-quiet" onClick={() => void desktop.revealPath(state.path).catch(e => setState({ phase: "failed", error: errorMessage(e) }))}>Show in folder</button>
         </>}
       </div>
-      {state.phase === "failed" && <InlineError>{state.error}</InlineError>}
+      {state.phase === "failed" && <InlineError><span data-log-private>{state.error}</span></InlineError>}
     </section>
   );
 }

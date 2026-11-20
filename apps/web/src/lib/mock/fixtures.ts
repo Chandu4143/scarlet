@@ -5,7 +5,6 @@
  */
 import { isDialogueGuide } from "@scarlet/shared";
 import type {
-  GraphicTemplateSummary,
   Learning,
   AgentHost,
   ProjectSummary,
@@ -50,7 +49,6 @@ export interface MockDb {
   hosts: AgentHost[];
   skills: Skill[];
   /** Graphics saved to reuse, picked with $name in the message box. Library-wide, like skills. */
-  templates: GraphicTemplateSummary[];
   /** Files dropped on the message box, by project. */
   attachments: Record<string, { id: string; name: string; size: number; mime?: string }[]>;
   /** Rules Scarlet picked up from requests, waiting for the editor. */
@@ -244,7 +242,7 @@ export function buildDb(chatLayouts = false): MockDb {
 
   const agentClaude = { type: "agent" as const, id: "claude", name: "Claude Code", model: "opus" };
   const agentCodex = { type: "agent" as const, id: "codex", name: "Codex", model: "gpt-5-codex" };
-  const agentGemini = { type: "agent" as const, id: "gemini", name: "Gemini CLI", model: "gemini-2.5-pro" };
+  const agentGemini = { type: "agent" as const, id: "gemini", name: "Gemini", model: "gemini-2.5-pro" };
   const editor = { type: "human" as const, id: me.id, name: me.name };
 
   const versions: VersionSummary[] = [
@@ -680,7 +678,8 @@ export function buildDb(chatLayouts = false): MockDb {
   for (const s of skills) {
     const list: SkillVersion[] = [];
     for (let v = 1; v <= s.version; v++) {
-      list.push({ version: v, content: v === s.version ? s.content : s.content.replace("# ", `# (v${v}) `), author: v === 1 ? editor : agentClaude, createdAt: minutesAgo(60 * 24 * (10 - v)) });
+      list.push({ version: v, content: v === s.version ? s.content : s.content.replace("# ", `# (v${v}) `), author: v === 1 ? editor : agentClaude, createdAt: minutesAgo(60 * 24 * (10 - v)),
+        note: v === 1 ? "First version" : "Changed the opening" });
     }
     skillVersions[s.id] = list;
   }
@@ -692,18 +691,18 @@ export function buildDb(chatLayouts = false): MockDb {
     { id: "lrn_pause", projectId: PRJ, rule: "Bring every pause between sentences down to about a quarter second.", said: "Tighten the pause before “three things”. A quarter second between sentences, always.",
       taskId: "task_done", skillId: dialogueSkill.id, state: "suggested", createdAt: minutesAgo(11),
       // What the sample's dialogue skill says that the rule would change, as a check quotes it.
-      replaces: ["As a guide, not a rule, half a second or more with nothing happening in it plays as dead air."] },
+      replaces: ["As a guide, not a rule, about a second with nothing happening in it plays as dead air."] },
     { id: "lrn_laugh", projectId: PRJ, rule: "Keep a laugh in. Cut only the dead air after it.", said: "Don’t cut the laugh.",
       taskId: "task_done", skillId: dialogueSkill.id, state: "suggested", createdAt: minutesAgo(10) },
   ];
 
   const settings: ServerSettings = {
     telemetryEnabled: true,
-    editingTools: {},
     transcription: { provider: "whispercpp", openaiModel: "whisper-1", whisperCppPath: "/opt/whisper.cpp/main", whisperModelPath: "/opt/whisper.cpp/models/ggml-large-v3.bin", language: "en" },
     noteCleanup: { enabled: true, provider: "anthropic", model: "claude-haiku-4-5" },
     render: { handleSeconds: 1.5, previewHeight: DEFAULT_PREVIEW_HEIGHT, concurrency: 2, hwaccel: "auto" },
     defaultAgent: "claude",
+    checkIn: "balanced",
   };
 
   return {
@@ -724,40 +723,12 @@ export function buildDb(chatLayouts = false): MockDb {
     taskEvents,
     hosts,
     skills,
-    templates: sampleTemplates(),
     attachments: {},
     learnings,
     skillVersions,
     settings,
     invites: [],
   };
-}
-
-/** Two graphics saved to reuse, as Scarlet would after the editor saved them from their cards. */
-export function sampleTemplates(): GraphicTemplateSummary[] {
-  return [
-    { id: "tpl_lower", name: "lower-third", title: "Lower third", description: "A name and a title in the lower left.", fields: ["Name", "Title"],
-      previewVersion: "1", createdAt: minutesAgo(60 * 24 * 6), updatedAt: minutesAgo(60 * 24 * 6) },
-    { id: "tpl_title", name: "title-card", title: "Title card", description: "A chapter title across the middle.", fields: ["Title", "Subtitle"],
-      previewVersion: "1", createdAt: minutesAgo(60 * 24 * 4), updatedAt: minutesAgo(60 * 24 * 4) },
-    { id: "tpl_quote", name: "pull-quote", title: "Pull quote", description: "A line the guest said, in large type.", fields: ["Quote", "Speaker"],
-      previewVersion: "1", createdAt: minutesAgo(60 * 24 * 2), updatedAt: minutesAgo(60 * 24 * 2) },
-  ];
-}
-
-/** A template's sample picture for the demo, drawn as the engine would: its graphic alone, on nothing, at 16:9. */
-export function templatePreviewSvg(template: Pick<GraphicTemplateSummary, "name" | "title">): string {
-  const body = template.name === "lower-third"
-    ? `<rect x="96" y="820" width="620" height="132" rx="6" fill="#111" fill-opacity=".86"/><rect x="96" y="820" width="10" height="132" fill="#e5484d"/>`
-      + `<text x="140" y="878" font-family="Inter,Helvetica,Arial" font-size="50" font-weight="700" fill="#fff">Daniel Kim</text>`
-      + `<text x="140" y="930" font-family="Inter,Helvetica,Arial" font-size="34" fill="#c8c8c8">Founder, Lattice Labs</text>`
-    : template.name === "title-card"
-      ? `<rect x="0" y="380" width="1920" height="320" fill="#0b0b0b" fill-opacity=".8"/>`
-        + `<text x="960" y="540" text-anchor="middle" font-family="Inter,Helvetica,Arial" font-size="110" font-weight="800" fill="#fff">Chapter One</text>`
-        + `<text x="960" y="624" text-anchor="middle" font-family="Inter,Helvetica,Arial" font-size="44" fill="#bdbdbd">Why agents edit now</text>`
-      : `<text x="160" y="470" font-family="Georgia,serif" font-size="96" font-style="italic" fill="#fff">“It finally just works.”</text>`
-        + `<text x="160" y="570" font-family="Inter,Helvetica,Arial" font-size="40" fill="#d0d0d0">— Daniel Kim</text>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">${body}</svg>`)}`;
 }
 
 const SCRIPT = [

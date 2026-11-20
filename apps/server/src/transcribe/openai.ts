@@ -5,8 +5,9 @@ import { extractWav } from "../render/ffmpeg.js";
 import { fallbackAdapter } from "../render/adapter.js";
 import { clip } from "../logText.js";
 import type { TranscribeInput, TranscribeResult, TranscriptionProvider } from "./index.js";
+import { SEAM_CONTEXT, savedWindows } from "./seams.js";
 
-const CHUNK_SECONDS = 600; // 10 minutes of 16k mono wav ≈ 19 MB, under the 25 MB API limit
+const CHUNK_SECONDS = 600; // 10 minutes of 16k mono wav ≈ 19 MB, with the 16 s either side under the 25 MB API limit
 /** A tenth of a second of that wav after FFmpeg's 78-byte header. The API rejects audio shorter than this. */
 const SHORTEST_CHUNK_BYTES = 78 + 3200;
 
@@ -68,25 +69,37 @@ export class OpenAIProvider implements TranscriptionProvider {
     const segments = [...(checkpoint?.result.segments ?? [])];
     let language = checkpoint?.result.language;
     const length = duration > 0 ? duration : 1;
-    // Send only the audio track, including for small videos and screen recordings.
-    for (let offset = checkpoint?.through ?? 0; offset < length; offset += CHUNK_SECONDS) {
+    const windows = savedWindows(checkpoint?.through ?? 0, (through, chunk) => {
+      checkpoint?.save(through, { language, segments: chunk }, through / length);
+      segments.push(...chunk);
+    });
+    // Send only the audio track, including for small videos and screen recordings. Each chunk is heard SEAM_CONTEXT
+    // past both of its ends, and chunks hand over at a word both read (seams.ts): OpenAI's Whisper finishes a sentence
+    // cut off at the end of the audio it is sent with a word nobody said, as the local one does.
+    for (let from = checkpoint?.through ?? 0; from < length;) {
       input.signal?.throwIfAborted();
+      const seam = Math.min(from + CHUNK_SECONDS, length);
+      const readFrom = Math.max(0, from - SEAM_CONTEXT), readTo = seam < length ? seam + SEAM_CONTEXT : seam;
       const out = join(input.tmpDir, `${newId("chunk")}.wav`);
       try {
-        await extractWav(input.path, out, { start: offset, duration: CHUNK_SECONDS, signal: input.signal });
         // A file can run past its audio. A later chunk that starts there holds no speech, and uploading it would
-        // fail the whole transcript.
+        // fail the whole transcript or send again what the chunk before it read.
         let chunk: TranscriptSegment[] = [];
-        if (offset === 0 || !await emptyDecode(out)) {
+        let heard = from === 0;
+        if (!heard) {
+          await extractWav(input.path, out, { start: from, duration: Math.min(1, seam - from), signal: input.signal });
+          heard = !await emptyDecode(out);
+        }
+        if (heard) {
+          await extractWav(input.path, out, { start: readFrom, duration: readTo - readFrom, signal: input.signal });
           const json = await this.call(out, input.language ?? this.opts.language, input);
           language ??= json.language;
-          chunk = toSegments(json, offset);
+          chunk = toSegments(json, readFrom);
         }
-        const through = Math.min(offset + CHUNK_SECONDS, length);
         input.signal?.throwIfAborted();
-        checkpoint?.save(through, { language, segments: chunk }, through / length);
-        segments.push(...chunk);
-        input.onProgress?.(through / length);
+        const saved = windows.add(chunk, from, seam, seam >= length);
+        input.onProgress?.(saved / length);
+        from = seam;
       } finally {
         await rm(out, { force: true });
       }

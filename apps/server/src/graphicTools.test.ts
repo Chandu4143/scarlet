@@ -78,7 +78,8 @@ describe.skipIf(!hasChrome())("graphics", () => {
     const listed = JSON.parse(textOf(await call("project_get", {})));
     expect(listed.media.find((m: { id: string }) => m.id === result.mediaId)).toMatchObject({ kind: "graphic", graphic: { source: expect.stringMatching(/^graphics\//) } });
 
-    const placed = await call("timeline_propose", { intent: "requested", description: "Lower third for Daniel", ops: [
+    const placed = await call("timeline_propose", { intent: "requested", description: "Lower third for Daniel",
+      reason: "Identify Daniel when he first appears on screen.", ops: [
       { op: "addTrack", track: { id: "v9", kind: "video", name: "Graphics", clips: [] } },
       { op: "addClip", trackId: "v9", clip: { id: "lt1", kind: "media", mediaId: result.mediaId, sourceIn: 0, sourceOut: 1, timelineIn: 0 } },
     ] });
@@ -91,24 +92,5 @@ describe.skipIf(!hasChrome())("graphics", () => {
     const result = JSON.parse(textOf(missing));
     expect(result).toMatchObject({ added: false, missingFonts: [{ family: "Brand Nope", sample: "Hi" }], next: expect.stringContaining("A font the editor named: ask them"), installedFonts: expect.arrayContaining([expect.any(String)]) });
     expect(images(missing)).toEqual([]);
-  });
-
-  it("saves a template, lists it, reads it and fills it, and names it for a request that types $ and its name", async () => {
-    const call = await session(agentCapabilities("claude"));
-    const saved = await call("template_save", { name: "name-card", title: "Name card", description: "A name, bottom left", fields: ["Name"],
-      html: PAGE, sample: { Name: "Ada Lovelace" }, duration: 1 });
-    expect(saved.isError, textOf(saved)).toBeFalsy();
-    expect(images(saved)).toHaveLength(1);
-    const { templateId } = JSON.parse(textOf(saved));
-    expect(JSON.parse(textOf(await call("template_list", {})))).toEqual([{ id: templateId, name: "name-card", title: "Name card", description: "A name, bottom left", fields: ["Name"] }]);
-    expect(JSON.parse(textOf(await call("template_get", { template: "$name-card" })))).toMatchObject({ html: PAGE, sample: { Name: "Ada Lovelace" }, width: 320 });
-    const filled = JSON.parse(textOf(await call("graphic_render", { template: "name-card", fields: { Name: "Grace" } })));
-    expect(filled).toMatchObject({ name: "Name card – Grace.mov", duration: expect.closeTo(1, 1) });
-    expect(await readFile(filled.source, "utf8")).toContain(">Grace</div>");
-
-    const { task } = await api.createTask(projectId, { instruction: "$name-card for Grace at 0:12", kind: "edit", agent: "claude" });
-    const { systemPrompt } = await api.taskPrompt(task.id);
-    expect(systemPrompt).toContain(`The editor picked the graphic template $name-card: "Name card" (template ${templateId}), with the fields "Name".`);
-    expect(systemPrompt).toContain("# Style guide");
   });
 });

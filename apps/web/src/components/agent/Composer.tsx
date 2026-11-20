@@ -1,18 +1,25 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { agentTarget, type Task, type TaskAttachment } from "@scarlet/shared";
+import { agentTarget, type PictureMarks, type Task, type TaskAttachment } from "@scarlet/shared";
 import { canStartCutReview, cutSummary, type Project } from "@scarlet/timeline";
 import { recordEditReview, requestPosition } from "../../lib/editReviews";
-import { errorMessage, IS_DESKTOP } from "../../lib/client";
+import { recordUndo } from "../../lib/undo";
+import { api, errorMessage, IS_DESKTOP } from "../../lib/client";
+import { messageTimestamps, type MessageClock } from "../../lib/messageTimestamps";
 import { dropTargets, fileDropZone } from "../../lib/dropTargets";
 import { useAttachmentsStore, type PendingAttachment } from "../../stores/attachments";
+import { usePictureMarksStore, type MarkedFrame } from "../../stores/pictureMarks";
+import { markedFramePicture } from "../../lib/markedFrame";
+import { rememberMarkedFrame } from "../../lib/markedFramePictures";
+import { player } from "../../lib/player";
+import { MarksDrawing, toggleMarking } from "../player/PictureMarks";
 import { isComposing } from "../../lib/hotkeys";
-import { clock, clockRange, lengthLabel, playbackClock } from "../../lib/format";
+import { clock, clockRange, playbackClock } from "../../lib/format";
 import type { RecorderResult } from "../../lib/recorder";
 import { useSpeech } from "../../lib/speech";
 import type { Thread } from "../../lib/threads";
 import { useProjectStore } from "../../stores/project";
 import { commandSkillIds, enabledSkills, useSkillsStore } from "../../stores/skills";
-import { markedRangeOf, playheadPoints, useUiStore, withMarkedRange, type AgentContext } from "../../stores/ui";
+import { editTargetAt, markedRangeOf, pointOf, playheadPoints, useUiStore, withMarkedRange, type AgentContext } from "../../stores/ui";
 import { Icon, Spinner, InlineError } from "../ui/primitives";
 import { AgentChip, useAgentAvailability } from "./AgentChip";
 import { SkillCommandInput } from "./SkillCommandInput";
@@ -33,6 +40,8 @@ export function Composer(props: ComposerProps) {
 
 interface Rewording { id: string; text: string; onChange(text: string): void; onSave(text: string, skillIds?: string[]): Promise<void>; onCancel(): void }
 
+export interface PausedAt { time: number; version?: string; mediaId?: string }
+
 interface ComposerProps {
   /** What sits attached to the top of the message box: the requests queued behind the one Scarlet is on. */
   tray?: ReactNode;
@@ -40,10 +49,11 @@ interface ComposerProps {
   targetTag?: string;
   /** The tag is a moment a new edit is about ("At 18:28"), not something being revised. Its × makes the message about the whole video. */
   targetIsPoint?: boolean;
-  /** A moment the editor navigated to and can attach to this message. */
-  editHere?: { time: string; onSelect(): void };
+  messageClock?: MessageClock;
   /** What taking the tag off does. Without it, the message becomes a reply to the whole request. */
   onClearTarget?(): void;
+  /** ⌘Z in an empty box puts back the tag Backspace or its × just took off. Says whether there was one to put back. */
+  onRestoreTarget?(): boolean;
   /**
    * The box is changing the words of a request still in the queue instead of writing a message: it shows `text` alone,
    * across its whole width, and sending saves them. The request's row in the tray says which it is, so the box has no
@@ -51,9 +61,14 @@ interface ComposerProps {
    * the box is done with the queued one.
    */
   rewording?: Rewording;
+  /**
+   * Where the editor paused the video while a cut or an edit is open, on the timeline the player showed. The tag shows
+   * that time in place of the cut's or the edit's; the message is still theirs, and Scarlet is told the frame too.
+   */
+  pausedAt?: PausedAt;
   selectedEdit?: AgentContext; onClearSelectedEdit?(): void; thread?: Thread; onCreated?(task: Task): void; onSent?(): void; modelPicker?: boolean }
 
-function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, rewording, editHere }: ComposerProps & { project: Project }) {
+function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClearSelectedEdit, modelPicker = true, tray, targetTag, targetIsPoint, onClearTarget, onRestoreTarget, rewording, messageClock, pausedAt }: ComposerProps & { project: Project }) {
   const media = useProjectStore(s => s.current?.media);
   const createTask = useProjectStore((s) => s.createTask);
   const createNote = useProjectStore((s) => s.createNote);
@@ -84,6 +99,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const attached = useAttachmentsStore(s => s.byProject[project.id]) ?? NO_FILES;
   const attach = useAttachmentsStore(s => s.add);
   const detach = useAttachmentsStore(s => s.remove);
+  // Marks drawn on the picture ride on the next message too, as their frame on a row of that line.
+  const markedFrame = usePictureMarksStore(s => s.byProject[project.id]?.marks.length ? s.byProject[project.id] : undefined);
   const dock = useRef<HTMLDivElement>(null);
   const [dropping, setDropping] = useState(false);
   // The desktop app's drops arrive as paths, routed by where the pointer is: the box takes them over the workspace,
@@ -127,14 +144,17 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const value = rewording ? rewording.text : draft;
   // The queued request a recording was begun for. What is said belongs to the box as it was when the microphone opened.
   const voiceReword = useRef<typeof rewordSession>(undefined);
-  const saveWords = async (request: Rewording, text: string) => {
+  const saveWords = async (session: typeof rewordSession, text: string) => {
+    const request = session.request;
+    if (!request) return;
     setError("");
     setBusy(true);
     try {
-      // The new words run the skills their /commands name, as they would if sent so, and no longer the old words' skills.
-      await request.onSave(text, await commandSkillIds(text));
+      const skillIds = await commandSkillIds(text);
+      // The library may finish loading after this rewording has closed.
+      if (session.request) await request.onSave(text, skillIds);
     } catch (e) {
-      setError(errorMessage(e));
+      if (session.request) setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -168,9 +188,9 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
 
   /** Continue the focused thread, start a note at a moment, or start a new request. */
   /** Sends the message, and says whether the files attached to it went with it. An answer to Scarlet's question can't carry any: they wait for the next message. */
-  const send = async (text: string, voiceTranscript?: string, anchor = displayAnchor, skillIds?: string[], files?: TaskAttachment[]): Promise<boolean> => {
+  const send = async (text: string, voiceTranscript?: string, anchor = displayAnchor, skillIds?: string[], files?: TaskAttachment[], drawn?: PictureMarks): Promise<boolean> => {
     const attachments = files?.length ? files : undefined;
-    const carried = attachments && { attachments };
+    const carried = attachments && { attachments, ...(drawn && { pictureMarks: drawn }) };
     if (question) {
       const answer = anchor?.editNumber ? `${[`Edit ${anchor.editNumber}`, anchor.label].filter(Boolean).join(" · ")} — ${text}`
         : anchor ? `At ${anchor.markedRange ? clockRange(anchor.time, anchor.end ?? anchor.time) : clock(anchor.time)}${sourceName ? ` in ${sourceName}` : ""} — ${text}` : text;
@@ -178,41 +198,64 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
       return false;
     }
     if (!effective) throw new Error(unavailableReason);
+    let context: Parameters<typeof createTask>[1]["context"];
     if (replying) {
       if (anchor?.changeId && ![...thread.changes, ...thread.flagged ?? []].some(c => c.id === anchor.changeId)) throw new Error("This suggestion is unavailable. Select the edit again.");
-      const position = anchor && requestPosition(anchor);
+      const position = anchor && { ...requestPosition(anchor), ...stoppedAt() };
       // A revision takes no files, so one that carries some is a request in the thread, as a reply is.
       if (revising && !attachments) {
-        await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),
+        const task = await revise(revising.id, { text, skillIds, voiceTranscript, assignTo: agentTarget(effective.agent, effective.model),
           effort: effective.effort, serviceTier: effective.serviceTier, ...(position && { position }) });
-      } else {
-        await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context: { skillIds, version: head, ...position, threadId: thread.id, ...carried } });
+        recordEditReview(project.id, anchor, "revise");
+        if (task) recordRevision(task);
+        return true;
       }
-      recordEditReview(project.id, anchor, "revise");
+      context = { skillIds, version: head, ...position, threadId: thread.id, ...carried };
     } else if (anchor?.mediaId) {
-      const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript,
-        context: { skillIds, version: anchor.version ?? head, mediaId: anchor.mediaId, time: anchor.time, end: anchor.end, ...carried } });
-      onCreated?.(task);
+      context = { skillIds, version: anchor.version ?? head, mediaId: anchor.mediaId, time: anchor.time, end: anchor.end, ...carried };
     } else if (anchor && attachments) {
       // A note at a moment takes no files, so a message that carries some is a request about that moment.
-      const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript,
-        context: { skillIds, version: anchor.version ?? head, time: anchor.time, end: anchor.end, clipIds: anchor.clipIds, markedRange: anchor.markedRange, ...carried } });
-      onCreated?.(task);
+      context = { skillIds, version: anchor.version ?? head, time: anchor.time, end: anchor.end, clipIds: anchor.clipIds, markedRange: anchor.markedRange, ...carried };
     } else if (anchor) {
       const { task } = await createNote(project.id, { skillIds, time: anchor.time, end: anchor.end, clipIds: anchor.clipIds, text, voiceTranscript, version: anchor.version ?? head, assignTo: agentTarget(effective.agent, effective.model), effort: effective.effort, serviceTier: effective.serviceTier });
       if (task) onCreated?.(task);
+      return true;
     } else {
-      const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context: { skillIds, version: head, ...carried } });
-      onCreated?.(task);
+      context = { skillIds, version: head, ...carried };
     }
+    const task = await createTask(project.id, { kind: "edit", ...effective, instruction: text, voiceTranscript, context });
+    // A reply stays in its thread; anything else is a new request the page goes to.
+    if (replying) {
+      recordEditReview(project.id, anchor, "revise");
+      recordRevision(task);
+    } else onCreated?.(task);
     return true;
   };
+  /** A revision sent is one ⌘Z can take back, named as its tag read when it went. */
+  function recordRevision(task: Task) {
+    const name = targetTag && targetTag !== "Reply" && targetTag !== "Answer" ? targetTag : undefined;
+    recordUndo({ kind: "revision", projectId: project.id, taskId: task.id, ...(name && { name }) });
+  }
+  /** The frame the editor stopped on, for a message to a cut or an edit. */
+  function stoppedAt() {
+    if (!pausedAt) return {};
+    const { time, version, mediaId } = pausedAt;
+    return { messageTime: { time, ...version && { version }, ...mediaId && { mediaId } } };
+  }
   /** The files ready to go with a message, once any still being added have landed, and taking them off the line once it's out. */
   const filesFor = async () => {
-    if (!useAttachmentsStore.getState().byProject[project.id]?.length) return { files: undefined, done: () => {} };
+    const frame = usePictureMarksStore.getState().byProject[project.id];
+    const drawing = frame?.marks.length ? frame : undefined;
+    if (!useAttachmentsStore.getState().byProject[project.id]?.length && !drawing) return { files: undefined, drawn: undefined, done: () => {} };
     const ready = await useAttachmentsStore.getState().settled(project.id);
-    return { files: ready.flatMap(a => a.attachment ?? []), done: (carried: boolean) => {
-      if (carried) useAttachmentsStore.getState().sent(project.id, ready.map(a => a.key));
+    const files = ready.flatMap(a => a.attachment ?? []);
+    const drawn = drawing && await sendMarks(project.id, drawing);
+    if (drawn) files.push(drawn.attachment);
+    return { files, drawn: drawn?.marks, done: (carried: boolean) => {
+      if (!carried) return;
+      useAttachmentsStore.getState().sent(project.id, ready.map(a => a.key));
+      // Marks changed while the message went out stay for the next one.
+      if (drawing && usePictureMarksStore.getState().byProject[project.id] === drawing) usePictureMarksStore.getState().clear(project.id);
     } };
   };
 
@@ -225,11 +268,11 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const submitText = async () => {
     if (rewording) {
       const words = rewording.text.trim();
-      if (words && !busy && !speech.busy) await saveWords(rewording, words);
+      if (words && !busy && !speech.busy) await saveWords(rewordSession, words);
       return;
     }
     const text = draft.trim();
-    if (!text || text === "/" || busy || speech.busy) return;
+    if (!text || text === "/" || onlyTime || busy || speech.busy) return;
     // Nothing can take the message. Enter says why under the box, where it used to do nothing.
     if (unavailable) return setRefused(true);
     setError("");
@@ -237,8 +280,8 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     setBusy(true);
     try {
       const skillIds = await commandSkillIds(draft);
-      const { files, done } = await filesFor();
-      done(await send(text, undefined, displayAnchor, skillIds, files));
+      const { files, drawn, done } = await filesFor();
+      done(await send(text, undefined, displayAnchor, skillIds, files, drawn));
       clearSentDraft(owner, { agentDraft: draft, agentContext: context });
       if (boxIsFree()) onSent?.();
     } catch (e) {
@@ -259,11 +302,11 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const speech = useSpeech(async (text) => {
     // Said while the box held a queued request's words: what was said takes their place. Words the editor put back
     // meanwhile stay as they were, and what was said for them is not sent as a new request.
-    if (voiceReword.current) return voiceReword.current.request?.onSave(text);
+    if (voiceReword.current) return saveWords(voiceReword.current, text);
     const anchor = voiceAnchor.current === undefined ? displayAnchor : voiceAnchor.current;
     try {
-      const { files, done } = await filesFor();
-      done(await send(text, text, anchor, undefined, files));
+      const { files, drawn, done } = await filesFor();
+      done(await send(text, text, anchor, undefined, files, drawn));
     } catch (e) {
       // What was said isn't lost with the failed send: it waits in the box it was said into, which is kept through a
       // quit, still aimed where it was sent. Another request's box the editor turned to meanwhile is left as it is.
@@ -301,6 +344,28 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
     }
   };
 
+  // A new note uses the first timestamp in its text. Replies, selected transcript words and marked ranges already
+  // have a destination. A saved point stays on its original source/version even if the editor browses elsewhere.
+  const typedPoint = context && context !== "whole" && context.fromMessage ? context : undefined;
+  // Only a message the editor hasn't aimed takes its place from its words. A moment they picked stays where it is
+  // whatever times are typed, and once they took the aim off with × ("whole") a typed time doesn't put it back.
+  const aimsByText = !context || !!typedPoint;
+  const inputClock = !replying && !rewording && (!displayAnchor || pointOf(displayAnchor)) ? messageClock : undefined;
+  const sameClock = !typedPoint || (typedPoint.version === inputClock?.version && typedPoint.mediaId === inputClock?.mediaId);
+  const duration = inputClock?.duration ?? 0;
+  const times = useMemo(() => messageTimestamps(value, duration), [value, duration]);
+  const firstTime = times[0]?.time;
+  // A time alone, as a pause writes it, says where but not what: there is nothing to send until words follow it.
+  const onlyTime = !rewording && times.length === 1 && value.trim() === times[0]!.text;
+  useLayoutEffect(() => {
+    if (rewording || replying || !aimsByText) return;
+    if (typedPoint && !sameClock && messageTimestamps(value, Infinity).some(t => t.time === typedPoint.time)) return;
+    if (inputClock && firstTime !== undefined) {
+      // A clock in whole seconds covers the moment it names to the frame, such as the one a pause wrote in.
+      if (sameClock && typedPoint && (firstTime === typedPoint.time || (!times[0]!.text.includes(".") && Math.floor(typedPoint.time) === firstTime))) return;
+      setContext({ ...editTargetAt(firstTime, inputClock.version, inputClock.timeline, inputClock.mediaId), fromMessage: true });
+    } else if (typedPoint) setContext(null);
+  }, [value, firstTime, inputClock, typedPoint, sameClock, rewording, replying, aimsByText, setContext]);
   const tagWords = targetTag && `${targetTag.charAt(0).toLowerCase()}${targetTag.slice(1)}`;
   // What the tag's message does, for its hover note: a cut or an edit is revised, a question answered, an edit replied to.
   const tagAct = !targetTag ? undefined : question && targetTag === "Answer" ? "Answering Scarlet’s question"
@@ -308,27 +373,31 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
   const tag = rewording ? undefined : targetTag;
   // A stretch marked on the timeline's ruler rides with the message, beside the tag of the cut or edit it is aimed at.
   const marked = rewording ? undefined : markedRangeOf(context);
-  const markedWords = marked && clockRange(marked.start, marked.end);
-  // "Answer" and "Reply" say in words who the message goes to. Anything with a place (a cut, an edit, a moment, a
-  // marked stretch) folds into the edit-point icon, which keeps one size however much it holds.
+  const markedWords = marked ? clockRange(marked.start, marked.end) : "";
+  // "Answer" and "Reply" name who the message goes to. The target label shows the place it is about.
   const wordTag = tag === "Answer" || tag === "Reply" ? tag : undefined;
   const placeTag = wordTag ? undefined : tag;
   const takeOffTarget = () => {
     if (onClearTarget) onClearTarget(); else setContext("whole");
     inputRef.current?.focus();
   };
+  // Paused with a cut or an edit open, the tag shows the one time the editor is looking at: where they stopped. Its full
+  // name still says which cut or edit the message goes to.
+  const stopped = replying && !targetIsPoint && pausedAt ? clock(pausedAt.time) : undefined;
   const aimItems: AimItem[] = [
-    ...placeTag ? [{ key: `target:${placeTag}`, kind: "target" as const, name: placeTag,
-      detail: targetIsPoint ? "the moment you picked" : /^cut\b/i.test(placeTag) ? "the cut that’s open" : /^edit\b/i.test(placeTag) ? "the edit that’s open" : "what you’re revising",
+    ...placeTag ? [{ key: `target:${placeTag}`, name: targetIsPoint ? placeTag.replace(/^At /, "") : stopped ? `${placeTag}, stopped at ${stopped}` : placeTag,
+      displayName: stopped ?? placeTag.replace(/^(?:(?:Cut|Edit) at|At) /, ""),
       clearLabel: targetIsPoint ? `Take “${placeTag}” off: the message is about the whole video` : `Start a new edit instead of ${tagAct!.charAt(0).toLowerCase()}${tagAct!.slice(1)}`,
       onClear: takeOffTarget }] : [],
-    ...marked ? [{ key: `range:${marked.start}/${marked.end}`, kind: "range" as const, name: markedWords!, detail: `${lengthLabel(marked.end - marked.start)} you marked`,
+    ...marked ? [{ key: `range:${marked.start}/${marked.end}`, name: `Range ${markedWords}`,
+      displayName: markedWords.replace(" – ", "–"),
       clearLabel: `Take the marked range ${markedWords} off the message`, onClear: () => {
         const was = context && context !== "whole" ? context : undefined;
         setContext(withMarkedRange(context, undefined), was?.changeId ? was : undefined);
         inputRef.current?.focus();
       } }] : [],
   ];
+  const [primaryAim, ...additionalAims] = aimItems;
   const saveLabel = rewording ? "Save the new words" : sendLabel;
   function changeText(text: string) {
     dismissFirstEditHint();
@@ -356,10 +425,31 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
         {modelPicker && <div className="composer-model"><AgentChip threadInput={thread ? question ? "answer" : "reply" : undefined} /></div>}
       </div>
       {tray}
-      {attached.length > 0 && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }} />}
+      {/* Where the message goes (a cut, an edit, a moment, a stretch marked on the ruler) is a line of its own on top of
+          the box, under the queue's tray, so the box keeps its whole width for the words. */}
+      {primaryAim && <div className="composer-aim-line">
+        <ComposerAim items={[primaryAim, ...additionalAims]} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />
+      </div>}
+      {(attached.length > 0 || markedFrame) && <AttachedFiles files={attached} onRemove={key => { detach(project.id, key); inputRef.current?.focus(); }}
+        marked={markedFrame} onOpenMarked={frame => {
+          player.pause();
+          player.seek(frame.time, true);
+          if (usePictureMarksStore.getState().marking !== project.id) toggleMarking(project.id, frame);
+        }} onRemoveMarked={() => { usePictureMarksStore.getState().clear(project.id); inputRef.current?.focus(); }} />}
       {/* Esc leaves a queued request's words as they were, unless the skill list took it first. */}
       {/* While an input method composes, Esc is its own: it puts away its candidates, and the words stay in the box. */}
-      <div className={firstEditHint ? "composer-box first-edit-hint" : "composer-box"} onKeyDown={e => { if (rewording && e.key === "Escape" && !e.defaultPrevented && !isComposing(e)) rewording.onCancel(); }}
+      {/* Backspace in an empty box takes the tag off, as its × does, and ⌘Z puts it back. A held Backspace that just emptied the box doesn't. */}
+      <div className={firstEditHint ? "composer-box first-edit-hint" : "composer-box"} onKeyDown={e => {
+        if (rewording && e.key === "Escape" && !e.defaultPrevented && !isComposing(e)) rewording.onCancel();
+        const emptyBox = !e.defaultPrevented && !isComposing(e) && !recording && !heard && e.target === inputRef.current && !inputRef.current.value;
+        if (e.key === "Backspace" && !e.repeat && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && emptyBox && placeTag) {
+          e.preventDefault();
+          takeOffTarget();
+        }
+        if (e.key.toLowerCase() === "z" && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && emptyBox && !rewording && onRestoreTarget?.()) {
+          e.preventDefault();
+        }
+      }}
         onKeyDownCapture={e => {
           if (!e.repeat) arrivedByKey.current = false;
           else if (arrivedByKey.current) e.preventDefault();
@@ -373,7 +463,6 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
         }}>
         <label htmlFor={inputId} className="composer-destination sr-only">{rewording ? "Changing the words of a queued request" : <>{mode}{editTitle && ` ${editTitle}`}</>}</label>
         <div className="composer-row">
-          {aimItems.length > 0 && <ComposerAim items={aimItems} disabled={recording || heard} disabledReason="Waits until what you’re saying is sent" />}
           {wordTag && <span className="composer-tag" title={tagAct}>
             <span className="composer-tag-name">{wordTag}</span>
             {/* A spoken message stays where it was said until it is out: aiming the box elsewhere would drop it. */}
@@ -383,12 +472,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           </span>}
           <SkillCommandInput key={owner} id={inputId} inputRef={inputRef} value={value} skills={skills}
             placeholder={rewording ? "What should it ask instead?" : question ? "Answer Scarlet…" : displayAnchor?.changeId && context ? "What should change?" : replying ? "Write a follow-up…" : NEW_EDIT_HINT}
-            onChange={changeText} onSubmit={() => void submitText()} />
-          {editHere && !tag && !rewording && !replying && !displayAnchor && !recording && !heard && <button type="button" className="composer-edit-here"
-            aria-label={`Edit here at ${editHere.time}`} title={`Edit here at ${editHere.time}`} onClick={() => {
-              editHere.onSelect();
-              inputRef.current?.focus();
-            }}>Edit here</button>}
+            timestamps={sameClock ? times : undefined} onTimestamp={inputClock?.seek} onChange={changeText} onSubmit={() => void submitText()} />
           {/* The reason is only for a mic with no agent to talk to. While a message sends or is written down the spinner says why. */}
           <MicButton onResult={(r) => void onVoice(r)} onStart={() => {
             dismissFirstEditHint();
@@ -398,7 +482,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
           }} onRecording={setRecording} onError={setError} followHold disabled={unavailable || busy || speech.busy} disabledReason={unavailable ? unavailableReason : undefined} label="Talk to Scarlet" />
           {(busy || speech.busy) && <Spinner className="size-3.5 shrink-0" />}
           {/* Shown once there's something to send (Enter sends too). Stopping an edit is on its card, where its progress is. */}
-          {value.trim() && <button type="button" className={rewording ? "btn-primary composer-send is-save shrink-0" : "btn-primary composer-send shrink-0"} aria-label={saveLabel} title={saveLabel}
+          {value.trim() && !onlyTime && <button type="button" className={rewording ? "btn-primary composer-send is-save shrink-0" : "btn-primary composer-send shrink-0"} data-log-control={rewording ? "save-queued-request" : "send-request"} aria-label={saveLabel} title={saveLabel}
             disabled={busy || speech.busy || (!rewording && (draft.trim() === "/" || unavailable))} onClick={() => void submitText()}>
             <Icon name={rewording ? "check" : "arrow"} size={15} />
           </button>}
@@ -432,7 +516,7 @@ function ComposerBox({ project, thread, onCreated, onSent, selectedEdit, onClear
 }
 
 /** What the empty box says when the message would start a new edit. */
-export const NEW_EDIT_HINT = "Describe an edit, / skills, $ templates";
+export const NEW_EDIT_HINT = "Describe an edit, / skills";
 
 const NO_FILES: PendingAttachment[] = [];
 
@@ -441,8 +525,22 @@ const NO_FILES: PendingAttachment[] = [];
  * read: a file mark, the name, and × to take it off. A file still on its way into the project is dim and says so; one
  * that couldn't be added says why.
  */
-function AttachedFiles({ files, onRemove }: { files: readonly PendingAttachment[]; onRemove(key: string): void }) {
+function AttachedFiles({ files, onRemove, marked, onOpenMarked, onRemoveMarked }: { files: readonly PendingAttachment[]; onRemove(key: string): void;
+  marked?: MarkedFrame; onOpenMarked(frame: MarkedFrame): void; onRemoveMarked(): void }) {
+  const markedName = marked && `Marked frame ${clock(marked.time)}`;
   return <div className="composer-files" role="group" aria-label="Files attached to your message">
+    {/* The frame the editor drew on: its picture with the marks, a press on it goes back there to mark more. */}
+    {marked && <div className="composer-file is-marked-frame" title={`${markedName} · ${marked.marks.length === 1 ? "1 mark" : `${marked.marks.length} marks`}`}>
+      <button type="button" className="composer-marked-frame" onClick={() => onOpenMarked(marked)} aria-label={`${markedName}, mark it again`}>
+        <span className="composer-marked-picture" aria-hidden="true">
+          {marked.picture && <img src={marked.picture} alt="" />}
+          <MarksDrawing marks={marked.marks} />
+        </span>
+        <span className="composer-file-name">{markedName}</span>
+        {marked.marks.length > 1 && <span className="composer-file-state">{marked.marks.length} marks</span>}
+      </button>
+      <button type="button" className="composer-file-remove" aria-label={`Remove ${markedName}`} title="Remove" onClick={onRemoveMarked}><Icon name="x" size={11} /></button>
+    </div>}
     {files.map(file => <div key={file.key} className={`composer-file is-${file.state}`} title={file.error ? `${file.name}: ${file.error}` : file.name}>
       <span className="composer-file-icon"><Icon name="file" size={12} /></span>
       <span className="composer-file-name">{file.name}</span>
@@ -451,4 +549,18 @@ function AttachedFiles({ files, onRemove }: { files: readonly PendingAttachment[
       <button type="button" className="composer-file-remove" aria-label={`Remove ${file.name}`} title="Remove" onClick={() => onRemove(file.key)}><Icon name="x" size={11} /></button>
     </div>)}
   </div>;
+}
+
+/**
+ * The marked frame on its way out with a message: its picture with the marks on it saved as one of the message's files,
+ * and the marks themselves, so the model has both what the editor drew and where. A frame the engine can't give
+ * stops the message, which says why and stays in the box.
+ */
+async function sendMarks(projectId: string, frame: MarkedFrame): Promise<{ attachment: TaskAttachment; marks: PictureMarks }> {
+  const where = { time: frame.time, ...(frame.version && { version: frame.version }), ...(frame.mediaId && { mediaId: frame.mediaId }), marks: frame.marks };
+  if (!frame.picture) throw new Error("The marked frame has no picture to send. Mark it again.");
+  const picture = await markedFramePicture(frame.picture, frame.marks);
+  const { attachment } = await api.uploadAttachment(projectId, new File([picture], `Marked frame ${clock(frame.time).replace(/:/g, ".")}.png`, { type: "image/png" }));
+  rememberMarkedFrame(attachment.id, picture);
+  return { attachment, marks: { attachmentId: attachment.id, ...where } };
 }

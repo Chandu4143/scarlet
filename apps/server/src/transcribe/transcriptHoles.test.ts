@@ -2,8 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import type { TranscriptSegment } from "@scarlet/timeline";
-import { fillTranscriptHoles, heardInHoles, transcriptHoles, wavLevels, withHoleWords, wordsOnSound, writeHoleAudio } from "./transcriptHoles.js";
+import type { TranscriptSegment, TranscriptWord } from "@scarlet/timeline";
+import { alignerHeard } from "./ctcAlign.js";
+import { fillTranscriptHoles, heardInHoles, transcriptHoles, wavLevels, withHoleWords, withoutUnheardSegments, wordsOnSound, writeHoleAudio } from "./transcriptHoles.js";
 
 const RATE = 16000;
 const seg = (...words: Array<[string, number, number]>): TranscriptSegment => ({ id: "s" + words[0]![1], start: words[0]![1], end: words.at(-1)![2],
@@ -67,6 +68,28 @@ it("adds found words inside the segment they interrupt and as their own segment 
   expect(inside[0]).toMatchObject({ text: "it which matters", words: [{ text: "it" }, { text: "which" }, { text: "matters" }] });
 });
 
+it("gives a word back the end or start of its own sound that a hole read again, and keeps a word said again whole", () => {
+  // From a recording: the aligner ended "$7.63." before the "three", and the hole after it read "3, now."
+  const said = [seg(["expensive,", 1302.84, 1303.46], ["$7.63.", 1303.46, 1304.76]), seg(["Now,", 1309.48, 1309.7], ["Argon,", 1309.7, 1310.2])];
+  const filled = withHoleWords(said, [seg(["3,", 1304.88, 1305.54], ["now.", 1305.92, 1306.2])]);
+  expect(filled.map(s => s.text)).toEqual(["expensive, $7.63.", "now.", "Now, Argon,"]);
+  expect(filled[0]).toMatchObject({ end: 1305.54, words: [{}, { text: "$7.63.", start: 1303.46, end: 1305.54 }] });
+  expect(said[0]!.words[1]!.end).toBe(1304.76);
+  // The start of the word after the hole, read again, goes to that word.
+  const onset = withHoleWords([seg(["it", 1, 1.5]), seg(["Argon", 6, 6.6])], [seg(["which", 4.2, 4.6], ["Ar", 5.6, 5.8])]);
+  expect(onset.map(s => s.text)).toEqual(["it", "which", "Argon"]);
+  expect(onset[2]).toMatchObject({ start: 5.6, words: [{ start: 5.6, end: 6.6 }] });
+  // A found segment that was nothing but that sound leaves no segment. A word said again whole, or one that only
+  // shares letters with a word far from it, stays.
+  expect(withHoleWords(said, [seg(["3", 1304.9, 1305.3])]).map(s => s.text)).toEqual(["expensive, $7.63.", "Now, Argon,"]);
+  expect(withHoleWords(said, [seg(["$7.63", 1304.9, 1305.8])]).map(s => s.text)).toEqual(["expensive, $7.63.", "$7.63", "Now, Argon,"]);
+  expect(withHoleWords(said, [seg(["3", 1305.4, 1305.8])]).map(s => s.text)).toEqual(["expensive, $7.63.", "3", "Now, Argon,"]);
+  // A found word the aligner put over words already there was not heard there.
+  const opening = [seg(["When", 8.16, 8.34], ["I", 8.34, 8.42], ["woke", 8.42, 8.66], ["up", 8.66, 8.78], ["this", 8.78, 8.96], ["morning,", 8.96, 9.28])];
+  expect(withHoleWords(opening, [seg(["...beating", 8.16, 9.38])])).toEqual(opening);
+  expect(withHoleWords(opening, [seg(["Five.", 5.4, 6.7], ["...beating", 8.16, 9.38])]).map(s => s.text)).toEqual(["Five.", "When I woke up this morning,"]);
+});
+
 it("reads the holes once, places what it heard, and returns the transcript unchanged when they held no speech", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scarlet-holes-"));
   try {
@@ -80,6 +103,15 @@ it("reads the holes once, places what it heard, and returns the transcript uncha
     expect(filled.map(s => s.text)).toEqual(["it uses Blender", "which includes", "that matters", "next"]);
     expect(filled[1]!.words[0]!.start).toBeCloseTo(5.01, 2);
     expect(log.at(-1)).toContain("found 2 words");
+    // A word the aligner didn't hear in the stretch, as Whisper writes over a cough or a laugh, stays out.
+    const heardOnly = await fillTranscriptHoles({ ...base, read: async () => [seg(["which", 1.3, 1.9], ["includes", 2, 2.8])],
+      align: async found => found.map(s => ({ ...s, words: s.words.map(w => {
+        const out = { ...w };
+        alignerHeard.set(out, w.text === "which");
+        return out;
+      }) })) });
+    expect(heardOnly.map(s => s.text)).toEqual(["it uses Blender", "which", "that matters", "next"]);
+    expect(log.at(-1)).toContain("found 1 words in 1 of them, leaving out 1 the aligner didn't hear");
     expect(await fillTranscriptHoles({ ...base, read: async () => [seg(["(coughs)", 1.3, 1.9])], align: async f => f })).toBe(transcript);
     // A transcript with a word on every sound never runs Whisper again.
     const whole = [...transcript, seg(["which", 5, 5.6], ["includes", 5.7, 6.5])];
@@ -116,4 +148,49 @@ it("only fits the words to their sound when there is no reader for the holes", a
     expect(out[0]!.words[0]).toMatchObject({ start: 9, end: 9.6 });
     expect(log).toEqual(["[transcribe] brought 1 word in from the quiet beside it"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+/** Levels in 20 ms steps: `db` wherever a range in `at` says so, the room's floor elsewhere. */
+function levelsOf(seconds: number, at: Array<[number, number, number]>, floorDb = -70) {
+  const rms = Array.from({ length: seconds * 50 }, (_, i) => {
+    const t = i / 50, hit = at.find(([a, b]) => t >= a && t < b);
+    return 10 ** ((hit ? hit[2] : floorDb) / 20);
+  });
+  return { from: 0, to: seconds, rms };
+}
+
+it("takes out a line Whisper wrote over a wait, and keeps a quiet line that was said", () => {
+  // Five lines at speaking level, one said softly (8 dB under), a muttered aside 20 dB under that the aligner placed,
+  // and "Thank you." over a wait that only reaches -45 dB, which it didn't.
+  const aside = seg(["get", 14, 14.3], ["that", 14.4, 15]);
+  const invented = seg(["Thank", 20, 20.4], ["you.", 30, 30.5]);
+  const lines = [seg(["one", 1, 2]), seg(["two", 3, 4]), seg(["three", 5, 6]), seg(["four", 7, 8]), seg(["five", 9, 10]),
+    seg(["softly", 11, 12]), aside, invented];
+  const levels = levelsOf(40, [[1, 2, -26], [3, 4, -25], [5, 6, -27], [7, 8, -26], [9, 10, -24], [11, 12, -34], [14, 15, -46], [20, 20.4, -45], [30, 30.5, -47]]);
+  const heard = (w: TranscriptWord) => invented.words.includes(w) ? false : true;
+  const { segments, dropped } = withoutUnheardSegments(lines, levels, heard);
+  expect(dropped.map(s => s.text)).toEqual(["Thank you."]);
+  expect(segments.map(s => s.text)).toEqual(["one", "two", "three", "four", "five", "softly", "get that"]);
+  // Without the aligner's word, a quiet line can't be told from an aside, and stays.
+  expect(withoutUnheardSegments(lines, levels).dropped).toEqual([]);
+});
+
+it("keeps a segment whole when one of its words reaches speaking level", () => {
+  const lines = [seg(["one", 1, 2]), seg(["two", 3, 4]), seg(["three", 5, 6]), seg(["four", 7, 8]),
+    seg(["and", 9, 9.2], ["then", 9.3, 10])];
+  const levels = levelsOf(12, [[1, 2, -26], [3, 4, -26], [5, 6, -26], [7, 8, -26], [9, 9.2, -50], [9.3, 10, -27]]);
+  expect(withoutUnheardSegments(lines, levels, () => false).dropped).toEqual([]);
+});
+
+it("takes out every line of a silent track, which has no level of its own to compare with", () => {
+  const lines = [seg(["Thank", 0, 0], ["you.", 0, 0]), seg(["Thank", 30, 30], ["you.", 30, 30])];
+  const { segments, dropped } = withoutUnheardSegments(lines, levelsOf(40, [], -91));
+  expect(dropped).toHaveLength(2);
+  expect(segments).toEqual([]);
+});
+
+it("compares a short recording's lines only with the floor nobody speaks under", () => {
+  // Too few lines for a typical level: a line 15 dB under the other is still kept.
+  const lines = [seg(["hello", 1, 2]), seg(["there", 3, 4])];
+  expect(withoutUnheardSegments(lines, levelsOf(5, [[1, 2, -25], [3, 4, -40]])).dropped).toEqual([]);
 });

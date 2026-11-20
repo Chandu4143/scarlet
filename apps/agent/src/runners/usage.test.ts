@@ -42,12 +42,23 @@ describe("token usage", () => {
     expect(st.usage).toEqual({ ...zero, inputTokens: 210, outputTokens: 55, cacheReadTokens: 800, reasoningTokens: 20 });
   });
 
-  it("reads Gemini stats with or without the uncached input field", () => {
+  it("reads Gemini ACP usage updates and both camelCase and snake_case stats", () => {
     const st = newGeminiState();
-    parseGeminiLine('{"type":"init","model":"gemini-3-pro"}', st);
-    parseGeminiLine('{"type":"result","status":"success","stats":{"total_tokens":1500,"input_tokens":1200,"output_tokens":300,"cached":1000,"input":200}}', st);
-    expect(st.usage).toEqual({ ...zero, model: "gemini-3-pro", inputTokens: 200, outputTokens: 300, cacheReadTokens: 1000 });
+    st.model = "gemini-2.5-pro";
+    parseGeminiLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "usage_update",
+          usage: { inputTokens: 1200, outputTokens: 300, cachedReadTokens: 1000, thoughtTokens: 50 },
+        },
+      },
+    }), st);
+    expect(st.usage).toEqual({ ...zero, model: "gemini-2.5-pro", inputTokens: 200, outputTokens: 300, cacheReadTokens: 1000, reasoningTokens: 50 });
     expect(geminiUsage({ input_tokens: 1200, output_tokens: 300, cached: 1000 })).toMatchObject({ inputTokens: 200, cacheReadTokens: 1000 });
+    expect(geminiUsage({ input_tokens: 1200, output_tokens: 300, cached: 1000, input: 200 })).toMatchObject({ inputTokens: 200, cacheReadTokens: 1000 });
   });
 
   it("ignores negative, fractional and non-numeric counts", () => {

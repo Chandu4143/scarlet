@@ -82,7 +82,17 @@ afterEach(async () => {
 const show = (element: ReactNode) => act(async () => root.render(element));
 const click = (element: HTMLElement) => act(async () => element.click());
 const labeled = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+const zoomLevel = () => container.querySelector<HTMLOutputElement>(".timeline-zoom-level")!;
+const zoomSlider = () => container.querySelector<HTMLInputElement>(".timeline-zoom-slider")!;
+// Dragging the zoom slider to its left end shows the whole video: there is no Fit button.
+const fitBySlider = () => act(() => {
+  const input = zoomSlider();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "0");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+});
 const exportButton = () => container.querySelector<HTMLButtonElement>('button[form="export-working-cut"]');
+const buttonByText = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === text);
 const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
 
 function sizeWaveformLane(width: number) {
@@ -311,39 +321,75 @@ it("writes the ruler's times as the player does, counting the hours past one", a
   expect(stamps()).toEqual(["0:00", "15:00", "30:00", "45:00", "1:00:00", "1:15:00"]);
 });
 
-it("zooms from the timeline controls and draws no edit points, zoomed or not", async () => {
+it("keeps zoom controls in the row under the timeline and draws no edit points, zoomed or not", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(132);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
   const source = data.media[0]!.id;
   const timeline = { ...data.timeline!, tracks: [{ ...data.timeline!.tracks[0]!, kind: "video" as const, hidden: false,
     clips: [mc("a", source, 0, 1, 50), mc("b", source, 0, 2, 51)] }] };
-  const seek = vi.fn();
+  const seek = vi.fn(), scrub = vi.fn(), selectRange = vi.fn();
   const render = () => show(<TimelineScrubber duration={200} playhead={150}
-    waveform={{ timeline, media: [] }} frameAt={() => undefined} onSeek={seek} />);
+    waveform={{ timeline, media: [] }} frameAt={() => undefined} onSeek={seek} onScrubStart={scrub} onRange={selectRange} />);
   const rail = () => container.querySelector(".timeline-cuts, .timeline-cut, .timeline-cut-group");
   await render();
   expect(rail()).toBeNull();
-  const trigger = labeled("Timeline controls");
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
-  expect(labeled("Zoom in")).toBeNull();
-  await click(trigger);
-  expect(labeled("Zoom out").disabled).toBe(true);
-  expect(button("Show edit points")).toBeUndefined();
-  await click(labeled("Zoom in"));
-  expect(rail()).toBeNull();
+  const controls = container.querySelector(".timeline-foot > [aria-label='Timeline zoom']");
   const zoomIn = labeled("Zoom in");
+  expect(controls?.contains(zoomIn)).toBe(true);
+  expect(labeled("Timeline controls")).toBeNull();
+  expect(labeled("Zoom out").disabled).toBe(true);
+  expect(zoomLevel().textContent).toBe("100%");
+  expect(zoomSlider().value).toBe("0");
+  expect(button("Show edit points")).toBeUndefined();
+  const ruler = container.querySelector(".timeline-ruler")!;
+  expect(ruler.textContent).toContain("2:00");
+  expect(ruler.textContent).toContain("3:00");
+  expect(ruler.querySelector('.ruler-major[style*="75%"]')).toBeTruthy();
+  await act(() => zoomIn.dispatchEvent(new PointerEvent("pointerdown", { button: 0, isPrimary: true, bubbles: true })));
+  await click(zoomIn);
+  expect(rail()).toBeNull();
   await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true, cancelable: true })));
-  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("4×");
-  await click(labeled("Fit timeline"));
+  expect(zoomLevel().textContent).toBe("400%");
+  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "-", bubbles: true, cancelable: true })));
+  expect(zoomLevel().textContent).toBe("200%");
+  expect(Number(zoomSlider().value)).toBeGreaterThan(0);
+  await fitBySlider();
+  expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
-  await act(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-  expect(labeled("Zoom in")).toBeNull();
-  expect(document.activeElement).toBe(trigger);
-  await click(trigger);
+  expect(scrub).not.toHaveBeenCalled();
+  expect(selectRange).not.toHaveBeenCalled();
+  const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  await act(() => zoomIn.dispatchEvent(escape));
+  expect(escape.defaultPrevented).toBe(false);
   await act(() => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(labeled("Zoom in")).toBe(zoomIn);
   expect(container.textContent).not.toContain("edit points");
+});
+
+it("brings the playhead part of the way to the middle with each zoom in, and leaves it where it is zooming out", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
+  await show(<TimelineScrubber activeShortcuts duration={200} playhead={190} frameAt={() => undefined} onSeek={() => {}} />);
+  const key = (name: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
+  const at = () => parseFloat(container.querySelector<HTMLElement>(".timeline-playhead")!.style.left);
+  expect(at()).toBeCloseTo(95, 0);
+  const seen = [];
+  for (let i = 0; i < 4; i++) {
+    await key("+");
+    seen.push(at());
+  }
+  // Each zoom moves it closer, never past the middle and never all the way at once.
+  for (const [i, left] of seen.entries()) {
+    expect(left).toBeGreaterThan(50);
+    expect(left).toBeLessThan(i ? seen[i - 1]! : 95);
+  }
+  expect(seen[0]).toBeGreaterThan(70);
+  const near = seen.at(-1)!;
+  await key("-");
+  expect(at()).toBeCloseTo(near, 5);
 });
 
 it("keeps the stretch the editor zoomed to when a new working cut builds the timeline again", async () => {
@@ -360,10 +406,10 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   const whole = stamps();
   await key("+");
   await key("+");
-  // 4×: fifty seconds around the playhead.
+  // 4×: fifty seconds around the playhead, which each zoom brought nearer the middle.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
-  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:00$/), expect.stringMatching(/2:30$/)]);
+  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:10$/), expect.stringMatching(/2:40$/)]);
   // A revision lands. The head moves first and the new cut arrives a moment later, ten seconds shorter. The timeline is
   // built again each time, on the stretch it showed.
   await render(undefined, 200);
@@ -434,93 +480,80 @@ it("holds the fitted review window until the playhead changes to the open cut's 
   }
 });
 
-it("draws crowded edits as one pill, names its first edit on hover, and opens that edit on a press instead of scrubbing", async () => {
+it("draws crowded edits as one pill that zooms to its run on a press, and a dot that opens its edit, with no note on hover", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
   const seek = vi.fn(), opened: number[] = [];
-  const edit = (time: number, n: number) => ({ time, n, state: "check" as const, title: `Edit ${n} of 6 · ${time}s`, summary: `Summary ${n}`, open: () => { opened.push(n); } });
+  const edit = (time: number, n: number) => ({ time, n, title: `Edit ${n} of 6 · ${time}s`, summary: `Summary ${n}`, open: () => { opened.push(n); } });
   // 100 s across 1000 px. Edits 1 to 4 sit a second apart, so their circles would touch. Edit 5 has room.
   await show(<TimelineScrubber duration={100} playhead={0} frameAt={() => undefined} onSeek={seek}
     marks={[edit(10, 1), edit(11, 2), edit(12, 3), edit(13, 4), edit(60, 5)]} />);
-  const markers = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
-  expect(markers.map(m => m.textContent)).toEqual(["1–4", "5"]);
-  expect(markers.every(m => m.classList.contains("is-numbered") && m.dataset.state === "check")).toBe(true);
-  expect(container.querySelector(".simple-timeline-mark.is-tick")).toBeNull();
-  const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
-  vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
-  const point = (type: string, clientX: number) => act(() => strip.dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, button: 0, clientX, bubbles: true })));
-  // Over the pill, the note names its first edit and counts the rest, and the pointer says a press opens it.
+  const markers = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
+  expect(markers().map(m => m.textContent)).toEqual(["1–4", "5"]);
+  expect(markers().every(m => m.classList.contains("is-numbered") && m.dataset.state === undefined)).toBe(true);
+  const strip = () => container.querySelector<HTMLElement>(".simple-timeline-hover")!;
+  vi.spyOn(strip(), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
+  const point = (type: string, clientX: number) => act(() => strip().dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, button: 0, clientX, bubbles: true })));
+  // Over the pill the pointer says a press does something, and nothing is written under the frame.
   await point("pointermove", 115);
-  expect(strip.classList.contains("is-aimed")).toBe(true);
-  const note = container.querySelector(".simple-timeline-tip")!;
-  expect(note.textContent).toContain("Edit 1 of 6");
-  expect(note.textContent).toContain("and 3 more here");
-  expect(note.textContent).not.toContain("Edit 2 of 6");
+  expect(strip().classList.contains("is-aimed")).toBe(true);
+  expect(container.querySelector(".simple-timeline-need, .simple-timeline-tip")).toBeNull();
+  // A press zooms to its run, where each edit has its own number, and opens nothing.
   await point("pointerdown", 115);
-  expect(opened).toEqual([1]);
+  expect(opened).toEqual([]);
   expect(seek).not.toHaveBeenCalled();
-  // Beside a marker the note still shows, but a press scrubs as before.
+  expect(markers().map(m => m.textContent)).toEqual(["1", "2", "3", "4"]);
+  // Back on the whole video, a press on a dot opens its edit; beside a marker a press scrubs as before.
+  await fitBySlider();
+  vi.spyOn(strip(), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await point("pointermove", 620);
-  expect(container.querySelector(".simple-timeline-tip")?.textContent).toContain("Edit 5 of 6");
-  expect(strip.classList.contains("is-aimed")).toBe(false);
+  expect(strip().classList.contains("is-aimed")).toBe(false);
   await point("pointerdown", 620);
   await point("pointerup", 620);
-  expect(opened).toEqual([1]);
-  await point("pointerdown", 600);
-  expect(opened).toEqual([1, 5]);
-});
-
-it("opens a dot's own edit on a press anywhere on the dot, and names it on hover, though a settled cut's tick sits inside the dot", async () => {
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
-  const seek = vi.fn(), opened: number[] = [];
-  const edit = (time: number, n: number) => ({ time, n, title: `Edit ${n} of 8 · ${time}s`, summary: `Summary ${n}`, open: () => { opened.push(n); } });
-  // 100 s across 1000 px, with the pass's list open. Edit 7 asks for a look, and its amber circle spans 91.5 to 108.5 px.
-  // Settled edit 8's tick takes no room, so it sits inside the circle, at 103 px.
-  await show(<TimelineScrubber duration={100} playhead={0} frameAt={() => undefined} onSeek={seek}
-    marks={[{ ...edit(10, 7), state: "check" }, { ...edit(10.3, 8), quiet: true }]} />);
-  const markers = [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark")];
-  expect(markers.map(m => m.classList.contains("is-quiet") ? "tick" : m.textContent)).toEqual(["7", "tick"]);
-  const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
-  vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
-  const point = (type: string, clientX: number) => act(() => strip.dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, button: 0, clientX, bubbles: true })));
-  // Right of the circle's centre the tick is the nearer marker, and the press is still on the circle.
-  for (const x of [100, 102, 103, 105, 107]) await point("pointerdown", x);
-  expect(opened).toEqual([7, 7, 7, 7, 7]);
-  expect(seek).not.toHaveBeenCalled();
-  // The note and the pointer say the same edit the press opens.
-  await point("pointermove", 105);
-  expect(strip.classList.contains("is-aimed")).toBe(true);
-  const note = container.querySelector(".simple-timeline-tip")!;
-  expect(note.textContent).toContain("Edit 7 of 8");
-  expect(note.textContent).not.toContain("Edit 8 of 8");
-});
-
-it("scrubs on a press at or beside a settled cut's faint tick, which takes no room: only a dot or a pill opens its edit", async () => {
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
-  const seek = vi.fn(), opened: number[] = [];
-  // A pass's full list is open: 121 settled cuts, a faint tick every 8 px across 1000 px, and one amber dot at 900 px.
-  const settled = Array.from({ length: 121 }, (_, i) => ({ time: 0.4 + i * 0.8, n: i + 1, title: `Edit ${i + 1} of 122`, quiet: true, open: () => { opened.push(i + 1); } }));
-  await show(<TimelineScrubber duration={100} playhead={0} frameAt={() => undefined} onSeek={seek}
-    marks={[...settled, { time: 90, n: 122, state: "check", title: "Edit 122 of 122", open: () => { opened.push(122); } }]} />);
-  const slider = labeled("Position in the video");
-  vi.spyOn(slider, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 120));
-  Object.defineProperty(slider, "setPointerCapture", { value: vi.fn() });
-  const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
-  vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
-  const point = (type: string, clientX: number) => act(() => strip.dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, button: 0, clientX, bubbles: true })));
-  // Over cut 61's tick, at 484 px, hovering lights its number, and the pointer doesn't say a press opens it.
-  await point("pointermove", 484);
-  expect(container.querySelector(".simple-timeline-mark.is-hot")?.textContent).toBe("61");
-  expect(strip.classList.contains("is-aimed")).toBe(false);
-  // A press on the tick, or beside it, scrubs there.
-  for (const x of [484, 488]) {
-    await point("pointerdown", x);
-    await point("pointerup", x);
-  }
   expect(opened).toEqual([]);
-  expect(seek.mock.calls.map(([t]) => Math.round(t * 10) / 10)).toEqual([48.4, 48.8]);
-  // A press on the amber dot still opens its edit.
-  await point("pointerdown", 900);
-  expect(opened).toEqual([122]);
+  await point("pointerdown", 600);
+  expect(opened).toEqual([5]);
+});
+
+it("zooms a pill when another group's circle is under the pointer too", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
+  const openOther = vi.fn(), openCall = vi.fn(), seek = vi.fn();
+  await show(<TimelineScrubber duration={100} playhead={0} frameAt={() => undefined} onSeek={seek} marks={[
+    { time: 11.1, n: 13, title: "Edit 13", open: openOther },
+    { time: 10.25, n: 12, title: "Cut 12", group: "call", open: openCall },
+    { time: 11.75, n: 14, title: "Cut 14", group: "call", open: openCall },
+  ]} />);
+  const pill = container.querySelector<HTMLElement>(".simple-timeline-mark.is-pill")!;
+  expect([pill.textContent, pill.style.left]).toEqual(["12+", "11%"]);
+  const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
+  vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
+  await act(() => strip.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, isPrimary: true, button: 0, clientX: 111, bubbles: true })));
+  expect(openOther).not.toHaveBeenCalled();
+  expect(openCall).not.toHaveBeenCalled();
+  expect(seek).not.toHaveBeenCalled();
+  expect([...container.querySelectorAll(".simple-timeline-mark")].map(mark => mark.textContent)).toEqual(["12", "13", "14"]);
+});
+
+it("names what waits on the editor in one amber line under the frame", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
+  const dot = (time: number, n: number, waits = false) => ({ time, n, title: `Cut ${n} of 6`, open: () => {},
+    ...waits && { state: "check" as const, need: `Cut ${n}` } });
+  // 100 s across 1000 px: cuts 1 to 3 share a pill, and the second of them waits on the editor.
+  await show(<TimelineScrubber duration={100} playhead={0} frameAt={() => undefined} onSeek={() => {}}
+    marks={[dot(10, 1), dot(11, 2, true), dot(12, 3), dot(60, 4)]} />);
+  const pill = container.querySelector<HTMLElement>(".simple-timeline-mark")!;
+  expect([pill.textContent, pill.dataset.state]).toEqual(["1–3", "check"]);
+  const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
+  vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
+  const point = (clientX: number) => act(() => strip.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, isPrimary: true, button: 0, clientX, bubbles: true })));
+  await point(108);
+  expect(container.querySelector(".simple-timeline-need")?.textContent).toBe("Cut 2 needs you");
+  // A marker with nothing waiting writes nothing under the frame.
+  await point(600);
+  expect(container.querySelector(".simple-timeline-need")).toBeNull();
 });
 
 it("anchors wheel and pinch zoom to the pointer and defers new media samples until the gesture settles", async () => {
@@ -533,8 +566,6 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
   vi.spyOn(track, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 0, 400, 120));
   const slider = labeled("Position in the video");
   const playheadX = () => slider.querySelector<HTMLElement>(".timeline-playhead")?.style.left;
-  await click(labeled("Timeline controls"));
-  const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
   vi.useFakeTimers();
   try {
     // x=200 is one quarter of this nonzero-based timeline, directly over its playhead.
@@ -546,32 +577,32 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
     });
     frameAt.mockClear();
     await wheel(-50);
-    expect(level()).toBe("1.3×");
+    expect(zoomLevel().textContent).toBe("135%");
     await wheel(-50, true);
-    expect(level()).toBe("2.5×");
+    expect(zoomLevel().textContent).toBe("246%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     expect(frameAt).not.toHaveBeenCalled();
     await act(() => { vi.advanceTimersByTime(150); });
     expect(frameAt).toHaveBeenCalled();
-    await click(labeled("Fit timeline"));
+    await fitBySlider();
     await act(() => vi.advanceTimersByTime(550));
     for (const [type, scale] of [["gesturestart", 1], ["gesturechange", 2], ["gesturechange", 3], ["gestureend", 3]] as const) {
       const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 200 });
       await act(() => track.dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
     }
-    expect(level()).toBe("3×");
+    expect(zoomLevel().textContent).toBe("300%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     const key = (value: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: value, cancelable: true })));
     await key("+");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("6×");
+    expect(zoomLevel().textContent).toBe("600%");
     await key("-");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("3×");
+    expect(zoomLevel().textContent).toBe("300%");
     await key("0");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("1×");
+    expect(zoomLevel().textContent).toBe("100%");
     expect(seek).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
 });
@@ -1158,26 +1189,39 @@ it("keeps the destination untouched if the cut changes while choosing where to e
   expect(discard).toHaveBeenCalledWith(12);
 });
 
-it("follows the video when an edit lands while Export is open, and drops the last export's line once the video has changed", async () => {
-  vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 8, path: "/chosen/cut.mp4" });
+it("labels a saved file from an earlier edit and still exports the current video", async () => {
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 8, path: "/chosen/cut.mp4" });
   vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
   vi.spyOn(desktop, "finishVideoExport").mockResolvedValue("/chosen/cut.mp4");
+  const reveal = vi.spyOn(desktop, "revealPath").mockResolvedValue();
+  const earlierEdit = () => container.querySelector('[role="status"]')?.textContent?.includes("Earlier edit");
   const request = vi.spyOn(api, "requestRender").mockImplementation(async (_id, body) => ({ render: {
     ...data.renders[0]!, id: "final", version: body.version!, kind: "full", quality: "delivery", range: null, state: "done" } }));
   await show(<ExportSheet hasCut onClose={() => {}} />);
   await click(exportButton()!);
   await act(async () => { await vi.waitFor(() => expect(button("Show in folder")).toBeDefined()); });
   expect(button("Close")).toBeDefined();
-  // Scarlet applies an edit: the video is a newer version, and shorter. The saved file is the earlier video, so its
-  // line goes, and the sheet doesn't ask to be reopened.
+  expect(earlierEdit()).toBe(false);
+  // The saved file is still available if the edit changes while the sheet is open.
   const earlier = buildDb().timelines.ver_2!;
   expect(timelineDuration(earlier)).not.toBe(timelineDuration(data.timeline!));
   const edited = { ...data, project: { ...data.project, head: "ver_4" }, timeline: { ...earlier, version: "ver_4" } };
   await act(async () => useProjectStore.setState({ current: edited }));
-  expect(button("Show in folder")).toBeUndefined();
+  expect(earlierEdit()).toBe(true);
+  await click(button("Show in folder")!);
+  expect(reveal).toHaveBeenCalledWith("/chosen/cut.mp4");
   expect(button("Close")).toBeUndefined();
   expect(button("Cancel")).toBeDefined();
+  expect(button("Advanced export")).toBeDefined();
   expect(container.querySelector('[role="alert"]')?.textContent ?? "").toBe("");
+  // Cancelling the chooser leaves the last successful file available.
+  choose.mockResolvedValueOnce(null);
+  await click(exportButton()!);
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(earlierEdit()).toBe(true);
+  await show(null);
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  expect(earlierEdit()).toBe(true);
   // A range picked from here starts as the whole of the video as it is now.
   await selectOption(container.querySelector<HTMLButtonElement>("#export-range")!, "Custom range");
   expect(Number(container.querySelector<HTMLInputElement>("#export-end")!.value.split(":")[1])).toBeCloseTo(timelineDuration(earlier), 1);
@@ -1187,9 +1231,13 @@ it("follows the video when an edit lands while Export is open, and drops the las
   await click(exportButton()!);
   expect(request).toHaveBeenLastCalledWith(PRJ, expect.objectContaining({ version: "ver_4" }));
   await act(async () => { await vi.waitFor(() => expect(button("Show in folder")).toBeDefined()); });
-  // Back on the version exported first, the newest export is of another video.
+  expect(earlierEdit()).toBe(false);
+  // Changes to the project settings distinguish exports even when the timeline version is the same.
+  await act(async () => useProjectStore.setState({ current: { ...edited, project: { ...edited.project, settings: { ...edited.project.settings, width: 1280 } } } }));
+  expect(earlierEdit()).toBe(true);
+  // Back on the version exported first, the newest export is still available as an earlier edit.
   await act(async () => useProjectStore.setState({ current: data }));
-  expect(button("Show in folder")).toBeUndefined();
+  expect(earlierEdit()).toBe(true);
 });
 
 it("asks for the file's name once, in the system's Save dialog, which opens on the project's name", async () => {
@@ -1201,7 +1249,7 @@ it("asks for the file's name once, in the system's Save dialog, which opens on t
   vi.spyOn(desktop, "finishVideoExport").mockRejectedValue(new Error("Disk full"));
   await show(<ExportSheet hasCut onClose={() => {}} />);
   // The sheet has no box for the name and no row for the folder: what to export, the video's options, and one button.
-  expect([...container.querySelectorAll("form label")].filter(label => !label.closest("details")).map(label => label.textContent)).toEqual(["Format", "Range"]);
+  expect([...container.querySelectorAll("form label")].filter(label => !label.closest("details")).map(label => label.textContent)).toEqual(["Range"]);
   // The range starts on the whole video, by that name.
   expect(container.querySelector("#export-range")!.textContent).toBe("Whole video");
   expect(container.querySelector("form input, #export-folder")).toBeNull();
@@ -1215,9 +1263,39 @@ it("asks for the file's name once, in the system's Save dialog, which opens on t
   expect(container.textContent).toContain("Disk full");
   expect(exportButton()!.textContent).toBe("Retry");
   expect(exportButton()!.disabled).toBe(false);
-  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /\.otio/);
+  // Advanced export saves a folder, named for the project, for finishing the edit in another app.
+  await click(buttonByText("Advanced export")!);
   await click(exportButton()!);
-  expect(choose).toHaveBeenLastCalledWith(`${data.project.name}.otio`);
+  expect(choose).toHaveBeenLastCalledWith(data.project.name);
+});
+
+it("offers a folder for another app under Advanced export, saying what it holds and what doesn't carry over", async () => {
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 7, path: "/Users/me/Exports/Interview" });
+  const handoff = vi.spyOn(api, "handoff").mockResolvedValue({ files: [{ path: "Interview.fcpxml", text: "<fcpxml/>" }], mediaBytes: 0 });
+  const save = vi.spyOn(desktop, "finishFolderExport").mockResolvedValue("/Users/me/Exports/Interview");
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await click(buttonByText("Advanced export")!);
+  // The video's own settings go; the folder's contents come instead.
+  expect(container.querySelector("#export-range")).toBeNull();
+  expect(container.querySelector("details")).toBeNull();
+  expect(container.textContent).toContain("A folder for finishing the edit in DaVinci Resolve, Final Cut Pro or Premiere Pro.");
+  expect(container.textContent).toContain("A copy of the footage");
+  expect(buttonByText("Back")).toBeTruthy();
+  await click(exportButton()!);
+  expect(choose).toHaveBeenCalledExactlyOnceWith(data.project.name);
+  expect(handoff).toHaveBeenCalledExactlyOnceWith(PRJ, data.project.head, "/Users/me/Exports/Interview");
+  expect(save).toHaveBeenCalledExactlyOnceWith(7, [{ path: "Interview.fcpxml", text: "<fcpxml/>" }]);
+  expect(container.textContent).toContain("Interview");
+  expect(buttonByText("Show in folder")).toBeTruthy();
+});
+
+it("goes back from Advanced export to the video's settings", async () => {
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await click(buttonByText("Advanced export")!);
+  await click(buttonByText("Back")!);
+  expect(container.querySelector("#export-range")).not.toBeNull();
+  expect(buttonByText("Advanced export")).toBeTruthy();
 });
 
 it("says an export is waiting to start or finishing, with no percent that would sit still", async () => {
@@ -1272,22 +1350,21 @@ it("adds a second zoom step to the one under way, and turns a zoom back from whe
   usePlayerStore.setState({ time: 50, playing: true });
   await render(50);
   const slider = container.querySelector(".timeline-slider");
-  const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
-  await click(labeled("Timeline controls"));
   await click(labeled("Zoom in"));
-  expect(level()).toBe("1×");
+  expect(zoomLevel().textContent).toBe("100%");
   await advance(130);
-  const halfway = parseFloat(level()!);
-  expect(halfway).toBeGreaterThan(1);
+  const halfway = parseFloat(zoomLevel().textContent!);
+  expect(halfway).toBeGreaterThan(100);
+  expect(halfway).toBeLessThan(200);
   await render(51); // An unrelated playback tick must not pull the view back.
   expect(container.querySelector(".timeline-slider")).toBe(slider);
   await click(labeled("Zoom in")); // A second step compounds the pending destination.
   await advance(500);
-  expect(level()).toBe("4×");
+  expect(zoomLevel().textContent).toBe("400%");
   await click(labeled("Zoom out"));
   await advance(60);
-  await click(labeled("Fit timeline")); // Reverse an in-flight zoom from its current pose.
+  await fitBySlider(); // Reverse an in-flight zoom from its current pose.
   await advance(500);
-  expect(level()).toBe("1×");
+  expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
 });

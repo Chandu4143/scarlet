@@ -72,19 +72,21 @@ export class Engine {
   branches(projectId: string) { return this.get<{ branches: Array<{ name: string; head: string }> }>(`/projects/${enc(projectId)}/branches`).then(r => r.branches); }
   task(taskId: string) { return this.get<{ task: TaskRecord; events: EventLike[] }>(`/tasks/${enc(taskId)}`); }
   /** Token totals for one task (every run, including pauses for questions). Null on engines without usage tracking. */
-  async taskUsage(projectId: string, taskId: string): Promise<Record<string, number> | null> {
+  /** The task's token counts and the engine's cost estimate (`estimatedApiCostUsd`, null with `unpricedModels` when a model has no price). */
+  async taskUsage(projectId: string, taskId: string): Promise<Record<string, unknown> | null> {
     try {
       const res = await this.get<{ groups: Array<{ key: string | null } & Record<string, unknown>> }>(`/projects/${enc(projectId)}/usage?by=task`);
       const group = res.groups.find(g => g.key === taskId);
       if (!group) return null;
-      return Object.fromEntries(Object.entries(group).filter((e): e is [string, number] => typeof e[1] === "number"));
+      return Object.fromEntries(Object.entries(group).filter(([k, v]) => k !== "key" &&
+        (typeof v === "number" || v === null || (Array.isArray(v) && v.every(m => typeof m === "string")))));
     } catch { return null; }
   }
   tasks(projectId: string, state?: string) {
     return this.get<{ tasks: TaskRecord[] }>(`/projects/${enc(projectId)}/tasks${state ? `?state=${enc(state)}` : ""}`).then(r => r.tasks);
   }
   change(changeId: string) { return this.get<{ change: Change }>(`/changes/${enc(changeId)}?view=record`).then(r => r.change); }
-  skills() { return this.get<{ skills: Array<{ id: string; name: string; version?: number }> }>(`/skills`).then(r => r.skills); }
+  skills() { return this.get<{ skills: Array<{ id: string; name: string; version?: number; enabled?: boolean }> }>(`/skills`).then(r => r.skills); }
   async transcript(mediaId: string) {
     try {
       return await this.get<{ segments: Array<{ words?: Array<{ text: string; start: number; end: number }> }> }>(`/media/${enc(mediaId)}/transcript`);

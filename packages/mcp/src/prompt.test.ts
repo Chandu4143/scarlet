@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Skill } from "@scarlet/shared";
-import { createProject, emptyTimeline, type Change } from "@scarlet/timeline";
+import { createProject, emptyTimeline, makeMediaClip, type Change } from "@scarlet/timeline";
 import { buildSystemPrompt, PLAN_STEPS, SCARLET_INTRO, stripFrontmatter } from "./prompt.js";
 
 const skill = (over: Partial<Skill> = {}): Skill => ({ id: "skl_house", name: "house-style", description: "Our house rules for interviews.",
@@ -16,6 +16,26 @@ it("keeps dialogue take-selection advice in the selected skill", () => {
   expect(caption).not.toMatch(/retake can|better version may come later|a passage of a few minutes/i);
   const dialogue = readFileSync(new URL("../../../skills/dialogue-pass/SKILL.md", import.meta.url), "utf8");
   expect(buildSystemPrompt({ project, skills: [skill({ name: "dialogue-pass", content: dialogue })] })).toContain(advice);
+});
+
+it("reads an editor's style after the guide it builds on, and has it win where they differ", () => {
+  const guide = skill({ id: "skl_dp", name: "dialogue-pass", content: "---\nname: dialogue-pass\ndescription: Cut dialogue.\n---\nAbout a quarter second at a join." });
+  const style = skill({ id: "skl_me", name: "my-style", content: "---\nname: my-style\ndescription: Mine.\nextends: dialogue-pass\n---\nA tenth of a second at a join." });
+  const prompt = buildSystemPrompt({ project: "A project.", skills: [guide, style] });
+  expect(prompt.indexOf("## dialogue-pass")).toBeLessThan(prompt.indexOf("## my-style"));
+  expect(prompt).toContain("This builds on dialogue-pass, above. Where the two differ, follow this one.");
+  // A style can build on several guides: each is read first, and the ones that aren't in the prompt go unmentioned.
+  const framing = skill({ id: "skl_fs", name: "frame-screen", content: "---\nname: frame-screen\ndescription: Frame the screen.\n---\nFill the video." });
+  const both = skill({ id: "skl_all", name: "my-edit", content: "---\nname: my-edit\ndescription: Mine.\nextends: dialogue-pass, frame-screen, punch-in\n---\nMy camera sits bottom right." });
+  expect(buildSystemPrompt({ project: "A project.", skills: [guide, framing, both] }))
+    .toContain("This builds on dialogue-pass and frame-screen, above. Where it and one of them differ, follow this one.");
+  // A guide can be called in the text where it applies, with no header: it reads the same, and says how it is called.
+  const inline = skill({ id: "skl_in", name: "my-demo", content: "---\nname: my-demo\ndescription: Mine.\n---\n## Show the demo\n\n/frame-screen, with these changes: my camera sits bottom right." });
+  const called = buildSystemPrompt({ project: "A project.", skills: [framing, inline] });
+  expect(called.indexOf("## frame-screen")).toBeLessThan(called.indexOf("## my-demo"));
+  expect(called).toContain("This builds on frame-screen, above, and calls each as /name where it applies, with what it changes beside the call. Where the two differ, follow this one.");
+  // Alone, it says nothing about a guide that isn't there.
+  expect(buildSystemPrompt({ project: "A project.", skills: [style] })).not.toContain("builds on");
 });
 
 describe("the prompt for revising a skill", () => {
@@ -102,6 +122,18 @@ describe("an editing prompt", () => {
   const base = { project: { project, timeline: emptyTimeline(project.id) }, skills: [] };
   const task = (context: Record<string, unknown>) => ({ kind: "edit" as const, instruction: "  Tighten this.  ", agent: "claude", context });
 
+  it("has a dialogue pass order its cuts by how likely each is to be wrong and flag as many as the editor's setting asks", () => {
+    const pass = (checkIn?: "less" | "balanced" | "more") => buildSystemPrompt({ ...base, checkIn,
+      task: { kind: "edit" as const, instruction: "/dialogue-pass", agent: "claude", context: { dialogueOperation: "first-cut" as const } } });
+    const asked = (prompt: string) => prompt.match(/- Before the pass is done, .* The editor asked to check (.*) of them: flag that many from the top of your order/)?.[1];
+    // The order is the model's. How far down it the editor is asked to look is theirs, and balanced when they haven't said.
+    expect(pass()).toContain("order those cuts from the most likely to be wrong to the least");
+    expect([pass(), pass("less"), pass("balanced"), pass("more")].map(asked)).toEqual(["about one in four", "about one in ten", "about one in four", "about half"]);
+    // A request about one cut or edit of the pass, a pause tightening and any other edit are not asked.
+    for (const context of [{ dialogueOperation: "first-cut", cutIndex: 0, changeId: "chg_1" }, { dialogueOperation: "first-cut", editIndex: 2 }, { dialogueOperation: "local-pauses" }, {}])
+      expect(buildSystemPrompt({ ...base, checkIn: "more", task: task(context) })).not.toContain("Before the pass is done");
+  });
+
   it("names where the editor was looking: a source passage in the source's own frames, or a place on the timeline", () => {
     const source = buildSystemPrompt({ ...base, task: task({ mediaId: "m1", time: 77, end: 80.5, version: "v4" }) });
     expect(source).toContain("## Instruction\nTighten this.");
@@ -115,10 +147,39 @@ describe("an editing prompt", () => {
     const marked = buildSystemPrompt({ ...base, task: task({ time: 10, end: 12, markedRange: { start: 42, end: 51.5, version: "v5" } }) });
     expect(marked).toContain("- Timeline position referenced: 10.00 s (0:10.00) to 12.00 s (0:12.00)");
     expect(marked).toContain("- Stretch the editor marked on the timeline: 42.00 s (0:42.00) to 51.50 s (0:51.12) on version v5");
+    // A message to an open edit written while the video was paused says the frame it stopped on and its version.
+    const stopped = buildSystemPrompt({ ...base, task: task({ changeId: "chg1", time: 32, end: 37.3, messageTime: { time: 37.5, version: "v5" } }) });
+    expect(stopped).toContain("- Where the editor stopped the video as they wrote this: timeline 37.50 s (0:37.12) on version v5");
     // Marked with nothing open it is the position itself, said once.
     expect(buildSystemPrompt({ ...base, task: task({ time: 42, end: 51.5, markedRange: { start: 42, end: 51.5 } }) })).not.toContain("Stretch the editor marked");
     // With nothing recorded there is no context section.
     expect(buildSystemPrompt({ ...base, task: task({}) })).not.toContain("## Context");
+  });
+
+  it("lists a long timeline's clips only near where the request points, and a pass's diff not for one of its cuts", () => {
+    const timeline = emptyTimeline(project.id);
+    timeline.tracks[0]!.clips = Array.from({ length: 60 }, (_, i) => makeMediaClip("m1", i * 2, i * 2 + 2, i * 2, { id: `c${i}` }));
+    const near = buildSystemPrompt({ ...base, project: { project, timeline }, task: task({ time: 60, end: 62 }) });
+    expect(near).toContain("c30 ");
+    expect(near).not.toContain("c0 ");
+    expect(near).toContain("Listed: the clips within 15 s of 1:00.00–1:02.00, of 60. `timeline_get` lists every clip");
+    const whole = buildSystemPrompt({ ...base, project: { project, timeline }, task: task({}) });
+    expect(whole).not.toContain("c30 ");
+    expect(whole).toContain("The 60 clips aren't listed here");
+    // A short timeline is listed whole.
+    timeline.tracks[0]!.clips = timeline.tracks[0]!.clips.slice(0, 10);
+    expect(buildSystemPrompt({ ...base, project: { project, timeline }, task: task({ time: 60 }) })).toContain("c0 ");
+    const change = { id: "chg_3", projectId: project.id, fromVersion: "v1", toVersion: "v2", description: "Review 7 optional dialogue cuts", author: { type: "agent", name: "codex" },
+      noteIds: [], ranges: [{ start: 10, end: 11 }], state: "revising", renders: [] } as unknown as Change;
+    const pass = { change, description: ["Moved 200 clips along the timeline with nothing else changed (now 1.00–600.00)"] };
+    expect(buildSystemPrompt({ ...base, change: pass, task: task({ changeId: "chg_3", cutIndex: 0 }) })).not.toContain("Diff:");
+    expect(buildSystemPrompt({ ...base, change: pass, task: task({ changeId: "chg_3", editIndex: 0 }) })).toContain("Diff:\n- Moved 200 clips");
+  });
+
+  it("asks for a reason for every edit and puts the summary in the chat", () => {
+    const prompt = buildSystemPrompt({ ...base, task: task({}) });
+    expect(prompt).toContain("Always save why you made each edit, even when the editor asked for the exact change.");
+    expect(prompt).toContain("Scarlet shows the short summary of what changed in the chat and the reason on the card above the timeline.");
   });
 
   it("points a revision at the staged cut or the edit the editor chose", () => {
@@ -135,21 +196,30 @@ describe("an editing prompt", () => {
     expect(edit).toContain("- Selected edit index: 0");
     expect(edit).not.toContain("Staged cut being revised");
     // With the change at hand, the edit comes with what Scarlet told the editor about it: its name, its number in their
-    // list, what it did and what to check on it. They are answering those words.
+    // list, what it did, why and what to check on it. They are answering those words.
     const change = { id: "chg_3", state: "approved", description: "Frame the games", fromVersion: "ver_1", toVersion: "ver_2", ranges: [], ops: [], author: { type: "agent", name: "Scarlet" },
       timelineEdits: [{ label: "Frame the watch", range: { start: 10, end: 20 } },
-        { label: " Frame the Fall Guys game ", range: { start: 181, end: 260 }, summary: "Screen zooms to the game window. ", check: "A Windows dialog sits over the game from 4:17" }] } as unknown as Change;
+        { label: " Frame the Fall Guys game ", range: { start: 181, end: 260 }, summary: "Screen zooms to the game window. ",
+          reason: " The score was too small to read as you called it out. ", check: "A Windows dialog sits over the game from 4:17" }] } as unknown as Change;
     const told = buildSystemPrompt({ ...base, change: { change }, task: task({ changeId: "chg_3", editIndex: 1, editNumber: 13 }) });
     expect(told).toContain(`- Selected edit index: 1 (edit 13 in the editor's list), "Frame the Fall Guys game"`);
     expect(told).toContain(`- What you told the editor this edit did: "Screen zooms to the game window."`);
+    expect(told).toContain(`- Why you made this edit: "The score was too small to read as you called it out."`);
     expect(told).toContain(`- What you asked the editor to check on this edit: "A Windows dialog sits over the game from 4:17"`);
     // An edit Scarlet said nothing more about is its name alone, and another change's edits are never borrowed.
     const plain = buildSystemPrompt({ ...base, change: { change }, task: task({ changeId: "chg_3", editIndex: 0 }) });
     expect(plain).toContain(`- Selected edit index: 0, "Frame the watch"`);
-    expect(plain).not.toMatch(/What you told the editor|What you asked the editor/);
+    expect(plain).not.toMatch(/What you told the editor|Why you made this edit|What you asked the editor/);
     expect(buildSystemPrompt({ ...base, change: { change }, task: task({ changeId: "chg_other", editIndex: 1 }) })).toContain("- Selected edit index: 1\n");
     // An index means nothing without the change it belongs to.
     expect(buildSystemPrompt({ ...base, task: task({ editIndex: 2, cutIndex: 1 }) })).not.toMatch(/Selected edit index|Staged cut being revised/);
+  });
+
+  it("tells a revision of a moment every edit in it", () => {
+    const told = buildSystemPrompt({ ...base, task: task({ changeId: "chg_3", editIndex: 0, time: 29.2, end: 33.5,
+      momentEdits: [{ changeId: "chg_3", spot: 1, label: "Rubik's Cube inset" }, { changeId: "chg_4", spot: 0 }] }) });
+    expect(told).toContain(`- The editor's words are about the whole moment this edit is in, which plays as one change and also has: edit index 1 of chg_3 ("Rubik's Cube inset"); edit index 0 of chg_4. Which of them the words mean is for you to work out.`);
+    expect(buildSystemPrompt({ ...base, task: task({ changeId: "chg_3", editIndex: 0 }) })).not.toContain("whole moment");
   });
 
   it("gives the model the tool names its harness exposes", () => {

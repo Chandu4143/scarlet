@@ -2,9 +2,9 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writePrivateFile } from "../private-files.js";
-import { briefInput, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
+import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
-import { addUsage, claudeUsage } from "./usage.js";
+import { addUsage, claudeUsage, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
 
 /**
@@ -135,6 +135,11 @@ export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent
       if (scarlet && scarlet.status !== "connected") {
         events.push({ type: "error", text: `Scarlet MCP server status: ${scarlet.status}` });
       }
+    } else if (msg.subtype === "compact_boundary") {
+      // Claude Code compacted the session's context. The engine logs it and keeps it out of the chat.
+      const meta = (msg.compact_metadata ?? {}) as { trigger?: unknown; pre_tokens?: unknown; post_tokens?: unknown };
+      events.push({ ...COMPACTED, data: { ...COMPACTED.data, ...(typeof meta.trigger === "string" && { trigger: meta.trigger }),
+        ...(typeof meta.pre_tokens === "number" && { preTokens: meta.pre_tokens }), ...(typeof meta.post_tokens === "number" && { postTokens: meta.post_tokens }) } });
     }
     return events;
   }
@@ -218,7 +223,7 @@ export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent
 /** The run's usage: the result totals, else the sum of the messages seen before the process stopped. */
 export function claudeRunUsage(st: ClaudeParseState, model?: string): AgentUsage | undefined {
   const usage = st.usage ?? Object.values(st.messageUsage).reduce<AgentUsage | undefined>(addUsage, undefined);
-  return usage && !usage.model && model ? { ...usage, model } : usage;
+  return usageWithModel(usage, model);
 }
 
 function flattenToolResult(content: unknown): string {
@@ -303,6 +308,8 @@ export async function runClaude(opts: RunAgentOptions): Promise<RunAgentResult> 
   // Avoid nested-session refusal when the host itself runs under Claude Code.
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
+  // Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured.
+  env.MCP_TOOL_TIMEOUT ??= "300000";
 
   const handle = spawnLines(cmd.file, cmd.args, {
     cwd: opts.cwd,

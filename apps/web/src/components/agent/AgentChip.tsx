@@ -5,13 +5,14 @@ import { isDesktop, type HostStatus } from "../../lib/desktop";
 import { AGENT_LABEL, isConfiguredAgent, onlineAgents, useHostsStore } from "../../stores/hosts";
 import { modelChoices, selectVisibleModel, useModelPreferences } from "../../stores/modelPicker";
 import { ModelProviders, type ModelScope } from "./ModelProviders";
+import { ModelRefreshButton, ModelRefreshFeedback, useModelRefresh } from "./ModelRefresh";
 import { FavoriteButton } from "./FavoriteButton";
 import { useUiStore } from "../../stores/ui";
 import { AgentSignIn, canSignIn, useLocalHost } from "../shell/AgentSignIn";
 import { Icon } from "../ui/primitives";
 import { MENU_ITEM_CLASS } from "../shell/WorkspaceNavigation";
 
-export const NO_AGENT_REASON = "Sign in with Claude or ChatGPT to let Scarlet edit";
+export const NO_AGENT_REASON = "Sign in with Claude, ChatGPT or Google to let Scarlet edit";
 
 // A provider on two hosts can offer different settings for the same model.
 function supportedOptions(profiles: ModelOptions[], effort?: string, serviceTier?: string, preferSpeed = false) {
@@ -35,7 +36,7 @@ function optionLabel(option: { id: string; label?: string }) {
   return option.label ?? option.id.charAt(0).toUpperCase() + option.id.slice(1);
 }
 
-const effortRanks = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+const effortRanks = ["none", "minimal", "low", "medium", "high", "xhigh", "extra", "max", "ultra"];
 
 /** How far up the model's own effort scale an effort sits, from 0 (lowest offered) to 1 (highest). */
 function effortLevel(efforts: { id: string }[], effort?: string) {
@@ -71,7 +72,8 @@ export function useAgentAvailability() {
   const hosts = useHostsStore((s) => s.hosts);
   const customOpenaiModels = useHostsStore((s) => s.customOpenaiModels);
   const customClaudeModels = useHostsStore((s) => s.customClaudeModels);
-  const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels);
+  const customGeminiModels = useHostsStore((s) => s.customGeminiModels);
+  const agents = onlineAgents(hosts, customOpenaiModels, customClaudeModels, customGeminiModels);
   const pick = useUiStore((s) => s.agent);
   const hidden = useModelPreferences((s) => s.hidden);
   const available = modelChoices(agents);
@@ -92,7 +94,7 @@ export function useAgentAvailability() {
   const hasConfiguredHost = hosts.some(h => h.agents.some(isConfiguredAgent));
   // Every model a signed-in agent offers is listed, so one that offers none is one whose list couldn't be read.
   const unavailableReason = available.length ? "Show a model in Settings to start an edit"
-    : agents.length ? "Couldn’t read the model list. Refresh models in Settings to try again."
+    : agents.length ? "Couldn’t read the model list. Refresh models to try again."
     : hasConfiguredHost ? "The model is offline" : NO_AGENT_REASON;
   return { agents, choices, selected, effective, none: !effective, unavailableReason, hasCatalog: available.length > 0, hasConfiguredHost };
 }
@@ -152,7 +154,7 @@ export function useModelNeedsYou(): boolean {
 /**
  * `variant="menu"` draws it as a row of a menu: "Model", then the one in use. The selector opens beside the row.
  */
-export function AgentChip({ direction = "up", threadInput, variant = "chip" }: { direction?: "up" | "down"; threadInput?: "reply" | "answer"; variant?: "chip" | "menu" }) {
+export function AgentChip({ direction = "up", threadInput, variant = "chip" }: { direction?: "up" | "down"; threadInput?: "reply" | "answer"; variant?: "chip" | "menu" | "icon" }) {
   const inProject = !!useMatch("/p/:id/*");
   const setSetupOpen = useUiStore((s) => s.setAgentSetupOpen);
   const { agents, choices, selected, effective, none, unavailableReason, hasCatalog, hasConfiguredHost } = useAgentAvailability();
@@ -162,6 +164,7 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
   const pick = useUiStore((s) => s.agent);
   const setAgent = useUiStore((s) => s.setAgent);
   const localHost = useLocalHost();
+  const modelRefresh = useModelRefresh();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -199,7 +202,7 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
       menu.style.right = "auto";
     }
     place();
-    searchField.current?.focus();
+    (searchField.current ?? menu).focus();
     const observer = new ResizeObserver(place);
     observer.observe(menu);
     observer.observe(anchor);
@@ -239,7 +242,9 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
   const checkingLocalAgents = isDesktop() && !localHost?.agents.length;
   const needsSetup = hostsReady && !checkingLocalAgents && !hasConfiguredHost && !localHost?.agents.some(isConfiguredAgent);
   const inMenu = variant === "menu";
-  if (!agents.length && !needsSetup) {
+  const iconOnly = variant === "icon";
+  const emptyCatalog = agents.length > 0 && !hasCatalog;
+  if (!open && !iconOnly && !agents.length && !needsSetup) {
     // The menu's row stays and says why no request can run. Still connecting needs nothing from the editor. A host
     // that was signed in and is offline does: the row carries the menu's mark, and opens the sign-in, which says why.
     const connecting = stillConnecting(hostsReady, localHost);
@@ -248,17 +253,17 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
     return threadInput ? <button type="button" className="btn-quiet" onClick={() => setSetupOpen("models")}>Models</button> : null;
   }
 
-  if (none && inProject) {
-    const setUp = agents.length ? (hasCatalog ? "Choose visible models" : "Refresh models") : "Set up a model";
+  if (!open && !iconOnly && none && !emptyCatalog && inProject) {
+    const setUp = agents.length ? "Choose visible models" : "Set up a model";
     return inMenu
       ? <button type="button" role="menuitem" className={`${MENU_ITEM_CLASS} text-fg`} onClick={() => setSetupOpen(agents.length ? "models" : true)}>
         <EffortDial level={0} />{setUp}<span className="menu-dot" aria-hidden /></button>
       : <button type="button" className="btn-quiet" onClick={() => setSetupOpen(agents.length ? "models" : true)}>{setUp}</button>;
   }
-  if (none && (agents.length || !needsSignIn.length)) {
+  if (!open && !iconOnly && none && !emptyCatalog && (agents.length || !needsSignIn.length)) {
     return (
       <Link to={agents.length ? "/settings#models" : "/settings#hosts"} className="inline-flex items-center gap-1.5 rounded-full border border-warn/40 px-3 py-1.5 text-[12px] text-warn hover:bg-warn/10" title={unavailableReason}>
-        <span className="size-1.5 rounded-full bg-warn" /> {agents.length ? (hasCatalog ? "Choose visible models" : "Refresh models") : isDesktop() ? "Set up a model" : "No model is ready"}
+        <span className="size-1.5 rounded-full bg-warn" /> {agents.length ? "Choose visible models" : isDesktop() ? "Set up a model" : "No model is ready"}
       </Link>
     );
   }
@@ -277,7 +282,7 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
   const effortTitle = `Thinking effort: ${effortLabel}`;
   const hasOptions = efforts.length > 0 || speeds.length > 0;
   const speed = speeds.find(o => o.id === effective?.serviceTier);
-  const label = selected?.name ?? "Sign in to start";
+  const label = selected?.name ?? (emptyCatalog ? "Refresh models" : "Sign in to start");
   const details = effective ? `${agentShort(effective.agent)} · ${label}. ${effortTitle}${speed ? `, speed: ${optionLabel(speed)}` : ""}` : label;
 
   const query = search.trim().toLowerCase();
@@ -296,17 +301,27 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
         ref={trigger}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`Model: ${details}. Change model, effort or speed`}
-        aria-description={answerHint}
-        title={answerHint ?? (selected ? effortTitle : undefined)}
-        onClick={() => { setScope(selected?.agent); setSearch(""); setOpen((o) => !o); }}
+        aria-label={iconOnly ? "Choose model" : emptyCatalog ? "Refresh models" : `Model: ${details}. Change model, effort or speed`}
+        aria-description={iconOnly && selected ? details : answerHint}
+        title={iconOnly ? (selected ? `Model: ${details}` : "Choose model") : answerHint ?? (emptyCatalog ? unavailableReason : selected ? effortTitle : undefined)}
+        onClick={() => {
+          if (!open) {
+            setScope(selected?.agent);
+            setSearch("");
+            modelRefresh.clear();
+            if (emptyCatalog && !iconOnly) void modelRefresh.refresh();
+          }
+          setOpen(!open);
+        }}
         {...(inMenu && { role: "menuitem" })}
         className={inMenu ? `${MENU_ITEM_CLASS} text-fg`
+          : iconOnly ? "btn-icon aria-expanded:bg-raised aria-expanded:text-fg"
           : `inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] hover:text-fg ${none ? "border-warn/40 text-warn" : "border-line text-muted hover:border-dim"}`}
       >
-        {inMenu ? <>
-          <EffortDial level={selected ? effortLevel(efforts, dialEffort?.id) : 0} />Model
-          <span className="menu-value truncate">{label}</span>{none && <span className="menu-dot" aria-hidden />}
+        {iconOnly ? <EffortDial level={effortLevel(efforts, dialEffort?.id)} /> : inMenu ? <>
+          <EffortDial level={selected ? effortLevel(efforts, dialEffort?.id) : 0} />
+          {emptyCatalog ? label : <>Model<span className="menu-value truncate">{label}</span></>}
+          {none && <span className="menu-dot" aria-hidden />}
         </> : <>
           {none && <span className="size-1.5 rounded-full bg-warn" aria-hidden />}
           <span className="truncate">{label}</span>
@@ -314,7 +329,7 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
         </>}
       </button>
       {open && (
-        <div ref={panel} role="dialog" aria-label="Model selector" data-shortcut-overlay
+        <div ref={panel} role="dialog" aria-label="Model selector" data-shortcut-overlay tabIndex={-1}
           onKeyDown={event => {
             const target = event.target as HTMLElement;
             if (target === searchField.current && event.key === "ArrowLeft" && !search) {
@@ -334,7 +349,7 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
           }}
           className={`fixed z-50 !max-w-[calc(100vw-16px)] overflow-auto card shadow-2xl ${hasOptions ? "w-[30rem]" : "w-[22rem]"}`}>
           {answerHint && <p className="border-b border-line px-3 py-2 text-xs text-muted">{answerHint}</p>}
-          <div className="flex">
+          {!choices.length ? <p className="px-3 py-3 text-[13px] text-muted">{unavailableReason}</p> : <div className="flex">
             {choices.length > 0 && <ModelProviders compact providers={["favorites", ...providers]} active={query ? undefined : active}
               onChange={id => { setScope(id); setSearch(""); searchField.current?.focus(); }} />}
             <div className="min-w-0 flex-1">
@@ -381,14 +396,14 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
                     value={effective.serviceTier ?? ""}
                     onChange={(v) => choose({ serviceTier: v || undefined })}
                     options={[
-                      { id: "", label: "Auto", title: defaultSpeedTitle(profiles) },
+                      { id: "", label: "Standard", title: defaultSpeedTitle(profiles) },
                       ...speeds.map(o => ({ id: o.id, label: optionLabel(o), title: o.description })),
                     ]}
                   />
                 )}
               </div>
             )}
-          </div>
+          </div>}
           {/* A grid, so that why a sign-in failed, which AgentSignIn draws after its button, is a row under the name and the button. */}
           {needsSignIn.map((a) => (
             <div key={a.id} className="px-3 py-2 grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1 border-t border-line/60 first:border-t-0">
@@ -396,14 +411,18 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
               <AgentSignIn agent={a} compact />
             </div>
           ))}
-          <div className="flex justify-between border-t border-line/60 mt-1 px-3 pt-2 pb-1.5">
-            {inProject ? <>
-              <button type="button" className="text-[12px] text-muted hover:text-fg" onClick={() => { setOpen(false); setSetupOpen("models"); }}>Manage models…</button>
-              <button type="button" className="text-[12px] text-dim hover:text-muted" onClick={() => { setOpen(false); setSetupOpen(true); }}>Manage sign-in…</button>
-            </> : <>
-              <Link to="/settings#models" className="text-[12px] text-muted hover:text-fg" onClick={() => setOpen(false)}>Manage models…</Link>
-              <Link to="/settings#hosts" className="text-[12px] text-dim hover:text-muted" onClick={() => setOpen(false)}>Manage sign-in…</Link>
-            </>}
+          <div className="mt-1 border-t border-line/60 px-3 py-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-x-3">
+              <ModelRefreshButton action={modelRefresh} />
+              {inProject ? <>
+                <button type="button" className="text-[12px] text-muted hover:text-fg" onClick={() => { setOpen(false); setSetupOpen("models"); }}>Manage models…</button>
+                <button type="button" className="text-[12px] text-dim hover:text-muted" onClick={() => { setOpen(false); setSetupOpen(true); }}>Manage sign-in…</button>
+              </> : <>
+                <Link to="/settings#models" className="text-[12px] text-muted hover:text-fg" onClick={() => setOpen(false)}>Manage models…</Link>
+                <Link to="/settings#hosts" className="text-[12px] text-dim hover:text-muted" onClick={() => setOpen(false)}>Manage sign-in…</Link>
+              </>}
+            </div>
+            <ModelRefreshFeedback action={modelRefresh} />
           </div>
         </div>
       )}

@@ -28,6 +28,18 @@ const P = "prj";
 /** One 20 s take laid end to end on V1 (and its audio comes with it). */
 const take = (): Timeline => timelineFromKeepRanges(P, "m1", [{ start: 0, end: 20 }]);
 
+it("maps later markers through both a skipped cut and the cuts already on the timeline", () => {
+  const base = take();
+  const head = applyOps(base, [{ op: "rippleDelete", start: 1, end: 3 }]);
+  const marker = (id: string, time: number): TimelineOp => ({
+    op: "addMarker", marker: { id, time, kind: "note", text: id, resolved: false },
+  });
+  const ops: TimelineOp[] = [marker("first", 5), { op: "rippleDelete", start: 6, end: 9 }, marker("second", 10)];
+  const replayed = replayOps(base, ops, head, i => i !== 1);
+  expect(replayed.markers.map(m => [m.id, m.time])).toEqual([["first", 3], ["second", 11]]);
+  expect(head.markers).toEqual([]);
+});
+
 it("preserves unrelated marker fields and refuses stale changes to the same field", () => {
   const base = take();
   base.markers.push({ id: "beat", time: 12, text: "First", kind: "note", resolved: false });
@@ -1115,4 +1127,47 @@ describe("approving some spots of a batch", () => {
     expect(moved.kind).toBe("partial");
     if (moved.kind === "partial") expect(changedSpots(moved.timeline, to)).toEqual([]);
   });
+});
+
+describe("footage cut since an edit was made", () => {
+  it("refuses an edit that brings cut footage back as a new clip, as it refuses a trim that does", () => {
+    const base = take();
+    base.tracks.push(makeTrack("video", "Overlay", "v2"));
+    const head = applyOps(base, [{ op: "rippleDelete", start: 6, end: 9 }]);
+    // Laid over the start: the part of the take the current version cut, as its own clip.
+    const ops: TimelineOp[] = [{ op: "addClip", trackId: "v2", clip: makeMediaClip("m1", 6, 9, 1, { id: "back" }) }];
+    expect(() => replayOps(base, ops, head)).toThrow("the footage under clip back changed since");
+    // Footage the current version kept is fine.
+    expect(replayOps(base, [{ op: "addClip", trackId: "v2", clip: makeMediaClip("m1", 12, 14, 1, { id: "kept" }) }], head)
+      .tracks.find(t => t.id === "v2")!.clips).toMatchObject([{ id: "kept", sourceIn: 12 }]);
+  });
+
+  it("refuses a picture trim into footage cut from the picture alone, while the sound still plays it", () => {
+    const base = emptyTimeline(P);
+    base.tracks[0]!.clips = [makeMediaClip("m1", 0, 10, 0, { id: "v1a", volume: 0 }), makeMediaClip("m1", 10, 20, 15, { id: "v1b", volume: 0 })];
+    base.tracks[1]!.clips = [makeMediaClip("m1", 0, 20, 0, { id: "sound" })];
+    const head = applyOps(base, [{ op: "removeClip", clipId: "v1b" }]);
+    const ops: TimelineOp[] = [{ op: "updateClip", clipId: "v1a", patch: { sourceOut: 15 } }];
+    expect(() => replayOps(base, ops, head)).toThrow("the footage under clip v1a changed since");
+  });
+
+  it("refuses turning back on a clip whose footage was cut since", () => {
+    const base = take();
+    base.tracks.push({ ...makeTrack("video", "Overlay", "v2"), clips: [{ ...makeMediaClip("m1", 6, 9, 1, { id: "spare" }), enabled: false }] });
+    const head = applyOps(base, [{ op: "rippleDelete", start: 6, end: 9 }]);
+    expect(() => replayOps(base, [{ op: "updateClip", clipId: "spare", patch: { enabled: true } }], head)).toThrow("the footage under clip spare changed since");
+  });
+});
+
+it("sees a transition from a colour card change the card's side of the join too", () => {
+  const base = emptyTimeline(P);
+  const card = { id: "card", kind: "color" as const, color: "#ff0000", timelineIn: 0, timelineOut: 4, enabled: true, opacity: 1 };
+  base.tracks[0]!.clips = [card, makeMediaClip("m1", 0, 4, 4, { id: "shot" })];
+  // A join a hair apart, as ripples leave them, is still the join the transition plays at.
+  base.tracks[0]!.clips[1]!.timelineIn = 4.0004;
+  const to = applyOps(base, [{ op: "updateClip", clipId: "shot", patch: { transitionIn: { type: "dissolve", duration: 1, direction: "left" } } }]);
+  const spots = changedSpots(base, to);
+  expect(spots).toHaveLength(1);
+  expect(spots[0]!.after.start).toBeCloseTo(3.5, 3);
+  expect(spots[0]!.after.end).toBeCloseTo(4.5, 3);
 });

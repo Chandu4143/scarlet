@@ -26,8 +26,15 @@ pub struct UnderWay {
     pub exports: u32,
 }
 
-/// The question to ask before quitting, naming what would stop. None when nothing would.
-pub fn warning(work: &UnderWay) -> Option<String> {
+/// Why Scarlet is closing: the editor quit, or pressed Restart to update, after which it opens again by itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Leaving {
+    Quit,
+    Restart,
+}
+
+/// The question to ask before quitting or restarting, naming what would stop. None when nothing would.
+pub fn warning(work: &UnderWay, leaving: Leaving) -> Option<String> {
     let name = |n: u32, one: &str, many: &str| match n {
         0 => None,
         1 => Some(one.to_string()),
@@ -48,7 +55,10 @@ pub fn warning(work: &UnderWay) -> Option<String> {
     };
     // A run cut short by a quit resumes at the next launch, a queued edit starts then, and an export renders again.
     let carry_on = if work.edits + work.queued + work.exports == 1 { "It carries on" } else { "They carry on" };
-    Some(format!("Quitting stops {list}. {carry_on} when you open Scarlet again."))
+    Some(match leaving {
+        Leaving::Quit => format!("Quitting stops {list}. {carry_on} when you open Scarlet again."),
+        Leaving::Restart => format!("Restarting stops {list}. {carry_on} when Scarlet reopens."),
+    })
 }
 
 /// Ask the engine what quitting would stop. None when it can't say in a moment.
@@ -82,7 +92,7 @@ fn quit_now(app: &AppHandle) {
 }
 
 /// Return the editor's choice if ending this session would stop work.
-pub async fn confirm_if_busy(app: &AppHandle) -> bool {
+pub async fn confirm_if_busy(app: &AppHandle, leaving: Leaving) -> bool {
     let Some(state) = app.try_state::<AppState>() else { return true };
     let engine = state.engine.status();
     let said = match (engine.url.as_deref(), engine.token.as_deref()) {
@@ -90,11 +100,12 @@ pub async fn confirm_if_busy(app: &AppHandle) -> bool {
         _ => None,
     };
     let running_here = state.host.status().await.running.len();
-    let Some(asked) = warning(&what_would_stop(said, running_here)) else { return true };
-    log::info!("asking before quitting: {asked}");
-    let dialog = app.dialog().message(asked).title("Quit Scarlet?")
+    let Some(asked) = warning(&what_would_stop(said, running_here), leaving) else { return true };
+    log::info!("asking before {}: {asked}", if leaving == Leaving::Quit { "quitting" } else { "restarting" });
+    let (title, yes) = if leaving == Leaving::Quit { ("Quit Scarlet?", "Quit") } else { ("Restart Scarlet?", "Restart") };
+    let dialog = app.dialog().message(asked).title(title)
         .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("Quit".into(), "Cancel".into()));
+        .buttons(MessageDialogButtons::OkCancelCustom(yes.into(), "Cancel".into()));
     #[cfg(windows)]
     let dialog = match app.get_webview_window("main") {
         Some(window) => dialog.parent(&window),
@@ -114,7 +125,7 @@ pub fn ask_before_quitting(app: &AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if confirm_if_busy(&app).await {
+        if confirm_if_busy(&app, Leaving::Quit).await {
             quit_now(&app);
         } else {
             ASKING.store(false, Ordering::SeqCst);
@@ -145,12 +156,17 @@ mod tests {
 
     #[test]
     fn names_what_quitting_would_stop() {
-        let asks = |edits, queued, exports| warning(&UnderWay { edits, queued, exports });
+        let asks = |edits, queued, exports| warning(&UnderWay { edits, queued, exports }, Leaving::Quit);
         assert_eq!(asks(0, 0, 0), None);
         assert_eq!(asks(1, 0, 0).as_deref(), Some("Quitting stops the edit Scarlet is working on. It carries on when you open Scarlet again."));
         assert_eq!(asks(1, 2, 0).as_deref(), Some("Quitting stops the edit Scarlet is working on and 2 edits waiting their turn. They carry on when you open Scarlet again."));
         assert_eq!(asks(2, 1, 1).as_deref(), Some("Quitting stops the 2 edits Scarlet is working on, an edit waiting its turn and an export. They carry on when you open Scarlet again."));
         assert_eq!(asks(0, 0, 3).as_deref(), Some("Quitting stops 3 exports. They carry on when you open Scarlet again."));
+        // Restart to update opens Scarlet again by itself, and says so in its own words.
+        let restart = |edits, queued| warning(&UnderWay { edits, queued, exports: 0 }, Leaving::Restart);
+        assert_eq!(restart(0, 0), None);
+        assert_eq!(restart(1, 0).as_deref(), Some("Restarting stops the edit Scarlet is working on. It carries on when Scarlet reopens."));
+        assert_eq!(restart(1, 2).as_deref(), Some("Restarting stops the edit Scarlet is working on and 2 edits waiting their turn. They carry on when Scarlet reopens."));
     }
 
     #[tokio::test]
@@ -162,17 +178,17 @@ mod tests {
         .await;
         let said = under_way(&busy.url, "sct_t").await;
         assert_eq!(said, Some(UnderWay { edits: 1, queued: 0, exports: 1 }));
-        assert_eq!(warning(&what_would_stop(said, 1)).as_deref(), Some("Quitting stops the edit Scarlet is working on and an export. They carry on when you open Scarlet again."));
+        assert_eq!(warning(&what_would_stop(said, 1), Leaving::Quit).as_deref(), Some("Quitting stops the edit Scarlet is working on and an export. They carry on when you open Scarlet again."));
         // The engine's word stands over the host's: nothing under way, so Scarlet quits at once.
         let idle = fake::engine(|_, _| (200, r#"{"edits":0,"queued":0,"exports":0}"#.into())).await;
-        assert_eq!(warning(&what_would_stop(under_way(&idle.url, "sct_t").await, 0)), None);
+        assert_eq!(warning(&what_would_stop(under_way(&idle.url, "sct_t").await, 0), Leaving::Quit), None);
         // An engine that has gone, or one too old to say, can't: the runs under way here are what quitting would stop.
         let gone = format!("http://{}", std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap());
         let old = fake::engine(|_, _| (404, r#"{"error":{"code":"not_found","message":"Not found"}}"#.into())).await;
         for silent in [under_way(&gone, "sct_t").await, under_way(&old.url, "sct_t").await] {
             assert_eq!(silent, None);
-            assert_eq!(warning(&what_would_stop(None, 2)).as_deref(), Some("Quitting stops the 2 edits Scarlet is working on. They carry on when you open Scarlet again."));
-            assert_eq!(warning(&what_would_stop(silent, 0)), None);
+            assert_eq!(warning(&what_would_stop(None, 2), Leaving::Quit).as_deref(), Some("Quitting stops the 2 edits Scarlet is working on. They carry on when you open Scarlet again."));
+            assert_eq!(warning(&what_would_stop(silent, 0), Leaving::Quit), None);
         }
     }
 }

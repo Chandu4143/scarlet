@@ -9,13 +9,32 @@ const VISIBLE_PAGES = 5;
 type Chunk = { key: string; mediaId: string; from: number; to: number };
 type Page = { data?: Transcript; error?: string; done: Promise<void> };
 
+/**
+ * Pages of finished transcripts already read. A chunk's key names its transcript, and a transcript that has been
+ * aligned never changes under its ID, so neither do its pages. The Transcript column is mounted again for each new
+ * working cut, and without these it read the whole transcript again every time: 60 requests for an hour of footage,
+ * on every edit Scarlet saved while the column was open.
+ */
+const readPages = new Map<string, Transcript>();
+/** About four hours of footage. */
+const READ_PAGES = 240;
+const pageKey = (chunk: Chunk, audioSources: boolean) => JSON.stringify([chunk.key, audioSources]);
+function keepPage(key: string, data: Transcript) {
+  readPages.delete(key);
+  readPages.set(key, data);
+  while (readPages.size > READ_PAGES) readPages.delete(readPages.keys().next().value!);
+}
+/** For tests: forget every page read. */
+export function forgetTranscriptPages() { readPages.clear(); }
+
 // Requests use fixed source-time chunks so linked tracks, repeated footage and adjacent cut pages share reads.
 export function transcriptChunks(source: MediaAsset | undefined, assets: MediaAsset[], clips: ReturnType<typeof mediaClipsFor>, from: number, to: number) {
   const chunks = new Map<string, Chunk>();
   const add = (asset: MediaAsset | undefined, start: number, stop: number) => {
     if (!asset?.transcriptId || stop <= start) return;
     for (let i = Math.floor(start / SECONDS); i < Math.ceil(stop / SECONDS); i++) {
-      const key = JSON.stringify([asset.id, asset.transcriptId, i]);
+      // The first transcript is readable before its word alignment finishes under the same ID.
+      const key = JSON.stringify([asset.id, asset.transcriptId, asset.lastTranscription?.completedAt, i]);
       chunks.set(key, { key, mediaId: asset.id, from: i * SECONDS, to: (i + 1) * SECONDS });
     }
   };
@@ -90,8 +109,14 @@ export function useTranscriptWindow(source: MediaAsset | undefined, timeline: Ti
     const load = (chunk: Chunk) => {
       const stored = cache.current.get(chunk.key);
       if (stored) return stored.done;
-      const page: Page = { done: api.transcript(chunk.mediaId, { from: chunk.from, to: chunk.to, granularity: "word", ...(audioSources ? { audioSources } : {}) })
-        .then(data => { page.data = data; }, err => { page.error = errorMessage(err); }) };
+      const kept = readPages.get(pageKey(chunk, audioSources));
+      const page: Page = kept ? { data: kept, done: Promise.resolve() }
+        : { done: api.transcript(chunk.mediaId, { from: chunk.from, to: chunk.to, granularity: "word", ...(audioSources ? { audioSources } : {}) })
+          .then(data => {
+            page.data = data;
+            // Words still being aligned move under the same ID until they are final.
+            if (!data.aligning) keepPage(pageKey(chunk, audioSources), data);
+          }, err => { page.error = errorMessage(err); }) };
       cache.current.set(chunk.key, page);
       return page.done;
     };
@@ -108,7 +133,8 @@ export function useTranscriptWindow(source: MediaAsset | undefined, timeline: Ti
     const segments = new Map<string, Set<string>>();
     let loading = false, error = "";
     for (const chunk of visible) {
-      const page = cache.current.get(chunk.key);
+      // A page read before this mount shows at once, with no "Loading transcript…" in between.
+      const page = cache.current.get(chunk.key) ?? { data: readPages.get(pageKey(chunk, audioSources)), error: undefined };
       if (page?.error) { error = page.error; continue; }
       if (!page?.data) { loading = true; continue; }
       const t = page.data;
@@ -125,7 +151,7 @@ export function useTranscriptWindow(source: MediaAsset | undefined, timeline: Ti
     }
     for (const t of transcripts.values()) t.segments.sort((a, b) => a.start - b.start);
     return { transcripts: [...transcripts.values()], loading, error };
-  }, [visible, revision]);
+  }, [visible, revision, audioSources]);
   return { ...result, assets, from, to, earlier: !fixedRange && first > 0, later: !fixedRange && last < lastPage,
     extend(direction: -1 | 1, keepSelection: boolean) {
       setWindow(w => {
