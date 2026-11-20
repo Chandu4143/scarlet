@@ -3389,8 +3389,8 @@ export function SimpleWorkspace() {
     : heard && (timeline.version === pass.fromVersion || toWorkingCut) ? { timeline, range: heard }
     : stagedOn.timeline && !heard ? { timeline: stagedOn.timeline, range: listening.cut } : undefined;
   const callScriptOpen = !!callKey && scriptFor === callKey && (!conflict || !!heard);
-  // With no list beside the chat, the card says how many still wait: this call's place among the ones not yet decided.
-  const callPlace = openCall ? waitingCalls.indexOf(openCall) : -1;
+  // Where the call's cut is in the video, as its dot on the timeline says.
+  const callAt = openCall ? (heard ?? placeCut(openCall))?.start : undefined;
   const callCard = !editOpen && pass && openCall && listening ? <section className="edit-card is-call" role="region" aria-label="Call">
     {/* A grey gap clicked: whose footage is playing, as on an applied cut's card. The lit icon is the way back. */}
     {visit?.side === "before" && <div className="edit-card-switched" role="status">
@@ -3400,7 +3400,8 @@ export function SimpleWorkspace() {
     {(decideError || pass.error) && <p className="text-bad" role="alert">{decideError || pass.error}</p>}
     <div className="edit-card-bar">
       {/* The call's number, the same as on its line in the chat and its dot on the timeline. */}
-      <span className="edit-card-count" title={callPlace >= 0 ? `${callPlace + 1} of ${waitingCalls.length} still waiting for you` : undefined}>Cut {callNo.get(openCall.index)}</span>
+      {/* Hovered, it says where the cut is in the video. */}
+      <span className="edit-card-count" title={callAt !== undefined ? `Cut at ${clockLabel(callAt)}` : undefined}>Cut {callNo.get(openCall.index)}</span>
       {callHistory.length > 0 && <EditVersion n={callHistory.length + 1}
         title={`v${callHistory.length}: ${callHistory.at(-1)!.reason ?? "Scarlet’s earlier version."}${callHistory.at(-1)!.note ? `\nYou: “${callHistory.at(-1)!.note}”` : ""}`} />}
       <EditNote key={callKey} text={openCall.reason} unchecked={openCall.unchecked} />
@@ -3613,6 +3614,8 @@ export function SimpleWorkspace() {
   // chosen in its passage has the words' times, not the cut's.
   const aimedCall = pass && aimed && aimed.changeId === pass.id && aimed.cutIndex !== undefined
     ? allCalls.find(a => a.index === aimed.cutIndex) ?? (aimed.end !== undefined ? { start: aimed.time, end: aimed.end } : undefined) : undefined;
+  // A call's tag is only its number ("Cut 3"), so the box's tag line says where that cut is.
+  const aimTime = boxTag && aimedCall && aimed && cutName(aimed) === boxTag ? (placeCut(aimedCall) ?? aimedCall).start : undefined;
   const aimLabel = !replyThread ? "Starting a new edit"
     : aimedCall && (targetLabel || aimedAtItem) ? `Revising the cut at ${clockLabel((placeCut(aimedCall) ?? aimedCall).start)}`
     : targetLabel ? `Revising ${targetLabel}`
@@ -3846,7 +3849,7 @@ export function SimpleWorkspace() {
     onCreated={() => { follow.current = true; }} onSent={sentUnder(aims.current)}
     // The box carries a tag naming the cut or edit it revises, or the point a new edit is about. Taking the tag off
     // makes the message a new edit about the whole video.
-    messageClock={messageClock} pausedAt={replyTo ? pausedAt : undefined}
+    messageClock={messageClock} pausedAt={replyTo ? pausedAt : undefined} aimTime={aimTime}
     targetTag={boxTag} onClearTarget={clearTarget} onRestoreTarget={restoreTarget}
     // A queued request's words have the box to themselves: its row in the tray, lit, says which request they are.
     rewording={rewordingItem && { id: rewordingItem.id, text: rewording!.text,
