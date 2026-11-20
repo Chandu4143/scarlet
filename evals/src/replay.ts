@@ -66,6 +66,8 @@ export interface ReplayResult {
   outcome: "ready" | "preserved" | "needsRevision" | "rejected";
   /** Submitted cuts, by index, a dispute set aside so the rest of the batch could be saved, as the tool does. */
   setAside?: number[];
+  /** Why each of them was set aside, as the model was told. */
+  setAsideWhy?: string[];
   error?: string;
   disputedEdges?: Array<Partial<Range> & { reason: string }>;
   /** Share of submitted ranges whose replayed tier and edges (±1 ms) match the run, per scan-window set tried. */
@@ -170,12 +172,13 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
       const { productionQuote, resumeWith, ...rest } = c as typeof c & { resumeWith?: string };
       return { ...rest, reason: c.reason ?? "", ...(!opts.dropQuotes && { productionQuote, resumeWith }) };
     }) as DialogueCutInput[];
-    let planned: Awaited<ReturnType<typeof planDialogueBatch>>["plan"], setAside: number[] | undefined, error: string | undefined;
+    let planned: Awaited<ReturnType<typeof planDialogueBatch>>["plan"], setAside: number[] | undefined, setAsideWhy: string[] | undefined, error: string | undefined;
     try {
       // As the tool saves a batch: cuts a dispute names are set aside and the rest are saved.
       const batch = await planDialogueBatch({ tl, cuts: cutsIn, range: plan.range, only: plan.only as DialogueCutInput["kind"] | undefined, localPauses, anchor, unsureJoins: plan.unsureJoins }, sources);
       planned = batch.plan;
       setAside = batch.setAside?.cuts;
+      setAsideWhy = batch.setAside?.disputedEdges.map(e => e.reason);
     } catch (err) {
       error = (err as Error).message;
       planned = { outcome: "preserved" };
@@ -207,13 +210,13 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
       });
     }
     const same = cuts.filter(c => c.original!.tier === c.replay.tier && (c.replay.tier === "kept" || near(c.original!, c.replay))).length;
-    return { planned, setAside, error, decisions, gate, cuts, agreement: cuts.length ? same / cuts.length : 0 };
+    return { planned, setAside, setAsideWhy, error, decisions, gate, cuts, agreement: cuts.length ? same / cuts.length : 0 };
   };
 
   const tried: Array<{ fp: string; result: Awaited<ReturnType<typeof run>> }> = [];
   for (const fp of candidates) tried.push({ fp, result: await run(fp) });
   const best = [...tried].sort((a, b) => b.result.agreement - a.result.agreement)[0]!;
-  const { planned, setAside, error, decisions, gate, cuts } = best.result;
+  const { planned, setAside, setAsideWhy, error, decisions, gate, cuts } = best.result;
 
   const changed: Record<string, number> = {}, transitions: Record<string, number> = {};
   for (const line of gate.decisions) changed[`${line.asked}→${line.outcome}`] = (changed[`${line.asked}→${line.outcome}`] ?? 0) + 1;
@@ -248,7 +251,7 @@ export async function replayCase(loaded: LoadedCase, opts: ReplayOptions = {}): 
   return {
     schema: 3, kind: "replay", generatedAt: new Date().toISOString(), caseId: loaded.file.id, taskId: origin.task.id, planVersion: plan.version,
     code: gitState(), crossfadeFrames: plan.crossfadeFrames ?? 0, dropQuotes: !!opts.dropQuotes, fingerprint: best.fp,
-    outcome: error ? "rejected" : planned.outcome, ...(error && { error }), ...(setAside?.length && { setAside }),
+    outcome: error ? "rejected" : planned.outcome, ...(error && { error }), ...(setAside?.length && { setAside, setAsideWhy }),
     ...(planned.outcome === "needsRevision" && { disputedEdges: planned.disputedEdges }),
     agreement: Object.fromEntries(tried.map(t => [t.fp.slice(0, 12), Math.round(t.result.agreement * 1000) / 1000])),
     gate: { changed, moved: gate.decisions.filter(l => l.from).length, unchanged: gate.unchangedCuts },
