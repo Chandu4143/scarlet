@@ -1346,7 +1346,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return deliverPictures(await preparePictures(request!));
     });
 
-  const batches = new PictureBatches(preparePictures);
+  // One call waits for the whole batch, a margin under the harness's tool deadline (toolWaitSeconds): 25 s for a
+  // client Scarlet didn't launch, as before.
+  const batches = new PictureBatches(preparePictures, { waitMs: toolWait(caps, 20) * 1000 });
   // The only close handler: a second assignment would replace this one.
   server.server.onclose = () => { diagnosticSessionClosed = true; batches.close(); reviews.close(); };
   tool("frame_contact_sheet_batch",
