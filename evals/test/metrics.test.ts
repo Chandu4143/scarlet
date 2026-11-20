@@ -260,6 +260,11 @@ describe("trace", () => {
   const task = { id: "tsk_1", state: "done", agent: "codex", createdAt: at(-5), startedAt: at(0), finishedAt: at(600),
     usage: { inputTokens: 1000, outputTokens: 200, cache: { read: 50 } } };
 
+  it("prefers cumulative workedMs when recorded on a resumed task", () => {
+    const resumed = { ...task, startedAt: at(500) };
+    expect(traceMetrics({ ...resumed, workedMs: 420000 }, events)).toMatchObject({ activeSeconds: 420, finishSeconds: 605, firstCallSeconds: 201 });
+  });
+
   it("counts tools, errors, inspection and active time without the editor's wait", () => {
     const m = traceMetrics(task, events);
     expect(m).toMatchObject({ finishSeconds: 605, activeSeconds: 540, queueSeconds: 5, waitingSeconds: 60, firstChangeSeconds: 201, firstCallSeconds: 202,

@@ -473,6 +473,7 @@ export function pacing(played: readonly PlayedWord[], opts: PacingOptions = DEFA
 // ---------------------------------------------------------------------------
 
 export interface TaskLike {
+  workedMs?: number;
   id: string;
   state: string;
   agent?: string;
@@ -522,7 +523,10 @@ export interface TraceMetrics {
   inspection: { listened: number; listenedByTool: Record<string, number>; visual: number; levels: number; usedAudio: boolean; usedVisual: boolean };
 }
 
-const ms = (a?: string, b?: string) => a && b ? (Date.parse(b) - Date.parse(a)) / 1000 : null;
+const ms = (a?: string, b?: string) => {
+  const delta = a && b ? (Date.parse(b) - Date.parse(a)) / 1000 : NaN;
+  return Number.isFinite(delta) && delta >= 0 ? delta : null;
+};
 
 /** Numeric token counts from `task.usage`, whatever its exact shape (flat or nested one level). */
 function usageNumbers(usage: unknown): Record<string, number> | null {
@@ -567,12 +571,14 @@ export function traceMetrics(task: TaskLike, events: readonly EventLike[]): Trac
   // A task claimed again (a worker restart, a resume) keeps only its latest startedAt, so the work began at its first event if that is earlier.
   const start = [task.startedAt, ...events.map(e => e.at)].filter((t): t is string => !!t).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
   const span = ms(start, task.finishedAt);
+  const active = task.workedMs != null ? (Number.isFinite(task.workedMs) && task.workedMs >= 0 ? task.workedMs / 1000 : null)
+    : span !== null && span >= waiting ? span - waiting : null;
   const listened = Object.values(listenedByTool).reduce((a, b) => a + b, 0);
   const raw = (task.usage && typeof task.usage === "object" ? task.usage : {}) as { estimatedApiCostUsd?: unknown; unpricedModels?: unknown };
   return {
     state: task.state, agent: task.agent, model: task.model, effort: task.effort,
     finishSeconds: r1(ms(task.createdAt, task.finishedAt)),
-    activeSeconds: span === null ? null : round(span - waiting, 1),
+    activeSeconds: r1(active),
     queueSeconds: r1(ms(task.createdAt, start)),
     waitingSeconds: round(waiting, 1),
     firstChangeSeconds: r1(ms(start, firstChange)),
