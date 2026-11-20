@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 19, 2026
 
+- Scarlet can now check whether a recording's lips keep time with its sound and, when they're off, move the picture to match while every cut stays where you heard it.
 - When the FFmpeg on your computer can’t draw text, exporting or playing a video with captions now says so and how to install one that can, instead of only asking you to try again.
 - On Windows, each edit starts about half a second sooner: Scarlet no longer opens PowerShell to lock its working folders and keep track of the programs it runs.
 - A cut whose edge Scarlet only had to move back into a pause, with no word in between, now goes in on its own instead of waiting for you as a call.

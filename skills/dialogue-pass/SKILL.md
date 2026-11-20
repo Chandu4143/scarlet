@@ -8,6 +8,8 @@ category: Story and pacing
 
 Make the conversation easier to follow with cuts alone. Keep the speaker’s meaning, the order of the exchange and the timing between synchronized tracks. The editor’s brief sets the pace and identifies any passage to protect. Use straight picture and audio cuts. Smoothing, mixing, color, framing, cutaways, music and captions each need an explicit request.
 
+When someone talks to camera, check once per recording that their lips keep time with the sound (`lip_sync`) before cutting it. Put a recording that is plainly off back in time with `timeline_picture_sync`, and ask the editor when the measurement leaves you unsure.
+
 An abandoned start can come out when the next take completes the thought. A retake can begin just beyond the passage under review. Compare what each delivery actually says, particularly corrections, qualifications and changes of mind. A line the speaker takes back and says again is a retake, even when something they just noticed corrected it ("oh yeah", "wait, actually"): keep the corrected line, and cut the wrong one with the moment of noticing. Keep both only when the mistake itself matters to the story. Keep repetition used for emphasis and the other speaker’s reply. A direction to the recording crew can come out when the surrounding dialogue makes its purpose clear.
 
 When a line is barely audible beside the dialogue on either side, it is usually an aside: cut the whole line and the wait around it. Speakers often say a note to their editor this way ("you can get a screenshot of that"), so quote each such line in the edit's summary, and flag it when it asks for something to be done. Keep a deliberate whisper or a quiet reply the audience needs to follow the exchange.

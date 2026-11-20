@@ -40,6 +40,7 @@ import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet
 import {
   applyOps,
   audioCrossfadeOps,
+  pictureSyncOps,
   CutAssessment,
   CaptionStyle,
   captionsFromWords,
@@ -111,7 +112,7 @@ const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_questio
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
 /** An area check looks at one frame and says what of it viewers may see, and nothing else. */
 const AREA_CHECK_TOOLS: ReadonlySet<string> = new Set(["media_frame", "screen_area"]);
-const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
+const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
 const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this footage after fromVersion. Read that passage on currentVersion and make the edit again there.";
@@ -1238,7 +1239,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         let outcome: ToolOutcome;
         let result: ToolResult;
         try {
-          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_framing", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
+          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_framing", "timeline_picture_sync", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
             throw new Error("This request only tightens local pauses. Save classified pauses with dialogue_apply_cuts.");
           if (PASS_WIDE_TOOLS.has(name)) {
             const selected = await useStagedCut();
@@ -3235,6 +3236,34 @@ ${OPS_DOC}`,
       const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
       const result = await propose({ intent, ops, description, reason, noteIds }, before);
       return { ...result, content: [...result.content, { type: "text" as const, text: `Joins:\n${report.join("\n")}` }] };
+    },
+  );
+
+  tool(
+    "timeline_picture_sync",
+    "Put a video's picture in time with its own sound, all through the edit: lip_sync measures how far off they are. Its sound stays where it is, so cuts placed by ear and recordings synced to it by sound stay as they are; its picture plays from `soundLeads` seconds later in the recording (earlier when negative), so a mouth moves with the words. `soundLeads` is set, not added: every clip of the video that plays beside its own sound is put that far from it whatever it was before, so a second call replaces the first and 0 puts the picture back as recorded. A clip that played its own sound hands it to the dialogue track below its own and goes silent, so its picture can move. A clip with none of its own sound beside it moves by the whole amount. Where the recording's picture runs out, a clip is shortened: the result lists each clip moved and any picture lost. One proposal.",
+    {
+      intent: intentInput,
+      mediaId: z.string().describe("The video whose picture to move"),
+      soundLeads: z.number().finite().min(-5).max(5).describe("Seconds the recording's sound comes before its picture, as lip_sync gives it: positive moves the picture later in the recording"),
+      description: z.string().min(1).default("Put the picture in time with its sound").describe("One short sentence for the chat about what the editor will see"),
+      reason: editReasonInput,
+      noteIds: z.array(z.string()).optional(),
+    },
+    async ({ intent, mediaId, soundLeads, description, reason, noteIds }) => {
+      const base = lastTimeline?.version;
+      const { project } = await getProject();
+      const before = await getTimeline(base);
+      const { ops, report } = pictureSyncOps(before, project.media, mediaId, soundLeads);
+      if (!ops.length) return text(`Nothing to change: every clip of ${mediaId} already plays its picture ${soundLeads} s after its sound.`);
+      const result = await propose({ intent, ops, description, reason, noteIds }, before);
+      const lines = [
+        `Moved the picture of ${report.moved.length} clip${report.moved.length === 1 ? "" : "s"}${report.unchanged ? ` (${report.unchanged} already there)` : ""}.`,
+        ...(report.soundMoved.length ? [`${report.soundMoved.length} clip${report.soundMoved.length === 1 ? "" : "s"} handed their sound to a dialogue track: ${report.soundMoved.join(", ")}.`] : []),
+        ...(report.pictureOnly.length ? [`No sound of the recording plays beside ${report.pictureOnly.join(", ")}: moved by the whole ${soundLeads} s.`] : []),
+        ...report.shortened.map(s => `${s.clipId} lost ${s.seconds.toFixed(3)} s of picture at ${s.at.toFixed(3)} s: the recording's picture runs out there.`),
+      ];
+      return { ...result, content: [...result.content, { type: "text" as const, text: lines.join("\n") }] };
     },
   );
 

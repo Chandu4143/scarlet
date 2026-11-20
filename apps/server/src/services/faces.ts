@@ -182,6 +182,16 @@ const reading = pictureReader<FaceSample[]>({ name: "faces", window: FACES_WINDO
 const followed = new Map<string, { windows: string; result: ReturnType<typeof faceTracks> }>();
 const MAX_FOLLOWED = 32;
 
+/**
+ * The faces as each frame looked at saw them, in a range, finding what hasn't been found yet: a box per frame, where
+ * `faces` gives one box that holds a face through a span. Waits up to `waitMs`, as `faces` does.
+ */
+export async function faceSamples(ctx: Ctx, media: MediaAsset & { projectId: string }, range: { from: number; to: number },
+  opts: { waitMs?: number; signal?: AbortSignal } = {}): Promise<{ samples: FaceSample[]; done: boolean; error?: string }> {
+  const read = await reading.read(ctx, media, range, opts);
+  return { samples: read.ready.flatMap(w => w.value).filter(s => s.at >= range.from && s.at < range.to), done: read.done, ...(read.error && { error: read.error }) };
+}
+
 export interface FacesResult {
   mediaId: string;
   from: number; to: number;

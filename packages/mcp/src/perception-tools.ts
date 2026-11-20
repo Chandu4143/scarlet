@@ -428,6 +428,21 @@ export function registerPerception(deps: PerceptionDeps) {
         ...(left > 0 && { next: `offset ${offset + page.length} for the next ${Math.min(200, left)}` }) });
     });
 
+  tool("lip_sync",
+    "Whether a video's sound keeps time with its own picture, measured from the face talking in it. A few stretches spread across the range (6 of 30 s by default, or `count` of `seconds`) are each measured on their own: how much the mouth moves from frame to frame against how loud the sound is, at every shift up to 1.5 s either way. Each gives `soundLeads`, the seconds the sound comes before the picture (positive: heard before the mouth moves; negative: after), `match`, how closely the mouth follows the sound at that shift (a correlation, -1..1), and `matchInSync`, the same as the recording plays now, with the face measured (the mouth's area as fractions of the frame, roughly where it looks and its seconds in frame). The mouth opens a little before the sound it makes, and loudness follows it loosely, so a recording in time reads within about 0.15 s of 0 with `match` hardly above `matchInSync`; an offset is plain when `match` is well above `matchInSync`. One stretch can wander a few tenths of a second where the speaker moves their head or pauses: `together` reads the measured stretches as one (their match at each shift averaged), which settles on the shift they share. One offset across the recording is a steady one; offsets that grow steadily from start to end are a drift, which one shift doesn't fix. A low `match` says the stretch had little to go on: a face turned away, a hand over the mouth, little speech, or sound that isn't the speaker. A stretch with no face in frame for most of it isn't measured and says why. `frameSeconds` is one frame. Measured once and kept; a stretch still being measured (`done` false) carries on: call again for it. timeline_picture_sync moves the picture to match.",
+    { mediaId: z.string(), from: z.number().min(0).optional().describe("Source seconds"), to: z.number().min(0).optional(),
+      count: z.number().int().min(1).max(20).optional().describe("Stretches to measure, default 6"),
+      seconds: z.number().min(5).max(120).optional().describe("Length of each stretch, default 30") },
+    async ({ mediaId, from, to, count, seconds }) => {
+      const { project } = await deps.getProject();
+      const asset = project.media.find(m => m.id === mediaId);
+      if (!asset) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
+      if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has a picture to keep time with its sound.`);
+      const qs = new URLSearchParams({ ...(from !== undefined && { from: String(from) }), ...(to !== undefined && { to: String(to) }),
+        ...(count !== undefined && { count: String(count) }), ...(seconds !== undefined && { seconds: String(seconds) }) }).toString();
+      return json(await client.get<object>(`/projects/${encodeURIComponent(deps.projectId)}/media/${encodeURIComponent(mediaId)}/lip-sync${qs ? `?${qs}` : ""}`));
+    });
+
   return {
     readTranscript,
     readingsOn,
