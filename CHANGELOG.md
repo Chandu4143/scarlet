@@ -8,6 +8,9 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 - A skill Scarlet comes with that you edited and then set back to Scarlet's own text gets Scarlet's updates again.
 - When Scarlet puts your camera in the corner over a screen recording, it now frames you instead of shrinking the whole camera shot into the box, and follows your skill's size, shape, how much of you to show and rounded corners.
+- A cut now comes right where your last word's sound ends, about a tenth of a second of quiet in all, instead of holding on you silent or breathing in before it.
+- When a breath follows your last word, the cut now goes before the breath, even where Scarlet heard no pause around it.
+- When two words run together, Scarlet no longer cuts at the short stop inside a word, such as the “p” of “subscription”, which took the end of the word off.
 
 ## November 19, 2026
 

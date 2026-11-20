@@ -150,9 +150,9 @@ describe("native retake boundaries", () => {
   it("checks the recording at an edge the transcript calls a word gap", () => {
     const { p, tl } = fixture();
     // The transcript ends “finish” at 1.38, but the voice runs to 1.44. A cut at 1.40 would clip its tail.
-    // The edge lands in the pause 0.2 s after the voice ends (1.64), on the nearest frame.
+    // The edge lands in the pause 0.05 s after the voice ends (1.49), on the nearest frame.
     const tail = checkDialogueJoin(tl,p,{start:1.40,end:2.8},[page]);
-    expect(tail).toMatchObject({ status: "snapped", start: expect.closeTo(49/30, 5), end: 2.8 });
+    expect(tail).toMatchObject({ status: "snapped", start: expect.closeTo(45/30, 5), end: 2.8 });
     expect(tail.reason).toMatch(/into the pause/);
     expect(checkDialogueJoin(tl,p,{start:tail.start,end:tail.end},[page]).status).toBe("unchanged");
   });
@@ -173,10 +173,10 @@ describe("native retake boundaries", () => {
   it("trims a fragment of the removed take onto the silence before it", () => {
     const { p, tl } = fixture();
     // The removal should start before “first”, but begins 50 ms after its onset. The nearest silent frame
-    // (53/30) is only a fragment trim, so it still snaps, and the edge then sits 0.2 s after “finish”.
+    // (53/30) is only a fragment trim, so it still snaps, and the edge then sits 0.05 s after “finish”, on a frame.
     const fragment = checkDialogueJoin(tl,p,{start:1.85,end:2.8},[page]);
     expect(fragment.status).toBe("snapped");
-    expect(fragment.start).toBeCloseTo(49/30);
+    expect(fragment.start).toBeCloseTo(45/30);
     expect(fragment.reason).toMatch(/earlier.*first/);
   });
   it("trusts measured silence over a stretched word timing", () => {
@@ -196,9 +196,9 @@ describe("native retake boundaries", () => {
   it("pads an edge it places: air after kept speech, air before speech resumes, split when the pause is short", () => {
     expect(padEdge({ start: 1, end: 2 }, "start")).toBeCloseTo(1 + AIR_AFTER_SPEECH);
     expect(padEdge({ start: 1, end: 2 }, "end")).toBeCloseTo(2 - AIR_BEFORE_SPEECH);
-    // 0.2 s is shorter than the two together; both edges take the same proportional point.
-    expect(padEdge({ start: 1, end: 1.2 }, "start")).toBeCloseTo(1.16);
-    expect(padEdge({ start: 1, end: 1.2 }, "end")).toBeCloseTo(1.16);
+    // 0.08 s is shorter than the two together; both edges take the same proportional point.
+    expect(padEdge({ start: 1, end: 1.08 }, "start")).toBeCloseTo(1.04);
+    expect(padEdge({ start: 1, end: 1.08 }, "end")).toBeCloseTo(1.04);
     // An edge already in silence is the model's pacing and stays where it is.
     const { p, tl } = fixture();
     expect(checkDialogueJoin(tl,p,{start:1.7,end:2.8},[page])).toMatchObject({ status: "unchanged", start: 1.7 });
@@ -217,7 +217,8 @@ describe("native retake boundaries", () => {
     // A pause named by its word is trimmed the same way: “first” ends at 2.2 s by its timing and sounds until 2.26 s.
     const pause = pauseCutRange(words[1]!, words[2]!, at);
     expect(pause).toMatchObject({ problems: [], plays: expect.closeTo(1.2) });
-    expect(pause.start).toBeCloseTo(2.2 + AIR_AFTER_SPEECH);
+    // No closer to the sound than the quiet's margin: the word sounds to 2.26 s.
+    expect(pause.start).toBeCloseTo(Math.max(2.2 + AIR_AFTER_SPEECH, 2.26 + .03));
     expect(pause.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
   });
   it("places a join's room tone by the pace it is given, and keeps its quiet before the voice whatever the pause", () => {
@@ -450,6 +451,27 @@ describe("native retake boundaries", () => {
     // The edge goes beside the word, not half a second before it.
     const cut = wordCutRange(words, 1, 1, () => joinEvidence(words, { from: 0, to: 5, peaks: levels, rms: levels, speechActivity: early }));
     expect(cut.end).toBeCloseTo(3.4 - AIR_BEFORE_SPEECH);
+  });
+
+  it("cuts in the room right after the kept word, before a breath the speech detector runs on through", () => {
+    // “simulation.” sounds to 1.4 s. The room for 80 ms, a breath 30 dB under the voice to 1.6 s, the room again, “I”
+    // at 1.82 s. The detector is on from the word to the end of “thought”, so the only gap is the trough after the breath.
+    const said = [{ start: 1, end: 1.4, text: "simulation." }, { start: 1.82, end: 2, text: "I" }, { start: 2, end: 2.3, text: "thought" }, { start: 3, end: 3.4, text: "test" }];
+    const sound = [[1, 1.4], [1.82, 2.3], [3, 3.4]];
+    const rms = Array.from({ length: 250 }, (_, i) => sound.some(([a, b]) => a! <= i/50 && i/50 < b!) ? .12 : i/50 >= 1.48 && i/50 < 1.6 ? .003 : i/50 >= 1.4 && i/50 < 1.82 ? .0008 : .0004);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: 1, end: 2.32 }, { start: 3, end: 3.42 }] })!;
+    const cut = wordCutRange(said, 1, 2, () => edges, undefined, { after: .18, before: .06 });
+    expect(cut.start).toBeGreaterThan(1.4);
+    expect(cut.start).toBeLessThan(1.48);
+  });
+
+  it("doesn't take a stop inside the kept word, which sounds on after it, for where the words part", () => {
+    // “subscription” runs into “I” with no pause. The stop before its last syllable falls to -52 dBFS at 1.2 s, and the
+    // word sounds at full level for 0.36 s after it: an edge there takes off “-tion”.
+    const said = [{ start: 1, end: 1.6, text: "subscription." }, { start: 1.6, end: 1.75, text: "I" }, { start: 1.75, end: 2.3, text: "downloaded" }, { start: 3, end: 3.4, text: "the" }];
+    const rms = Array.from({ length: 250 }, (_, i) => i/50 >= 1.2 && i/50 < 1.24 ? .0025 : (i/50 >= 1 && i/50 < 2.3) || (i/50 >= 3 && i/50 < 3.4) ? .12 : .0004);
+    const edges = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: [{ start: 1, end: 2.32 }, { start: 3, end: 3.42 }] })!;
+    expect(wordCutRange(said, 1, 2, () => edges).start).toBeCloseTo(1.6, 2);
   });
 
   it("starts the quiet after a word where its sound is back at room level, with the breath after it in the pause", () => {
