@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 20, 2026
+
+- When Scarlet puts your camera in the corner over a screen recording, it now frames you instead of shrinking the whole camera shot into the box, and follows your skill's size, shape, how much of you to show and rounded corners.
+
 ## November 19, 2026
 
 - Scarlet can now check whether a recording's lips keep time with its sound and, when they're off, move the picture to match while every cut stays where you heard it.

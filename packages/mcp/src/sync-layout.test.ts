@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { applyOps, createProject, emptyTimeline, makeMediaClip, makeTrack, Transform } from "@scarlet/timeline";
-import { InsetFraming, syncPictureOps } from "./sync-layout.js";
+import { InsetFraming, insetStretches, presetInset, syncPictureOps, type FaceReading } from "./sync-layout.js";
 
 it("leaves solo cameras and intentional compositions alone, and uses the selected camera above an earlier screen", () => {
   const project = createProject("Screen and camera");
@@ -89,4 +89,110 @@ it("asks for a screen and a separate camera that overlap, and names what is wron
   expect(roles("later")).toThrow("The screen and camera clips must overlap after sync.");
   upper.hidden = true;
   expect(roles("later")).toThrow("Choose a screen clip and a separate camera recording");
+});
+
+// The presenter as `faces` read a 4K talking head on 2026-11-20: one face, a little right of centre, in spans that each
+// hold its box through small moves.
+const presenter = (track = 1, shift = 0): FaceReading["spans"] => [
+  { track, start: 73, end: 107.5, box: [.414 + shift, .266, .623 + shift, .796], eyes: [.527 + shift, .453], confidence: .95 },
+  { track, start: 107.5, end: 152.5, box: [.434 + shift, .268, .636 + shift, .72], eyes: [.554 + shift, .46], confidence: .95 },
+  { track, start: 152.5, end: 286.5, box: [.409 + shift, .269, .62 + shift, .767], eyes: [.519 + shift, .481], confidence: .95 },
+  { track, start: 286.5, end: 400, box: [.415 + shift, .237, .621 + shift, .728], eyes: [.528 + shift, .424], confidence: .95 },
+];
+const camera = { width: 3840, height: 2160 };
+const project4k = () => createProject("Demo", { width: 3840, height: 2160 });
+
+it("crops the preset inset to the presenter's head and shoulders, in the canvas's shape and its corner", () => {
+  const { framing, presenter: held, whole } = presetInset(project4k(), camera, [{ spans: presenter() }]);
+  expect(whole).toBeUndefined();
+  expect(held).toMatchObject({ seconds: 327 });
+  const w = 1 - framing.cropLeft! - framing.cropRight!, h = 1 - framing.cropTop! - framing.cropBottom!;
+  // The canvas's shape: no background beside the camera, and the same corner and size as the whole-picture preset.
+  expect(w * camera.width / (h * camera.height)).toBeCloseTo(16 / 9, 2);
+  expect(framing).toMatchObject({ scale: .25, x: .35, y: .35 });
+  // Tighter than the whole picture, holding the face's box wherever the presenter keeps to, eyes in the upper half.
+  expect(w).toBeLessThan(.85);
+  expect(framing.cropLeft).toBeLessThan(.409);
+  expect(1 - framing.cropRight!).toBeGreaterThan(.636);
+  expect(framing.cropTop).toBeLessThan(.237);
+  const eyeLine = (.46 - framing.cropTop!) / h;
+  expect(eyeLine).toBeGreaterThan(.35);
+  expect(eyeLine).toBeLessThan(.5);
+});
+
+it("frames the inset as the editor's skill asks: 20% larger, 1.5:1, down to the desk, corners rounded", () => {
+  // matt-talking-head: “scale it up by 20% in both dimensions, then crop the sides … 1.5:1 … from a small margin above
+  // my hair down to the desk in front of me … Round all four corners of the inset.”
+  const { framing, whole } = presetInset(project4k(), camera, [{ spans: presenter() }], { show: "desk", aspect: 1.5, size: 1.2, cornerRadius: .06 });
+  expect(whole).toBeUndefined();
+  const w = 1 - framing.cropLeft! - framing.cropRight!, h = 1 - framing.cropTop! - framing.cropBottom!;
+  expect(w * camera.width / (h * camera.height)).toBeCloseTo(1.5, 2);
+  // Down to the bottom of the camera's picture, from above the hair, with the sides cut.
+  expect(framing.cropBottom).toBe(0);
+  expect(framing.cropTop).toBeGreaterThan(0);
+  expect(framing.cropTop).toBeLessThan(.15);
+  expect(framing.cropLeft).toBeGreaterThan(.05);
+  expect(framing.cropRight).toBeGreaterThan(.05);
+  // A quarter of the canvas's height, 20% larger, in the bottom-right corner with the preset's margin.
+  expect(framing).toMatchObject({ scale: .3, cornerRadius: .06 });
+  const heightOnCanvas = .3, widthOnCanvas = .3 * 1.5 / (16 / 9);
+  expect(.5 + framing.x + widthOnCanvas / 2).toBeCloseTo(.975, 3);
+  expect(.5 + framing.y + heightOnCanvas / 2).toBeCloseTo(.975, 3);
+});
+
+it("reaches further down for more of the presenter and stops at the chin for a head", () => {
+  const reach = (show: "head" | "shoulders" | "chest" | "desk") => 1 - presetInset(project4k(), camera, [{ spans: presenter() }], { show }).framing.cropBottom!;
+  expect(reach("head")).toBeLessThan(reach("shoulders"));
+  expect(reach("shoulders")).toBeLessThan(reach("chest"));
+  // This camera's picture ends at his chest: the desk is as far as it shows.
+  expect(reach("chest")).toBe(1);
+  expect(reach("desk")).toBe(1);
+});
+
+it("cuts a camera it can't frame on a presenter to the shape asked from its middle", () => {
+  const { framing, whole } = presetInset(project4k(), camera, [], { aspect: 1.5, cornerRadius: .06 });
+  expect(whole).toBe("no face was found in the camera's picture");
+  expect(framing).toMatchObject({ cropTop: 0, cropBottom: 0, cornerRadius: .06 });
+  expect(framing.cropLeft).toBeCloseTo(framing.cropRight!, 4);
+  expect(framing.cropLeft).toBeGreaterThan(.07);
+});
+
+it("keeps the crop inside the picture for a presenter near its edge", () => {
+  const { framing } = presetInset(project4k(), camera, [{ spans: presenter(1, .33) }]);
+  expect(framing.cropRight).toBe(0);
+  expect(framing.cropLeft).toBeGreaterThan(0);
+});
+
+it("counts only the seconds of a span inside the stretch that read it", () => {
+  // Two ten-second stretches inside one long span: twenty seconds of the presenter, not the span's length twice.
+  const span = presenter()[2]!;
+  expect(presetInset(project4k(), camera, [{ from: 160, to: 170, spans: [span] }, { from: 260, to: 270, spans: [span] }]).presenter)
+    .toMatchObject({ seconds: 20 });
+});
+
+it("reads the presenter across stretches read apart, and follows the face most on screen", () => {
+  const spans = presenter();
+  const glimpse = { track: 2, start: 200, end: 203, box: [.05, .3, .1, .4] as const, eyes: [.07, .33] as const, confidence: .55 };
+  const { framing } = presetInset(project4k(), camera, [{ spans: spans.slice(0, 2) }, { spans: [...spans.slice(2), glimpse] }]);
+  expect(framing.cropLeft).toBeGreaterThan(.1);
+});
+
+it("shows the whole camera when there is no presenter to frame, two to choose between, or one who fills it", () => {
+  const project = project4k();
+  const preset = { scale: .25, x: .35, y: .35 };
+  expect(presetInset(project, camera, [])).toEqual({ framing: preset, whole: "no face was found in the camera's picture" });
+  expect(presetInset(project, camera, [{ done: false, spans: [] }])).toEqual({ framing: preset, whole: "its faces weren't read in time" });
+  expect(presetInset(project, {}, [{ spans: presenter() }])).toMatchObject({ framing: preset, whole: "the camera's picture size isn't known yet" });
+  const guest = presenter(2, -.3);
+  expect(presetInset(project, camera, [{ spans: [...presenter(), ...guest] }]).whole).toMatch(/^a second face shares the camera's picture/);
+  const close = [{ track: 1, start: 0, end: 60, box: [.3, .1, .7, .9] as const, eyes: [.5, .4] as const, confidence: .95 }];
+  expect(presetInset(project, camera, [{ spans: close }])).toMatchObject({ framing: preset, whole: "the presenter already fills the camera's picture" });
+});
+
+it("reads faces in a few short stretches spread over a long camera, and all of a short one", () => {
+  expect(insetStretches(10, 40)).toEqual([{ from: 10, to: 40 }]);
+  const spread = insetStretches(0, 600);
+  expect(spread).toHaveLength(6);
+  expect(spread[0]).toEqual({ from: 45, to: 55 });
+  expect(spread.at(-1)).toEqual({ from: 545, to: 555 });
 });

@@ -251,6 +251,39 @@ describe("timeline_first_cut", () => {
       expect(body.timeline!.tracks[1]!.clips[0]).toMatchObject({ mediaId: "cam", sourceIn: 0, sourceOut: 100, timelineIn: 2, volume: 1,
         transform: { scale: 0.25, x: 0.35, y: 0.35 } });
       expect(textOf(r)).toContain("Layer cam: 100.00 s of the 120.00 s inset on V2 in 1 clip(s); it has no footage for the other 20.00 s, where m1 plays alone.");
+      expect(textOf(r)).toContain("The inset isn't placed on the presenter: the faces in the camera's picture couldn't be read. It shows cam's [0, 0, 100, 100] percent of its picture, at scale 0.25. Give framing to set it yourself.");
+      // Where the camera's faces are read, the preset holds the presenter's head and shoulders, from the seconds it plays.
+      const asked: string[] = [];
+      mock.state.extra = (req, res) => {
+        if (req.method !== "GET" || req.path !== "/projects/prj_test/media/cam/faces") return false;
+        asked.push(`${req.query.get("from")}-${req.query.get("to")}`);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ spans: [
+          { track: 1, start: Number(req.query.get("from")), end: Number(req.query.get("to")), box: [.42, .27, .62, .75], eyes: [.52, .45], confidence: .95 }] }));
+        return true;
+      };
+      const framed = await call({ mediaId: "cam", offset: 2, sound: true });
+      mock.state.extra = undefined;
+      // Six stretches of ten seconds, spread across the hundred the camera plays.
+      expect(asked).toEqual(["3.333-13.333", "20.000-30.000", "36.667-46.667", "53.333-63.333", "70.000-80.000", "86.667-96.667"]);
+      const inset = ProposeChangeRequest.parse(posts().at(-1)!.body).timeline!.tracks[1]!.clips[0]!;
+      expect(inset).toMatchObject({ transform: { scale: 0.25, x: 0.35, y: 0.35 } });
+      expect(inset.kind === "media" && inset.transform!.cropLeft).toBeGreaterThan(.1);
+      expect(textOf(framed)).toMatch(/The inset holds the presenter \(shoulders\): cam shows \[[\d., ]+\] percent of its picture, at scale 0.25, around the face found in 60 s of it\./);
+      // As the editor's skill asks it: larger, 1.5:1, down to the desk, corners rounded.
+      mock.state.extra = (req, res) => {
+        if (req.method !== "GET" || req.path !== "/projects/prj_test/media/cam/faces") return false;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ from: Number(req.query.get("from")), to: Number(req.query.get("to")), spans: [
+          { track: 1, start: 0, end: 100, box: [.42, .27, .62, .75], eyes: [.52, .45], confidence: .95 }] }));
+        return true;
+      };
+      const skilled = await call({ mediaId: "cam", offset: 2, sound: true, presenter: { show: "desk", aspect: 1.5, size: 1.2, cornerRadius: .06 } });
+      mock.state.extra = undefined;
+      const desk = ProposeChangeRequest.parse(posts().at(-1)!.body).timeline!.tracks[1]!.clips[0]!;
+      expect(desk).toMatchObject({ transform: { scale: .3, cornerRadius: .06, cropBottom: 0 } });
+      const t = desk.kind === "media" ? desk.transform! : undefined;
+      expect((1 - t!.cropLeft - t!.cropRight) * 1920 / ((1 - t!.cropTop - t!.cropBottom) * 1080)).toBeCloseTo(1.5, 2);
+      expect(textOf(skilled)).toContain("The inset holds the presenter (desk)");
+      expect(textOf(await call({ mediaId: "cam", offset: 2, presenter: { show: "head" }, framing: { scale: .3, x: 0, y: 0 } }))).toContain("presenter or framing, not both");
       // Keep ranges cut both at the same moments, and the first recording stays the sound unless the layer is chosen.
       const framing = { scale: 0.4, x: -0.25, y: 0.1, cropLeft: .12, cropRight: .12, cropTop: .04, cornerRadius: .06 };
       await call({ mediaId: "cam", offset: -1.5, framing }, {
@@ -263,7 +296,7 @@ describe("timeline_first_cut", () => {
         { sourceIn: 21.5, sourceOut: 31.5, timelineIn: 10, transform: framing }]);
       // What can't be a layer says why, and nothing is proposed.
       const proposed = posts().length;
-      expect(proposed).toBe(sent + 2);
+      expect(proposed).toBe(sent + 4);
       for (const [layer, more, why] of [
         [{ mediaId: "nope", offset: 0 }, {}, "Layer media nope is not in this project"],
         [{ mediaId: "m2", offset: 0 }, {}, "A separate sound recording goes in audioMediaId"],
