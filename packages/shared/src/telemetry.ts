@@ -22,6 +22,8 @@ const FEATURES = [
 
   ["POST", "/projects/:id/import/otio", "timeline.import_otio"],
   ["GET", "/projects/:id/versions/:v/export.otio", "timeline.export_otio"],
+  ["GET", "/projects/:id/versions/:v/export.srt", "timeline.export_srt"],
+  ["GET", "/projects/:id/versions/:v/export.vtt", "timeline.export_vtt"],
   ["POST", "/projects/:id/versions/:v/handoff", "timeline.export_handoff"],
   ["POST", "/projects/:id/branches", "branch.create"],
   ["POST", "/projects/:id/versions/:v/restore", "version.restore"],

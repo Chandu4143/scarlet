@@ -5,7 +5,8 @@
  */
 import type { CaptionClip, Clip, MediaAsset, MediaClip, Project, Timeline, Track } from "./schema.js";
 import { frames, q, seconds, type Q } from "./rational.js";
-import { clock, hms } from "./time.js";
+import { captionExportHasCues } from "./captions.js";
+import { clock } from "./time.js";
 
 /** A frame rate as a fraction: `num / den` frames a second. 29.97 is 30000/1001. */
 export interface ExactRate { num: number; den: number }
@@ -125,19 +126,7 @@ export function captionTracks(timeline: Timeline): Array<{ track: Track; cues: C
     cues: track.clips
       .filter((c): c is CaptionClip => c.kind === "caption" && c.enabled !== false && !!c.text.trim())
       .sort((a, b) => a.timelineIn - b.timelineIn),
-  })).filter(t => t.cues.length);
-}
-
-function srtTime(at: number): string {
-  const ms = Math.max(0, Math.round(at * 1000));
-  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
-  const { h, m, s } = hms(Math.floor(ms / 1000));
-  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms % 1000, 3)}`;
-}
-
-/** A caption track as a SubRip file, timed on the timeline. */
-export function toSrt(cues: CaptionClip[]): string {
-  return cues.map((c, i) => `${i + 1}\n${srtTime(c.timelineIn)} --> ${srtTime(c.timelineOut)}\n${c.text.trim().replace(/\r\n?/g, "\n")}\n`).join("\n");
+  })).filter(t => t.cues.length && captionExportHasCues(timeline, { trackId: t.track.id }));
 }
 
 /** Something another editor's app won't show as Scarlet does, and where. */

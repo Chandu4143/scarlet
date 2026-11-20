@@ -292,6 +292,9 @@ describe("a query", () => {
   it("puts the token on a file's address, after any query the address already has", () => {
     const { client } = engine();
     expect(client.fileUrl("/media/m1/file")).toBe("http://127.0.0.1:4000/api/media/m1/file?token=secret");
+    expect(client.srtUrl("p1", "v3")).toBe("http://127.0.0.1:4000/api/projects/p1/versions/v3/export.srt?token=secret");
+    expect(client.vttUrl("p1", "v3", { trackId: "cap", start: 1, end: 6 }))
+      .toBe("http://127.0.0.1:4000/api/projects/p1/versions/v3/export.vtt?token=secret&trackId=cap&start=1&end=6");
     expect(client.frameUrl("m1", 2.5)).toBe("http://127.0.0.1:4000/api/media/m1/frame?token=secret&t=2.5&w=640");
     expect(client.renderFileUrl("r1")).toBe("http://127.0.0.1:4000/api/renders/r1/file?token=secret");
     expect(client.renderFileUrl("r1", true)).toBe("http://127.0.0.1:4000/api/renders/r1/file?token=secret&wait=1");

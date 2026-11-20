@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createProject, emptyTimeline, exactRate, fromOtio, handoffFileNames, handoffLosses, handoffReadMe, makeMediaClip,
-  makeTrack, timecodeFrames, toFcpxml, toOtio, toSrt, timelineFromKeepRanges, trackLayers, type HandoffSource, type Timeline,
+  makeTrack, timecodeFrames, toFcpxml, toOtio, timelineFromKeepRanges, trackLayers, type HandoffSource, type Timeline,
 } from "./index.js";
 
 const source = (over: Partial<HandoffSource> = {}): HandoffSource => ({
@@ -36,15 +36,6 @@ describe("rates and timecode", () => {
   it("names the copies as Windows will write them: no trailing dots or spaces, no device names", () => {
     expect(handoffFileNames(["take.mov. ", "notes. . ", "CON.mov", "nul", "Com1.tar.gz", "lpt9.wav", "console.mov", "aux.mov"]))
       .toEqual(["take.mov", "notes", "CON_.mov", "nul_", "Com1_.tar.gz", "lpt9_.wav", "console.mov", "aux_.mov"]);
-  });
-});
-
-describe("captions", () => {
-  it("writes SubRip cues on the timeline's clock", () => {
-    expect(toSrt([
-      { id: "c1", kind: "caption", enabled: true, timelineIn: 1.5, timelineOut: 3.25, text: "Hello there" },
-      { id: "c2", kind: "caption", enabled: true, timelineIn: 3661.001, timelineOut: 3662, text: "Later" },
-    ])).toBe("1\n00:00:01,500 --> 00:00:03,250\nHello there\n\n2\n01:01:01,001 --> 01:01:02,000\nLater\n");
   });
 });
 
