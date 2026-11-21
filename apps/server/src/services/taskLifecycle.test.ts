@@ -152,7 +152,7 @@ it("stops a pass's closing check after a few returns in all, even when each retu
   }
   expect(states).toEqual([...Array(MOST_CLOSING_CHECKS).fill("queued"), "failed"]);
   expect(get(task.id)).toMatchObject({ interrupted: true, repeatAudit: { totalReturns: MOST_CLOSING_CHECKS } });
-  expect(get(task.id).error).toMatch(/^The final audio check still has/);
+  expect(get(task.id).error).toMatch(/^The final check still has/);
 });
 
 it("holds a request's read for a rule while editing is paused, and runs it on Resume", async () => {
