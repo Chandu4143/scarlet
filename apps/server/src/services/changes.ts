@@ -2131,7 +2131,23 @@ export function approveChange(ctx: Ctx, user: User, change: Change, opts: { spot
       outcome === "partial"
         ? `${user.name} approved ${spots!.length} of ${change.ranges.length} spots of ${quote(saved.description)}`
         : `${user.name} approved ${quote(saved.description)}${outcome === "rebased" ? " (merged into the latest edit)" : ""}`,
-    data: { changeId: saved.id, threadId: saved.threadId, outcome, version: target, onto: head },
+    data: {
+      changeId: saved.id,
+      threadId: saved.threadId,
+      ...(saved.taskId && { taskId: saved.taskId }),
+      branch: project.branch,
+      author: saved.author,
+      outcome,
+      version: target,
+      onto: head,
+      durationBefore: timelineDuration(headTl),
+      durationAfter: timelineDuration(snapshot.timeline),
+      editCount: saved.timelineEdits?.length ?? saved.ranges.length,
+      rangesCount: saved.ranges.length,
+      ...(saved.ops?.length && { opsCount: saved.ops.length }),
+      ...(saved.approvedSpots && { approvedSpots: saved.approvedSpots }),
+      ...(saved.restoredCuts?.length && { restoredCuts: saved.restoredCuts }),
+    },
   });
   return { change: saved, project: updated, outcome };
 }
@@ -2207,7 +2223,16 @@ export function unapproveChange(ctx: Ctx, user: User, change: Change): { change:
     actor: actorFor(user),
     type: "change.undone",
     summary: `${user.name} undid the approval of ${quote(change.description)}${change.decidedBy && change.decidedBy.id !== user.id ? ` (approved by ${change.decidedBy.name})` : ""}`,
-    data: { changeId: change.id, threadId: change.threadId, version: onto, from: applied },
+    data: {
+      changeId: change.id,
+      threadId: change.threadId,
+      ...(change.taskId && { taskId: change.taskId }),
+      branch: project.branch,
+      version: onto,
+      from: applied,
+      durationBefore: timelineDuration(resolveTimeline(ctx, project, applied)),
+      durationAfter: timelineDuration(resolveTimeline(ctx, project, onto)),
+    },
   });
   return { change: saved, project: updated };
 }
