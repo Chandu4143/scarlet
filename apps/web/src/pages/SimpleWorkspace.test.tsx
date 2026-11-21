@@ -3588,15 +3588,13 @@ it("keeps the other calls' dots on the timeline while a call is open, so one pre
   const dots = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
   const numbers = () => dots().map(d => d.querySelector(".simple-timeline-number")?.textContent);
   expect(numbers()).toEqual(["1", "2", "3"]);
-  // Each call's footage is drawn dashed from its dot, since it still plays until the call is approved.
-  const proposed = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-proposed")].map(b => b.style.left);
-  expect(proposed()).toEqual(dots().map(d => d.style.left));
-  // The open call's dot is lit at the start of its band. The calls still waiting that are in view keep theirs.
+  // Waiting calls are dots only, as any cut is: nothing is drawn over the footage they'd take out until one is open.
+  expect(container.querySelector(".simple-timeline-band, .simple-timeline-cut")).toBeNull();
+  // The open call's dot is lit at the start of its band. The calls still waiting that are in view keep theirs. Its band
+  // is a cut's, with a dashed edge, since its footage is still in the video until it's approved.
   await openCall("Breath before the price.");
-  expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
+  expect(container.querySelector(".simple-timeline-band")?.classList.contains("is-proposed")).toBe(true);
   expect(numbers()).toEqual(["1", "2", "3"]);
-  // The open call has its own band instead of a dashed one.
-  expect(proposed()).toEqual(dots().filter(d => !d.classList.contains("is-on")).map(d => d.style.left));
   expect(dots().map(d => [d.dataset.state, d.classList.contains("is-on")])).toEqual([["check", false], ["check", true], ["check", false]]);
   // A press on one opens that call in the card, and the timeline zooms to it.
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
@@ -6684,7 +6682,7 @@ it("marks the menu while a rule waits in Learnings, and lists each with its skil
   // Each is said once in the chat, under the request it came from.
   const from = container.querySelector<HTMLElement>(`.unit[data-run="${data.tasks[0]!.id}"]`)!;
   expect([...from.querySelectorAll(".simple-learned")].map(l => l.textContent))
-    .toEqual(["Learned for dialogue-pass: “Leave the breath before a punchline.” Review", "Learned for frame-screen: “Keep a laugh in.” Review"]);
+    .toEqual(["Learned for dialogue-pass: “Leave the breath before a punchline.” Review Decline", "Learned for frame-screen: “Keep a laugh in.” Review Decline"]);
   expect(container.querySelectorAll(".simple-learned")).toHaveLength(2);
   await openMenu();
   expect(menuRow("Learnings").querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("2 rules to review");
@@ -6747,6 +6745,29 @@ it("opens Learnings at a rule from Review on its line in the chat, and takes the
     useProjectStore.setState({ current: data });
   });
   expect(container.querySelector(".simple-learned")).toBeNull();
+});
+
+it("declines a rule from Decline on its line in the chat, and says why when that fails", async () => {
+  useSkillsStore.setState({ skills: [skillNamed("skl_dialogue", "dialogue-pass")], status: "ready", error: null });
+  const declineLearning = vi.fn().mockRejectedValueOnce(new Error("Scarlet is offline.")).mockResolvedValue(undefined);
+  data = { ...data, learnings: [learning("lrn_a")] };
+  useProjectStore.setState({ current: data, declineLearning });
+  await show();
+  const line = () => container.querySelector<HTMLElement>(".simple-learned");
+  // Decline rests muted after Review, as the chat's other links do.
+  expect([...line()!.querySelectorAll("button")].map(b => [b.textContent, b.className]))
+    .toEqual([["Review", "simple-learned-review"], ["Decline", "simple-learned-decline"]]);
+  await click(buttonIn(line()!, "Decline")!);
+  expect(declineLearning).toHaveBeenCalledWith("lrn_a");
+  expect(line()!.querySelector('[role="alert"]')?.textContent).toBe(" Couldn't decline. Scarlet is offline.");
+  await click(buttonIn(line()!, "Decline")!);
+  expect(line()!.querySelector('[role="alert"]')).toBeNull();
+  // Declined, the line leaves the chat.
+  await act(async () => {
+    data = { ...data, learnings: [learning("lrn_a", { state: "declined" })] };
+    useProjectStore.setState({ current: data });
+  });
+  expect(line()).toBeNull();
 });
 
 it("names a rule's skill in full on hover, and moves the decisions under it together where the panel is too narrow for both", async () => {

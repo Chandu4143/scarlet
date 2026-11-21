@@ -12,7 +12,7 @@ import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, noteEvidenceMiss, text } from "./tool-result.js";
 import { OTHER_INPUT } from "./analysis.js";
 import { screenReadings, type ScreenLine } from "./screen-reading.js";
-import { motionSpans, type MotionSecond } from "./screen-motion.js";
+import { motionSpans, type DetailFrame, type MotionSecond } from "./screen-motion.js";
 import type { RecordingCut } from "./brief-pictures.js";
 
 type ToolRegistrar = <Shape extends z.ZodRawShape>(name: ScarletToolName, description: string, shape: Shape,
@@ -142,7 +142,7 @@ export function registerPerception(deps: PerceptionDeps) {
   async function besideOn(tl: Timeline, project: Project, sources: Array<{ id: string; from: number; to: number }>, range: { start: number; end: number }, wait: number) {
     const [text, motion, cuts, transcripts] = await Promise.all([
       readPictures<{ spans: ScreenLine[] }>("screen-text", sources, wait),
-      readPictures<{ seconds: MotionSecond[] }>("screen-motion", sources, wait),
+      readPictures<{ seconds: MotionSecond[]; detail?: DetailFrame[] }>("screen-motion", sources, wait),
       readPictures<{ cuts: RecordingCut[] }>("picture-cuts", sources, wait),
       wordsFor(tl, project).catch(() => new Map<string, TranscriptWord[]>()),
     ]);
@@ -150,6 +150,7 @@ export function registerPerception(deps: PerceptionDeps) {
       evidence: {
         lines: new Map(text.reads.map(({ id, read }) => [id, read.spans])),
         seconds: new Map(motion.reads.map(({ id, read }) => [id, read.seconds])),
+        detail: new Map(motion.reads.map(({ id, read }) => [id, read.detail ?? []])),
         cuts: new Map(cuts.reads.map(({ id, read }) => [id, read.cuts])),
         words: transcripts.size ? timelineWords(tl, transcripts, range) : [],
       },

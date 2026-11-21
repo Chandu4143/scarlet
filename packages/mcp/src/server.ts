@@ -3,7 +3,7 @@ import { PictureBatches, type PictureRequest, type PreparedPictures } from "./pi
 import { BRIEF_PICTURES_NEXT, edgesOntoRecordingCuts, flashesOntoCuts, MET_CUT_NEXT, MET_RECORDING_CUT_NEXT, newBriefPictures, type MetCut, type MetRecordingCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
 import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
-import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
+import { CORNERS, MOVE_EASES, boxInCorner, cornerOf, coverOnText, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
 import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
@@ -1104,7 +1104,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   async function framedOn(before: Timeline | null, made: Timeline) {
     const { project } = await getProject();
     const framed = framingReport(before, made, project.media, project.settings);
-    if (!framed.length) return { framed, unread: [] as string[] };
+    if (!framed.length) return { framed, covered: [], unread: [] as string[] };
     const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
     const besideReach = besideSources(made, framed);
     const [found, moving, beside] = await Promise.all([
@@ -1114,7 +1114,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         .catch(error => { noteUnmeasured("what the screen shows beside the framed stretches", error); return undefined; }) : undefined,
     ]);
     const evidence = !!found?.readings.length || !!moving?.spans.length || !!beside;
-    return { framed: evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed,
+    const report = evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed;
+    // The holds where a picture over the recording, such as a camera inset, hides its text or anything else on it, in timeline seconds.
+    const covered = report.flatMap(f => f.holds.filter(h => h.underCover || h.coverHides).map(h => [h.from, h.to]));
+    return { framed: report, covered,
       unread: [...new Set([...found?.unread ?? [], ...moving?.unread ?? [], ...beside?.unread ?? []])] };
   }
   /** Recordings whose cuts weren't read through when this run last saved: brief pictures at their cuts weren't reported then. */
@@ -1252,6 +1255,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(briefNow?.unread.length && { recordingCutsUnread: briefNow.unread }),
       ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
       ...(metRecordingCut.length && { metRecordingCut: metRecordingCut.slice(0, 20), metRecordingCutNext: MET_RECORDING_CUT_NEXT }),
+      // Named once ahead of the list, as timeline_framing does: among a hundred framings, the few with text under a cover were read past.
+      ...(framedNow?.covered.length && { hiddenUnderCover: framedNow.covered.slice(0, 20) }),
       ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
       ...(insetNow?.content.length && { insetLook: insetNow.insets.map(i => ({ mediaId: i.mediaId, trackId: i.trackId, clips: i.clips,
         crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
@@ -2520,6 +2525,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return result;
   }
 
+  /**
+   * A cut's row in the chat, where the editor reads what Scarlet wants them to approve. Passes wrote what they had done
+   * to check it ("Reviewed the restart…", "Kept the stronger reveal") and the editor couldn't tell what the change was
+   * (2026-11-20).
+   */
+  const cutRow = "Its row in the editor's list of edits: say plainly what the change does to the video, by the words it takes out or the words beside it (\"Cut the repeated start before ‘just explain’\", \"Cut the first ‘But first, the benchmarks’\", \"Shortened the pause after ‘okay’\"). Name the change, not your checking (\"Reviewed…\") or what stays (\"Kept…\"), and never why: the reason says why. Rows read in a list, so no two alike.";
+
   tool("dialogue_apply_cuts",
     `Save your decisions on an assembled version: cut, review or keep ranges, sorted and nonoverlapping. ${cutCoordinates} Cut ranges apply together; review stages a range for the editor; keep or omission retains it. Scarlet measures each retake, filler, pause and quoted production edge. An edge on sound moves a few frames onto silence, or onto the low point between two words said in one breath, and applies; an edge between named words said straight through, with no low point, goes where the transcript parts them and applies; a larger move narrows the cut and stages it, unless unsureJoins is cut. An edge Scarlet can't move out of sound stays held, and its held reason says what the join plays, what the passage plays if the cut is kept and, for a range given in seconds, the nearest quiet or low point either side and the words moving there keeps or removes. A pause's edge moves onto the quiet beside it. A short piece between cuts with a transcript word at room-tone level returns quietKeptWord with nearby measured sound in source seconds. Footage between separate removals stays in the timeline. \`gate\` lists changes to the measured plan with their evidence. Its ranges describe placement before the engine rounds to project frames. The returned timelineEdits describe the saved edits. A cut whose optional quote doesn't verify, whose join would play words twice or a kept word too quietly, or that removes a restart and runs on past it, taking words at its edge that nothing either side of the join says again, or a pause trim whose range holds sound at speaking level that no word explains or whose pause holds words the transcript doesn't have, is left out with its evidence in \`notSaved\`, and the rest of the part saves. Save a long pass in parts and continue on \`continueFrom\`. For a first dialogue pass, send at most ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions as soon as they are ready, with any keep or protected ranges they depend on. The gate reports an applied cut whose edge sits within ${SPEECH_BESIDE_EDGE} s of the sound it removes, since the picture can show a word starting that the sound has not reached; whether that needs the editor is yours to judge. A retake placed by seconds is listed with removes and plays: the words it takes out and its join as the viewer hears it. What Scarlet changed on its own comes back with why: \`stagedForEditor\` (confident cuts that wait for the editor), \`onFrames\` (edges put on whole frames), \`droppedFromReview\` (an earlier part's staged cuts whose footage a later edit broke up) and \`heldCutsStay\` (cuts not saved because, sent with unsureJoins cut, they would have replaced a staged cut held for its join with other edges Scarlet couldn't place either). For a requested crossfade, \`joinCrossfades\` reports how many joins were faded and why any stayed straight. The result also lists what this part still plays, each thing once per pass, at \`at\` on continueFrom: keptSilences (2 s or more without words that no decision covers), keptPauses (the longest thirty of ${PAUSE_FLOOR_SECONDS} s or more, or from the length you give as pausesFrom, with the afterWord that trims an untouched one), repeatedWords (said twice in a row, with the pause the edit plays between them, atJoin when a cut made it; fromWord/toWord name the first) unexplainedSound (speaking-level sound the transcript has no word for, often what is left of a take beside a cut) and heardNotInTranscript (words the scan read in what this part still plays that the transcript has no word for, such as a false start or a repeat it tidied away: where and how long they play on the version the part continues on, the words, and the words round them as the scan read them; they have no word index, so a cut of them is given in timeline seconds). These are evidence, not decisions: a pause can be a beat, a repeat emphasis, a sound a breath. Ranges your previous part staged on that version join this part's review (carriedForward). Cuts already handed to the editor keep their passage and note (heldForReview). \`description\` is your one-sentence summary for the editor.`,
     { version: z.string(), description: z.string().min(1), crossfadeFrames, pace: paceInput, unsureJoins: unsureJoinsInput, noteIds: z.array(z.string()).optional(),
@@ -2535,7 +2547,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         productionQuote: z.string().trim().min(1).optional().describe("Optional check for a coaching cut: verify all the words in the removed production aside against the scan."),
         picture: z.enum(["safe", "uncertain", "protect"]).optional().describe("Protect preserves this range. For all other picture verdicts, decision controls whether the range is cut or staged for review."),
         reason: z.string().trim().min(1).describe("One short sentence on why you chose to cut, stage or keep this passage, shown on its card"),
-        summary: CutAssessment.shape.summary.describe("Required for a cut or review: its row in the chat's list of edits. Say what came out and where, by the words beside it (\"Shortened the pause after ‘okay’\", \"Cut the false start ‘so the’\"), never why: the reason says why. Rows read in a list, so no two alike."),
+        summary: CutAssessment.shape.summary.describe(`Required for a cut or review. ${cutRow}`),
         check: z.string().trim().min(1).max(120).optional().describe("For a cut that applies: a few words naming a doubt the editor must settle by listening or looking. Marks the cut as needing them until they keep it; omit when nothing is in doubt") }))
         .describe("For a faint line that still plays, keptQuietPhrases returns mediaId and fromWord/toWord for use here, its position on continueFrom (at), and the phrase and neighboring speech levels in dBFS.") },
     async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames, pausesFrom, pace, unsureJoins }) => {
@@ -2866,7 +2878,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   tool("dialogue_review_save", "Record your cut, keep or ask recommendation on a pending suggestion. An ask's reason appears on its card, where it explains why you recommend it and what to listen or look for. Cuts that would wait under the same reason are refused, and so is an ask whose reason quotes words its cut neither removes nor plays within 3 s of it: the refusal says what the cut removes and what its join plays. An ask or cut on a staged cut whose edge is inside a word that sounds there is refused with what was measured: move it with dialogue_revise_cut and record it as moved, or keep it. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A cut goes into the video when the request finishes, or with the editor's last call when some wait for them, so it is not removed again with another tool. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). To tell the editor something new about a call still waiting on them, such as a join that clips a word, save it as an ask with amend:true and the new reason: its card shows that note, and its number, footage and verdict stay. The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
     { changeId: z.string(), fromVersion: z.string(), toVersion: z.string(), assessments: z.array(CutAssessment.omit({ inspected: true, revised: true, askOrder: true, provisional: true }).extend({
-      summary: CutAssessment.shape.summary.describe("Short summary of the proposed cut for the chat. Supply it alongside the reason shown on the card."),
+      summary: CutAssessment.shape.summary.describe(`${cutRow} Supply it alongside the reason shown on the card.`),
       amend: z.boolean().optional().describe("Replace the note of a call that already waits on the editor."),
     })).min(1).max(500) },
     async ({ changeId, fromVersion, toVersion, assessments }) => {
@@ -2947,7 +2959,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       pauseAfterWord: z.number().finite().nonnegative().optional().describe("Timeline seconds to leave between the last complete word and the start of this cut. Use 0 to trim up to the word."),
       keep: z.literal(true).optional().describe("Keep the current footage for the staged cut this request is about"),
       reason: z.string().trim().min(1).max(800).optional(),
-      summary: CutAssessment.shape.summary.describe("Short summary of the revised cut for the chat."),
+      summary: CutAssessment.shape.summary.describe(`For the revised cut. ${cutRow}`),
       cuts: z.array(z.object({ index: z.number().int().nonnegative(), start: z.number().finite().nonnegative(), end: z.number().finite().nonnegative(), keep: z.literal(true).optional(),
         reason: z.string().trim().min(1).max(800), summary: CutAssessment.shape.summary })).min(1).max(50).optional().describe("Several cuts of this pass to move in one call, instead of the fields for one cut"),
       noteIds: z.array(z.string()).optional() },
@@ -3481,15 +3493,6 @@ ${OPS_DOC}`,
           return read.done ? read.spans : undefined;
         } catch { return undefined; }
       }));
-      const overlap = (a: readonly number[], b: readonly number[]) => Math.max(0, Math.min(a[2]!, b[2]!) - Math.max(a[0]!, b[0]!)) * Math.max(0, Math.min(a[3]!, b[3]!) - Math.max(a[1]!, b[1]!));
-      /** Whether a cover sits on a real part of any line of the frame's text. A sentence whose end runs under the inset counts. */
-      const onText = (frame: Box, covers: readonly Box[], spans: ReadonlyArray<{ box: readonly number[] }>) => spans.some(s => {
-        const [fl, ft, fr, fb] = frame, fw = fr - fl, fh = fb - ft;
-        const onVideo = [(s.box[0]! - fl) / fw, (s.box[1]! - ft) / fh, (s.box[2]! - fl) / fw, (s.box[3]! - ft) / fh];
-        const seen = overlap(onVideo, [0, 0, 1, 1]);
-        return seen > 0 && covers.some(c => overlap(onVideo, c) >= 0.05 * seen);
-      });
-      const cornerOf = (box: Box): Corner => `${(box[1] + box[3]) / 2 >= 0.5 ? "bottom" : "top"}-${(box[0] + box[2]) / 2 >= 0.5 ? "right" : "left"}`;
       // `clear`: the inset's own corner when no text of the frame is under it there, else the corner it is in, else
       // another with none. Moving it moves the frame that keeps `show` clear of it, so each choice is checked again
       // on the frames it makes.
@@ -3502,7 +3505,7 @@ ${OPS_DOC}`,
           const frame = plan.frames[i]!, spans = lines[i];
           if (f.inset !== "clear" || !spans || frame.notOnPicture || !frame.covers.length) return;
           const here = cornerOf(frame.covers[0]!);
-          const chosen = [...new Set([home[i] ?? here, here, ...CORNERS])].find(corner => !onText(frame.frame, frame.covers.map(c => boxInCorner(c, corner)), spans));
+          const chosen = [...new Set([home[i] ?? here, here, ...CORNERS])].find(corner => !coverOnText(frame.frame, frame.covers.map(c => boxInCorner(c, corner)), spans));
           if (!chosen) noneClear.add(i);
           else if (chosen !== here) { corners[i] = chosen; moved = true; }
         });
@@ -3516,9 +3519,9 @@ ${OPS_DOC}`,
         const spans = lines[i]?.map(s => ({ ...s, x: (s.box[0] + s.box[2]) / 2, y: (s.box[1] + s.box[3]) / 2 }));
         const shown = spans?.filter(s => inside(show, s.x, s.y));
         const heights = shown?.map(s => Math.round((s.box[3] - s.box[1]) / fh * project.settings.height)).sort((a, b) => a - b);
-        const under = spans?.filter(s => onText(f.frame, f.covers, [s]));
+        const under = spans?.filter(s => coverOnText(f.frame, f.covers, [s]));
         // The corners the covers could sit in with no line of the frame's text under them.
-        const clear = !under?.length ? undefined : CORNERS.filter(corner => !onText(f.frame, f.covers.map(c => boxInCorner(c, corner)), spans!));
+        const clear = !under?.length ? undefined : CORNERS.filter(corner => !coverOnText(f.frame, f.covers.map(c => boxInCorner(c, corner)), spans!));
         return {
           at: f.at, arrives: f.arrives, settles: f.settles, holds: f.holds, frame: percent(f.frame), zoom: Math.round(f.zoom * 100) / 100, sourcePixels: Math.round(f.sourcePixels * 100) / 100,
           ...(f.hidden >= 0.005 && { hidden: Math.round(f.hidden * 100) }),

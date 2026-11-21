@@ -114,6 +114,8 @@
 /* The passage Scarlet asks the editor to look at or hear: amber, as everything that waits on them is. */
 .simple-timeline-band.is-check { background: rgba(237, 194, 133, .10); border: 1.5px solid rgba(237, 194, 133, .75); }
 .simple-timeline-band.is-check span { color: var(--color-warn); }
+/* A call's cut: red as any cut, but its edge dashed, since the footage is still in the video until the call is approved. */
+.simple-timeline-band.is-proposed { border-style: dashed; }
 .simple-timeline-band.is-added { background: color-mix(in srgb, var(--color-ok) 14%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--color-ok) 70%, transparent); }
 /* Footage another cut in the same pass took out. On After it isn't in the media, so it greys out instead of looking
@@ -129,14 +131,6 @@
   border-radius: 4px; background: rgba(12, 12, 12, .8); font-size: 10.5px; line-height: 14px; color: var(--color-fg);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .simple-timeline-gap.is-skipped .simple-timeline-gap-label { color: var(--color-muted); }
-/* A call still waiting on the editor: the footage its cut would take out, red as any cut's, but dashed and fainter since
-   it still plays until the call is approved. Its tag, amber as the call is in For you, opens it; the rest scrubs. */
-.simple-timeline-proposed { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; min-width: 2px; pointer-events: none; border-radius: 3px;
-  box-sizing: border-box; border: 1px dashed rgba(255, 160, 156, .85);
-  background: repeating-linear-gradient(135deg, rgba(255, 160, 156, .18) 0 5px, rgba(255, 160, 156, .05) 5px 10px); }
-.simple-timeline-proposed-tag { position: absolute; z-index: 3; top: calc(var(--ruler-height) + 3px); padding: 1px 6px; border-radius: 4px;
-  background: rgba(12, 12, 12, .78); font-size: 10.5px; line-height: 14px; color: var(--color-warn); white-space: nowrap; cursor: pointer; }
-.simple-timeline-proposed-tag:hover { background: rgba(12, 12, 12, .92); }
 .simple-timeline-cut { position: absolute; z-index: 1; top: var(--ruler-height); bottom: 0; width: 2px; margin-left: -1px; pointer-events: none; background: rgba(255, 160, 156, .9); }
 .simple-timeline-cut span { position: absolute; left: 6px; top: 3px; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(255, 160, 156, .55);
   background: rgba(40, 22, 21, .9); font-size: 10.5px; line-height: 14px; color: var(--color-fg); white-space: nowrap; }
@@ -317,8 +311,8 @@
 .learn-saving { font-size: 12.5px; }
 /* A rule opened from its line in the chat is the one the editor came for: a faint band says which. */
 .learn-item[aria-current="true"] { margin: 0 -14px; padding-left: 14px; padding-right: 14px; background: rgb(255 255 255 / 4%); }
-/* The line under a request that taught Scarlet a rule: the skill, the rule in quotes and Review in amber, which opens
-   Learnings at it. It goes once the editor decides there. */
+/* The line under a request that taught Scarlet a rule: the skill, the rule in quotes, Review in amber, which opens
+   Learnings at it, and Decline, muted as the chat's other links rest. It goes once the editor decides. */
 .simple-learned { display: flex; align-items: baseline; gap: 7px; margin: 6px 0 2px; font-size: 12.5px; line-height: 1.45;
   color: var(--color-muted); overflow-wrap: anywhere; }
 .simple-learned > svg { flex: none; position: relative; top: 2px; color: var(--color-warn); }
@@ -327,6 +321,12 @@
   text-decoration: underline; text-underline-offset: 3px; }
 .simple-learned-review:is(:hover, :focus-visible) { text-decoration-thickness: 2px; }
 .simple-learned-review:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
+.simple-learned-decline { margin-left: 6px; padding: 0; border: 0; background: none; font: inherit; color: var(--color-muted); white-space: nowrap; cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--color-dim); text-underline-offset: 3px; }
+.simple-learned-decline:hover:not(:disabled) { color: var(--color-fg); }
+.simple-learned-decline:disabled { opacity: .6; cursor: default; }
+.simple-learned-decline:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
+.simple-learned-failed { color: var(--color-warn); }
 .learn-empty { padding: 11px 0 12px; }
 .learn-empty p { margin: 0; font-size: 13.5px; line-height: 1.45; color: var(--color-fg); }
 .learn-empty p + p { margin-top: 2px; font-size: 12.5px; color: var(--color-dim); }

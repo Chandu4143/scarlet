@@ -621,6 +621,9 @@ const LOOKUP_INDEXES = {
   changes_left_out_unread: `ON changes(created_at) WHERE state = 'approved' AND json_extract(json, '$.leftOut') IS NULL
     AND json_array_length(coalesce(json_extract(json, '$.ops'), '[]')) > 0
     AND json_array_length(coalesce(json_extract(json, '$.cutReasons'), '[]')) = 0`,
+  // Joins an earlier reading of the footage left out found, read again with the current one (LEFT_OUT_READING).
+  changes_left_out_reread: `ON changes(created_at) WHERE state = 'approved' AND json_array_length(json_extract(json, '$.leftOut.joins')) > 0
+    AND coalesce(json_extract(json, '$.leftOut.reading'), 1) < 2`,
   tasks_dialogue_unset: "ON tasks(created_at) WHERE kind IN ('edit','revise','note') AND json_type(json, '$.context.dialogueOperation') IS NULL",
 };
 

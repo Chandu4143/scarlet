@@ -100,11 +100,15 @@ describe("the prompt for reading a request for a standing rule", () => {
     for (const absent of [check.said, "A project the task only borrows.", "Never cut laughter.\n", "# House style", SCARLET_INTRO, PLAN_STEPS]) expect(prompt).not.toContain(absent);
     // It reads the skill a rule goes into before offering it, so the editor sees what the rule would change, and a
     // rule the skill already has isn't offered.
-    expect(prompt).toContain("read the skill it belongs in, in full, with `skills_list`, then offer the rule with `learning_suggest`");
+    expect(prompt).toContain("read the skill it belongs in, in full, with `skills_list`, then offer it with `learning_suggest`");
     expect(prompt).toContain("beside what the skill says that it would change");
-    expect(prompt).toContain("or the skill or a rule listed below already says it, call nothing.");
-    // A correction the editor keeps making to one skill's cuts is a rule for that skill, though each was about one cut.
-    expect(prompt).toContain("When their earlier requests keep asking for the same kind of fix to what a skill made, that fix is how they want the skill to work.");
+    expect(prompt).toContain("a rule the skill or a rule listed below already says, in any wording");
+    // A rule is offered only when the editor said it as one, or when the same kind of fix keeps coming back: a single
+    // note about one join was offered as "play back each join and adjust it" (2026-11-20).
+    expect(prompt).toContain("It does in only two cases:\n- They said it as a rule themselves: their words are about every video or every time");
+    expect(prompt).toContain("- The same kind of fix keeps coming back: at least two of their earlier requests below asked for the same kind of change to what a skill made as this one does.");
+    expect(prompt).toContain("a note about this video, this moment or this cut that hasn’t come up before, however general it could be made");
+    expect(prompt).toContain("a rule that only tells the agent to do its work well (check, play back, adjust as needed) without saying what the editor wants");
     // A rule is the principle, never the case it came from.
     expect(prompt).toContain("write the principle behind what they said, not its instances: no words, names, times or moments from this video or the requests");
   });

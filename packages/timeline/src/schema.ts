@@ -654,9 +654,10 @@ export const Change = z.object({
   /**
    * The footage this change left out as it built `toVersion` from pieces of a recording, read once it was applied:
    * `version` plays `toVersion` with every such stretch back in, and each join is where one came out (`at`, on
-   * `toVersion`) and what (`removed`, on `version`). No joins when it was looked for and none was found.
+   * `toVersion`) and what (`removed`, on `version`). No joins when it was looked for and none was found. `reading` is
+   * the reading that found the joins (`LEFT_OUT_READING`): one found by an earlier reading is read again as Scarlet starts.
    */
-  leftOut: z.object({ version: Id.optional(), joins: z.array(z.object({ at: Seconds, removed: TimeRange })) }).optional(),
+  leftOut: z.object({ version: Id.optional(), joins: z.array(z.object({ at: Seconds, removed: TimeRange })), reading: z.number().int().optional() }).optional(),
   /** The same on `appliedVersion`, when the editor's calls or a moved edit applied other cuts than `toVersion` holds. */
   appliedJoinFades: JoinFades.optional(),
   /** Who approved/rejected and why, once decided. */
