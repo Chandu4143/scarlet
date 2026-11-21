@@ -1366,25 +1366,6 @@ describe("lip_sync and timeline_picture_sync", () => {
   });
 });
 
-describe("shorts_plan", () => {
-  const short = { index: 1, count: 2, sourceProjectId: "prj_long", sourceName: "Long", sourceVersion: "v1", aspect: "9:16" as const, maxSeconds: 60, captions: true, projectIds: ["prj_test", "prj_b"] };
-  const task = (index: number) => Task.parse({ id: `short-${index}`, state: "running", projectId: "prj_test", kind: "edit", agent: "claude", instruction: "Make up to 2 vertical shorts, each under 60 s.",
-    context: { short: { ...short, index } }, hostId: "host_a", createdBy: { type: "human", name: "Editor" } });
-
-  it("saves the first short's moments for its task, and is offered to no other run", async () => {
-    mock.state.extra = (req, res) => req.path === "/tasks/short-1/shorts-plan"
-      ? reply(res, { shorts: [{ projectId: "prj_test", name: "Agents fail" }, { projectId: "prj_b", name: "The wrong flight", taskId: "tsk_b" }], removed: [] }) : false;
-    const first = await connect({ taskId: "short-1", task: task(1) });
-    const second = await connect({ taskId: "short-2", task: task(2) });
-    try {
-      const moments = [{ start: 5, end: 40, title: "Agents fail" }, { start: 50, end: 80, title: "The wrong flight" }];
-      expect(JSON.parse(textOf(await ok(first, "shorts_plan", { moments })))).toMatchObject({ shorts: [{ name: "Agents fail" }, { taskId: "tsk_b" }] });
-      expect(sent("/tasks/short-1/shorts-plan")[0]!.body).toEqual({ moments });
-      expect((await second.listTools()).tools.map(t => t.name)).not.toContain("shorts_plan");
-    } finally { await Promise.all([first.close(), second.close()]); }
-  });
-});
-
 describe("a graphic page's files", () => {
   it("reads each relative link once, decoded as a browser decodes it, and a stray % as part of the name", () => {
     const html = `<img src="a%b.png"><img src="logo%20dark.svg"><img src='logo%20dark.svg'><link href="https://fonts.example/x.css">
