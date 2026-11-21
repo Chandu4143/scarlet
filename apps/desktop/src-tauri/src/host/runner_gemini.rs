@@ -26,6 +26,7 @@ const MAX_CARRY_ONS: u32 = 4;
 #[derive(Debug, Default, Clone)]
 pub struct GeminiState {
     pub texts: Vec<String>,
+    pub last_message: Option<String>,
     /// Accumulated streamed assistant message (delta chunks).
     pub partial: String,
     /// Accumulated streamed reasoning/thought chunks.
@@ -89,9 +90,12 @@ fn flush_thought(st: &mut GeminiState, events: &mut Vec<RunnerEvent>) {
 }
 
 fn flush_partial(st: &mut GeminiState, events: &mut Vec<RunnerEvent>) {
-    if !st.partial.trim().is_empty() {
-        st.texts.push(st.partial.clone());
-        events.push(RunnerEvent::new("log", st.partial.clone()));
+    let text = st.partial.trim();
+    if !text.is_empty() {
+        let text = text.to_string();
+        st.texts.push(text.clone());
+        st.last_message = Some(text.clone());
+        events.push(RunnerEvent::new("log", text));
     }
     st.partial.clear();
 }
@@ -796,10 +800,7 @@ impl AcpSession {
                 }
                 if matches!(stop_reason, "end_turn" | "max_tokens" | "stop_sequence") {
                     self.st.completed = true;
-                    let summary = {
-                        let t = tail_summary(&self.st.texts);
-                        if t.is_empty() { "done".to_string() } else { t }
-                    };
+                    let summary = self.st.last_message.clone().unwrap_or_else(|| "done".to_string());
                     if let Some(usage) = result.get("usage").filter(|v| !v.is_null()) {
                         (self.on_event)(RunnerEvent::with("result", summary, json!({ "usage": usage })));
                     } else {
@@ -926,7 +927,7 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
     let ok = st.failed.is_none() && st.completed;
     RunResult {
         ok,
-        summary: tail_summary(&st.texts),
+        summary: st.last_message.unwrap_or_else(|| tail_summary(&st.texts)),
         error: if ok {
             None
         } else {
@@ -1132,6 +1133,75 @@ done
         assert!(events.iter().any(|e| e.kind == "log"
             && e.data.as_ref().is_some_and(|d| d["kind"] == "tool_refused" && d["harnessTool"] == "run_shell_command")));
         assert_eq!(events.iter().filter(|e| e.kind == "result").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uses_only_the_trimmed_final_message_as_summary() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-agy-multi");
+        let earlier = format!("{}and checking the last transition areas.", "Checking transition areas. ".repeat(90));
+        let progress = "Framing the benchmark graph demo cleanly inside the Kimi window.";
+        let final_reply = format!("Synced and tightened the video.\n\n{}All cuts are ready.", "Detailed follow-up note. ".repeat(100));
+        assert!(final_reply.len() > 2000);
+        let u1 = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": format!("\n\n{earlier}") } } }
+        }))
+        .unwrap();
+        let t1 = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "update": { "sessionUpdate": "tool_call", "toolCallId": "t1", "name": "mcp__scarlet__timeline_get", "rawInput": {} } }
+        }))
+        .unwrap();
+        let u2 = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": format!("\n\n{progress}") } } }
+        }))
+        .unwrap();
+        let t2 = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "update": { "sessionUpdate": "tool_call", "toolCallId": "t2", "name": "mcp__scarlet__timeline_propose", "rawInput": {} } }
+        }))
+        .unwrap();
+        let u3 = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": format!("\n\n{final_reply}\n") } } }
+        }))
+        .unwrap();
+        let lines_path = dir.path().join("updates.jsonl");
+        std::fs::write(&lines_path, format!("{u1}\n{t1}\n{u2}\n{t2}\n{u3}\n")).unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+  case "$line" in
+    *'"method":"initialize"'*) echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}' ;;
+    *'"method":"session/new"'*) echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-2"}}}}' ;;
+    *'"method":"session/prompt"'*)
+      cat '{}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+      ;;
+  esac
+done
+"#,
+                lines_path.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (opts, events) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+        let res = run_gemini(opts).await;
+        assert!(res.ok, "unexpected error: {:?}", res.error);
+        assert_eq!(res.summary, final_reply);
+        let events = events.lock().unwrap();
+        assert_eq!(events.iter().find(|e| e.kind == "result").map(|e| e.text.as_str()), Some(final_reply.as_str()));
+        let logs: Vec<&str> = events.iter().filter(|e| e.kind == "log").map(|e| e.text.as_str()).collect();
+        assert_eq!(logs, vec!["Gemini session started", earlier.as_str(), progress, final_reply.as_str()]);
     }
 
     #[cfg(unix)]
