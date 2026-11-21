@@ -65,6 +65,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - When Scarlet fine-tunes a cut it already made, such as moving its edge a frame, the cut now stays one row in the list, playing as the video does now, instead of showing again as a second edit beside the old one.
 - An edit that frames a screen recording no longer waits behind itself: Scarlet looks at several of the recording's windows at once beside it, so those edits finish minutes sooner.
 - With Gemini, a step that needs Scarlet to measure something first now waits for it instead of giving up and trying again.
+- Crossfading a join or putting a recording's picture in time with its sound no longer moves its sound onto a dialogue track you muted, so those passages stay audible.
 
 ## November 19, 2026
 
