@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- During a screen demo, your camera now stays in its corner, and Scarlet frames the screen around it instead of moving the camera around.
 - After a cut on your camera, your voice now comes straight in, a new topic or demo included, instead of a beat of quiet on your face after the cut.
 - Scarlet can now find or make B-roll for a moment with any model you pick: it searches the web, captures an article or a post as a picture, and builds the shot its own way before laying it in.
 - B-roll Scarlet lays over your video is called B-roll, and when it came from the web, a link icon on its card shows the page as Scarlet captured it, the part in your video, and its address.
