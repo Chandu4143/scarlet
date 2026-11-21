@@ -8,6 +8,11 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 - Scarlet now sees when you look down at your screen while you talk to it, so your screen can be up there too.
 - When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.
+- Every edit card now has the same two rows: the note on top, and below it Before/After and the transcript on the left with Revise, Keep and the × that rejects on the right, each showing its key.
+- A call’s card now has the same actions as an applied edit’s: Keep, Revise and the × that rejects it, in place of Approve and Skip.
+- X rejects the edit or call on screen.
+- Removed History from projects for now; Scarlet still keeps a full log of every change behind the scenes.
+- The model picker now sits right in the project header, and the duplicate Export row is gone from the ⋯ menu.
 - A screen demo Scarlet frames as the whole screen but its menu bar now stays up for the whole demo, instead of a few seconds at a time.
 - While Scarlet edits, the timeline keeps its pictures and sound as each new cut comes in, instead of going blank until the edit is done.
 

@@ -650,13 +650,6 @@
 .skill-details > .skill-version-text [data-changed] { box-shadow: none; }
 .skill-version-text ins { text-decoration: none; border-radius: 2px; background: rgb(126 212 179 / 16%); }
 .skill-version-text del { color: var(--color-bad); text-decoration-color: rgb(255 160 156 / 70%); opacity: .8; }
-.version-row {
-  padding: 10px 12px;
-  border: 1px solid var(--color-line);
-  border-radius: 8px;
-  background: var(--color-panel);
-}
-.version-row:hover { border-color: #555; }
 
 @media (max-width: 767px) {
   .skill-editor-toolbar > .preference-select.compact { max-width: 160px; }
@@ -703,18 +696,6 @@
 .preference-options .preference-more { margin-top: 4px; border-top: 1px solid var(--color-line); border-radius: 0 0 6px 6px; color: var(--color-muted); font-size: 12.5px; }
 .preference-options [data-active="true"] { background: var(--color-raised); }
 
-/* Each edit a version made, such as every cut of a dialogue pass, with its revisions. */
-.version-edits { display: grid; gap: 4px; font-size: 12.5px; }
-.version-edits-head { font-size: 11.5px; color: var(--color-dim); }
-.version-edits ol { display: grid; }
-.version-edits li { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 5px 0;
-  border-top: 1px solid var(--color-line); }
-.version-edit-time { font: 11px var(--font-mono); color: var(--color-dim); font-variant-numeric: tabular-nums; }
-.version-edit-label { color: var(--color-fg); overflow-wrap: anywhere; }
-.version-edit-label small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--color-muted); }
-.version-edit-value { color: var(--color-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* The full history's entries keep one colour. A small mark before the words says which were approved, put back or went wrong. */
-.history-mark { display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; vertical-align: 0.14em; }
 .import-transcription-notice .simple-link { font-size: inherit; color: var(--color-fg); }
 /* A short sits under the video it was made from, set in from it. */
 .list .project-card.is-short { margin-left: 44px; }
