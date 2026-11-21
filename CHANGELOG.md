@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.
 - A screen demo Scarlet frames as the whole screen but its menu bar now stays up for the whole demo, instead of a few seconds at a time.
 - While Scarlet edits, the timeline keeps its pictures and sound as each new cut comes in, instead of going blank until the edit is done.
 
