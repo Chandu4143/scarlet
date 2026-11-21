@@ -55,12 +55,6 @@ export function originalClipAt(timeline: Timeline, at: number, media: readonly M
       track.kind === "audio" && !track.muted && clip.enabled !== false && clip.kind === "media")?.clip;
 }
 
-/** A still from the source media under timeline time `t`, if the cut has video there. */
-export function thumbUrl(timeline: Timeline | null, t: number, width = 160): string | undefined {
-  const clip = visibleClipAt(timeline, t);
-  if (clip?.kind === "media") return api.frameUrl(clip.mediaId, timelineToSource(clip, t), width);
-}
-
 /** Hover previews share quarter-second stills. Filmstrip samples use the source frame at the selected time. */
 export function scrubFrameUrl(source: MediaAsset | undefined, timeline: Timeline | null, media: readonly MediaAsset[], t: number, exact = false) {
   let start = 0;

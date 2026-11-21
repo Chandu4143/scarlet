@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it as vitestIt, vi, onTestFinished } from "vitest";
 import { partedIt } from "../../../test/parts";
-import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
+import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, LEFT_OUT_READING, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
 import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, taskRecoveryAction, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
@@ -1729,6 +1729,11 @@ it("reads the footage a change left out as it built the video, when it is applie
   ctx.repos.changes.put({ ...change, id: "chg_ripple", ops: [{ op: "rippleDelete", start: 1, end: 2 }], leftOut: undefined });
   recordLeftOutFootage(ctx);
   expect(ctx.repos.changes.get("chg_ripple")!.leftOut).toEqual({ joins: [] });
+  // Joins an earlier reading found are read again with this one, once.
+  expect(change.leftOut.reading).toBe(LEFT_OUT_READING);
+  ctx.repos.changes.put({ ...change, leftOut: { version: change.leftOut.version, joins: [...change.leftOut.joins, { at: 12, removed: { start: 27, end: 28 } }] } });
+  recordLeftOutFootage(ctx);
+  expect(ctx.repos.changes.get(change.id)!.leftOut).toEqual(change.leftOut);
   const stamp = ctx.repos.changes.get(change.id)!.updatedAt;
   const read = vi.spyOn(ctx.repos.changes, "parse");
   recordLeftOutFootage(ctx);
