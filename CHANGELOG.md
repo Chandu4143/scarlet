@@ -9,6 +9,11 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - Before Scarlet finishes an edit, it checks every place the video flicks between your screen and your camera, or goes back to your camera while your screen still shows what you're talking about, and fixes it or says why it stays.
 - Scarlet keeps your screen recording up for as long as you're talking about it, instead of going back to your camera at the first chance.
 - When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.
+- Every edit card now has the same two rows: the note on top, and below it Before/After and the transcript on the left with Revise, Keep and the × that rejects on the right, each showing its key.
+- A call’s card now has the same actions as an applied edit’s: Keep, Revise and the × that rejects it, in place of Approve and Skip.
+- X rejects the edit or call on screen.
+- Removed History from projects for now; Scarlet still keeps a full log of every change behind the scenes.
+- The model picker now sits right in the project header, and the duplicate Export row is gone from the ⋯ menu.
 - A screen demo Scarlet frames as the whole screen but its menu bar now stays up for the whole demo, instead of a few seconds at a time.
 - While Scarlet edits, the timeline keeps its pictures and sound as each new cut comes in, instead of going blank until the edit is done.
 
