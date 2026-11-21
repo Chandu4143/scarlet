@@ -141,6 +141,18 @@ describe("an editing prompt", () => {
       expect(buildSystemPrompt({ ...base, checkIn: "more", task: task(context) })).not.toContain("Before the pass is done");
   });
 
+  it("has a dialogue pass stage the repeats it would keep that are likeliest restarts, as many as the editor's setting asks", () => {
+    const pass = (checkIn?: "less" | "balanced" | "more", closing = false) => buildSystemPrompt({ ...base, checkIn,
+      task: { kind: "edit" as const, instruction: "/dialogue-pass", agent: "claude", context: { dialogueOperation: "first-cut" as const },
+        ...(closing && { repeatAudit: { version: "v1", returns: 1 } }) } });
+    const staged = (prompt: string) => prompt.match(/- Order the repeats dialogue_check_repeats lists that you would keep.* Stage (.*) of them from the top with removeRepeat and decision review/)?.[1];
+    expect([pass(), pass("less"), pass("more")].map(staged)).toEqual(["about one in four", "about one in ten", "about half"]);
+    // A keep plays on unseen, so the closing check orders the repeats it keeps too.
+    expect(staged(pass("balanced", true))).toBe("about one in four");
+    for (const context of [{ dialogueOperation: "first-cut", cutIndex: 0, changeId: "chg_1" }, { dialogueOperation: "local-pauses" }, {}])
+      expect(buildSystemPrompt({ ...base, task: task(context) })).not.toContain("Order the repeats dialogue_check_repeats lists");
+  });
+
   it("names where the editor was looking: a source passage in the source's own frames, or a place on the timeline", () => {
     const source = buildSystemPrompt({ ...base, task: task({ mediaId: "m1", time: 77, end: 80.5, version: "v4" }) });
     expect(source).toContain("## Instruction\nTighten this.");

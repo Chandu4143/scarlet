@@ -285,6 +285,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       // that order: asked again, it flagged a second share of the same cuts, 27-60% of the word cuts on three passes at
       // "about one in four" (2026-11-20). Its own doubts it stages as any run does.
       if (!t.repeatAudit?.returns) ctxLines.push(`- Before the pass is done, read back what the video plays where your cuts took words out, and order those cuts from the most likely to be wrong to the least: a cut is wrong when the editor, hearing the result, would put words back, take more out or choose the other delivery. The editor asked to check ${CHECK_IN_SHARE[ctx.checkIn ?? "balanced"]} of them: flag that many from the top of your order, each with what could be wrong. A cut you already flagged or staged for them counts.`);
+      // A repeat kept with dialogue_check_repeats plays on and is never shown to the editor. Across his ten edits of
+      // 2026-11-20, 9 of 10 passes kept 7-30 listed repeats each, plain restarts among them ("Gemini four and | Gemini
+      // four just came out", kept as "the first use names the model family"), while 1 of 166 phrases playing twice was
+      // never listed. Each run orders only the repeats it keeps itself, so a later run doesn't stage a second share.
+      ctxLines.push(`- Order the repeats dialogue_check_repeats lists that you would keep, from the most likely to be a restart or a retake the editor would take out to the least. Stage ${CHECK_IN_SHARE[ctx.checkIn ?? "balanced"]} of them from the top with removeRepeat and decision review, so the editor decides them, and keep the rest with your reason.`);
     }
     if (c.version) ctxLines.push(`- Timeline version the editor was looking at: ${c.version}`);
     if (t.cutConflict) {
