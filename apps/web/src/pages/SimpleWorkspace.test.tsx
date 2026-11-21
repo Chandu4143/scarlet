@@ -2062,7 +2062,7 @@ it("rejects one applied edit with the × after Keep, asking Scarlet to put back 
   await event(d => ({ ...d, tasks: [...d.tasks, { ...d.tasks.find(t => t.id === "task_done")!, id: "task_reject", state: "queued" as const }] }));
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true })); });
   await act(async () => {});
-  expect(cancel.mock.calls).toEqual([["task_reject"]]);
+  expect(cancel.mock.calls).toEqual([["task_reject", false, true]]);
   expect(openTitle()).toBe("captions");
   expect(container.querySelector(".timeline-foot .timeline-undo-button")).toBeNull();
 });
@@ -2657,10 +2657,11 @@ it("sums a dialogue pass up on one card, and makes its calls in the card on the 
   // The call opens in the same card an applied edit uses, right on top of the timeline.
   expect(call().closest(".cut-transport > .edit-card")).toBe(call());
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing cut at 3:50 · 1 of 2 · After");
-  // Like an applied edit, a call is one row: its number, the same as on its line in the chat, then Scarlet's reason.
-  // How many still wait is on hover. It has no picker and no script.
-  expect([...call().querySelectorAll(".edit-card-bar > .edit-card-count, .edit-card-bar > .edit-card-title")].map(e => e.textContent))
+  // Like an applied edit, a call leads with its number, the same as on its line in the chat, then what Keep would take
+  // out over Scarlet's reason. How many still wait is on hover. It has no picker and no script.
+  expect([...call().querySelectorAll(".edit-card-bar > .edit-card-count, .edit-card-bar .edit-card-title")].map(e => e.textContent))
     .toEqual(["Cut 1", "Breath before the price."]);
+  expect(call().querySelector(".edit-card-text > .edit-card-what")?.textContent).toMatch(/^Takes out /);
   // Hovering the number says where the cut is in the video, and nothing else.
   expect(call().querySelector(".edit-card-count")?.getAttribute("title")).toBe("Cut at 3:50");
   // The note is one row, and the controls another under it.
@@ -5380,7 +5381,7 @@ it("marks a revised call v2 in the list and in its card, with the earlier versio
   await click(passRows()[1]!);
   // On the card it is the mark an edit's row has after its words, here before the note.
   const version = call().querySelector(".edit-version")!;
-  expect([version.tagName, version.className, version.textContent, version.nextElementSibling?.classList.contains("edit-card-title")]).toEqual(["SMALL", "edit-version", "v2", true]);
+  expect([version.tagName, version.className, version.textContent, version.nextElementSibling?.querySelector(".edit-card-title") !== null]).toEqual(["SMALL", "edit-version", "v2", true]);
   expect(version.getAttribute("title")).toBe("v1: The corrected image-input take belongs here.\nYou: “The words don't line up.”");
 });
 
@@ -10720,6 +10721,8 @@ it("opens a cut unlit with its words folded when it is opened again, after Befor
   await click(buttonIn(turnFor("chg_approved_2"), "See edit")!);
   await act(async () => {});
   expect(beforeIcon(editPanel()!)).toEqual(["BeforeAfter\\", "Before", "false", "Play Before (\\)"]);
+  // Its first line says what it took out, over Scarlet's note.
+  expect(editPanel()!.querySelector(".edit-card-text > .edit-card-what")?.textContent).toMatch(/^Took out /);
   expect(container.querySelector(".simple-on-video")?.textContent).toBe("Showing “Keep the image test” · After");
   expect(transcriptLink().getAttribute("aria-expanded")).toBe("false");
   expect(openHead()!.querySelector(".edit-passage")).toBeNull();

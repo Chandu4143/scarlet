@@ -7,6 +7,10 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 21, 2026
 
 - Scarlet now sees when you look down at your screen while you talk to it, so your screen can be up there too.
+- Scarlet’s note on an edit’s card now reads as it would tell you in person, in everyday words, instead of its own terms for the footage.
+- An edit’s card now says exactly what it did on its first line: the words a cut took out, a caption’s words, the file laid over the picture, how far a zoom goes or how loud the sound now plays.
+- Before Scarlet finishes an edit, it checks every place the video flicks between your screen and your camera, or goes back to your camera while your screen still shows what you're talking about, and fixes it or says why it stays.
+- Scarlet keeps your screen recording up for as long as you're talking about it, instead of going back to your camera at the first chance.
 - When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.
 - Every edit card now has the same two rows: the note on top, and below it Before/After and the transcript on the left with Revise, Keep and the × that rejects on the right, each showing its key.
 - A call’s card now has the same actions as an applied edit’s: Keep, Revise and the × that rejects it, in place of Approve and Skip.
