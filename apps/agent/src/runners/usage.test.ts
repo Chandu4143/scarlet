@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { claudeRunUsage, newClaudeState, parseClaudeLine } from "./claude.js";
 import { newCodexState, parseCodexLine } from "./codex.js";
 import { newGeminiState, parseGeminiLine } from "./gemini.js";
-import { addUsage, claudeUsage, codexUsage, geminiUsage, tokenCount } from "./usage.js";
+import { addUsage, claudeUsage, codexUsage, geminiTranscriptStepUsage, geminiUsage, tokenCount } from "./usage.js";
 
 const zero = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
 
@@ -42,9 +42,9 @@ describe("token usage", () => {
     expect(st.usage).toEqual({ ...zero, inputTokens: 210, outputTokens: 55, cacheReadTokens: 800, reasoningTokens: 20 });
   });
 
-  it("reads Gemini ACP usage updates and both camelCase and snake_case stats", () => {
+  it("reads Gemini ACP usage updates, transcript steps, and both camelCase and snake_case stats", () => {
     const st = newGeminiState();
-    st.model = "gemini-2.5-pro";
+    st.model = "gemini-4-neon";
     parseGeminiLine(JSON.stringify({
       jsonrpc: "2.0",
       method: "session/update",
@@ -52,11 +52,16 @@ describe("token usage", () => {
         sessionId: "s1",
         update: {
           sessionUpdate: "usage_update",
-          usage: { inputTokens: 1200, outputTokens: 300, cachedReadTokens: 1000, thoughtTokens: 50 },
+          usage: { inputTokens: 2151, outputTokens: 18, cachedReadTokens: 7634, thoughtTokens: 15, totalTokens: 9803 },
         },
       },
     }), st);
-    expect(st.usage).toEqual({ ...zero, model: "gemini-2.5-pro", inputTokens: 200, outputTokens: 300, cacheReadTokens: 1000, reasoningTokens: 50 });
+    expect(st.usage).toEqual({ ...zero, model: "gemini-4-neon", inputTokens: 2151, outputTokens: 18, cacheReadTokens: 7634, reasoningTokens: 15 });
+    expect(geminiUsage({ inputTokens: 1500, outputTokens: 250, cachedReadTokens: 900, cachedWriteTokens: 100, thoughtTokens: 80, totalTokens: 1750 }, "gemini-3.1-pro"))
+      .toEqual({ model: "gemini-3.1-pro", inputTokens: 500, outputTokens: 250, cacheReadTokens: 900, cacheWriteTokens: 100, reasoningTokens: 80 });
+    expect(geminiTranscriptStepUsage({ step_index: 3, type: "PLANNER_RESPONSE", status: "DONE", input_tokens: 2151, cache_read_tokens: 7634, output_tokens: 18 }, "gemini-4-neon"))
+      .toEqual({ ...zero, model: "gemini-4-neon", inputTokens: 2151, outputTokens: 18, cacheReadTokens: 7634 });
+    expect(geminiTranscriptStepUsage({ type: "GENERIC", input_tokens: 10 })).toBeUndefined();
     expect(geminiUsage({ input_tokens: 1200, output_tokens: 300, cached: 1000 })).toMatchObject({ inputTokens: 200, cacheReadTokens: 1000 });
     expect(geminiUsage({ input_tokens: 1200, output_tokens: 300, cached: 1000, input: 200 })).toMatchObject({ inputTokens: 200, cacheReadTokens: 1000 });
   });

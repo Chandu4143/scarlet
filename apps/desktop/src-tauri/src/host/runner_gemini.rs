@@ -3,7 +3,9 @@
 //! Scarlet MCP tools and rejects all built-in file/shell tools. Supports model selection,
 //! thinking level (`thought_level`), session resume (`session/resume`), and token usage reporting.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,8 +18,8 @@ use super::types::{
     brief, brief_input, is_question_tool, plan_event, pretty_tool_name, tail_summary, McpSpec, PlanStep, RunResult,
     RunnerEvent,
 };
-use super::usage::{gemini_usage, AgentUsage};
-use crate::util::env_get;
+use super::usage::{add_usage, gemini_transcript_step_usage, gemini_usage, AgentUsage};
+use crate::util::{env_get, home_dir};
 
 const STOP_GRACE: Duration = Duration::from_secs(2);
 /// How many times a run carries on after agy ended Gemini's turn on a tool Scarlet refused.
@@ -41,8 +43,111 @@ pub struct GeminiState {
     pub failed: Option<String>,
     pub model: Option<String>,
     pub session_id: Option<String>,
+    /// Cumulative authoritative usage from completed `session/prompt` turns in this run.
+    pub completed_usage: Option<AgentUsage>,
+    /// Live usage observed so far in the active `session/prompt` turn.
+    pub turn_usage: Option<AgentUsage>,
+    /// Effective total usage for this run (`completed_usage + turn_usage`).
     pub usage: Option<AgentUsage>,
     pub plan: Option<String>,
+}
+
+impl GeminiState {
+    fn sync_usage(&mut self) {
+        self.usage = add_usage(self.completed_usage.clone(), self.turn_usage.clone());
+    }
+}
+
+/// Path to `agy`'s per-session `transcript.jsonl`, where completed planner steps are written mid-turn.
+pub fn agy_transcript_path(env: &HashMap<String, String>, session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.contains("..") {
+        return None;
+    }
+    let home = env_get(env, "HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| env_get(env, "USERPROFILE").filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+        .unwrap_or_else(home_dir);
+    Some(
+        home.join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join(session_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl"),
+    )
+}
+
+/// Incrementally tails `agy`'s `transcript.jsonl` to report live token counts mid-turn,
+/// since `agy acp`'s `usage_update` notifications only report context-window fill (`used`/`size`).
+#[derive(Debug, Default)]
+struct TranscriptUsageTailer {
+    path: Option<PathBuf>,
+    offset: u64,
+    seen_steps: HashSet<u64>,
+    turn_usage: Option<AgentUsage>,
+}
+
+impl TranscriptUsageTailer {
+    fn open(&mut self, env: &HashMap<String, String>, session_id: &str, skip_existing: bool) {
+        self.path = agy_transcript_path(env, session_id);
+        self.offset = if skip_existing {
+            self.path
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        self.seen_steps.clear();
+        self.turn_usage = None;
+    }
+
+    fn poll(&mut self, model: Option<&str>) -> Option<AgentUsage> {
+        let path = self.path.as_ref()?;
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return self.turn_usage.clone();
+        };
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if len <= self.offset {
+            return self.turn_usage.clone();
+        }
+        if file.seek(SeekFrom::Start(self.offset)).is_err() {
+            return self.turn_usage.clone();
+        }
+        let mut buf = Vec::new();
+        if file.read_to_end(&mut buf).is_err() {
+            return self.turn_usage.clone();
+        }
+        // Only consume through the last newline so a concurrently written partial line is read next time.
+        let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
+            return self.turn_usage.clone();
+        };
+        self.offset = self.offset.saturating_add((last_nl + 1) as u64);
+        for line in buf[..=last_nl].split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(val) = serde_json::from_slice::<Value>(line) else {
+                continue;
+            };
+            if let Some(step_usage) = gemini_transcript_step_usage(Some(&val), model) {
+                if let Some(idx) = val.get("step_index").and_then(Value::as_u64) {
+                    if !self.seen_steps.insert(idx) {
+                        continue;
+                    }
+                }
+                self.turn_usage = add_usage(self.turn_usage.take(), Some(step_usage));
+            }
+        }
+        self.turn_usage.clone()
+    }
+
+    fn reset_turn(&mut self) {
+        self.turn_usage = None;
+    }
 }
 
 fn non_empty_str(v: Option<&Value>) -> Option<&str> {
@@ -349,7 +454,8 @@ pub fn parse_gemini_acp_update(update: &Value, st: &mut GeminiState) -> Vec<Runn
         "usage_update" => {
             let source = update.get("usage").unwrap_or(update);
             if let Some(usage) = gemini_usage(Some(source), st.model.as_deref()) {
-                st.usage = Some(usage);
+                st.turn_usage = Some(usage);
+                st.sync_usage();
             }
         }
         _ => {}
@@ -466,6 +572,7 @@ struct AcpSession {
     cancel_sent: bool,
     has_api_key: bool,
     cwd: String,
+    env: HashMap<String, String>,
     mcp_server: Value,
     model_override: Option<String>,
     effort_override: Option<String>,
@@ -478,6 +585,7 @@ struct AcpSession {
     config_options: Vec<Value>,
     has_legacy_models: bool,
     st: GeminiState,
+    transcript: TranscriptUsageTailer,
     sent_usage: Option<AgentUsage>,
     on_event: EventSink,
     on_usage: Option<UsageSink>,
@@ -533,6 +641,14 @@ impl AcpSession {
             .clone()
             .map(|u| u.or_model(self.model_override.as_deref()));
         report_usage(&self.on_usage, &mut self.sent_usage, now);
+    }
+
+    fn poll_transcript_usage(&mut self) {
+        let model = self.st.model.as_deref().or(self.model_override.as_deref());
+        if let Some(live) = self.transcript.poll(model) {
+            self.st.turn_usage = Some(live);
+            self.st.sync_usage();
+        }
     }
 
     fn send_open_session(&mut self) {
@@ -661,8 +777,12 @@ impl AcpSession {
             }
             if method == "session/update" {
                 if let Some(update) = msg.pointer("/params/update") {
+                    let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("");
                     for ev in parse_gemini_acp_update(update, &mut self.st) {
                         (self.on_event)(ev);
+                    }
+                    if matches!(kind, "usage_update" | "tool_call" | "tool_call_update" | "agent_message_chunk") {
+                        self.poll_transcript_usage();
                     }
                     self.emit_usage();
                     if self.st.should_stop {
@@ -720,6 +840,7 @@ impl AcpSession {
                     return true;
                 };
                 self.st.session_id = Some(session_id.clone());
+                self.transcript.open(&self.env, &session_id, self.resume_session.is_some());
                 self.config_options = parse_config_options(result);
                 let legacy_models = result.get("models").filter(|v| v.is_object());
                 self.has_legacy_models = legacy_models.is_some();
@@ -785,11 +906,17 @@ impl AcpSession {
                 for ev in flush_evs {
                     (self.on_event)(ev);
                 }
+                self.poll_transcript_usage();
                 let model = self.st.model.as_deref().or(self.model_override.as_deref());
-                if let Some(turn_usage) = gemini_usage(result.get("usage"), model) {
-                    self.st.usage = Some(turn_usage);
-                    self.emit_usage();
+                let finished_turn = gemini_usage(result.get("usage"), model)
+                    .or_else(|| self.st.turn_usage.clone());
+                if let Some(turn_usage) = finished_turn {
+                    self.st.completed_usage = add_usage(self.st.completed_usage.take(), Some(turn_usage));
                 }
+                self.st.turn_usage = None;
+                self.transcript.reset_turn();
+                self.st.sync_usage();
+                self.emit_usage();
                 let stop_reason = non_empty_str(result.get("stopReason")).unwrap_or("end_turn");
                 if stop_reason == "cancelled" && self.st.question.is_some() {
                     self.stop_session();
@@ -838,6 +965,7 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         cancel_sent: false,
         has_api_key,
         cwd: opts.cwd.to_string_lossy().into_owned(),
+        env: opts.env.clone(),
         mcp_server: acp_mcp_server(&opts.mcp),
         model_override: opts.model.clone(),
         effort_override: opts.effort.clone(),
@@ -849,6 +977,7 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         config_options: Vec::new(),
         has_legacy_models: false,
         st: GeminiState::default(),
+        transcript: TranscriptUsageTailer::default(),
         sent_usage: None,
         on_event: opts.on_event.clone(),
         on_usage: opts.on_usage.clone(),
@@ -901,6 +1030,8 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         for ev in remaining {
             (sess.on_event)(ev);
         }
+        sess.poll_transcript_usage();
+        sess.emit_usage();
         (sess.st.clone(), sess.resume_failed)
     };
 
@@ -982,7 +1113,7 @@ mod tests {
         assert!(st.question_posted);
         assert!(st.should_stop);
         let u = st.usage.unwrap();
-        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens), (200, 300, 1000));
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens), (1200, 300, 1000));
         assert_eq!(u.model.as_deref(), Some("gemini-3.1-pro"));
     }
 
@@ -1079,12 +1210,12 @@ while IFS= read -r line; do
       ;;
     *'"method":"session/prompt"'*'{}'*)
       echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"Trimmed clip."}}}}}} }}'
-      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\",\"usage\":{{\"inputTokens\":500,\"outputTokens\":100,\"cachedReadTokens\":200}}}}}}"
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\",\"usage\":{{\"inputTokens\":500,\"outputTokens\":100,\"cachedReadTokens\":200,\"totalTokens\":800}}}}}}"
       ;;
     *'"method":"session/prompt"'*)
       echo '{{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{{"toolCall":{{"name":"mcp__scarlet__timeline_get"}},"options":[{{"optionId":"yes","kind":"allow_once"}},{{"optionId":"no","kind":"reject_once"}}]}} }}'
       echo '{{"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{{"toolCall":{{"name":"run_shell_command"}},"options":[{{"optionId":"yes","kind":"allow_once"}},{{"optionId":"no","kind":"reject_once"}}]}} }}'
-      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\",\"usage\":{{\"inputTokens\":150,\"outputTokens\":40,\"cachedReadTokens\":800,\"totalTokens\":990}}}}}}"
       ;;
   esac
 done
@@ -1114,7 +1245,8 @@ done
         assert_eq!(res.summary, "Trimmed clip.");
         assert_eq!(res.session_id.as_deref(), Some("s-1"));
         let u = res.usage.unwrap();
-        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens), (300, 100, 200));
+        // Both the refused first turn (150 in, 40 out, 800 cache) and the carry-on turn (500 in, 100 out, 200 cache) count.
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens), (650, 140, 1000));
         assert_eq!(u.model.as_deref(), Some("gemini-3.1-pro"));
 
         let sent = std::fs::read_to_string(&log_path).unwrap();
@@ -1220,5 +1352,89 @@ done
         let sent = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(sent.matches(r#""method":"session/prompt""#).count(), 5);
         assert!(!events.lock().unwrap().iter().any(|e| e.kind == "result"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streams_live_token_usage_from_agy_transcript_and_skips_prior_steps_on_resume() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let transcript = home.join(".gemini/antigravity-cli/brain/s-live/.system_generated/logs/transcript.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let script = dir.path().join("fake-agy-live");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+TRANSCRIPT='{}'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}'
+      ;;
+    *'"method":"session/new"'*)
+      echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-live"}}}}'
+      ;;
+    *'"method":"session/resume"'*)
+      echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-live"}}}}'
+      ;;
+    *'"method":"session/prompt"'*'resumed'*)
+      printf '%s\n' '{{"step_index":10,"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":300,"cache_read_tokens":5000,"output_tokens":40}}' >> "$TRANSCRIPT"
+      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":5340,"size":1048576}}}}}}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\",\"usage\":{{\"inputTokens\":300,\"outputTokens\":40,\"cachedReadTokens\":5000,\"thoughtTokens\":25,\"totalTokens\":5340}}}}}}"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '%s\n' '{{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":1000,"cache_read_tokens":0,"output_tokens":50}}' >> "$TRANSCRIPT"
+      printf '%s' '{{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":200,' >> "$TRANSCRIPT"
+      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":1050,"size":1048576}}}}}}'
+      echo '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"toolCall":{{"name":"mcp__scarlet__timeline_get"}},"options":[{{"optionId":"yes","kind":"allow_once"}}]}} }}'
+      IFS= read -r _perm_reply
+      printf '%s\n' '"cache_read_tokens":1000,"output_tokens":30}}' >> "$TRANSCRIPT"
+      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":1230,"size":1048576}}}}}}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\",\"usage\":{{\"inputTokens\":1200,\"outputTokens\":80,\"cachedReadTokens\":1000,\"thoughtTokens\":60,\"totalTokens\":2280}}}}}}"
+      ;;
+  esac
+done
+"#,
+                transcript.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (mut opts, _) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+        opts.model = Some("gemini-4-neon".into());
+        opts.env.insert("HOME".into(), home.to_string_lossy().into_owned());
+        let reports: Arc<Mutex<Vec<AgentUsage>>> = Arc::default();
+        let reports_sink = reports.clone();
+        opts.on_usage = Some(Arc::new(move |u| reports_sink.lock().unwrap().push(u)));
+
+        let res = run_gemini(opts).await;
+        assert!(res.ok, "{:?}", res.error);
+        let seen = reports.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3, "expected 2 live step reports + final authoritative report, got {seen:?}");
+        assert_eq!((seen[0].input_tokens, seen[0].cache_read_tokens, seen[0].output_tokens, seen[0].reasoning_tokens), (1000, 0, 50, 0));
+        assert_eq!((seen[1].input_tokens, seen[1].cache_read_tokens, seen[1].output_tokens, seen[1].reasoning_tokens), (1200, 1000, 80, 0));
+        assert_eq!((seen[2].input_tokens, seen[2].cache_read_tokens, seen[2].output_tokens, seen[2].reasoning_tokens), (1200, 1000, 80, 60));
+        assert_eq!(res.usage.as_ref().map(|u| (u.input_tokens, u.cache_read_tokens, u.output_tokens, u.reasoning_tokens)), Some((1200, 1000, 80, 60)));
+
+        // Resuming the same session must skip the earlier claim's steps in transcript.jsonl.
+        let (mut resume_opts, _) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+        resume_opts.model = Some("gemini-4-neon".into());
+        resume_opts.instruction = "resumed turn".into();
+        resume_opts.resume_session = Some("s-live".into());
+        resume_opts.env.insert("HOME".into(), home.to_string_lossy().into_owned());
+        let resume_reports: Arc<Mutex<Vec<AgentUsage>>> = Arc::default();
+        let resume_sink = resume_reports.clone();
+        resume_opts.on_usage = Some(Arc::new(move |u| resume_sink.lock().unwrap().push(u)));
+
+        let resumed = run_gemini(resume_opts).await;
+        assert!(resumed.ok, "{:?}", resumed.error);
+        let resumed_seen = resume_reports.lock().unwrap().clone();
+        assert_eq!(resumed_seen.len(), 2, "expected 1 live report + 1 final report, got {resumed_seen:?}");
+        assert_eq!((resumed_seen[0].input_tokens, resumed_seen[0].cache_read_tokens, resumed_seen[0].output_tokens), (300, 5000, 40));
+        assert_eq!((resumed_seen[1].input_tokens, resumed_seen[1].cache_read_tokens, resumed_seen[1].output_tokens, resumed_seen[1].reasoning_tokens), (300, 5000, 40, 25));
     }
 }
