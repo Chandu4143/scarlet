@@ -51,11 +51,20 @@ Add an entry to `ledger.json` with the editor's words, the project, run and time
 
 **Count the class, not only the spot.** A report is one instance of a kind of mistake. Before fixing, find how many
 others of the same kind his edits play now, and which gate let each through: not found (the transcript or a finder
-missed it), found but held and routed around, or found and kept (a keep plays on and is never shown to him). For
-restarts, `tsx evals/src/leftovers.ts` lists every phrase each project's current edit plays twice, and how many repeats
-its pass kept silently, from the library alone. Write the count in the entry's `note`, and fix the gate that lets most
-of them through, not just the one the reported spot went through. A finder the engine and the evals share
-(`findRestarts`) is fixed in both, or the entry says why not.
+missed it), found but held and routed around, or found and kept (a keep plays on and is never shown to him).
+`tsx evals/src/leftovers.ts` sweeps his library with no engine and no model, and lists by family what each project's
+current edit plays: `restart`, `deadAir`, `lateCut`, `lateVoice`, `edgeInWord`, `brokenSentence`, `doubledAtJoin` and
+`shortNumber` (`--family` narrows it), with how many repeats each pass kept silently. Every figure is a flag read from
+the transcript, to listen to, not a count of mistakes.
+
+Every entry reported from 2026-11-21 names its `class`: the family and its count per 10 minutes when reported
+(`{ "family": "restart", "before": { "count": 166, "perTenMin": 11.6, "at": "2026-11-20" } }`), or
+`{ "family": "none", "noSweep": "…" }` with why no sweep counts it. The ledger refuses to load without it. Fix the gate
+that lets most of the family through, not just the one the reported spot went through, and fix a finder the engine
+and the evals share (`findRestarts`) in both, or say why not. `ledger.ts check` prints every family's rate in his edits
+now beside the last recorded run and each entry's count when it was reported, and `--record` keeps it on the
+scoreboard: a family whose rate never falls after fixes to it is being fixed one spot at a time. A kind of mistake that
+keeps coming back as `none` is a sweep to write.
 
 Run the new entry on the current code before you fix anything: it should fail. An entry that passes on the code that
 made the mistake doesn't check it.
