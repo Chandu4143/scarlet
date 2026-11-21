@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Scarlet now knows what your camera inset covers on a screen demo, text or not, such as a chart's numbers or a usage meter, and keeps your camera off what you're talking about.
 - A rule Scarlet learned can be declined right from its line in the chat.
 - When you stumble on a word (“who who thinks of this”), Scarlet leans toward taking out the first saying of it, so the line runs on as you said it instead of jumping from the broken word into the next.
 - Learnings now offers a rule only when you state one yourself or ask for the same kind of fix a few times, not after a single note about one cut.

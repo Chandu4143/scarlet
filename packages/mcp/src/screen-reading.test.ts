@@ -156,6 +156,35 @@ describe("framingReport", () => {
     expect(framingReport(both, both, media, canvas)).toEqual([]);
   });
 
+  it("names the screen's text a camera inset sits on while the frame holds, and the corners where it would sit on none", () => {
+    // A chart framed whole, with the camera laid over its bottom right quarter in the same save.
+    const before = cameraAndScreen({ s1: true });
+    const after = applyOps(before, [
+      { op: "updateClip", clipId: "s1", patch: { transform: { scale: 1, x: 0, y: 0 } } },
+      { op: "addTrack", track: { id: "inset", kind: "video", name: "Inset", clips: [] } },
+      { op: "addClip", trackId: "inset", clip: { id: "i", kind: "media", mediaId: "camera", sourceIn: 5, sourceOut: 15, timelineIn: 5, volume: 0, transform: { scale: 0.3, x: 0.32, y: 0.32 } } },
+    ]);
+    const header: ScreenLine = { start: 0, end: 90, text: "Claude Opus 5.5", box: [0.6, 0.1, 0.75, 0.13] };
+    const covered: ScreenLine = { start: 0, end: 90, text: "80.0%", box: [0.7, 0.8, 0.76, 0.83] };
+    const left: ScreenLine = { start: 0, end: 90, text: "RiemannBench", box: [0.05, 0.8, 0.2, 0.83] };
+    const evidence = (lines: ScreenLine[]) => ({ lines: new Map([["screen", lines]]), seconds: new Map(), words: [] });
+    const [stretch] = framingReport(before, after, media, canvas, [], [], evidence([header, covered, left]));
+    expect(stretch!.holds).toEqual([{ from: 5, to: 15, frame: [0, 0, 100, 100], underCover: ["80.0%"], cornersClearOfText: ["top-left"] }]);
+    // Text beside the inset, not under it, isn't named.
+    expect(framingReport(before, after, media, canvas, [], [], evidence([header, left]))[0]!.holds[0]!.underCover).toBeUndefined();
+    // A ring with no text in it, most of it under the inset's left edge, and a flat background elsewhere.
+    const cells = new Uint8Array(64 * 36 / 8);
+    for (let y = 26; y < 30; y++) for (let x = 40; x < 48; x++) cells[(y * 64 + x) >> 3]! |= 1 << ((y * 64 + x) & 7);
+    const ring = { ...evidence([header, left]), detail: new Map([["screen", [{ at: 0, cells: Buffer.from(cells).toString("base64") }]]]) };
+    const hold = framingReport(before, after, media, canvas, [], [], ring)[0]!.holds[0]!;
+    expect(hold.underCover).toBeUndefined();
+    expect(hold.coverHides).toEqual([{ box: [62.5, 72.2, 75, 83.3], hidden: 63 }]);
+    expect(hold.detailInCorners).toEqual({ "bottom-right": 10, "bottom-left": 0, "top-right": 0, "top-left": 0 });
+    // A save that only moves the inset over a stretch it leaves framed as it was reports the stretch too.
+    const moved = applyOps(after, [{ op: "updateClip", clipId: "i", patch: { transform: { scale: 0.3, x: -0.32, y: 0.32 } } }]);
+    expect(framingReport(after, moved, media, canvas, [], [], evidence([header, covered, left]))[0]!.holds[0]!.underCover).toEqual(["RiemannBench"]);
+  });
+
   it("keeps the time beside a stretch on the clip that plays on into it where two overlap at a crossfaded cut", () => {
     // The camera's sound cuts at 10 from source 10 to 50 with a 0.1 s crossfade; the screen, 10 s ahead, comes on at the cut.
     const before = applyOps(emptyTimeline("p"), [
