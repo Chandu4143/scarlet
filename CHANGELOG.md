@@ -6,7 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
-- When you stumble on a word (“who who thinks of this”), Scarlet takes out the first saying of it, so the line runs on as you said it instead of jumping from the broken word into the next.
+- When you stumble on a word (“who who thinks of this”), Scarlet leans toward taking out the first saying of it, so the line runs on as you said it instead of jumping from the broken word into the next.
 - Your camera inset leaves clear room above your head, even when you sit up.
 - A cut waiting for your approval no longer draws a dotted line across the whole timeline: it shows as its dot, like any cut, and once opened its red band has a dashed edge until you approve it.
 - When Scarlet reworks the whole video in one go, every cut it made is listed, so you can open, revise or undo each one.
