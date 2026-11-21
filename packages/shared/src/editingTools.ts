@@ -13,7 +13,7 @@ export const EDITING_TOOL_GROUPS = [
   { title: "Review and delivery", description: "Follow review notes, preview a change and render a delivery.",
     tools: ["change_get", "change_list", "edit_flag", "notes_list", "note_reply", "note_resolve", "render_request", "render_status"] },
   { title: "Requests and skills", description: "Report progress, ask editorial questions, use saved instructions and offer rules to add to them.",
-    tools: ["task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit", "shorts_plan"] },
+    tools: ["task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit"] },
   { title: "Motion graphics", description: "Draw graphics from web pages, capture pages from the web, and read the files and style guide the editor gave.",
     tools: ["graphic_render", "graphic_get", "web_capture", "style_guide_save", "attachment_read"] },
   { title: "Frame inspection", description: "Examine a source frame or several moments from an edit together.",

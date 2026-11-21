@@ -203,8 +203,6 @@ export const ProjectSummary = z.object({
    * Nothing while Scarlet is idle. Old engines omit it.
    */
   activity: z.array(ProjectActivity).optional(),
-  /** The project this one was made from, as a short of it. */
-  source: Project.shape.source,
   updatedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime().optional(),
 });
@@ -229,12 +227,7 @@ export const UpdateProjectRequest = z.object({
   archived: z.boolean().optional(),
   name: z.string().min(1).optional(),
   settings: ProjectSettings.partial().optional(),
-  /** False once the editor dismisses the line in a short's chat that says which project it was made from. */
-  sourceNotice: z.literal(false).optional(),
 });
-
-/** The shapes a short can take. */
-export const ShortAspect = z.enum(["9:16", "1:1", "4:5"]);
 
 
 // ---------------------------------------------------------------------------
@@ -826,19 +819,6 @@ export const Task = z.object({
       pictureMarks: PictureMarks.optional(),
       /** What such a request asked of the agent, without the thread's history. Its name alone doesn't say which edit, so the thread's later requests are told this. */
       asked: z.string().optional(),
-      /**
-       * A request Make shorts started in one of the projects it made: which short this is, the project and version it
-       * was made from, and what the editor chose. The first short's run chooses every short's moment; the others are
-       * started with theirs, in timeline seconds on the copied edit.
-       */
-      short: z.object({
-        index: z.number().int().positive(), count: z.number().int().positive(),
-        sourceProjectId: Id, sourceName: z.string(), sourceVersion: Id,
-        aspect: ShortAspect, maxSeconds: z.number().positive(), captions: z.boolean(),
-        /** Every project Make shorts made for this request, in order, the first included. */
-        projectIds: z.array(Id),
-        moment: z.object({ start: Seconds, end: Seconds, title: z.string() }).optional(),
-      }).optional(),
     })
     .default({}),
   state: TaskState,
@@ -1044,34 +1024,8 @@ export const CreateTaskRequest = z.object({
   serviceTier: AgentOptionId.optional(),
   instruction: z.string().min(1),
   voiceTranscript: z.string().optional(),
-  context: Task.shape.context.removeDefault().omit({ dialogueOperation: true, dialogueRange: true, short: true }).optional(),
+  context: Task.shape.context.removeDefault().omit({ dialogueOperation: true, dialogueRange: true }).optional(),
 });
-
-/** What the editor chose in Make shorts. Each short becomes a project of its own, made from this one's finished edit. */
-export const MakeShortsRequest = z.object({
-  /** Up to this many: the run that chooses the moments may find fewer that stand on their own. */
-  count: z.number().int().min(1).max(5),
-  aspect: ShortAspect,
-  /** Each short runs under this long. */
-  maxSeconds: z.number().int().min(10).max(600),
-  captions: z.boolean(),
-  agent: AgentId,
-  model: z.string().optional(),
-  effort: AgentEffort.optional(),
-  fast: z.boolean().optional(),
-  serviceTier: AgentOptionId.optional(),
-});
-export type MakeShortsRequest = z.infer<typeof MakeShortsRequest>;
-
-/** The moments the first short's run chose, in timeline seconds on the copied edit, one per short, in order. */
-export const ShortsPlanRequest = z.object({
-  moments: z.array(z.object({
-    start: Seconds, end: Seconds,
-    /** The short's name: what the editor sees in the library and the project's header. */
-    title: z.string().trim().min(1).max(80),
-  })).min(1).max(5),
-});
-export type ShortsPlanRequest = z.infer<typeof ShortsPlanRequest>;
 
 /**
  * New words for a request still waiting its turn, and the skills their /commands name, resolved as a send resolves

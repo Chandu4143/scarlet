@@ -4051,24 +4051,6 @@ ${OPS_DOC}`,
     },
   );
 
-  // Only the run that chooses the moments for a Make shorts request: the first short's.
-  if (ctx.task?.context.short?.index === 1) tool(
-    "shorts_plan",
-    "Save the moments you chose for this Make shorts request, one per short, in the order the shorts are numbered: the first is this project's. " +
-      "Times are timeline seconds on the copied edit, the version every short started as. Each short is named for its title. " +
-      "Scarlet starts a run in each other short's project, given its moment, and moves the shorts you leave unused to the trash. Call it once, before you cut this project.",
-    {
-      moments: z.array(z.object({
-        start: z.number().finite().nonnegative(), end: z.number().finite().positive(),
-        title: z.string().trim().min(1).max(80).describe("A few words a viewer would know the short by"),
-      })).min(1).max(5),
-    },
-    async ({ moments }) => {
-      const result = await client.post<{ shorts: Array<{ projectId: string; name: string; taskId?: string }>; removed: string[] }>(`/tasks/${ctx.taskId}/shorts-plan`, { moments });
-      return json(result);
-    },
-  );
-
   tool(
     "task_question",
     "Ask the editor a question when you cannot proceed without their decision (which take, what aspect ratio, whether to cut a section). Posting the question pauses the task; STOP working immediately after calling this and end your turn. Scarlet resumes the task with the editor's answer as your next message. Ask only when needed, and make the question specific with the options you see.",
