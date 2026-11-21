@@ -2,7 +2,7 @@ import { access, constants, mkdir, stat, writeFile } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { Workspace } from "./runners/types.js";
 
-/** Where a B-roll run's shell finds its programs, in the task folder: small launchers, first on its PATH. */
+/** Where a request's shell finds its programs, in the task folder: small launchers, first on its PATH. */
 export const TOOLS_DIR = ".tools";
 
 const runnable = (path: string) => access(path, constants.X_OK).then(() => true, () => false);
@@ -44,7 +44,7 @@ export function programFolder(path: string): string {
 }
 
 /**
- * The programs a B-roll run's shell is given, as launchers in the task folder: ffmpeg and ffprobe (the engine's own, from
+ * The programs a request's shell is given, as launchers in the task folder: ffmpeg and ffprobe (the engine's own, from
  * FFMPEG_PATH and FFPROBE_PATH, else the PATH's). Pages are drawn and captured in Scarlet's own Chrome (`graphic_render`,
  * `web_capture`): in every harness's sandbox Chrome either crashed at start or couldn't reach the web (2026-11-21).
  * What the host lacks is left out; the shell keeps its PATH as it was.

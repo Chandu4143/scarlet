@@ -1,5 +1,5 @@
 //! Gemini via Antigravity CLI (`agy acp`), speaking Agent Client Protocol (JSON-RPC 2.0) over stdio.
-//! Runs with `--sandbox` and an explicit `session/request_permission` handler: a B-roll run's agent may use agy's own
+//! Runs with `--sandbox` and an explicit `session/request_permission` handler: a request's agent may use agy's own
 //! shell, file and web tools inside its task folder as well as Scarlet's, and a side check only Scarlet's. Supports model selection,
 //! thinking level (`thought_level`) and token usage reporting. The runner can open a session again
 //! (`session/resume`), but the engine never asks it to: Gemini isn't among the agents it resumes, so an
@@ -227,7 +227,7 @@ pub const SCARLET_TOOLS: &[&str] = &[
     "faces", "lip_sync",
     "change_get", "change_list", "edit_flag", "notes_list", "note_reply", "note_resolve", "render_request", "render_status",
     "task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit",
-    "broll_make", "web_capture", "graphic_render", "graphic_get", "style_guide_save", "attachment_read",
+    "web_capture", "graphic_render", "graphic_get", "style_guide_save", "attachment_read",
     "media_frame", "frame_contact_sheet", "frame_contact_sheet_batch", "screen_area",
     "change_review_cut", "source_audio",
     "captions_generate",
@@ -313,7 +313,7 @@ fn resolved(path: &str) -> String {
     format!("{prefix}/{}", parts.join("/"))
 }
 
-/// Whether a B-roll run's agent may use one of agy's own tools: yes unless it names a path outside the folders it works in
+/// Whether a request's agent may use one of agy's own tools: yes unless it names a path outside the folders it works in
 /// (its task folder, and those its programs live in). agy's sandbox restricts its terminal; its file tools reach as far
 /// as the user's files do, the library that holds Scarlet's token among them.
 pub fn workspace_permission(params: &Value, roots: &[String]) -> bool {
@@ -845,7 +845,7 @@ impl AcpSession {
             if let Some(id) = msg.get("id") {
                 if method == "session/request_permission" {
                     let params = msg.get("params").unwrap_or(&Value::Null);
-                    // A B-roll run's agent has agy's own tools inside its folders; every other run has Scarlet's only.
+                    // A request's agent has agy's own tools inside its folders; a side check has Scarlet's only.
                     let allow = match &self.roots { Some(roots) => workspace_permission(params, roots), None => is_scarlet_mcp_permission(params) };
                     if !allow {
                         self.refused.push(permission_tool(params));

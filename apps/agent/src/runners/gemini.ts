@@ -1,6 +1,6 @@
 /**
  * Gemini via Antigravity CLI (`agy acp`), speaking Agent Client Protocol (JSON-RPC 2.0) over stdio.
- * Runs with `--sandbox` and an explicit `session/request_permission` handler: a B-roll run's agent may use agy's own
+ * Runs with `--sandbox` and an explicit `session/request_permission` handler: a request's agent may use agy's own
  * shell, file and web tools inside its task folder as well as Scarlet's, and a side check only Scarlet's. Supports model selection,
  * thinking level (`thought_level`), session resume (`session/resume`), and token usage reporting.
  */
@@ -244,7 +244,7 @@ function namedPaths(params: unknown): string[] {
 }
 
 /**
- * Whether a B-roll run's agent may use one of agy's own tools: yes unless it names a path outside the folders it works in
+ * Whether a request's agent may use one of agy's own tools: yes unless it names a path outside the folders it works in
  * (its task folder, and those its programs live in). agy's sandbox restricts its terminal; its file tools reach as far
  * as the user's files do, the library that holds Scarlet's token among them.
  */
@@ -623,7 +623,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
       if (typeof msg.method === "string") {
         if (msg.id !== undefined) {
           if (msg.method === "session/request_permission") {
-            // A B-roll run's agent has agy's own tools inside its folder; every other run has Scarlet's only.
+            // A request's agent has agy's own tools inside its folder; a side check has Scarlet's only.
             const allow = opts.workspace ? workspacePermission(msg.params, [opts.cwd, ...opts.workspace.readDirs])
               : isScarletMcpPermission(msg.params);
             if (!allow) refused.push(extractToolName(asRecord(asRecord(msg.params)?.toolCall) ?? {}));

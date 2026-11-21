@@ -46,7 +46,7 @@ let textOf: (r: CallToolResult) => string;
 /** A result's answer, before any line that says what it was answered without. */
 const firstJson = (r: CallToolResult) => JSON.parse((r.content[0] as { text: string }).text);
 
-async function connect(taskId?: string, workDir?: string, task?: Task, alignmentWaitMs?: number, agent = "claude", joinWaitMs?: number, guides?: string[]) {
+async function connect(taskId?: string, workDir?: string, task?: Task, alignmentWaitMs?: number, agent = "claude", joinWaitMs?: number) {
   const sc = new ScarletClient({ baseUrl: mock.url, token: "tok" });
   const server = createScarletMcpServer(sc, {
     projectId: "prj_test",
@@ -55,7 +55,6 @@ async function connect(taskId?: string, workDir?: string, task?: Task, alignment
     taskId,
     taskStartedAt: taskId ? "2026-04-01T12:00:00.000Z" : undefined,
     task,
-    guides,
     agent,
     author: { type: "agent", id: agent, name: agent, model: "opus" },
     workDir,
@@ -101,8 +100,8 @@ describe("MCP file tools", () => {
         width: 1280, height: 2400, headings: [{ text: "Everyone is building AI agents", box: { left: 0.05, top: 0.0412345, right: 0.6, bottom: 0.08 } }] }));
       return true;
     };
-    const run = Task.parse({ id: "tsk_broll", projectId: "prj_test", kind: "broll_make", agent: "claude", state: "running", instruction: "B-roll at 0:12",
-      context: { checksTaskId: "tsk_edit_b", broll: { at: 12, want: "The article's headline" } }, createdBy: { type: "human", name: "Editor" } });
+    const run = Task.parse({ id: "tsk_edit_b", projectId: "prj_test", kind: "edit", agent: "claude", state: "running", instruction: "Show the article",
+      createdBy: { type: "human", name: "Editor" } });
     const c = await connect(run.id, dir, run);
     try {
       const shot = await c.callTool({ name: "web_capture", arguments: { url: "https://www.theledger.example/agents", fullPage: true } }) as CallToolResult;
@@ -123,8 +122,8 @@ describe("MCP file tools", () => {
 
   it("records where B-roll from the web came from, with the page as captured from the artifact directory", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scarlet-artifact-test-"));
-    const run = Task.parse({ id: "tsk_broll", projectId: "prj_test", kind: "broll_make", agent: "claude", state: "running", instruction: "B-roll at 0:12",
-      context: { checksTaskId: "tsk_edit_b", broll: { at: 12, want: "The article's headline" } }, createdBy: { type: "human", name: "Editor" } });
+    const run = Task.parse({ id: "tsk_edit_b", projectId: "prj_test", kind: "edit", agent: "claude", state: "running", instruction: "Show the article",
+      createdBy: { type: "human", name: "Editor" } });
     const c = await connect(run.id, dir, run);
     try {
       await writeFile(join(dir, "article.png"), "framed");
@@ -218,81 +217,31 @@ describe("tools/list", () => {
     } finally { await codex.close(); }
     expect((await client.listTools()).tools.map(t => t.name)).not.toContain("asset_add");
   });
-  it("offers a request the tool that asks for B-roll, and the B-roll run alone the shell's tools: page capture and asset_add on every harness", async () => {
-    const edit = Task.parse({ id: "tsk_edit_b", projectId: "prj_test", kind: "edit", agent: "claude", state: "running", instruction: "Add B-roll",
+  it("offers every request, a dialogue pass included, page capture and asset_add with where a file came from, on every harness, and a side check neither", async () => {
+    const edit = Task.parse({ id: "tsk_edit_b", projectId: "prj_test", kind: "edit", agent: "claude", state: "running", instruction: "Show the article",
       createdBy: { type: "human", name: "Editor" } });
-    const run = Task.parse({ ...edit, id: "tsk_broll", kind: "broll_make", context: { checksTaskId: edit.id, broll: { at: 12, want: "The article's headline" } } });
-    for (const agent of ["claude", "codex", "gemini"]) {
-      const asking = await connect(edit.id, undefined, { ...edit, agent } as Task, undefined, agent);
-      const making = await connect(run.id, undefined, { ...run, agent } as Task, undefined, agent);
+    for (const agent of ["claude", "codex", "gemini"]) for (const context of [{}, { dialogueOperation: "first-cut" as const }]) {
+      const c = await connect(edit.id, undefined, Task.parse({ ...edit, agent, context }), undefined, agent);
       try {
-        const asks = (await asking.listTools()).tools.map(t => t.name);
-        expect([asks.includes("broll_make"), asks.includes("web_capture"), asks.includes("timeline_propose")], agent).toEqual([true, false, true]);
-        // The editor asks for a shot, in their words or a skill; the run is told to start none unasked.
-        if (agent !== "gemini") expect((await asking.listTools()).tools.find(t => t.name === "broll_make")!.description).toContain("Call it only when the editor asked");
-        const makes = (await making.listTools()).tools.map(t => t.name).filter(n => n !== "tool_help").sort();
-        // It reads the moment, captures and draws, and adds what it made. It saves nothing to the video and asks nobody.
-        expect(makes, agent).toEqual(["asset_add", "attachment_read", "frame_contact_sheet", "graphic_get", "graphic_render", "media_frame", "project_get", "screen_text",
-          "skills_list", "task_log", "timeline_at", "timeline_get", "timeline_transcript", "transcript_get", "transcript_search", "web_capture"]);
-      } finally { await asking.close(); await making.close(); }
+        const tools = (await c.listTools()).tools;
+        const names = tools.map(t => t.name);
+        expect([names.includes("web_capture"), names.includes("asset_add"), names.includes("timeline_propose"), names.includes("broll_make")], agent).toEqual([true, true, true, false]);
+        expect(Object.keys(tools.find(t => t.name === "asset_add")!.inputSchema.properties ?? {}), agent).toEqual(["path", "kind", "provenance", "source"]);
+      } finally { await c.close(); }
     }
-    // A dialogue pass cuts words and asks for none: it reads the tools it always has.
-    const pass = await connect("tsk_pass_b", undefined, Task.parse({ ...edit, id: "tsk_pass_b", context: { dialogueOperation: "first-cut" } }));
-    try {
-      const tools = (await pass.listTools()).tools;
-      expect(tools.map(t => t.name)).not.toContain("broll_make");
-      expect(tools.map(t => t.name)).not.toContain("web_capture");
-    } finally { await pass.close(); }
-    // A pass whose skill calls the B-roll guide is the editor's skill asking: it is offered the tool.
-    const asked = await connect("tsk_pass_b", undefined, Task.parse({ ...edit, id: "tsk_pass_b", context: { dialogueOperation: "first-cut", skillIds: ["skl_mine"] } }),
-      undefined, "claude", undefined, ["dialogue-pass", "b-roll", "my-talking-head"]);
-    try { expect((await asked.listTools()).tools.map(t => t.name)).toContain("broll_make"); } finally { await asked.close(); }
-    // On Codex, which can add a file in any request, a request reads asset_add as it always has: where a file came from
-    // on the web is the B-roll run's to say.
-    const codexPass = await connect("tsk_pass_c", undefined, Task.parse({ ...edit, id: "tsk_pass_c", agent: "codex", context: { dialogueOperation: "first-cut" } }), undefined, "codex");
-    try {
-      const add = (await codexPass.listTools()).tools.find(t => t.name === "asset_add")!;
-      expect([Object.keys(add.inputSchema.properties ?? {}), add.description!.includes("B-roll")]).toEqual([["path", "kind", "provenance"], false]);
-    } finally { await codexPass.close(); }
-    // A side check asks for none.
     const check = await connect("tsk_check", undefined, Task.parse({ ...edit, id: "tsk_check", kind: "learning_check", context: { checksTaskId: edit.id } }));
-    try { expect((await check.listTools()).tools.map(t => t.name)).not.toContain("broll_make"); } finally { await check.close(); }
-  });
-  it("starts a B-roll run with the moment and what to show, waits on it, and says what it made or that it is still at work", async () => {
-    const edit = Task.parse({ id: "tsk_edit_b", projectId: "prj_test", kind: "edit", agent: "claude", state: "running", instruction: "Add B-roll",
-      createdBy: { type: "human", name: "Editor" } });
-    const answers: unknown[] = [{ runId: "tsk_run1", state: "working", media: [] },
-      { runId: "tsk_run1", state: "done", summary: "m_art is The Ledger's headline, 4 s, the whole frame.", media: [{ id: "m_art", kind: "video", name: "ledger.mov", duration: 4 }] }];
-    const extra = mock.state.extra;
-    mock.state.extra = async (rec, res) => {
-      if (rec.method !== "POST" || !rec.path.endsWith("/broll-runs")) return extra ? extra(rec, res) : false;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(answers.shift()));
-      return true;
-    };
-    const c = await connect(edit.id, undefined, edit);
     try {
-      const first = JSON.parse(textOf(await c.callTool({ name: "broll_make", arguments: { at: 62.5, duration: 4, want: "The Ledger's headline on agents", says: "everyone is building an agent" } }) as CallToolResult));
-      expect(first).toEqual({ runId: "tsk_run1", state: "working", media: [], next: "Still at work. Call broll_make with runId tsk_run1 to wait on it." });
-      const done = JSON.parse(textOf(await c.callTool({ name: "broll_make", arguments: { runId: "tsk_run1" } }) as CallToolResult));
-      expect(done).toMatchObject({ state: "done", media: [{ id: "m_art" }], summary: expect.stringContaining("whole frame") });
-      const sent = mock.requests.filter(r => r.path.endsWith("/broll-runs")).map(r => r.body);
-      // Claude Code's tool deadline leaves 220 s to wait.
-      expect(sent).toEqual([{ at: 62.5, duration: 4, want: "The Ledger's headline on agents", says: "everyone is building an agent", waitMs: 220_000 }, { runId: "tsk_run1", waitMs: 220_000 }]);
-      // Neither a moment nor a run to wait on is nothing to do.
-      expect((await c.callTool({ name: "broll_make", arguments: { want: "Something" } })).isError).toBe(true);
-    } finally {
-      mock.state.extra = extra;
-      await c.close();
-    }
+      const names = (await check.listTools()).tools.map(t => t.name);
+      expect([names.includes("web_capture"), names.includes("asset_add")]).toEqual([false, false]);
+    } finally { await check.close(); }
   });
   it("registers every Scarlet tool with a description", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    // Claude's harness does not deliver audio, so nothing offers WAV, and a request has no file tools, so nothing imports
-    // from the artifact directory or captures a page. Only the check that reads a request offers a rule, and only a
-    // request's own run asks for B-roll.
-    expect(names).toEqual([...SCARLET_TOOL_NAMES].filter(n => !["source_audio", "learning_suggest", "asset_add", "web_capture", "broll_make"].includes(n)).sort());
+    // Claude's harness does not deliver audio, so nothing offers WAV. This session has no task, so it isn't launched with
+    // file tools: nothing imports from the artifact directory or captures a page. Only the check that reads a request
+    // offers a rule.
+    expect(names).toEqual([...SCARLET_TOOL_NAMES].filter(n => !["source_audio", "learning_suggest", "asset_add", "web_capture"].includes(n)).sort());
     for (const t of tools) expect(Object.keys(t.inputSchema.properties ?? {})).not.toContain("includeAudio");
     expect(JSON.stringify(tools)).not.toMatch(/\bWAV\b|can (hear|play)|accepts audio|consume audio/);
     for (const t of tools) expect(t.description?.length ?? 0).toBeGreaterThan(20);

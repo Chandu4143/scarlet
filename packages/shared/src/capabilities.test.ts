@@ -62,7 +62,7 @@ describe("toolWait", () => {
 });
 
 describe("a run launched with its harness's own tools", () => {
-  it("has files, a shell and the web on every harness, and a request has none of the shell or the web", () => {
+  it("has files, a shell and the web on every harness, as every request is launched, and a side check has no shell or web", () => {
     for (const agent of ["claude", "codex", "gemini"]) {
       const request = agentCapabilities(agent);
       expect([request.shell, request.web], agent).toEqual([undefined, undefined]);

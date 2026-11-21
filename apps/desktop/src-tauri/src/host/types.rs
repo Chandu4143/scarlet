@@ -145,12 +145,12 @@ pub struct TaskPrompt {
     #[serde(default)]
     pub refused_tool: Option<String>,
     /// Launch the CLI with its harness's own shell, file and web tools beside Scarlet's, the shell sandboxed to the task
-    /// folder: a B-roll run alone has them. An engine from before them leaves it out.
+    /// folder: every request has them, a side check and a skill's revision don't. An engine from before them leaves it out.
     #[serde(default)]
     pub workspace: bool,
 }
 
-/// What a B-roll run's agent works with beyond Scarlet's tools (Workspace in apps/agent/src/runners/types.ts): its harness's
+/// What a request's agent works with beyond Scarlet's tools (Workspace in apps/agent/src/runners/types.ts): its harness's
 /// shell, sandboxed to the task folder and reaching the web, file tools and web search. The editor chose this for every
 /// model (2026-11-21).
 #[derive(Debug, Clone, Default, PartialEq)]

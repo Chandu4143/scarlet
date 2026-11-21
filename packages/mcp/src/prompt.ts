@@ -4,7 +4,7 @@
  * provides context (timestamps, clip ids, notes, the change being revised)
  * and includes the applicable skills verbatim.
  */
-import { CHECK_IN_SHARE, taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type BrollBrief, type CheckIn, type PictureMark, type Skill, type Task } from "@scarlet/shared";
+import { CHECK_IN_SHARE, taskDialogueOperation, agentCapabilities, changeEdits, namedTimelineEdits, skillExtends, type AgentCapabilities, type CheckIn, type PictureMark, type Skill, type Task } from "@scarlet/shared";
 import type { Change, Note, Project, Timeline, TimelineDiff } from "@scarlet/timeline";
 import { clipById, describeDiff, formatTimecode } from "@scarlet/timeline";
 import { summarizeProject } from "./analysis.js";
@@ -45,8 +45,6 @@ export interface PromptContext {
   learningCheck?: LearningCheckContext;
   /** What an area_check task looks at. Such a task edits no video, so its prompt is about one frame. */
   areaCheck?: { mediaId: string; at: number };
-  /** What a broll_make task is to find or make. Such a task places nothing, so its prompt is about one shot. */
-  broll?: BrollBrief & { styleGuide?: { name: string; text?: string } };
   /** The editor's setting for how many of a pass's cuts they are asked to check. Omitted = balanced. */
   checkIn?: CheckIn;
   /** Directory the agent may use for temp files; mentioned in the prompt. */
@@ -162,44 +160,6 @@ function buildAreaCheckPrompt(check: { mediaId: string; at: number }, prefix: st
   ].join("\n\n");
 }
 
-/**
- * The brief of a B-roll run: one moment, what should be on screen there, what the run has to work with and how it
- * hands back what it made. It says the goal and what counts as done, not how: which source, which look and which tools
- * are the model's calls.
- */
-function buildBrollPrompt(brief: NonNullable<PromptContext["broll"]>, ctx: PromptContext): string {
-  const caps = ctx.capabilities ?? agentCapabilities(ctx.task?.agent);
-  const prefix = caps.toolPrefix ?? "";
-  const tool = (name: string) => `\`${prefix}${name}\``;
-  const project = typeof ctx.project === "string" ? undefined : ctx.project.project;
-  const size = project ? `${project.settings.width} × ${project.settings.height} at ${project.settings.fps} fps` : undefined;
-  const clock = `${Math.floor(brief.at / 60)}:${String(Math.floor(brief.at % 60)).padStart(2, "0")}`;
-  return [
-    "# You are making one piece of B-roll for a video being edited in Scarlet",
-    "Another run of Scarlet is editing this video with its editor, and asked for a shot to lay over one moment of it. Find or make that shot and add it to the project's media. You place nothing in the video: the run that asked lays it in, from what you tell it.",
-    [
-      "## The moment",
-      `At ${clock} of the video (${brief.at} s)${brief.duration ? `, to hold for about ${brief.duration} s` : ""}.${size ? ` The video is ${size}.` : ""}`,
-      ...(brief.says ? [`What is said there: “${brief.says}”`] : []),
-      `What should be on screen: ${brief.want}`,
-      ...(brief.url ? [`Take it from this page: ${brief.url}`] : []),
-    ].join("\n"),
-    [
-      "## What you have",
-      ...(ctx.workDir ? [`Your task artifact directory is: ${ctx.workDir}`] : []),
-      `Your harness's own tools: a shell, sandboxed to this task's folder, with ffmpeg and ffprobe on its PATH where this machine has them, file tools${caps.web ? ", and web search" : ""}. The shell can't reach the project's footage.`,
-      `Scarlet's tools: ${tool("web_capture")} takes the picture of a page on the web, with its headings and words; ${tool("graphic_render")} draws a page you write as a graphic or a full frame, animated if you like; ${tool("media_frame")} and ${tool("timeline_transcript")} show the moment and what is said round it; ${tool("project_get")} lists the footage already in the project; ${tool("skills_list")} has the editor's guides, the ones for B-roll and motion graphics among them.`,
-      "How you make it is yours to choose: a captured page framed to the line being said, a clip cut with ffmpeg, a page drawn from scratch, a script.",
-    ].join("\n"),
-    ...(brief.styleGuide ? [`## The editor's style guide: ${brief.styleGuide.name}\n${brief.styleGuide.text ?? `Read it with ${tool("attachment_read")}.`}`] : []),
-    [
-      "## When it's done",
-      `Add the finished file with ${tool("asset_add")} (with \`source\` for anything taken from the web: the page's address, the capture and the part you used), unless ${tool("graphic_render")} already added it. Look at what you made before you hand it over.`,
-      "End with one or two plain sentences for the run that asked: the mediaId, what it shows, how long it runs, and how it is meant to sit (the whole frame, or over part of the picture). If nothing fitting can be found or made, say so and what would be needed. Ask the editor nothing: the run that asked does.",
-    ].join("\n"),
-  ].join("\n\n");
-}
-
 function buildLearningCheckPrompt(check: LearningCheckContext): string {
   const list = (lines: string[]) => lines.map(l => `- ${l}`).join("\n");
   return [
@@ -275,14 +235,17 @@ export function buildSystemPrompt(ctx: PromptContext): string {
   if (ctx.editSkill) return buildSkillEditPrompt(ctx, ctx.editSkill);
   if (ctx.learningCheck) return buildLearningCheckPrompt(ctx.learningCheck);
   if (ctx.areaCheck) return buildAreaCheckPrompt(ctx.areaCheck, ctx.capabilities?.toolPrefix ?? "");
-  if (ctx.broll) return buildBrollPrompt(ctx.broll, ctx);
   const parts: string[] = [SCARLET_INTRO];
   // Only a caller that says the run has the tool is asked: a harness's default says what it can do, not how this run was launched.
   if (ctx.capabilities?.plan) parts.push(PLAN_STEPS);
 
   // Only a harness with file tools can put anything in the artifact directory.
   const caps = ctx.capabilities ?? agentCapabilities(ctx.task?.agent);
-  if (ctx.workDir && caps.files) {
+  if (ctx.workDir && caps.files && caps.shell) {
+    // A request launched with its harness's own tools. What to use them for is the model's call; that B-roll and graphics
+    // are the editor's to ask for is the editor's standing word (2026-11-21), said here once.
+    parts.push(`Your task artifact directory is: ${ctx.workDir}\nBeside Scarlet's tools you have your harness's own: a shell, sandboxed to this task's folder, with ffmpeg and ffprobe on its PATH where this machine has them, file tools${caps.web ? ", and web search" : ""}. Use them for what Scarlet's tools don't give: a file built for the edit, something looked up. \`web_capture\` takes the picture of a page on the web, \`graphic_render\` draws a page you write, and \`asset_add\` brings a finished file into the project, with \`source\` for anything taken from the web. The project's footage and the video are read through Scarlet's tools: the shell can't reach them. B-roll and graphics are made when the editor asked for them, in their words or in a skill of theirs, never on your own initiative.`);
+  } else if (ctx.workDir && caps.files) {
     parts.push(`Your task artifact directory is: ${ctx.workDir}\n\`asset_add\` imports a graphic, animation or music bed you made there, with how you made it.`);
   }
 

@@ -13,7 +13,7 @@ import type { AgentUsage, PlanStep } from "@scarlet/shared";
  * TodoWrite, which takes the whole list. `--tools` takes the names a CLI knows and passes over the rest.
  */
 const CLAUDE_PLAN_TOOLS = ["TaskCreate", "TaskUpdate", "TodoWrite"];
-/** Claude Code's own tools a B-roll run's agent has beside Scarlet's: a shell, files and the web. */
+/** Claude Code's own tools a request's agent has beside Scarlet's: a shell, files and the web. */
 export const CLAUDE_WORKSPACE_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"];
 /** Allowed without asking. `WebFetch(domain:*)` also lets the shell's sandbox reach any web address. */
 const CLAUDE_WORKSPACE_ALLOWED = [...CLAUDE_WORKSPACE_TOOLS, "WebFetch(domain:*)"];
@@ -269,7 +269,7 @@ export function buildClaudeCommand(
   const systemPath = join(tmpDir, "system.md");
   const mcpConfig = { mcpServers: { scarlet: { command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env } } };
   const ws = opts.workspace;
-  // A B-roll run's agent has Claude Code's own shell, file and web tools beside Scarlet's. Its shell runs in Claude Code's
+  // A request's agent has Claude Code's own shell, file and web tools beside Scarlet's. Its shell runs in Claude Code's
   // sandbox, writing only in the task folder; it reaches any web address (`WebFetch(domain:*)` opens the sandbox's
   // proxy to every host), and reads nothing outside the task folder but the programs its links point at. The control
   // files, which hold Scarlet's token, are closed to every tool. Where the sandbox can't start (native Windows, a Linux
@@ -295,8 +295,8 @@ export function buildClaudeCommand(
     "--restricted",
     "--disable-slash-commands",
     "--tools",
-    // A B-roll run's own shell, file and web tools, and Claude Code's to-do list when the engine asks for the agent's plan.
-    // Every other run has neither.
+    // A request's own shell, file and web tools, and Claude Code's to-do list when the engine asks for the agent's plan.
+    // A side check has neither.
     tools.join(","),
     "--allowedTools",
     ["mcp__scarlet__*", ...(ws ? CLAUDE_WORKSPACE_ALLOWED : [])].join(","),

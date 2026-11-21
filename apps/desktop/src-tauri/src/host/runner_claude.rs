@@ -40,7 +40,7 @@ pub struct ClaudeState {
 /// and its result names the step's id; TaskUpdate changes one step by id. A Claude Code from before those has
 /// TodoWrite, which takes the whole list. `--tools` takes the names a CLI knows and passes over the rest.
 pub const CLAUDE_PLAN_TOOLS: &str = "TaskCreate,TaskUpdate,TodoWrite";
-/// Claude Code's own tools a B-roll run's agent has beside Scarlet's: a shell, files and the web.
+/// Claude Code's own tools a request's agent has beside Scarlet's: a shell, files and the web.
 pub const CLAUDE_WORKSPACE_TOOLS: [&str; 8] = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"];
 
 /// Why a run whose Scarlet MCP server failed has failed: Claude Code carries on without it and calls the run a success.
@@ -391,8 +391,8 @@ pub fn can_run_bare(env: &std::collections::HashMap<String, String>) -> bool {
 pub fn build_claude_command(model: Option<&str>, effort: Option<&str>, service_tier: Option<&str>, system_prompt: &str, instruction: &str, resume_session: Option<&str>, bare: bool, plan: bool, workspace: Option<&Workspace>, mcp: &McpSpec, bin: &str, tmp_dir: &Path) -> RunnerCommand {
     let mcp_config_path = tmp_dir.join("mcp.json");
     let system_path = tmp_dir.join("system.md");
-    // A B-roll run's own shell, file and web tools, and Claude Code's to-do list when the engine asks for the agent's plan.
-    // Every other run has neither.
+    // A request's own shell, file and web tools, and Claude Code's to-do list when the engine asks for the agent's plan.
+    // A side check has neither.
     let mut tools: Vec<&str> = Vec::new();
     if workspace.is_some() { tools.extend(CLAUDE_WORKSPACE_TOOLS); }
     if plan { tools.extend(CLAUDE_PLAN_TOOLS.split(',')); }
@@ -438,7 +438,7 @@ pub fn build_claude_command(model: Option<&str>, effort: Option<&str>, service_t
         args.push("--effort".into());
         args.push(e.to_string());
     }
-    // A B-roll run's shell runs in Claude Code's sandbox, writing only in the task folder; it reaches any web address
+    // A request's shell runs in Claude Code's sandbox, writing only in the task folder; it reaches any web address
     // (`WebFetch(domain:*)` opens the sandbox's proxy to every host) and reads nothing outside the task folder but the
     // programs its launchers point at. The control files, which hold Scarlet's token, are closed to every tool.
     // Insisting on the sandbox (`failIfUnavailable`) failed every run on a machine where it can't start, so where it

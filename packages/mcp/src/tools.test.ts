@@ -739,7 +739,7 @@ describe("tool annotations", () => {
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
   const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "screen_area", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
-    "graphic_render", "style_guide_save", "broll_make"];
+    "graphic_render", "style_guide_save"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
 
   it("gives every tool an input schema a harness can convert: no array that lists an item per position", async () => {
@@ -800,14 +800,12 @@ describe("tool annotations", () => {
       context: { skillId: "skl_1" }, hostId: "host_a", createdBy: { type: "human", name: "Editor" } });
     const check = Task.parse({ ...task, id: "check-task", kind: "learning_check", context: { checksTaskId: "asked-task" } });
     const edit = Task.parse({ ...task, id: "edit-task", kind: "edit", instruction: "Add B-roll", context: {} });
-    const broll = Task.parse({ ...task, id: "broll-task", kind: "broll_make", context: { checksTaskId: "edit-task", broll: { at: 12, want: "The article's headline" } } });
     const sessions = [await hearing(), await connect({ agent: "codex", taskId: task.id, task }), await connect({ agent: "codex", taskId: check.id, task: check }),
-      await connect({ agent: "codex", taskId: edit.id, task: edit }), await connect({ agent: "claude", taskId: broll.id, task: broll })];
+      await connect({ agent: "codex", taskId: edit.id, task: edit })];
     try {
       const tools = (await Promise.all(sessions.map(c => c.listTools()))).flatMap(l => l.tools);
       // The hearing session lists every editing tool; the skill request adds the tool that saves its revision, the
-      // check that reads a request the one that offers a rule, an edit request's own run the one that asks for B-roll,
-      // and the B-roll run the one that captures a page.
+      // check that reads a request the one that offers a rule, and the edit request the one that captures a page.
       expect([...new Set(tools.map(t => t.name))].sort()).toEqual(every.filter(name => name !== "skill_save_from_change").sort());
       for (const t of tools) expect(t.annotations, t.name).toEqual(toolAnnotations(t.name));
     } finally { await Promise.all(sessions.map(c => c.close())); }
@@ -1365,6 +1363,25 @@ describe("lip_sync and timeline_picture_sync", () => {
       expect(body.ops.find(o => o.op === "updateClip" && o.clipId === talk.id)!.patch).toMatchObject({ volume: 0, sourceIn: 10.65, sourceOut: 20.65, timelineIn: 0 });
       expect(textOf(await call(c, "timeline_picture_sync", { mediaId: "m2", soundLeads: 0.2 }))).toContain("only a video");
     } finally { await c.close(); }
+  });
+});
+
+describe("shorts_plan", () => {
+  const short = { index: 1, count: 2, sourceProjectId: "prj_long", sourceName: "Long", sourceVersion: "v1", aspect: "9:16" as const, maxSeconds: 60, captions: true, projectIds: ["prj_test", "prj_b"] };
+  const task = (index: number) => Task.parse({ id: `short-${index}`, state: "running", projectId: "prj_test", kind: "edit", agent: "claude", instruction: "Make up to 2 vertical shorts, each under 60 s.",
+    context: { short: { ...short, index } }, hostId: "host_a", createdBy: { type: "human", name: "Editor" } });
+
+  it("saves the first short's moments for its task, and is offered to no other run", async () => {
+    mock.state.extra = (req, res) => req.path === "/tasks/short-1/shorts-plan"
+      ? reply(res, { shorts: [{ projectId: "prj_test", name: "Agents fail" }, { projectId: "prj_b", name: "The wrong flight", taskId: "tsk_b" }], removed: [] }) : false;
+    const first = await connect({ taskId: "short-1", task: task(1) });
+    const second = await connect({ taskId: "short-2", task: task(2) });
+    try {
+      const moments = [{ start: 5, end: 40, title: "Agents fail" }, { start: 50, end: 80, title: "The wrong flight" }];
+      expect(JSON.parse(textOf(await ok(first, "shorts_plan", { moments })))).toMatchObject({ shorts: [{ name: "Agents fail" }, { taskId: "tsk_b" }] });
+      expect(sent("/tasks/short-1/shorts-plan")[0]!.body).toEqual({ moments });
+      expect((await second.listTools()).tools.map(t => t.name)).not.toContain("shorts_plan");
+    } finally { await Promise.all([first.close(), second.close()]); }
   });
 });
 

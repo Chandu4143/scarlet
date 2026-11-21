@@ -114,7 +114,7 @@ export function registerGraphics(deps: GraphicsDeps) {
     async ({ mediaId }) => json(await client.graphic(deps.projectId, mediaId)),
   );
 
-  // A run with a shell of its own captures pages: a B-roll run. A request asks for one with broll_make.
+  // A run launched with its harness's own tools, as every request is, captures pages into its task folder.
   if (deps.caps.shell) tool(
     "web_capture",
     "Open a page on the web in Scarlet's own headless Chrome and save its picture in the task artifact directory: the browser window (width × height in CSS pixels, default 1280 × 800) or, with fullPage, the whole page down to its end (up to 12,000 pixels). The page gets a moment after it loads for what it draws late. Use it for B-roll of an article, a post or a site: frame the picture any way you like (a page for graphic_render that links the file, ffmpeg, your own tools), then bring the result in with asset_add, with source { url, capture: this file, region: the part you used }, so the editor sees where it came from. Only public http and https pages. Returns the file's path and size, the page's title and address after any redirect, its headings with where each sits in the picture (fractions of it), and its words (the first 20,000 characters).",
