@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- A cut after you finish talking now comes right after your last word: a beat Scarlet keeps before a new demo or topic plays after the cut instead of as quiet after you stop.
 - An edit you play no longer starts over when Scarlet saves another edit of the same request meanwhile: it plays on, and the new edit comes in when you pause.
 - The model picker lists Standard speed once for Claude models instead of twice.
 - A skill Scarlet comes with that you edited and then set back to Scarlet's own text gets Scarlet's updates again.
