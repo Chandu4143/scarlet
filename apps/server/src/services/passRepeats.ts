@@ -118,7 +118,9 @@ export async function readPassRepeats(ctx: Ctx, task: Task, request: z.output<ty
     // A join inside a range staged for review isn't played yet; the review reads it.
     const joins = check.joins.filter(j => !stagedRanges.some(r => r.start - frame <= j.at && j.at <= r.end + frame));
     const noFindings = !check.repeats.length && !check.silences.length && !check.fragments.length && !joins.length && !unheardJoins.length && !unavailable.length;
-    saveTask(ctx, { ...owner, state: "running", repeatAudit: { version: tl.version, remaining, unavailable, returns, noFindings } });
+    // How many times in all the pass went back for this check, and when it last did, go on whatever this reading finds.
+    saveTask(ctx, { ...owner, state: "running", repeatAudit: { version: tl.version, remaining, unavailable, returns, noFindings,
+      ...(last?.totalReturns !== undefined && { totalReturns: last.totalReturns }), ...(last?.queuedAt && { queuedAt: last.queuedAt }) } });
     return { version: tl.version, ...(named !== tl.version && { readInsteadOf: named }), heard: check.repeats.length, staged: staged.length, remaining,
       // One offset pages the repeats and the divided sentences together: a pass asked for the next pages of both at once.
       repeats: repeats.slice(request.offset, request.offset + 25),

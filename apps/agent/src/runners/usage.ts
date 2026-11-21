@@ -88,13 +88,20 @@ export function geminiUsage(raw: unknown, model?: string): AgentUsage | undefine
       cache > 0 &&
       rawInput >= cache &&
       Math.abs(rawInput + output - total) < Math.abs(rawInput + cache + output - total);
+    const input = inputIncludesCache ? Math.max(0, rawInput - cache) : rawInput;
+    // `reasoningTokens` is part of `outputTokens`. In agy's own reports `totalTokens` adds up without the thoughts, so
+    // its output holds them already. Where they are reported apart (the total counts them on top of the output, or the
+    // output is smaller than they are), they are added to it.
+    const thought = tokenCount(s!.thoughtTokens);
+    const thoughtApart = thought > 0 && (output < thought ||
+      (total > 0 && Math.abs(input + cache + output + thought - total) < Math.abs(input + cache + output - total)));
     return {
       ...emptyUsage(model),
-      inputTokens: inputIncludesCache ? Math.max(0, rawInput - cache) : rawInput,
-      outputTokens: output,
+      inputTokens: input,
+      outputTokens: thoughtApart ? output + thought : output,
       cacheReadTokens: cached,
       cacheWriteTokens: written,
-      reasoningTokens: tokenCount(s!.thoughtTokens),
+      reasoningTokens: thought,
     };
   }
   if (!has(s, "input_tokens", "output_tokens", "input", "cached")) return undefined;

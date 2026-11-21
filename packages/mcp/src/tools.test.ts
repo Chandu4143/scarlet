@@ -349,6 +349,38 @@ describe("timeline_framing", () => {
     } finally { await c.close(); }
   });
 
+  it("waits within one tool call's time across every measurement a save waits for", async () => {
+    // The engine takes each wait it is given in full: the recording's cuts, then its edges, then a look at a frame.
+    const waited: Array<[string, number]> = [];
+    const others = mock.state.extra!;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    mock.state.extra = (req, res) => {
+      const wait = Number(req.query.get("wait") ?? 0);
+      const answer = (body: object) => {
+        waited.push([req.path.split("/").slice(-2).join("/"), wait]);
+        vi.setSystemTime(Date.now() + wait * 1000);
+        return reply(res, body);
+      };
+      if (req.path.endsWith("/picture-cuts")) return answer({ from: 0, to: 120, readSeconds: 1, done: false, cuts: [] });
+      if (req.path.endsWith("/show-area")) return answer({ mediaId: "scr", step: 5, done: true, areas: [], unset: [[0, 120]] });
+      if (req.path.endsWith("/show-area/ask")) return answer({ mediaId: "scr", step: 5, done: true, areas: [], unset: [[0, 120]], asked: 1, answered: 1 });
+      return others(req, res);
+    };
+    const c = await connect({ taskId: "task-waits" });
+    try {
+      await ok(c, "timeline_get");
+      const refused = await call(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "s0", patch: { transform: { cropLeft: 0.1, cropTop: 0.1, cropRight: 0.2, cropBottom: 0.1 } } }],
+        intent: "requested", description: "Cropped the demo.", reason: "The window is the subject." });
+      expect(textOf(refused)).toContain("no area says what viewers may see");
+      expect(waited.map(([what]) => what)).toEqual(expect.arrayContaining(["scr/picture-cuts", "scr/show-area"]));
+      // Claude Code's calls wait 240 s at most: each wait has what the ones before it left.
+      expect(waited.reduce((sum, [, wait]) => sum + wait, 0)).toBeLessThanOrEqual(240);
+    } finally {
+      vi.useRealTimers();
+      await c.close();
+    }
+  });
+
   describe("with areas viewers may see on record", () => {
     // One window from 0 to 60 s of the screen recording: 10-80% across, 10-90% down. Nothing is set after that.
     const window = { at: 5, area: [0.1, 0.1, 0.8, 0.9], noLine: [], holds: [[0, 60]] };
@@ -375,7 +407,10 @@ describe("timeline_framing", () => {
         expect(result.areas).toEqual([{ at: 5, area: [10, 10, 80, 90], holds: [[0, 60]], heldSeconds: 60 }]);
         // The edit plays nothing of the recording past 30 s, so the unset stretch is not on picture.
         expect(result.unset).toEqual([{ from: 60, to: 120, onPicture: 0, look: 90 }]);
-        expect(textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }] }))).toContain("at least 5 percent each way");
+        expect(textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }] }))).toContain("set[0].area is [left, top, right, bottom] in percent, at least 5 percent each way");
+        // Every area too small is named in one refusal.
+        const several = textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }, { at: 9, area: [10, 10, 80, 90] }, { at: 20, area: [10, 10, 80, 11] }] }));
+        expect(several).toContain("set[0].area and set[2].area are each [left, top, right, bottom] in percent");
       } finally { await c.close(); }
     });
 
@@ -722,6 +757,28 @@ describe("tool annotations", () => {
       };
       for (const t of tools) walk(t.inputSchema, t.name);
       expect(positional).toEqual([]);
+    } finally { await c.close(); }
+  });
+
+  it.each(["claude", "codex", "gemini"])("lists every parameter %s's model is shown with its own type: no $ref, no untyped branch", async agent => {
+    // A run's session, which has the tools only a request has.
+    const task = Task.parse({ id: "typed-task", state: "running", projectId: "prj_test", kind: "edit", agent, instruction: "/first-cut-dialogue",
+      context: {}, createdBy: { type: "human", name: "Editor" } });
+    const c = await connect({ agent, taskId: task.id, task, author: { type: "agent", id: agent, name: agent } });
+    try {
+      const { tools } = await c.listTools();
+      expect(tools.map(t => t.name)).toEqual(expect.arrayContaining(["dialogue_check_join", "dialogue_apply_cuts", "timeline_propose", "captions_generate"]));
+      const untyped: string[] = [];
+      const walk = (node: unknown, path: string) => {
+        if (!node || typeof node !== "object") return;
+        if ("$ref" in node) untyped.push(`${path} is a $ref`);
+        for (const [key, value] of Object.entries(node)) {
+          if (key === "anyOf" && Array.isArray(value)) value.forEach((branch, i) => { if (!branch?.type) untyped.push(`${path}.anyOf[${i}] has no type`); });
+          walk(value, `${path}.${key}`);
+        }
+      };
+      for (const t of tools) walk(t.inputSchema, t.name);
+      expect(untyped).toEqual([]);
     } finally { await c.close(); }
   });
 

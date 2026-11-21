@@ -23,6 +23,7 @@ import { acousticRetakeContinuations, acousticRetakeJoin, type AcousticRetakePag
 import { acousticRepeatedTakes, findRepeatedTakes } from "./dialogue-retakes.js";
 import { firstCutRanges } from "./first-cut-ranges.js";
 import { InsetFraming, InsetPresenter, insetFraming, insetStretches, presetInset, syncPictureOps, type FaceReading, type PresetInset } from "./sync-layout.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { wordDigest } from "./transcript-digest.js";
 import { mkdtemp } from "node:fs/promises";
@@ -33,7 +34,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listToolsBriefly } from "./brief-tools.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, Project, TimeRange, Transcript } from "@scarlet/timeline";
@@ -126,6 +127,8 @@ const SAVE_REMINDER_SECONDS = 300;
  * 60 s of a 4K screen recording takes about 1.5 s, all 25 minutes of one about 40 s (M-series, 2026-11-18).
  */
 const CUTS_WAIT_SECONDS = 45;
+/** When the tool call under way has to have answered by, in ms since the epoch: its harness's tool wait from when it began. */
+const callDeadline = new AsyncLocalStorage<number>();
 /** The latest staged pass of a run, and how many of its cuts still have no recommendation. */
 interface StagedReview { changeId: string; total: number; unchecked: number }
 /** How many of a pass's cuts have a recommendation that isn't provisional. */
@@ -294,6 +297,29 @@ export function validateOps(ops: unknown): { ok: true; ops: TimelineOp[] } | { o
   return { ok: false, error: `Invalid ops:\n${lines.join("\n")}\n\n${OPS_DOC}` };
 }
 
+/**
+ * A copy of a schema that shares no part with any other. The SDK lists a tool's parameters through zod-to-json-schema,
+ * which writes a schema it meets a second time in one tool as a `$ref` to the first: a node with no type or description
+ * of its own, which a harness may show the model untyped. Eighteen parameters of seven tools read that way, the word
+ * references in dialogue_check_join's `cuts` and timelineEdits' reason among them (2026-11-20).
+ */
+function unshared<T extends z.ZodTypeAny>(schema: T): T {
+  const copy = (value: unknown): unknown => value instanceof z.ZodType ? unshared(value)
+    : Array.isArray(value) ? value.map(copy)
+    : value instanceof Map ? new Map([...value].map(([key, item]) => [key, copy(item)]))
+    : value;
+  const def = Object.fromEntries(Object.entries(schema._def as Record<string, unknown>).map(([key, value]) => {
+    // An object schema keeps its fields behind a function.
+    if (key !== "shape" || typeof value !== "function") return [key, copy(value)];
+    const fields = unsharedShape((value as () => z.ZodRawShape)());
+    return [key, () => fields];
+  }));
+  return new (schema.constructor as new (def: unknown) => T)(def);
+}
+function unsharedShape<Shape extends z.ZodRawShape>(shape: Shape): Shape {
+  return Object.fromEntries(Object.entries(shape).map(([key, value]) => [key, unshared(value)])) as Shape;
+}
+
 export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcpContext): McpServer {
   const startedAt = ctx.taskStartedAt ?? ctx.task?.startedAt;
   const client = workspace.forProject(ctx.projectId, ctx.taskId ? { taskId: ctx.taskId, startedAt } : undefined);
@@ -416,22 +442,45 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   /**
+   * Seconds a wait inside the tool call under way may take: what is left of the call's time, less `margin` for the work
+   * after it, and no more than `most`. A save's waits run one after another: budgeted each as if it had the whole call,
+   * together they could run to twice its harness's deadline. Outside a call, as if one began now.
+   */
+  function waitLeft(margin: number, most = Infinity) {
+    const deadline = callDeadline.getStore() ?? Date.now() + toolWait(caps, 0) * 1000;
+    return Math.max(0, Math.floor(Math.min(most, (deadline - Date.now()) / 1000 - margin)));
+  }
+
+  /**
    * The version this agent last looked at. Edits are proposed against it, so
    * if someone approves another change while the agent works, Scarlet can
    * still merge these edits correctly instead of misplacing them.
    */
   let lastTimeline: Timeline | undefined;
+  /**
+   * Only the agent's own looks move it: timeline_get, timeline_at and project_get, as `fromVersion` says. Reads sent
+   * together can answer in any order, so the one asked for last holds, and a save that moves the video on clears it.
+   */
+  let baseAsked = 0, baseHeld = 0;
+  function moveBase(timeline: Timeline | null | undefined, asked = ++baseAsked) {
+    if (asked < baseHeld) return;
+    baseHeld = asked;
+    lastTimeline = timeline && timeline.version !== "draft" ? timeline : undefined;
+  }
 
+  /** The agent's own read of a version: edits it proposes next are based on it. */
   async function getTimeline(version?: string): Promise<Timeline> {
     if (lastTimeline && version === lastTimeline.version && version !== "head") return lastTimeline;
+    const asked = ++baseAsked;
     const { timeline } = await client.timeline(ctx.projectId, version ?? "head");
-    lastTimeline = timeline.version === "draft" ? undefined : timeline;
+    moveBase(timeline, asked);
     return timeline;
   }
 
   /**
    * A version read for a measurement rather than by the agent: the earlier side of a diff, a change's two versions,
-   * a staged cut's join. It leaves the version edits are proposed against where the agent's own reads put it.
+   * a staged cut's join, a version a check or a save is given. It leaves the version edits are proposed against where
+   * the agent's own reads put it.
    * A saved version never changes, so the last few are kept.
    */
   const measuredVersions = new Map<string, Timeline>();
@@ -453,9 +502,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return cutAnchorOn(anchor, timeline, version && version !== "head" && version !== timeline.version ? await peekTimeline(version) : undefined);
   }
 
+  /** The version an edit goes on when none is given: the one the agent last read, or else head. */
+  async function baseTimeline(): Promise<Timeline> {
+    return lastTimeline ?? await peekTimeline("head");
+  }
+
   async function headTimelineOrNull(): Promise<Timeline | null> {
     try {
-      return await getTimeline("head");
+      return await baseTimeline();
     } catch (err) {
       if (err instanceof ScarletApiError && err.status === 404) return null;
       throw err;
@@ -925,7 +979,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   type ToolOutcome = "ok" | "failed" | "refused" | "preparing" | "degraded";
-  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number, result?: ToolResult) {
+  function logToolResult(tool: string, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number, result?: ToolResult) {
     if (!ctx.taskId || !startedAt || diagnosticSessionClosed) return;
     const path = `/projects/${apiPathId(ctx.projectId)}/tasks/${apiPathId(ctx.taskId)}/tool-diagnostic`;
     const signal = AbortSignal.timeout(2000);
@@ -1000,7 +1054,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     });
   }
   /** A recording's areas viewers may see and where each holds. A first ask reads the recording's edges, within one tool call where it can. */
-  const recordingAreas = (mediaId: string, waitSeconds = toolWait(caps, 20)) =>
+  const recordingAreas = (mediaId: string, waitSeconds = waitLeft(20)) =>
     client.get<RecordingAreas & { error?: string }>(`/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${waitSeconds}`);
   /**
    * Every save an agent makes goes through here: one that frames footage past the area viewers may see, or on part of a
@@ -1019,7 +1073,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // Footage with no area on record is looked at now, a frame for each stretch, by short runs beside this one. An
     // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
     // time one tool call has.
-    const deadline = Date.now() + toolWait(caps, 30) * 1000;
+    const deadline = Date.now() + waitLeft(30) * 1000;
     // A frame is asked about once per save: its answer doesn't change, and asking again cost a run each time (2026-11-18).
     const looked = new Set<string>();
     for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
@@ -1071,7 +1125,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    */
   async function cutsRead(made: Timeline) {
     const { project } = await getProject();
-    const read = await perception.cutsOn(made, project, { wait: CUTS_WAIT_SECONDS })
+    const read = await perception.cutsOn(made, project, { wait: waitLeft(10, CUTS_WAIT_SECONDS) })
       .catch(error => { noteUnmeasured("where the recordings cut", error); return undefined; });
     const fresh = new Set([...cutsUnread].filter(id => read?.cuts.has(id) && !read.unreadIds.includes(id)));
     for (const id of fresh) cutsUnread.delete(id);
@@ -1119,8 +1173,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
     if (ctx.author.type === "agent") {
       const edits = body.timelineEdits ?? [];
-      const missing = edits.findIndex(edit => !edit.reason);
-      if (missing >= 0) throw new Error(`Give timelineEdits[${missing}].reason so the editor can see why you made that edit.`);
+      const missing = edits.flatMap((edit, i) => edit.reason ? [] : [`timelineEdits[${i}].reason`]);
+      if (missing.length) throw new Error(`Give ${missing.length > 1 ? `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}` : missing[0]} so the editor can see why you made ${missing.length > 1 ? "each" : "that"} edit.`);
       const proposedTogether = body.intent !== "requested" || ctx.task?.context.reviewAllCuts;
       if (!body.reason && (!edits.length || (proposedTogether && edits.length > 1))) {
         throw new Error("Give reason for the change so the editor can see why you made it.");
@@ -1166,7 +1220,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const { change, timeline, diffDescription, duration, onWholeFrames: placed, notApplied } = await client.proposeChangeSummary(ctx.projectId, req);
     if (placed?.length) onWholeFrames.push(...placed);
     // The video moved on, with this edit or under it: the next read is of the video as it is now.
-    if (change.state === "approved" || notApplied) lastTimeline = undefined;
+    if (change.state === "approved" || notApplied) moveBase(undefined);
     const action = change.state === "approved" ? "Applied" : "Proposed";
     const lines = diffDescription ?? (before && timeline ? describeDiff(diffTimelines(before, timeline), undefined, clipById) : []);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
@@ -1220,8 +1274,19 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }
   }
 
+  /** A call's outcome in the run's diagnostics, and what it refused in the task's history. */
+  async function reportResult(name: string, outcome: ToolOutcome, began: number, misses: number, result: ToolResult) {
+    // Preserve the project's existing refusal receipt separately from the operational log.
+    const refusal = toolRefusal(result);
+    if (refusal && !result.isError) outcome = "refused";
+    logToolResult(name, outcome, Math.round(performance.now() - began), misses, result);
+    if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
+  }
+
   // The calls of each tool under way. A harness can send several calls at once, as a save and the next read.
   const running = new Map<ScarletToolName, Set<Promise<unknown>>>();
+  /** Each tool's parameters, as the SDK checks a call's arguments against them. */
+  const toolParameters = new Map<string, z.ZodTypeAny>();
   function tool<Shape extends z.ZodRawShape>(
     name: ScarletToolName,
     description: string,
@@ -1242,13 +1307,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // edits doesn't offer rules as well, so the editor never gets the same rule twice in two wordings.
     if (ctx.task?.kind === "learning_check" ? !LEARNING_CHECK_TOOLS.has(name) : name === "learning_suggest") return;
     if (ctx.task?.kind === "area_check" && !AREA_CHECK_TOOLS.has(name)) return;
-    server.registerTool(name, { description, inputSchema: shape, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
+    const inputSchema = unsharedShape(shape);
+    toolParameters.set(name, z.object(inputSchema));
+    server.registerTool(name, { description, inputSchema, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
       const calls = running.get(name) ?? new Set<Promise<unknown>>();
       running.set(name, calls);
       let finish!: () => void;
       const call = new Promise<void>(resolve => { finish = resolve; });
       calls.add(call);
       const began = performance.now();
+      const deadline = Date.now() + toolWait(caps, 0) * 1000;
       try {
         const missed = new Map<string, string>();
         const diagnostic = { misses: new Set<string>(), preparing: false };
@@ -1261,7 +1329,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
             const selected = await useStagedCut();
             if (selected) throw selected;
           }
-          result = await toolDiagnostics.run(diagnostic, () => unmeasured.run(missed, () => handler(args)));
+          result = await callDeadline.run(deadline, () => toolDiagnostics.run(diagnostic, () => unmeasured.run(missed, () => handler(args))));
           outcome = result.isError ? "failed" : diagnostic.preparing ? "preparing" : "ok";
         } catch (err) {
           outcome = err instanceof MediaPreparing ? "preparing" : "failed";
@@ -1274,11 +1342,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         if (line) result = { ...result, content: [...result.content, { type: "text", text: line }] };
         const kept = await keptLine();
         if (kept) result = { ...result, content: [...result.content, { type: "text", text: kept }] };
-        // Preserve the project's existing refusal receipt separately from the operational log.
-        const refusal = toolRefusal(result);
-        if (refusal && !result.isError) outcome = "refused";
-        logToolResult(name, outcome, Math.round(performance.now() - began), misses, result);
-        if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
+        await reportResult(name, outcome, began, misses, result);
         return result;
       } finally {
         calls.delete(call);
@@ -1303,13 +1367,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     "Get the project: settings (fps, width x height, aspect), every media asset (id, name, kind, duration s, fps, size, hasAudio, hasTranscript, provenance of generated assets, and for a graphic Scarlet drew the page it was drawn from, relative to the project's folder), the head version, the edit's duration, and a per-track summary. For an assigned task, editContext contains the editor’s recorded selection, change or cut index, and note IDs when supplied. Media ids are what transcript, waveform and clip tools take as mediaId. For clip-level detail use timeline_get.",
     {},
     async () => {
+      const asked = ++baseAsked;
       const detail = await client.workspace(ctx.projectId);
       const media = detail.project.media.map((m) => ({
         id: m.id, name: m.name, kind: m.kind, duration: m.duration, fps: m.fps, width: m.width, height: m.height,
         hasAudio: m.hasAudio, hasTranscript: Boolean(m.transcriptId), ...(m.provenance && { provenance: m.provenance }), ...(m.graphic && { graphic: m.graphic }),
       }));
       const tl = detail.timeline;
-      lastTimeline = tl && tl.version !== "draft" ? tl : undefined;
+      moveBase(tl, asked);
       return json({
         id: detail.project.id,
         name: detail.project.name,
@@ -1511,9 +1576,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const asset = project.media.find(m => m.id === mediaId);
       if (!asset) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
       if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has a picture to show.`);
-      const bad = set?.findIndex(a => !(a.area[2]! - a.area[0]! >= 5 && a.area[3]! - a.area[1]! >= 5));
-      if (bad !== undefined && bad >= 0) throw new Error(`set[${bad}].area is [left, top, right, bottom] in percent, at least 5 percent each way.`);
-      const wait = toolWait(caps, 20);
+      const bad = (set ?? []).flatMap((a, i) => a.area[2]! - a.area[0]! >= 5 && a.area[3]! - a.area[1]! >= 5 ? [] : [`set[${i}].area`]);
+      if (bad.length) throw new Error(`${bad.length > 1 ? `${bad.slice(0, -1).join(", ")} and ${bad.at(-1)} are each` : `${bad[0]} is`} [left, top, right, bottom] in percent, at least 5 percent each way.`);
+      const wait = waitLeft(20);
       const path = `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${wait}`;
       const state = set?.length || remove?.length
         ? await client.post<RecordingAreas & { error?: string }>(path, { set: set?.map(a => ({ at: a.at, area: a.area.map(n => n / 100) })), remove })
@@ -1528,7 +1593,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         return json({ mediaId, reading: state.error ? `The recording's edges could not be read: ${state.error}` : "The recording's edges are still being read: call again for where each area holds and what is unset.", areas });
       }
       // What the edit as it stands plays of each unset stretch: those are the ones a save will ask about.
-      const timeline = await getTimeline(lastTimeline?.version).catch(() => null);
+      const timeline = await baseTimeline().catch(() => null);
       const plays = (timeline?.tracks ?? []).filter(t => t.kind === "video" && !t.hidden).flatMap(t => t.clips)
         .filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false && c.mediaId === mediaId);
       const unset = state.unset.map(([from, to]) => {
@@ -1982,12 +2047,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       }
     }
     const timer = new AbortController();
-    const wait = (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) * 1000;
+    const wait = waitLeft(0) * 1000;
     const pageDeadline = Date.now() + wait + 7_000;
     let detections: DialogueDetections | undefined, detectorIssue: string | undefined;
     try {
-      // Allow local inference, a first page's speaker analysis included, to finish within one MCP call, with a
-      // margin below the harness's tool deadline (toolWaitSeconds), so a waiting page costs no extra turns.
+      // Allow local inference, a first page's speaker analysis included, to finish within what is left of the MCP call,
+      // a margin below the harness's tool deadline (toolWaitSeconds), so a waiting page costs no extra turns.
       const job = detectWindow(mediaId, from, to);
       const ready = await Promise.race([job, delay(wait, "pending" as const, { signal: timer.signal, ref: false })]);
       if (ready === "pending") {
@@ -2151,7 +2216,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // A harness can send a save and the next read at once. The read waits for a save or a review under way, so what it
     // asks for first is what they left: sent together, the read was refused for the cuts its save was saving, and
     // after a few refusals the model passed noCutsReadyThrough with every read, cuts or none (2026-11-15).
-    if (batch?.isNewPage(from, firstEnd)) await finished(["dialogue_apply_cuts", "dialogue_review_save"]);
+    if (batch?.isNewPage(from, firstEnd)) {
+      // Within this call's time: a save that runs on past it is waited for again on the next read.
+      const timer = new AbortController();
+      const saved = await Promise.race([finished(["dialogue_apply_cuts", "dialogue_review_save"]).then(() => true),
+        delay(waitLeft(20) * 1000, false, { signal: timer.signal, ref: false })]).finally(() => timer.abort());
+      if (!saved) throw new MediaPreparing(`A save you sent is still being made, and this page is read after it. Call dialogue_scan again with from ${from} once it has answered.`);
+    }
     const reviewFirst = batch && await firstRecommendationNeeded();
     if (reviewFirst && batch?.isNewPage(from, firstEnd)) throw new Error(reviewFirst);
     batch?.startRead(from, firstEnd, noCutsReadyThrough);
@@ -2164,7 +2235,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     while (nextFrom !== null && saved.has(nextFrom) && restoredPages.length < 2 && responseSize < 16_000) {
       const pageEnd = saved.get(nextFrom)!;
       if (batch?.needsSave(nextFrom, pageEnd) || (reviewFirst && batch?.isNewPage(nextFrom, pageEnd))) break;
-      const page = await readDialoguePage(asset, nextFrom, end, saved, background);
+      // A page still being read is left for the next call to collect: what this call has read is answered now.
+      const page = await readDialoguePage(asset, nextFrom, end, saved, background).catch((err: unknown) => {
+        if (err instanceof MediaPreparing) return undefined;
+        throw err;
+      });
+      if (!page) break;
       responseSize += JSON.stringify(page).length;
       if (responseSize > 16_000) break;
       restoredPages.push(page);
@@ -2209,7 +2285,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     let job = syncChecks.get(version);
     if (!job) {
       job = (async () => {
-        const [{ project }, timeline] = await Promise.all([getProject(), getTimeline(version)]);
+        const [{ project }, timeline] = await Promise.all([getProject(), peekTimeline(version)]);
         // Each new version is checked again; the recordings' levels don't change, so they are read once.
         const levels = (mediaId: string, from: number, to: number) => {
           const key = `${mediaId}/${from}/${to}`;
@@ -2268,7 +2344,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         .min(1).max(100).optional().describe("Several removals to check in one call, instead of start/end or a word reference"),
       ...audioOption("Attach about two seconds of the original recording around each edge as WAV, for a single range") },
     async ({ version, includeAudio, resumeWith, cuts, crossfadeFrames = 0, pace, ...cut }) => {
-      const tl = await getTimeline(version);
+      const tl = await peekTimeline(version);
       const snapshot = tl.version === "draft" ? createHash("sha256").update(JSON.stringify(tl)).digest("hex") : tl.version;
       const key = JSON.stringify([snapshot, cuts, cut, resumeWith, crossfadeFrames, pace, !!includeAudio]);
       return joinChecks.collect(key, tl.version, cuts?.length ?? 1, async publish => {
@@ -2469,7 +2545,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (ctx.taskId && operation === "first-cut" && requested.filter(c => c.decision !== "keep" && c.picture !== "protect").length > FIRST_CUT_BATCH_SIZE)
         throw new Error(`Save up to ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions in each first-pass batch, with their keep and protected ranges. Send the first settled group now. For the next group use source word references or map its positions on continueFrom with timeline_at.`);
       const localPauses = operation === "local-pauses";
-      const tl = await getTimeline(version);
+      const tl = await peekTimeline(version);
       // Edge checks, snapping, word references, quotes and the gate report: dialogue-plan.ts, shared with offline replay.
       const cuts = requested.map(({ removeRepeat, ...cut }) => {
         if (!removeRepeat) return cut;
@@ -2545,7 +2621,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         const read = readTo.get(mediaId) ?? 0, here = reach.get(mediaId);
         await postEvent({ type: "log", text: "", data: { kind: "pass_progress", mediaId, through: here !== undefined && here >= read - 60 ? Math.max(read, to) : to } });
       }
-      lastTimeline = undefined;
+      moveBase(undefined);
       for (const c of result.changes) await postEvent({ type: "change", text: c.description,
         data: { changeId: c.id, toVersion: c.toVersion, state: c.state } });
       // Applied cuts move the edit forward. A part that only stages cuts leaves it where it was.
@@ -2806,7 +2882,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // neither removes nor plays beside goes back with what the cut does (quotesAwayFromCut).
       const asks = assessments.filter(a => a.verdict === "ask" && a.reason && quotesAwayFromCut(a.reason, [], a).length);
       if (asks.length) {
-        const [tl, { project }] = await Promise.all([getTimeline(fromVersion), getProject()]);
+        const [tl, { project }] = await Promise.all([peekTimeline(fromVersion), getProject()]);
         const words = (mediaId: string) => transcriptWords(mediaId, false).catch(() => null);
         const away = (await Promise.all(asks.map(async a => {
           const near = await timelineWordsNear(tl, project, a, words, NOTE_QUOTE_REACH + 15);
@@ -2822,7 +2898,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // that sounds there is moved or kept, never asked about or cut as placed (his rule, 2026-11-16).
       const toCheck = assessments.filter(a => a.verdict === "ask" || a.verdict === "cut");
       if (toCheck.length) {
-        const [tl, { project }] = await Promise.all([getTimeline(fromVersion), getProject()]);
+        const [tl, { project }] = await Promise.all([peekTimeline(fromVersion), getProject()]);
         await measureTimeline(tl, toCheck.flatMap(a => [a.start, a.end])).catch(() => undefined);
         const check = dialogueJoinChecker(tl, project, joinPages());
         const joins = toCheck.map(a => ({ a, join: check({ start: a.start, end: a.end }) }));
@@ -2909,7 +2985,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         const on = conflict?.version ?? edit?.version ?? change.fromVersion;
         if (!range || range.start >= range.end || (edit && !edit.previewVersion)) throw new Error("This cut has no current removal to tighten.");
         if (version && version !== on) throw new Error(`This cut is on ${on}. Measure its pause there.`);
-        const source = await getTimeline(on);
+        const source = await peekTimeline(on);
         const measured = resolveOutgoingPause(source, project, range, await outgoingPausePages(source, project, range.start), pauseAfterWord);
         if (measured.status === "unavailable") throw new Error(measured.reason);
         if (measured.status === "already-at-target" && !conflict && crossfadeFrames === undefined) {
@@ -2923,7 +2999,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         readPassage(on, { start, end }, true);
       }
       const moves = cuts ?? [{ index: index!, start: start!, end: end!, reason: reason!, summary, keep }];
-      const tl = await getTimeline(version ?? change.fromVersion);
+      const tl = await peekTimeline(version ?? change.fromVersion);
       // A request about one staged cut seldom reads the recording in pages, so the sound beside each new edge is measured
       // here, as dialogue_check_join does. Without it no edge could be judged, and none snapped.
       if (!pause) await measureTimeline(tl, moves.flatMap(m => m.keep ? [] : [m.start, m.end]));
@@ -2995,7 +3071,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
           next: settled ? undefined : "An edge isn't on measured silence. Check it with dialogue_check_join and call again with a quiet edge if one exists. The latest call replaces this one." });
       }
       if (!revised) return json({ changeId, moved: results });
-      lastTimeline = undefined;
+      moveBase(undefined);
       await postEvent({ type: "change", text: revised.description, data: { changeId: revised.id, toVersion: revised.toVersion, state: revised.state } });
       // The engine puts each cut on whole frames. Report the ranges it saved, which are the ones a recommendation names.
       const edits = new Map(revised.cutEdits?.map(edit => [edit.index, edit]));
@@ -3028,7 +3104,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- timeline -------------------------------------------------------------
 
-  const perception = registerPerception({ tool, client, projectId: ctx.projectId, otherInputWords: async (mediaId, words) => (await otherInput(mediaId, words)).other, seesFrames: caps.images, getTimeline, peekTimeline, getProject, readPassage, transcriptWords, showWords, settledThrough, readLevels, unavailable: unavailableOnce,
+  const perception = registerPerception({ tool, client, projectId: ctx.projectId, otherInputWords: async (mediaId, words) => (await otherInput(mediaId, words)).other, seesFrames: caps.images, peekTimeline, getProject, readPassage, transcriptWords, showWords, settledThrough, readLevels, unavailable: unavailableOnce,
     readWaveform: (mediaId, from, to, points) => readPrepared(mediaId, "waveform", () => client.waveform(mediaId, from, to, points, true)) });
 
   async function readApprovedExample(changeId: string) {
@@ -3099,7 +3175,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    */
   const presetInsetOver = async (project: Project, camera: MediaAsset, from: number, to: number, want?: InsetPresenter): Promise<PresetInset> => {
     if (!(to > from)) return presetInset(project, camera, [], want);
-    const wait = Math.min(20, toolWait(caps, 25));
+    const wait = waitLeft(25, 20);
     const readings = await Promise.all(insetStretches(from, to).map(s => client.get<FaceReading>(
       `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(camera.id)}/faces?from=${s.from.toFixed(3)}&to=${s.to.toFixed(3)}&wait=${wait}`)
       .catch(withoutOnce(`failed to find the presenter's face in ${camera.id} for the inset`, null))));
@@ -3167,7 +3243,7 @@ ${OPS_DOC}`,
       if (!ops && !timeline) throw new Error("Provide either `ops` or `timeline`.");
       if (ops && timeline) throw new Error("Provide only one of `ops` or `timeline`.");
       const base = fromVersion ?? lastTimeline?.version;
-      const before = base ? await getTimeline(base) : await headTimelineOrNull();
+      const before = fromVersion ? await peekTimeline(fromVersion) : await headTimelineOrNull();
       if (range && (typeof pictureLayout === "object" || !before || !ops || ops.some(o => o.op !== "rippleDelete" || o.trackIds)))
         throw new Error("A bounded ripple edit takes only rippleDelete ops across all tracks on the existing timeline.");
       const body: ProposeChangeRequest = { description, reason, noteIds, intent, fromVersion: base, autoApprove: !ctx.taskId && autoApprove === true ? true : undefined, timelineEdits, skipRender,
@@ -3281,9 +3357,8 @@ ${OPS_DOC}`,
       noteIds: z.array(z.string()).optional(),
     },
     async ({ intent, joins, duration, description, reason, noteIds }) => {
-      const base = lastTimeline?.version;
       const { project } = await getProject();
-      const before = await getTimeline(base);
+      const before = await baseTimeline();
       const ops = audioCrossfadeOps(before, project.media, joins, duration ?? 2 / project.settings.fps);
       return propose({ intent, ops, description, reason, noteIds }, before);
     },
@@ -3305,9 +3380,8 @@ ${OPS_DOC}`,
       noteIds: z.array(z.string()).optional(),
     },
     async ({ intent, joins, type, duration, direction, color, none, description, reason, noteIds }) => {
-      const base = lastTimeline?.version;
       const { project } = await getProject();
-      const before = await getTimeline(base);
+      const before = await baseTimeline();
       let style: Transition | null = null;
       if (!none) {
         if (!type) throw new Error("Give the transition's type and duration.");
@@ -3331,9 +3405,8 @@ ${OPS_DOC}`,
       noteIds: z.array(z.string()).optional(),
     },
     async ({ intent, mediaId, soundLeads, description, reason, noteIds }) => {
-      const base = lastTimeline?.version;
       const { project } = await getProject();
-      const before = await getTimeline(base);
+      const before = await baseTimeline();
       const { ops, report } = pictureSyncOps(before, project.media, mediaId, soundLeads);
       if (!ops.length) return text(`Nothing to change: every clip of ${mediaId} already plays its picture ${soundLeads} s after its sound.`);
       const result = await propose({ intent, ops, description, reason, noteIds }, before);
@@ -3378,7 +3451,7 @@ ${OPS_DOC}`,
     async ({ intent, mediaId, trackId, framings, to, preview, description, reason, timelineEdits, noteIds, fromVersion, ...rest }) => {
       const picturesFrom = (rest as { picturesFrom?: number }).picturesFrom ?? 0;
       const { project } = await getProject();
-      const before = await getTimeline(fromVersion ?? lastTimeline?.version);
+      const before = fromVersion ? await peekTimeline(fromVersion) : await baseTimeline();
       if (before.version === "draft") throw new Error("There is no saved timeline to frame yet.");
       const fraction = (box: readonly number[]) => box.map(n => n / 100) as Box;
       const percent = (box: readonly number[]) => box.map(n => Math.round(n * 1000) / 10);
@@ -3539,8 +3612,7 @@ ${OPS_DOC}`,
       noteIds: z.array(z.string()).optional(),
     },
     async ({ intent, mediaId, keep, layer, audioMediaId, crossfade, pace, leave, description, reason, noteIds }) => {
-      const base = lastTimeline?.version;
-      const detail = base ? { ...await getProject(), timeline: await getTimeline(base) } : await client.workspace(ctx.projectId);
+      const detail = lastTimeline ? { ...await getProject(), timeline: lastTimeline } : await client.workspace(ctx.projectId);
       const before = detail.timeline ?? await headTimelineOrNull();
       const media = detail.project.media.find((m) => m.id === mediaId);
       if (!media) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
@@ -3998,8 +4070,34 @@ ${OPS_DOC}`,
     );
   }
 
+  watchRefusedArguments(server, async (name, args, began, result) => {
+    const parameters = toolParameters.get(name);
+    if (parameters && !(await parameters.safeParseAsync(args ?? {})).success) await reportResult(name, "failed", began, 0, result);
+  });
   if (caps.briefTools) listToolsBriefly(server);
   return server;
+}
+
+type CallTool = (request: { method: "tools/call"; params: { name: string; arguments?: unknown } }, extra: unknown) => Promise<ToolResult>;
+/**
+ * The SDK checks a call's arguments against its tool's parameters before the tool runs, and answers one that doesn't
+ * fit itself: such a call never reaches the tool, so nothing logged it or put its refusal in the task's history. Each
+ * call that comes back an error goes to `failed`, which says whether its arguments were what was refused.
+ */
+function watchRefusedArguments(server: McpServer, failed: (name: string, args: unknown, began: number, result: ToolResult) => Promise<void>) {
+  const handlers = (server.server as unknown as { _requestHandlers?: Map<string, CallTool> })._requestHandlers;
+  const called = handlers?.get("tools/call");
+  // Missing the record of refused arguments is no reason to stop a run from editing: it says so and the tools work on.
+  if (!handlers || !called) {
+    console.error("[scarlet-mcp] calls refused for their arguments go unrecorded: the MCP SDK no longer keeps its tools/call handler where Scarlet reads it.");
+    return;
+  }
+  handlers.set("tools/call", async (request, extra) => {
+    const began = performance.now();
+    const result = await called(request, extra);
+    if (result.isError) await failed(request.params.name, request.params.arguments, began, result);
+    return result;
+  });
 }
 
 function guessKind(name: string): "video" | "audio" | "image" | "graphic" {

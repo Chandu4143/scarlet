@@ -2,7 +2,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writePrivateFile } from "../private-files.js";
-import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
+import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, prettyToolName, questionText, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, claudeUsage, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
@@ -79,7 +79,7 @@ export interface ClaudeParseState {
   texts: string[];
   result?: string;
   resultIsError?: boolean;
-  pendingQuestion?: { id: string; text: string };
+  pendingQuestion?: { id: string; text: string; tool: string };
   question?: string;
   questionPosted: boolean;
   /** Set when the tool_result for the question arrived, or Scarlet's MCP server failed: the runner should stop the process. */
@@ -172,11 +172,12 @@ export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent
         const pretty = prettyToolName(b.name);
         if (planCall(st.plan, b.name, b.id, b.input)) {
           events.push(...planChange(st.plan));
-        } else if (isQuestionTool(b.name)) {
-          const text = String((b.input as { text?: unknown })?.text ?? briefInput(b.input));
-          st.pendingQuestion = { id: b.id, text };
+        } else if (isQuestionTool(b.name) && questionText(b.input)) {
+          // A call with no words to ask is no question: Scarlet refuses it, and the model hears why and tries again.
+          // Said once posted, as the desktop host says it, so nothing takes a question Scarlet refused for one asked.
+          const text = questionText(b.input)!;
+          st.pendingQuestion = { id: b.id, text, tool: b.name };
           st.question = text;
-          events.push({ type: "question", text, data: { tool: b.name, toolUseId: b.id } });
         } else {
           events.push({ type: "tool", text: `${pretty} ${briefInput(b.input)}`.trim(), data: { tool: b.name, input: b.input, toolUseId: b.id } });
         }
@@ -184,10 +185,14 @@ export function parseClaudeLine(line: string, st: ClaudeParseState): RunnerEvent
         const b = block as { tool_use_id: string; content?: unknown; is_error?: boolean };
         if (planResult(st.plan, b.tool_use_id, !!b.is_error, b.content, msg.tool_use_result)) {
           events.push(...planChange(st.plan));
-        } else if (st.pendingQuestion && b.tool_use_id === st.pendingQuestion.id) {
-          st.questionPosted = !b.is_error;
+        } else if (st.pendingQuestion && b.tool_use_id === st.pendingQuestion.id && !b.is_error) {
+          const { text, tool } = st.pendingQuestion;
+          st.questionPosted = true;
           st.shouldStop = true;
+          events.push({ type: "question", text, data: { tool, toolUseId: b.tool_use_id } });
         } else if (b.is_error) {
+          // A question Scarlet refused was never asked: the model hears why and carries on, so the run does too.
+          if (st.pendingQuestion && b.tool_use_id === st.pendingQuestion.id) st.pendingQuestion = st.question = undefined;
           events.push({ type: "error", text: `Tool error: ${briefInput(flattenToolResult(b.content), 400)}`, data: { toolUseId: b.tool_use_id } });
         }
       }
@@ -259,8 +264,9 @@ export function buildClaudeCommand(
   const mcpConfigPath = join(tmpDir, "mcp.json");
   const systemPath = join(tmpDir, "system.md");
   const mcpConfig = { mcpServers: { scarlet: { command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env } } };
-  // Native Windows can lack Claude's shell sandbox. This MCP-only runner exposes no shell tools.
-  const sandbox = { enabled: true, allowUnsandboxedCommands: false, failIfUnavailable: process.platform === "win32" ? undefined : true };
+  // The sandbox wraps Claude Code's shell tool, which this MCP-only runner never offers: where the sandbox can't start
+  // (native Windows, a Linux without bubblewrap) the run goes on without it rather than failing for nothing.
+  const sandbox = { enabled: true, allowUnsandboxedCommands: false };
   const args = [
     "-p",
     ...(bare ? ["--bare"] : []),
@@ -296,6 +302,15 @@ export function buildClaudeCommand(
   };
 }
 
+/** Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured, under this deadline. */
+const TOOL_DEADLINE_MS = 300_000;
+
+/** Claude Code's MCP tool deadline: the user's own when it is longer, never shorter than the one Scarlet's waits assume. */
+export function mcpToolTimeout(user: string | undefined): string {
+  const theirs = Number(user);
+  return Number.isFinite(theirs) && theirs > TOOL_DEADLINE_MS ? String(Math.floor(theirs)) : String(TOOL_DEADLINE_MS);
+}
+
 export async function runClaude(opts: RunAgentOptions): Promise<RunAgentResult> {
   const env = { ...(opts.env ?? process.env) };
   const bin = await resolveCli("claude", opts.bin, env);
@@ -308,8 +323,8 @@ export async function runClaude(opts: RunAgentOptions): Promise<RunAgentResult> 
   // Avoid nested-session refusal when the host itself runs under Claude Code.
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
-  // Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured.
-  env.MCP_TOOL_TIMEOUT ??= "300000";
+  env.MCP_TOOL_TIMEOUT = mcpToolTimeout(env.MCP_TOOL_TIMEOUT);
+  let sentUsage: string | undefined;
 
   const handle = spawnLines(cmd.file, cmd.args, {
     cwd: opts.cwd,
@@ -323,6 +338,13 @@ export async function runClaude(opts: RunAgentOptions): Promise<RunAgentResult> 
         // A resume that finds no session falls back to a fresh run. Keep its error out of the task log.
         if (opts.resumeSession && !st.started && ev.type === "error") continue;
         opts.onEvent(ev);
+      }
+      // The run's tokens so far, each time they grow, as the other runners and the desktop host report them.
+      const usage = claudeRunUsage(st, opts.model);
+      const seen = usage && JSON.stringify(usage);
+      if (usage && seen !== sentUsage) {
+        sentUsage = seen;
+        opts.onUsage?.(usage);
       }
       if (st.shouldStop) {
         st.shouldStop = false;

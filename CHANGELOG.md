@@ -6,6 +6,10 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Pause then Resume now picks an edit up where it left off, instead of starting it over.
+- A request you take back with ⌘Z no longer offers a rule in Learnings, and Scarlet doesn't read your words for rules while editing is paused.
+- Claude Code edits no longer fail on computers where its sandbox can't start.
+- Gemini edits now stop with a message to update agy when it's too old to take Scarlet's instructions, instead of editing without them.
 - Media no longer has Add from a link: add footage with Add files or by dropping it in.
 - Settings › About now keeps the What’s new list short up front with a toggle for the rest, and collapses earlier days by date.
 - A cut waiting for your approval is now drawn on the timeline over the footage it would take out, dashed until you approve it, so while you watch you can see that part is still in and waiting on you; its tag opens it.

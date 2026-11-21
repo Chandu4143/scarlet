@@ -88,6 +88,10 @@ pub struct Task {
     pub question: Option<String>,
     #[serde(default)]
     pub summary: Option<String>,
+    /// In the engine's answer to a completion: it handed this attempt's CLI session to a later attempt (a pause), so
+    /// the session stays for that attempt to carry on in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_carries_on: Option<bool>,
 }
 
 fn default_kind() -> String {
@@ -137,6 +141,9 @@ pub struct TaskPrompt {
     /// Launch the CLI with its own to-do tool on, so the plan it keeps reaches Scarlet.
     #[serde(default)]
     pub plan: bool,
+    /// What to tell a model whose harness ended its turn on a tool Scarlet refused, `{tool}` standing for the tool.
+    #[serde(default)]
+    pub refused_tool: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +239,13 @@ pub fn is_question_tool(name: Option<&str>) -> bool {
         return prefix.ends_with("__") || prefix.ends_with('.') || prefix.ends_with('/') || prefix.ends_with(':');
     }
     false
+}
+
+/// The words a `task_question` call asks, when it asks any: only a call whose `text` is a string with something in
+/// it is a question. Any other is an ordinary call, which the MCP server refuses and the engine would too (`text`
+/// can't be empty): taken for a question, one put its raw input before the editor.
+pub fn question_words(input: Option<&Value>) -> Option<String> {
+    input?.get("text")?.as_str().filter(|text| !text.trim().is_empty()).map(str::to_string)
 }
 
 /// Strip the MCP namespace prefix for display: mcp__scarlet__timeline_get -> scarlet.timeline_get

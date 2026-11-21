@@ -1,7 +1,9 @@
 //! Gemini via Antigravity CLI (`agy acp`), speaking Agent Client Protocol (JSON-RPC 2.0) over stdio.
 //! Runs with `--sandbox` and an explicit `session/request_permission` handler that allows only
 //! Scarlet MCP tools and rejects all built-in file/shell tools. Supports model selection,
-//! thinking level (`thought_level`), session resume (`session/resume`), and token usage reporting.
+//! thinking level (`thought_level`) and token usage reporting. The runner can open a session again
+//! (`session/resume`), but the engine never asks it to: Gemini isn't among the agents it resumes, so an
+//! answer or an interruption starts a fresh run with the earlier questions and answers, or the recap.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -15,8 +17,8 @@ use tokio::sync::mpsc;
 use super::runner::{cut_short, exit_error, report_usage, EventSink, RunOptions, RunnerCommand, UsageSink};
 use super::spawn::{resolve_cli, spawn_interactive, SpawnLinesOptions};
 use super::types::{
-    brief, brief_input, is_question_tool, plan_event, pretty_tool_name, tail_summary, McpSpec, PlanStep, RunResult,
-    RunnerEvent,
+    brief, brief_input, is_question_tool, plan_event, pretty_tool_name, question_words, tail_summary, McpSpec, PlanStep,
+    RunResult, RunnerEvent,
 };
 use super::usage::{add_usage, gemini_transcript_step_usage, gemini_usage, AgentUsage};
 use crate::util::{env_get, home_dir};
@@ -35,8 +37,11 @@ pub struct GeminiState {
     pub thought: String,
     /// Tool call names keyed by toolCallId so updates know which tool finished or failed.
     pub tool_names: HashMap<String, String>,
+    /// The `task_question` call under way, so an update that doesn't name its tool is known for one.
     pub pending_question_id: Option<String>,
     pub question: Option<String>,
+    /// The call `question` came from, which its result settles.
+    question_id: Option<String>,
     pub question_posted: bool,
     pub should_stop: bool,
     pub completed: bool,
@@ -210,7 +215,46 @@ fn flush_streams(st: &mut GeminiState, events: &mut Vec<RunnerEvent>) {
     flush_partial(st, events);
 }
 
-/// Whether an ACP `session/request_permission` request targets a Scarlet MCP tool.
+/// Every tool Scarlet's MCP server offers: the tools of `EDITING_TOOL_GROUPS` in packages/shared/src/editingTools.ts,
+/// and `tool_help`, which the server adds for Gemini. A test keeps this list the same as that file's.
+pub const SCARLET_TOOLS: &[&str] = &[
+    "project_get", "timeline_get", "timeline_at", "timeline_diff", "timeline_propose", "timeline_first_cut",
+    "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync",
+    "transcript_get", "transcript_search", "timeline_transcript", "timeline_join_audit", "waveform_get", "sound_picture",
+    "media_profile", "audio_sync", "dialogue_scan", "dialogue_check_join", "dialogue_check_repeats", "dialogue_apply_cuts",
+    "dialogue_review_inspect", "dialogue_review_save", "dialogue_revise_cut",
+    "screen_text", "screen_reading", "screen_motion",
+    "faces", "lip_sync",
+    "change_get", "change_list", "edit_flag", "notes_list", "note_reply", "note_resolve", "render_request", "render_status",
+    "task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit", "shorts_plan",
+    "graphic_render", "graphic_get", "style_guide_save", "attachment_read",
+    "media_frame", "frame_contact_sheet", "frame_contact_sheet_batch", "screen_area",
+    "change_review_cut", "source_audio",
+    "captions_generate",
+    "asset_add", "export_otio",
+    "tool_help",
+];
+
+/// The ways a harness names a tool of the `scarlet` MCP server.
+const SCARLET_PREFIXES: [&str; 6] = ["mcp__scarlet__", "mcp_scarlet_", "scarlet__", "scarlet.", "scarlet/", "scarlet:"];
+
+/// Whether `name` is a Scarlet tool's, whole: one of the prefixes, one of Scarlet's tools by its exact name, then
+/// nothing or something no path or name goes on with. `scarlet/notes.md` or `scarlet.json` is a file's.
+fn names_scarlet_tool(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    SCARLET_PREFIXES.iter().filter_map(|prefix| name.strip_prefix(prefix)).any(|rest| {
+        SCARLET_TOOLS.iter().any(|tool| {
+            rest.strip_prefix(tool).is_some_and(|after| {
+                after.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || "_.-/\\".contains(c)))
+            })
+        })
+    })
+}
+
+/// Whether an ACP `session/request_permission` request targets a Scarlet MCP tool: its meta names the `scarlet`
+/// server, or its name or tool name is a Scarlet tool's. A title is display text (agy shows the model's own
+/// `toolSummary` there, which a built-in tool's call could fill with a Scarlet tool's name), so it counts only when
+/// the request gives no name at all.
 pub fn is_scarlet_mcp_permission(params: &Value) -> bool {
     let Some(tc) = params.get("toolCall").and_then(Value::as_object) else {
         return false;
@@ -224,23 +268,14 @@ pub fn is_scarlet_mcp_permission(params: &Value) -> bool {
         tc.get("server"),
         tc.get("serverName"),
     ];
-    for server in server_candidates.into_iter().flatten() {
-        if server.as_str().is_some_and(|s| s.eq_ignore_ascii_case("scarlet")) {
-            return true;
-        }
+    if server_candidates.into_iter().flatten().any(|server| server.as_str().is_some_and(|s| s.eq_ignore_ascii_case("scarlet"))) {
+        return true;
     }
-    for key in ["name", "toolName", "title"] {
-        if let Some(candidate) = tc.get(key).and_then(Value::as_str) {
-            let trimmed = candidate.trim().to_ascii_lowercase();
-            if ["mcp__scarlet__", "mcp_scarlet_", "scarlet__", "scarlet.", "scarlet/", "scarlet:"]
-                .iter()
-                .any(|prefix| trimmed.starts_with(prefix))
-            {
-                return true;
-            }
-        }
+    let names: Vec<&str> = ["name", "toolName"].iter().filter_map(|key| tc.get(*key).and_then(Value::as_str)).filter(|n| !n.trim().is_empty()).collect();
+    if names.is_empty() {
+        return tc.get("title").and_then(Value::as_str).is_some_and(names_scarlet_tool);
     }
-    false
+    names.into_iter().any(names_scarlet_tool)
 }
 
 /// Pick the best ACP permission outcome for allow vs reject.
@@ -296,6 +331,45 @@ fn is_failed_output(raw_output: Option<&Value>, content: Option<&Value>) -> bool
     false
 }
 
+/// A `task_question` call, or an update to one: its words are the question once it has some. Only a call whose `text`
+/// has something in it is a question; the words can come with the call or with an update to it.
+fn note_question(st: &mut GeminiState, id: &Option<String>, input: Option<&Value>) {
+    if let (None, Some(text)) = (&st.question, question_words(input)) {
+        st.question = Some(text);
+        st.question_id = id.clone();
+    }
+}
+
+/// A `task_question` call has finished. Posted, the question is the editor's and the turn stops on it. Refused, or
+/// with no words, it isn't asked: the model hears why and carries on, and so does the run.
+fn settle_question(st: &mut GeminiState, id: &Option<String>, name: &str, update: &Value, events: &mut Vec<RunnerEvent>) {
+    let status = update.get("status").and_then(Value::as_str);
+    let refused = status != Some("completed") || is_failed_output(update.get("rawOutput"), update.get("content"));
+    let asked = st.question.is_some() && st.question_id == *id;
+    if st.pending_question_id == *id {
+        st.pending_question_id = None;
+    }
+    let mut data = serde_json::Map::new();
+    if let Some(call_id) = id {
+        data.insert("toolId".into(), Value::String(call_id.clone()));
+    }
+    if asked && !refused {
+        st.question_posted = true;
+        st.should_stop = true;
+        data.insert("tool".into(), Value::String(name.to_string()));
+        events.push(RunnerEvent::with("question", st.question.clone().unwrap_or_default(), Value::Object(data)));
+        return;
+    }
+    if asked {
+        st.question = None;
+        st.question_id = None;
+    }
+    if refused {
+        let detail = first(update, &["rawOutput", "content", "error"]);
+        events.push(RunnerEvent::with("error", format!("{name} failed: {}", brief_input(detail, 400)).trim().to_string(), Value::Object(data)));
+    }
+}
+
 /// Parse one ACP `session/update` payload (`params.update`).
 pub fn parse_gemini_acp_update(update: &Value, st: &mut GeminiState) -> Vec<RunnerEvent> {
     if !update.is_object() {
@@ -331,25 +405,10 @@ pub fn parse_gemini_acp_update(update: &Value, st: &mut GeminiState) -> Vec<Runn
             let input = first(update, &["rawInput", "parameters", "input", "arguments"]);
             let status = update.get("status").and_then(Value::as_str);
             if is_question_tool(Some(&raw_name)) {
-                let q_text = input.and_then(|i| non_empty_str(i.get("text"))).map(String::from);
-                if st.question.is_none() && (q_text.is_some() || input.is_some()) {
-                    let text = q_text.unwrap_or_else(|| brief(input));
-                    st.question = Some(text.clone());
-                    st.pending_question_id = id.clone();
-                    let mut data = serde_json::Map::new();
-                    data.insert("tool".into(), Value::String(name));
-                    if let Some(ref call_id) = id {
-                        data.insert("toolId".into(), Value::String(call_id.clone()));
-                    }
-                    events.push(RunnerEvent::with("question", text, Value::Object(data)));
-                } else if st.pending_question_id.is_none() {
-                    st.pending_question_id = id;
-                }
+                st.pending_question_id = id.clone();
+                note_question(st, &id, input);
                 if matches!(status, Some("completed" | "failed" | "error")) {
-                    let failed = status != Some("completed")
-                        || is_failed_output(update.get("rawOutput"), update.get("content"));
-                    st.question_posted = !failed;
-                    st.should_stop = true;
+                    settle_question(st, &id, &name, update, &mut events);
                 }
             } else {
                 let text = format!("{name} {}", brief(input)).trim().to_string();
@@ -382,40 +441,9 @@ pub fn parse_gemini_acp_update(update: &Value, st: &mut GeminiState) -> Vec<Runn
             let input = first(update, &["rawInput", "parameters", "input", "arguments"]);
             let is_question = (id.is_some() && st.pending_question_id == id) || is_question_tool(raw_name.as_deref());
             if is_question {
-                if st.question.is_none() && input.is_some() {
-                    let text = input
-                        .and_then(|i| non_empty_str(i.get("text")))
-                        .map(String::from)
-                        .unwrap_or_else(|| brief(input));
-                    st.question = Some(text.clone());
-                    if id.is_some() {
-                        st.pending_question_id = id.clone();
-                    }
-                    let mut data = serde_json::Map::new();
-                    data.insert("tool".into(), Value::String(name.clone()));
-                    if let Some(ref call_id) = id {
-                        data.insert("toolId".into(), Value::String(call_id.clone()));
-                    }
-                    events.push(RunnerEvent::with("question", text, Value::Object(data)));
-                }
+                note_question(st, &id, input);
                 if matches!(status, Some("completed" | "failed" | "error")) {
-                    if st.question.is_none() {
-                        let fallback = {
-                            let b = brief(input);
-                            if b.is_empty() { "Question posted".to_string() } else { b }
-                        };
-                        st.question = Some(fallback.clone());
-                        let mut data = serde_json::Map::new();
-                        data.insert("tool".into(), Value::String(name));
-                        if let Some(ref call_id) = id {
-                            data.insert("toolId".into(), Value::String(call_id.clone()));
-                        }
-                        events.push(RunnerEvent::with("question", fallback, Value::Object(data)));
-                    }
-                    let failed = status != Some("completed")
-                        || is_failed_output(update.get("rawOutput"), update.get("content"));
-                    st.question_posted = !failed;
-                    st.should_stop = true;
+                    settle_question(st, &id, &name, update, &mut events);
                 }
             } else if matches!(status, Some("failed" | "error")) {
                 let detail = first(update, &["rawOutput", "content", "error"]);
@@ -579,6 +607,8 @@ struct AcpSession {
     resume_session: Option<String>,
     instruction: String,
     system_prompt: String,
+    /// The engine's words for the turn after a refusal, `{tool}` standing for what was refused.
+    refused_tool: Option<String>,
     /// Tools Scarlet refused during the turn under way. agy ends Gemini's turn on a refusal.
     refused: Vec<String>,
     carry_ons: u32,
@@ -715,9 +745,13 @@ impl AcpSession {
             format!("Scarlet refused {names}: only Scarlet's tools run here. Gemini carries on."),
             json!({ "kind": "tool_refused", "harnessTool": names }),
         ));
-        self.send_turn(format!(
-            "Scarlet refused {names}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools."
-        ));
+        let text = match self.refused_tool.as_deref().filter(|words| !words.trim().is_empty()) {
+            Some(words) => words.replace("{tool}", &names),
+            None => format!(
+                "Scarlet refused {names}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools."
+            ),
+        };
+        self.send_turn(text);
         true
     }
 
@@ -828,7 +862,19 @@ impl AcpSession {
 
         let result = msg.get("result").unwrap_or(&Value::Null);
         match self.step {
-            Step::Initialize | Step::Authenticate => {
+            Step::Initialize => {
+                // Scarlet's prompt reaches Gemini only as an addition to agy's system prompt. An agy that doesn't offer
+                // that would drop it without a word, and Gemini would edit with no instructions.
+                if result.pointer("/agentCapabilities/_meta/antigravity/systemPrompt/append") != Some(&Value::Bool(true)) {
+                    let version = non_empty_str(result.pointer("/agentInfo/version")).map(|v| format!(" {v}")).unwrap_or_default();
+                    self.fail_session(format!(
+                        "This agy{version} doesn't take Scarlet's instructions (its initialize result lists no systemPrompt.append), so Gemini would edit without them. Update agy."
+                    ));
+                    return true;
+                }
+                self.send_open_session();
+            }
+            Step::Authenticate => {
                 self.send_open_session();
             }
             Step::SessionOpen => {
@@ -972,6 +1018,7 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         resume_session: opts.resume_session.clone(),
         instruction: opts.instruction.clone(),
         system_prompt: opts.system_prompt.clone(),
+        refused_tool: opts.refused_tool.clone(),
         refused: Vec::new(),
         carry_ons: 0,
         config_options: Vec::new(),
@@ -1118,6 +1165,37 @@ mod tests {
     }
 
     #[test]
+    fn a_question_the_mcp_server_refused_or_with_no_words_is_no_question() {
+        let update = |u: Value| json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"g1","update":u}}).to_string();
+        let ask = |id: &str, input: Value| update(json!({"sessionUpdate":"tool_call","toolCallId":id,"name":"mcp_scarlet_task_question","rawInput":input}));
+        let ended = |id: &str, end: Value| {
+            let mut u = json!({"sessionUpdate":"tool_call_update","toolCallId":id});
+            u.as_object_mut().unwrap().extend(end.as_object().unwrap().clone());
+            update(u)
+        };
+        let kinds = |evs: &[RunnerEvent]| evs.iter().map(|e| e.kind.clone()).collect::<Vec<_>>();
+        // No words worth asking: an ordinary call, whatever its result. It never becomes the question.
+        for input in [json!({"question":"Which take?"}), json!({"text":""}), json!({"text":"  "}), json!({})] {
+            let mut st = GeminiState::default();
+            let evs = feed(&[&ask("c1", input.clone()), &ended("c1", json!({"status":"completed","rawOutput":{"ok":true}}))], &mut st);
+            assert!(evs.is_empty(), "{input}: {evs:?}");
+            assert!(st.question.is_none() && !st.should_stop && !st.question_posted, "{input}");
+        }
+        // Words the server refused, whichever way it says so: dropped, the refusal logged, and the run goes on.
+        for end in [json!({"status":"failed","rawOutput":"text: Required"}), json!({"status":"completed","rawOutput":{"isError":true}})] {
+            let mut st = GeminiState::default();
+            let evs = feed(&[&ask("c2", json!({"text":"Which take?"})), &ended("c2", end.clone())], &mut st);
+            assert_eq!(kinds(&evs), ["error"], "{end}");
+            assert_eq!(evs[0].data, Some(json!({"toolId":"c2"})));
+            assert!(st.question.is_none() && st.pending_question_id.is_none() && !st.should_stop && !st.question_posted, "{end}");
+            // The model asks again, its words coming with the update this time, and that one is the editor's.
+            let evs = feed(&[&ask("c3", json!({})), &ended("c3", json!({"status":"completed","rawInput":{"text":"Keep the cold open?"}}))], &mut st);
+            assert_eq!(evs, vec![RunnerEvent::with("question", "Keep the cold open?", json!({"tool":"scarlet.task_question","toolId":"c3"}))]);
+            assert!(st.question_posted && st.should_stop);
+        }
+    }
+
+    #[test]
     fn maps_plan_updates_and_tool_failures() {
         let mut st = GeminiState::default();
         let evs = feed(
@@ -1141,6 +1219,36 @@ mod tests {
         assert!(is_scarlet_mcp_permission(&json!({ "toolCall": { "_meta": { "mcpServer": "scarlet" }, "name": "timeline_get" } })));
         assert!(!is_scarlet_mcp_permission(&json!({ "toolCall": { "name": "run_shell_command" } })));
         assert!(!is_scarlet_mcp_permission(&json!({ "toolCall": { "name": "write_file" } })));
+        // agy names Scarlet's tools `mcp_scarlet_<tool>` to the model (its transcript.jsonl, agy 1.5.13). A request that
+        // names no tool is read by its title, which may say more after the name.
+        for call in [
+            json!({ "name": "mcp_scarlet_project_get" }),
+            json!({ "toolName": "mcp_scarlet_dialogue_apply_cuts" }),
+            json!({ "title": "mcp_scarlet_timeline_get" }),
+            json!({ "title": "scarlet/timeline_propose (2 ops)" }),
+            json!({ "title": "  Scarlet.Frame_Contact_Sheet_Batch  " }),
+            json!({ "name": "scarlet__tool_help" }),
+            json!({ "name": "mcp__scarlet__skill_save_edit" }),
+            json!({ "name": " ", "title": "scarlet:task_question" }),
+        ] {
+            assert!(is_scarlet_mcp_permission(&json!({ "toolCall": call })), "{call}");
+        }
+        // A title is display text: a built-in tool on a file that merely starts with "scarlet" is not Scarlet's, and nor
+        // is a built-in tool whose title the model filled with a Scarlet tool's name.
+        for call in [
+            json!({ "title": "scarlet/notes.md" }),
+            json!({ "title": "scarlet.json" }),
+            json!({ "title": "scarlet/timeline_get.md" }),
+            json!({ "title": "scarlet:project_get/../../.ssh/id_rsa" }),
+            json!({ "title": "Write scarlet/timeline_get" }),
+            json!({ "name": "scarlet__timeline_getter" }),
+            json!({ "name": "mcp_scarlet_run_shell_command" }),
+            json!({ "title": "scarlet/" }),
+            json!({ "name": "write_file", "title": "mcp_scarlet_timeline_get" }),
+            json!({ "_meta": { "mcpServer": "scarlet-notes" }, "title": "scarlet/notes.md" }),
+        ] {
+            assert!(!is_scarlet_mcp_permission(&json!({ "toolCall": call })), "{call}");
+        }
 
         let params = json!({
             "options": [
@@ -1151,6 +1259,24 @@ mod tests {
         assert_eq!(permission_outcome(&params, true), json!({ "outcome": "selected", "optionId": "allow_1" }));
         assert_eq!(permission_outcome(&params, false), json!({ "outcome": "selected", "optionId": "reject_1" }));
         assert_eq!(permission_outcome(&json!({}), false), json!({ "outcome": "cancelled" }));
+    }
+
+    /// Scarlet's tools as editingTools.ts lists them, so the copy agy's permission check uses can't drift from them.
+    #[test]
+    fn knows_every_tool_scarlet_offers_and_no_other() {
+        let source = include_str!("../../../../../packages/shared/src/editingTools.ts");
+        let groups = regex::Regex::new(r"tools:\s*\[([^\]]*)\]").unwrap();
+        let names = regex::Regex::new(r#""([a-z0-9_]+)""#).unwrap();
+        let mut listed: Vec<&str> = groups.captures_iter(source)
+            .flat_map(|group| names.captures_iter(group.get(1).unwrap().as_str()).map(|n| n.get(1).unwrap().as_str()).collect::<Vec<_>>())
+            .collect();
+        assert!(listed.len() > 40, "read {} tools from editingTools.ts", listed.len());
+        // The MCP server adds tool_help, which gives Gemini a tool's whole description.
+        listed.push("tool_help");
+        listed.sort_unstable();
+        let mut ours = SCARLET_TOOLS.to_vec();
+        ours.sort_unstable();
+        assert_eq!(ours, listed, "SCARLET_TOOLS differs from packages/shared/src/editingTools.ts");
     }
 
     #[test]
@@ -1197,7 +1323,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
   case "$line" in
     *'"method":"initialize"'*)
-      echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}'
+      echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"_meta":{{"antigravity":{{"systemPrompt":{{"append":true}}}}}}}}}}}}'
       ;;
     *'"method":"session/new"'*)
       echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-1","configOptions":[{{"id":"model","category":"model","currentValue":"gemini-3-flash"}},{{"id":"thought_level","category":"thought_level","currentValue":"medium"}}]}} }}'
@@ -1269,6 +1395,79 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn finishes_a_run_whose_question_was_refused_without_asking_the_editor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-agy-refused-question");
+        let init = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"_meta":{"antigravity":{"systemPrompt":{"append":true}}}}}}"#;
+        let ask = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"q1","name":"mcp_scarlet_task_question","rawInput":{"text":""}}}}"#;
+        let refused = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"q1","status":"failed","rawOutput":"text must not be empty"}}}"#;
+        let said = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Kept both takes."}}}}"#;
+        std::fs::write(&script, format!(r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) echo '{init}' ;;
+    *'"method":"session/new"'*) echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-q"}}}}' ;;
+    *'"method":"session/prompt"'*)
+      echo '{ask}'
+      echo '{refused}'
+      echo '{said}'
+      echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+      ;;
+  esac
+done
+"#)).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (opts, _) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+        let res = run_gemini(opts).await;
+        assert!(res.ok && res.question.is_none() && !res.question_posted, "{res:?}");
+        assert_eq!(res.summary, "Kept both takes.");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn carries_on_after_a_refusal_in_the_engines_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, log_path) = fake_agy(dir.path(), false);
+        let (mut opts, _) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+        opts.refused_tool = Some("Scarlet refused {tool} here. Carry on with Scarlet's tools only.".into());
+        let res = run_gemini(opts).await;
+        assert!(res.ok, "{:?}", res.error);
+        let sent = std::fs::read_to_string(&log_path).unwrap();
+        assert!(sent.contains("Scarlet refused run_shell_command here. Carry on with Scarlet's tools only."), "{sent}");
+        assert!(!sent.contains("the scarlet MCP server"), "the host's own words went too: {sent}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fails_clearly_with_an_agy_that_wont_take_scarlets_instructions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("requests.jsonl");
+        let script = dir.path().join("fake-agy-old");
+        // An agy whose initialize offers no systemPrompt.append: it would open the session and drop Scarlet's prompt.
+        std::fs::write(&script, format!(r#"#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> '{}'
+  case "$line" in
+    *'"method":"initialize"'*) echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":true}},"agentInfo":{{"name":"Antigravity ACP Server","version":"1.4.0"}}}}}}' ;;
+    *'"method":"session/new"'*) echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-old"}}}}' ;;
+    *'"method":"session/prompt"'*) echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}' ;;
+  esac
+done
+"#, log_path.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (opts, events) = super::super::runner::testing::options("gemini", dir.path(), Some(script.to_string_lossy().into_owned()));
+        let res = run_gemini(opts).await;
+        assert!(!res.ok);
+        let error = res.error.unwrap_or_default();
+        assert_eq!(error, "This agy 1.4.0 doesn't take Scarlet's instructions (its initialize result lists no systemPrompt.append), so Gemini would edit without them. Update agy.");
+        assert!(!std::fs::read_to_string(&log_path).unwrap().contains("session/new"), "a session was opened without Scarlet's prompt");
+        assert!(events.lock().unwrap().iter().any(|e| e.kind == "error" && e.text == error));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn uses_only_the_trimmed_final_message_as_summary() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1311,7 +1510,7 @@ done
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
   case "$line" in
-    *'"method":"initialize"'*) echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}' ;;
+    *'"method":"initialize"'*) echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"_meta":{{"antigravity":{{"systemPrompt":{{"append":true}}}}}}}}}}}}' ;;
     *'"method":"session/new"'*) echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-2"}}}}' ;;
     *'"method":"session/prompt"'*)
       cat '{}'
@@ -1372,7 +1571,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
   case "$line" in
     *'"method":"initialize"'*)
-      echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}'
+      echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"_meta":{{"antigravity":{{"systemPrompt":{{"append":true}}}}}}}}}}}}'
       ;;
     *'"method":"session/new"'*)
       echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-live"}}}}'

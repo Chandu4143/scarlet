@@ -27,6 +27,9 @@ pub struct RunOptions {
     pub resume_session: Option<String>,
     /// Launch the CLI with its own to-do tool on. The engine decides (`plan` in the task's prompt).
     pub plan: bool,
+    /// The engine's words for a run to carry on with after Scarlet refused one of its harness's own tools, `{tool}`
+    /// standing for the tool (`refusedTool` in the task's prompt). Only agy needs telling.
+    pub refused_tool: Option<String>,
     /// Per-task workspace. The agent may write temp files here.
     pub cwd: PathBuf,
     pub mcp: McpSpec,
@@ -166,6 +169,7 @@ pub(crate) mod testing {
             env: crate::util::env_map(),
             task: None,
             plan: false,
+            refused_tool: None,
         };
         (opts, events)
     }
