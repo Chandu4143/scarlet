@@ -1,11 +1,13 @@
 /**
- * The dialogue ledger: every mistake the editor has reported in a dialogue cut, each with a check of whether the
- * current code still makes it, and a scoreboard row for every recorded check run. See evals/DIALOGUE.md.
+ * The ledgers: every mistake the editor has reported, each with a check of whether the current code still makes it,
+ * and a scoreboard row for every recorded check run. `dialogue` holds mistakes in a dialogue cut (evals/DIALOGUE.md);
+ * `picture` holds mistakes in what the video shows: which recording is on screen, its framing, the camera inset,
+ * punch-ins, flashes and graphics. `--ledger` picks one; dialogue is the default.
  *
- * It lives with the eval data, never in the repository (it holds the editor's words and times):
- *   $SCARLET_EVAL_DATA/dialogue/ledger.json       the entries
- *   $SCARLET_EVAL_DATA/dialogue/history.md        what each report was, its cause, what was tried, what shipped
- *   $SCARLET_EVAL_DATA/dialogue/scoreboard.jsonl  one row per recorded check run
+ * Each lives with the eval data, never in the repository (it holds the editor's words and times):
+ *   $SCARLET_EVAL_DATA/<ledger>/ledger.json       the entries
+ *   $SCARLET_EVAL_DATA/<ledger>/history.md        what each report was, its cause, what was tried, what shipped
+ *   $SCARLET_EVAL_DATA/<ledger>/scoreboard.jsonl  one row per recorded check run
  *
  * The free checks spend no model tokens: a replay sends the model's own requests from the reported run through the
  * current planning code (replay.ts), and a command check runs a test or script. A trials check needs model passes,
@@ -27,10 +29,23 @@ const USAGE = `Usage:
   tsx evals/src/ledger.ts list                                         the entries and how each is checked
   tsx evals/src/ledger.ts board [--last 10]                            the scoreboard, oldest first
 
+--ledger dialogue|picture picks the ledger (default dialogue).
 check exits 1 when an entry marked fixed fails or can't be checked. --record appends the run to the scoreboard.`;
 
+/** The ledgers there are: mistakes in a dialogue cut, and in what the video shows. */
+export const LEDGERS = ["dialogue", "picture"] as const;
+export type LedgerName = typeof LEDGERS[number];
+let ledgerName: LedgerName = "dialogue";
+/** Points the ledger's paths at another ledger. */
+export function useLedger(name: string) {
+  if (!(LEDGERS as readonly string[]).includes(name)) throw new Error(`No ledger named ${name}: ${LEDGERS.join(" or ")}.`);
+  ledgerName = name as LedgerName;
+}
+
 /** Where the mistake came from, which says where its fix belongs (docs/skills-and-tools.md). */
-export type Cause = "transcript" | "placement" | "model" | "eval" | "flow";
+export type Cause = "transcript" | "placement" | "model" | "eval" | "flow"
+  /** A reading of the picture (screen text, motion, cuts, faces, show areas) missing or wrong: the picture's `transcript`. */
+  | "perception";
 
 /** What the current code must do at the reported spot, given the model's requests from the reported run. */
 export type Expect =
@@ -92,7 +107,16 @@ export interface BoardRow {
   passes: Record<string, PassTotals>;
 }
 
-export const ledgerDir = () => checkedPath(dataDir(), join(dataDir(), "dialogue"));
+/** A vitest run with a test name filter whose output shows no test passed, only skipped. */
+export function unmatchedTests(command: string, output: string): boolean {
+  if (!/\bvitest\b/.test(command) || !/\s-t\s|--testNamePattern/.test(command)) return false;
+  // eslint-disable-next-line no-control-regex
+  const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const tests = plain.match(/^\s*Tests\s+(.*)$/m)?.[1] ?? "";
+  return !/\d+ passed/.test(tests);
+}
+
+export const ledgerDir = () => checkedPath(dataDir(), join(dataDir(), ledgerName));
 export const ledgerPath = () => join(ledgerDir(), "ledger.json");
 export const boardPath = () => join(ledgerDir(), "scoreboard.jsonl");
 
@@ -225,9 +249,12 @@ export async function runChecks(entries: readonly Entry[], log: (line: string) =
         detail = judged.map(j => j.detail).join("; ");
       } else if (c.kind === "command") {
         const run = spawnSync("sh", ["-c", c.run], { cwd: REPO_ROOT, encoding: "utf8", timeout: (c.timeoutSeconds ?? 600) * 1000, maxBuffer: 64 << 20 });
-        verdict = run.status === 0 ? "pass" : run.error || run.status === null ? "error" : "fail";
-        const tail = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim().split("\n").filter(Boolean).slice(-3).join(" | ");
-        detail = run.status === 0 ? "passed" : run.error ? run.error.message : tail.slice(0, 300);
+        const out = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+        // A test filter that matches nothing exits 0 with every test skipped: a renamed or removed test would pass unseen.
+        const nothingRan = run.status === 0 && unmatchedTests(c.run, out);
+        verdict = nothingRan ? "fail" : run.status === 0 ? "pass" : run.error || run.status === null ? "error" : "fail";
+        const tail = out.trim().split("\n").filter(Boolean).slice(-3).join(" | ");
+        detail = nothingRan ? "no test matched the filter: renamed or removed?" : run.status === 0 ? "passed" : run.error ? run.error.message : tail.slice(0, 300);
       } else if (c.kind === "trials") {
         verdict = "model";
         detail = c.last ?? "never measured";
@@ -282,7 +309,8 @@ function table(entries: readonly Entry[], results: readonly EntryResult[]): stri
 }
 
 async function ledgerCli(argv = process.argv.slice(2)) {
-  const { values, positionals } = cli({ id: { type: "string" }, record: { type: "boolean" }, label: { type: "string" }, last: { type: "string" } }, USAGE, argv);
+  const { values, positionals } = cli({ id: { type: "string" }, record: { type: "boolean" }, label: { type: "string" }, last: { type: "string" }, ledger: { type: "string" } }, USAGE, argv);
+  if (values.ledger) useLedger(values.ledger);
   const command = positionals[0];
   if (command === "board") {
     const rows = loadBoard().slice(-Number(values.last ?? 10));
