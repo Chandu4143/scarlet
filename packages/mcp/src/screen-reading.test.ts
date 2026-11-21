@@ -101,6 +101,26 @@ describe("framingReport", () => {
     expect(report([], changes(11, 40)).shownAfter).toEqual({ from: 15, to: 25, unchanged: true, said: "I mean it's pretty cool to watch" });
   });
 
+  it("names the passages read aloud off the recording beside a stretch while it is off picture", () => {
+    // Neon review 2, 5:45: the screen ended on a live mock, then 25 s of camera while he read its note out word for word.
+    const before = applyOps(emptyTimeline("p"), [
+      { op: "addTrack", track: { id: "cam", kind: "video", name: "Camera", clips: [] } },
+      { op: "addTrack", track: { id: "scr", kind: "video", name: "Screen", clips: [] } },
+      { op: "addClip", trackId: "cam", clip: { id: "c1", kind: "media", mediaId: "camera", sourceIn: 0, sourceOut: 25, timelineIn: 0 } },
+      { op: "addClip", trackId: "cam", clip: { id: "c2", kind: "media", mediaId: "camera", sourceIn: 60, sourceOut: 75, timelineIn: 25 } },
+      { op: "addClip", trackId: "scr", clip: { id: "s1", kind: "media", mediaId: "screen", sourceIn: 15, sourceOut: 25, timelineIn: 5 } },
+    ]);
+    const after = applyOps(before, [{ op: "updateClip", clipId: "s1", patch: { transform: { scale: 2, x: 0.5, y: 0.5 } } }]);
+    const note: ScreenLine = { start: 12, end: 34, text: "Noted, I'll include a live mock for UI changes going forward.", box: [0.1, 0.1, 0.4, 0.15] };
+    const words = [...said("and at the bottom", 16), ...said("noted I'll include a live mock for UI changes", 17.5), ...said("it's just super clean", 21)];
+    const report = (lines: ScreenLine[]) =>
+      framingReport(before, after, media, canvas, [], [], { lines: new Map([["screen", lines]]), seconds: new Map([["screen", []]]), words })[0]!;
+
+    expect(report([note]).shownAfter?.reads).toEqual([{ from: 17.5, to: 20.15, said: "noted I'll include a live mock for UI changes" }]);
+    // Text the recording shows only later on its clock isn't read yet.
+    expect(report([{ ...note, start: 40 }]).shownAfter?.reads).toBeUndefined();
+  });
+
   // A camera heard on its own sound track, its picture beneath a silent screen recording 10 s ahead of it, laid in two
   // clips that are off picture until an edit turns them on.
   function cameraAndScreen(screen: { s1?: boolean; s2?: boolean } = {}) {

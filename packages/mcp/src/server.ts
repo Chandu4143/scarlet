@@ -1104,7 +1104,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   async function framedOn(before: Timeline | null, made: Timeline) {
     const { project } = await getProject();
     const framed = framingReport(before, made, project.media, project.settings);
-    if (!framed.length) return { framed, covered: [], unread: [] as string[] };
+    if (!framed.length) return { framed, covered: [], readOff: [] as Array<readonly [number, number]>, unread: [] as string[] };
     const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
     const besideReach = besideSources(made, framed);
     const [found, moving, beside] = await Promise.all([
@@ -1117,7 +1117,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const report = evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed;
     // The holds where a picture over the recording, such as a camera inset, hides its text or anything else on it, in timeline seconds.
     const covered = report.flatMap(f => f.holds.filter(h => h.underCover || h.coverHides).map(h => [h.from, h.to]));
-    return { framed: report, covered,
+    // The passages read aloud off a recording beside a stretch while it is off picture, once each: the time between two
+    // stretches is the one's after and the other's before.
+    const readOff = [...new Map(report.flatMap(f => [...f.shownBefore?.reads ?? [], ...f.shownAfter?.reads ?? []])
+      .map(r => [`${r.from}-${r.to}`, [r.from, r.to]] as const)).values()].sort((x, y) => x[0]! - y[0]!);
+    return { framed: report, covered, readOff,
       unread: [...new Set([...found?.unread ?? [], ...moving?.unread ?? [], ...beside?.unread ?? []])] };
   }
   /** Recordings whose cuts weren't read through when this run last saved: brief pictures at their cuts weren't reported then. */
@@ -1257,6 +1261,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(metRecordingCut.length && { metRecordingCut: metRecordingCut.slice(0, 20), metRecordingCutNext: MET_RECORDING_CUT_NEXT }),
       // Named once ahead of the list, as timeline_framing does: among a hundred framings, the few with text under a cover were read past.
       ...(framedNow?.covered.length && { hiddenUnderCover: framedNow.covered.slice(0, 20) }),
+      ...(framedNow?.readOff.length && { readOffPicture: framedNow.readOff.slice(0, 20) }),
       ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
       ...(insetNow?.content.length && { insetLook: insetNow.insets.map(i => ({ mediaId: i.mediaId, trackId: i.trackId, clips: i.clips,
         crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
