@@ -21,7 +21,7 @@ import { AnalysisCache } from "../services/analysisCache.js";
 import { transcriptReader } from "../services/transcriptReader.js";
 import { otherInputReader } from "../services/otherInput.js";
 import { sourceCacheStatuses, sourcePreviews } from "../services/sourcePreviews.js";
-import { pictureDecoder, pictureLane } from "../services/pictureWork.js";
+import { framePriority, pictureDecoder, pictureLane } from "../services/pictureWork.js";
 import { previewPictures } from "../services/previewPictures.js";
 import { getWaveform, ingestMedia, readWaveformCache, removeUnreadableMedia, settleAlignment, startTranscription, transcriptionHeld, writeHashedFile } from "../services/ingest.js";
 import { realignTranscript } from "../services/realign.js";
@@ -394,8 +394,8 @@ export function mediaRoutes(ctx: Ctx) {
       return ctx.render.extractFrame(file, t, { width: w, signal, indexedMp4, decoder, area, grid });
     };
     try {
-      // Frames share the engine’s picture lane with contact sheets. The editor’s own requests go first.
-      const priority = c.req.query("priority") === "interactive";
+      // Frames share the engine’s picture lane with contact sheets. The editor’s own requests go first, then the timeline’s.
+      const priority = framePriority(c.req.query("priority"));
       const jpeg = await frames.get(key, signal => ctx.track(pictureLane(ctx).run(() => frame(signal), { priority, signal }), media.projectId), {
         priority, signal: c.req.raw.signal,
       });
