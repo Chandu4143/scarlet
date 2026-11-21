@@ -33,7 +33,7 @@ import { ExportStarNotice } from "../components/shell/ExportStarNotice";
 vi.mock("../components/shell/AppShell", () => ({
   AppShell: () => <Outlet />,
 }));
-vi.mock("./ProjectsPage", () => ({ ProjectsPage: () => <><Link to="/">Projects</Link><WindowActions /></>, ImportUrlModal: () => null }));
+vi.mock("./ProjectsPage", () => ({ ProjectsPage: () => <><Link to="/">Projects</Link><WindowActions /></> }));
 vi.mock("../components/agent/Composer", () => ({ Composer: () => null }));
 
 let root: Root;

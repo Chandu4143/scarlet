@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Media no longer has Add from a link: add footage with Add files or by dropping it in.
 - Settings › About now keeps the What’s new list short up front with a toggle for the rest, and collapses earlier days by date.
 - A cut waiting for your approval is now drawn on the timeline over the footage it would take out, dashed until you approve it, so while you watch you can see that part is still in and waiting on you; its tag opens it.
 - When the cut that takes out a whole stumble can't be placed in a pause, Scarlet asks you to hear it instead of making a cleaner cut that leaves part of the stumble in.
