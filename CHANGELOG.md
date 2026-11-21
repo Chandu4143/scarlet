@@ -4,6 +4,10 @@ What changed in Scarlet, newest first, in the words an editor would use. Scarlet
 
 Add one line under today's date for each change an editor would notice. Leave out changes to tests, builds and tooling.
 
+## November 21, 2026
+
+- While Scarlet edits, the timeline keeps its pictures and sound as each new cut comes in, instead of going blank until the edit is done.
+
 ## November 20, 2026
 
 - Lines you said twice that Scarlet would have left in now come to you in For you, as many as Checking with you asks for, starting with the likeliest restarts.

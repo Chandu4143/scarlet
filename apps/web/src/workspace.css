@@ -313,6 +313,8 @@
   transition: opacity .25s ease .28s;
 }
 .filmstrip-held[data-leaving] { opacity: 0; }
+.filmstrip-held > div { transition: opacity .25s ease .28s; }
+.filmstrip-held > [data-covered] { opacity: 0; }
 .timeline-filmstrip .filmstrip-held img { opacity: 1; transition: none; }
 .timeline-playhead-time {
   position: absolute; top: 1px; padding: 1px 4px; border-radius: 3px; background: #f4f1e9; color: #1a1918;
