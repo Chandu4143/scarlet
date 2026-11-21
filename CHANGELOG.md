@@ -10,6 +10,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 - The model picker lists Standard speed once for Claude models instead of twice.
 - A skill Scarlet comes with that you edited and then set back to Scarlet's own text gets Scarlet's updates again.
 - When Scarlet puts your camera in the corner over a screen recording, it now frames you instead of shrinking the whole camera shot into the box, and follows your skill's size, shape, how much of you to show and rounded corners.
+- An edit that frames a screen recording no longer waits behind itself: Scarlet looks at several of the recording's windows at once beside it, so those edits finish minutes sooner.
+- With Gemini, a step that needs Scarlet to measure something first now waits for it instead of giving up and trying again.
 
 ## November 19, 2026
 
