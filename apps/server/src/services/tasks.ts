@@ -1,4 +1,4 @@
-import { agentCapabilities, isAsideTask, SIDE_CHECK_KINDS, isLearningCheck, isProjectEditTask, PROJECT_EDIT_TASK_KINDS, isSkillEdit, planText, queueBlocker, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
+import { agentCapabilities, workspaceCapabilities, isBrollMake, isAsideTask, SIDE_CHECK_KINDS, isLearningCheck, isProjectEditTask, PROJECT_EDIT_TASK_KINDS, isSkillEdit, planText, queueBlocker, type QueueChange, reviewItemPath, splitAgentTarget, TaskPlan, dialogueCommand, skillCommands, taskDialogueOperation, taskRunKind } from "@scarlet/shared";
 import { AgentId, type AgentHost, type CompleteTaskRequest, type Task, type TaskEvent, type TaskKind, type TaskPrompt, type User } from "@scarlet/shared";
 import { buildSystemPrompt } from "@scarlet/mcp/prompt";
 import { join } from "node:path";
@@ -437,7 +437,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
 }
 
 /** The side checks of one kind a request started that haven't finished. */
-function openChecks(ctx: Ctx, task: Task, kind: "learning_check" | "area_check"): Task[] {
+function openChecks(ctx: Ctx, task: Task, kind: "learning_check" | "area_check" | "broll_make"): Task[] {
   if (!editsDialogue(task.kind)) return [];
   return ctx.repos.tasks.select("project_id = ? AND kind = ? AND json_extract(json, '$.context.checksTaskId') = ?", [task.projectId, kind, task.id])
     .filter(check => !FINISHED_TASK.has(check.state));
@@ -450,6 +450,8 @@ function openChecks(ctx: Ctx, task: Task, kind: "learning_check" | "area_check")
  */
 export function dropWaitingLooks(ctx: Ctx, task: Task): void {
   for (const check of openChecks(ctx, task, "area_check")) if (check.state === "queued") cancelTask(ctx, check);
+  // A B-roll run serves the run that asked for it, which is over: nothing would place what it made.
+  for (const run of openChecks(ctx, task, "broll_make")) cancelTask(ctx, run);
 }
 
 /**
@@ -473,6 +475,7 @@ export function cancelTask(ctx: Ctx, task: Task, opts: { withdrawn?: boolean } =
   // The frames a request asked to have looked at serve its own run alone, and that run is over: stopped, taken back or
   // put back in line by a pause, where the attempt that resumes it asks again.
   for (const check of openChecks(ctx, task, "area_check")) cancelTask(ctx, check);
+  for (const run of openChecks(ctx, task, "broll_make")) cancelTask(ctx, run);
   ctx.bus.taskQueued({ taskId: saved.id, projectId: saved.projectId });
   return saved;
 }
@@ -494,10 +497,13 @@ const PAUSED = "The editor paused editing while you were working on this request
 
 /**
  * What a host tells the model after refusing it a tool that isn't Scarlet's, with `{tool}` for the tool's name. Gemini's
- * harness offers its own shell and file tools whatever it is launched with, so its hosts refuse them in the turn.
+ * harness offers its own shell and file tools whatever it is launched with, so its hosts refuse them in the turn: all of
+ * them on a request or a side check, and on a B-roll run one that reaches outside the task folder.
  */
 const REFUSED_TOOL = "Scarlet refused {tool}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. " +
   "Carry on with the request using Scarlet's tools.";
+const REFUSED_OUTSIDE = "Scarlet refused {tool}: it reaches outside your task folder. Keep your files in the task folder, " +
+  "and read the project's footage and the video through Scarlet's tools. Carry on.";
 
 /** Pair each `question` event with the `answer` that followed it. */
 export function pairQuestionsAndAnswers(events: Pick<TaskEvent, "type" | "text">[]): Array<{ question: string; answer: string }> {
@@ -580,14 +586,18 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
     editSkill: editSkill ?? undefined,
     learningCheck: isLearningCheck(task) ? learningCheckContext(ctx, task) : undefined,
     areaCheck: task.kind === "area_check" ? task.context.areaCheck : undefined,
+    broll: isBrollMake(task) && c.broll ? { ...c.broll, styleGuide: project.styleGuide ? { name: project.styleGuide.name, text: project.styleGuide.text } : undefined } : undefined,
     checkIn: ctx.settings().checkIn,
     workDir: opts.workDir,
     timeLimitMinutes: opts.timeLimitMinutes,
-    capabilities: { ...agentCapabilities(task.agent), plan: plans },
+    // Only a B-roll run has its harness's own shell, file and web tools.
+    capabilities: { ...(isBrollMake(task) ? workspaceCapabilities(agentCapabilities(task.agent)) : agentCapabilities(task.agent)), plan: plans },
     ...graphicsContext(ctx, project, task),
   });
-  // Whether the host launches the CLI with its own to-do tool on, and what it says when it refuses a tool.
-  const launch = { ...(plans && { plan: true }), refusedTool: REFUSED_TOOL };
+  // Whether the host launches the CLI with its own to-do tool on, with its shell, file and web tools (a B-roll run
+  // alone: a request asks for one when a moment needs a shot found or made, the editor's choice of 2026-11-21), and
+  // what it says when it refuses a tool.
+  const launch = { ...(plans && { plan: true }), ...(isBrollMake(task) && { workspace: true }), refusedTool: isBrollMake(task) ? REFUSED_OUTSIDE : REFUSED_TOOL };
   if (resumeSession) {
     return { systemPrompt, instruction: answered ? `The editor answered: "${last!.text.trim()}"\nContinue the task with that answer.`
       : `${task.resumesAfterProjectStop ? PAUSED : INTERRUPTED}\n\n${instruction.trim()}`, resumeSession, ...launch };
@@ -804,10 +814,10 @@ function claimNext(ctx: Ctx, host: AgentHost, taskId?: string, freeAgents?: stri
   const rows = ctx.db.prepare(`SELECT q.id, q.project_id, q.kind, q.json, q.created_at, p.editing_paused,
     coalesce(json_extract(q.json, '$.rewordingUntil') > ?, 0) AS rewording FROM tasks q JOIN projects p ON p.id = q.project_id
     LEFT JOIN tasks root ON root.id = json_extract(q.json, '$.resumeRootId')
-    LEFT JOIN tasks asker ON q.kind = 'area_check' AND asker.id = json_extract(q.json, '$.context.checksTaskId')
+    LEFT JOIN tasks asker ON q.kind IN ('area_check', 'broll_make') AND asker.id = json_extract(q.json, '$.context.checksTaskId')
     WHERE p.deleted_at IS NULL AND q.state = 'queued' AND ${filter}
     AND (p.editing_paused = 0 OR q.kind NOT IN ${HELD_WHILE_PAUSED})
-    AND (q.kind != 'area_check' OR asker.state IN ('claimed', 'running'))
+    AND (q.kind NOT IN ('area_check', 'broll_make') OR asker.state IN ('claimed', 'running'))
     ORDER BY coalesce(asker.state IN ('claimed', 'running'), 0) DESC,
       coalesce(root.created_at, q.created_at), coalesce(root.rowid, q.rowid), q.rowid`)
     .iterate(checkedAt, ...filterArgs) as Iterable<{

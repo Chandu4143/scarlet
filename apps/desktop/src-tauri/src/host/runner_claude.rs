@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 use super::runner::{cut_short, exit_error, write_files, RunOptions, RunnerCommand};
 use super::spawn::{resolve_cli, spawn_lines, SpawnLinesOptions};
 use super::usage::{add_usage, claude_usage, AgentUsage};
-use super::types::{brief, brief_input, is_question_tool, plan_event, pretty_tool_name, question_words, tail_summary, value_text, McpSpec, PlanStep, RunResult, RunnerEvent};
+use super::types::{brief, brief_input, is_question_tool, plan_event, pretty_tool_name, question_words, tail_summary, value_text, McpSpec, PlanStep, RunResult, RunnerEvent, Workspace, CONTROL_DIR};
 
 #[derive(Debug, Default, Clone)]
 pub struct ClaudeState {
@@ -40,6 +40,8 @@ pub struct ClaudeState {
 /// and its result names the step's id; TaskUpdate changes one step by id. A Claude Code from before those has
 /// TodoWrite, which takes the whole list. `--tools` takes the names a CLI knows and passes over the rest.
 pub const CLAUDE_PLAN_TOOLS: &str = "TaskCreate,TaskUpdate,TodoWrite";
+/// Claude Code's own tools a B-roll run's agent has beside Scarlet's: a shell, files and the web.
+pub const CLAUDE_WORKSPACE_TOOLS: [&str; 8] = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"];
 
 /// Why a run whose Scarlet MCP server failed has failed: Claude Code carries on without it and calls the run a success.
 const MCP_FAILED: &str = "Scarlet's MCP server failed to start, so Claude Code had no editing tools.";
@@ -386,9 +388,18 @@ pub fn can_run_bare(env: &std::collections::HashMap<String, String>) -> bool {
 
 /// Build the exact command line (pure, for tests and for reporting).
 #[allow(clippy::too_many_arguments)]
-pub fn build_claude_command(model: Option<&str>, effort: Option<&str>, service_tier: Option<&str>, system_prompt: &str, instruction: &str, resume_session: Option<&str>, bare: bool, plan: bool, mcp: &McpSpec, bin: &str, tmp_dir: &Path) -> RunnerCommand {
+pub fn build_claude_command(model: Option<&str>, effort: Option<&str>, service_tier: Option<&str>, system_prompt: &str, instruction: &str, resume_session: Option<&str>, bare: bool, plan: bool, workspace: Option<&Workspace>, mcp: &McpSpec, bin: &str, tmp_dir: &Path) -> RunnerCommand {
     let mcp_config_path = tmp_dir.join("mcp.json");
     let system_path = tmp_dir.join("system.md");
+    // A B-roll run's own shell, file and web tools, and Claude Code's to-do list when the engine asks for the agent's plan.
+    // Every other run has neither.
+    let mut tools: Vec<&str> = Vec::new();
+    if workspace.is_some() { tools.extend(CLAUDE_WORKSPACE_TOOLS); }
+    if plan { tools.extend(CLAUDE_PLAN_TOOLS.split(',')); }
+    let tools = tools.join(",");
+    let mut allowed = vec!["mcp__scarlet__*"];
+    if workspace.is_some() { allowed.extend(CLAUDE_WORKSPACE_TOOLS); allowed.push("WebFetch(domain:*)"); }
+    let allowed = allowed.join(",");
     let mut args: Vec<String> = vec!["-p".into()];
     if bare {
         args.push("--bare".into());
@@ -404,10 +415,9 @@ pub fn build_claude_command(model: Option<&str>, effort: Option<&str>, service_t
             "--restricted",
             "--disable-slash-commands",
             "--tools",
-            // No built-in tools, or only Claude Code's own to-do list when the engine asks for the agent's plan.
-            if plan { CLAUDE_PLAN_TOOLS } else { "" },
+            &tools,
             "--allowedTools",
-            "mcp__scarlet__*",
+            &allowed,
             "--append-system-prompt-file",
             &system_path.to_string_lossy(),
             "--permission-mode",
@@ -428,9 +438,24 @@ pub fn build_claude_command(model: Option<&str>, effort: Option<&str>, service_t
         args.push("--effort".into());
         args.push(e.to_string());
     }
-    // This runner gives Claude no shell tool, so its sandbox guards nothing here. Insisting on it
-    // (`failIfUnavailable`) failed every run on a machine where it can't start.
+    // A B-roll run's shell runs in Claude Code's sandbox, writing only in the task folder; it reaches any web address
+    // (`WebFetch(domain:*)` opens the sandbox's proxy to every host) and reads nothing outside the task folder but the
+    // programs its launchers point at. The control files, which hold Scarlet's token, are closed to every tool.
+    // Insisting on the sandbox (`failIfUnavailable`) failed every run on a machine where it can't start, so where it
+    // can't, the run goes on without it.
     let mut settings = json!({ "sandbox": { "enabled": true, "allowUnsandboxedCommands": false } });
+    if let Some(ws) = workspace {
+        let control = tmp_dir.to_string_lossy().replace('\\', "/");
+        settings["sandbox"]["autoAllowBashIfSandboxed"] = json!(true);
+        // A shell's `curl` was refused every host until the sandbox's own list named them all (2026-11-21).
+        settings["sandbox"]["network"] = json!({ "allowedDomains": ["*"] });
+        settings["sandbox"]["filesystem"] = json!({ "denyRead": [tmp_dir.to_string_lossy()] });
+        if !ws.read_dirs.is_empty() {
+            settings["sandbox"]["filesystem"]["allowRead"] = json!(ws.read_dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>());
+        }
+        let rule = format!("//{}/**", control.trim_start_matches('/'));
+        settings["permissions"] = json!({ "blockReadsOutsideWorkingDirectories": true, "allow": ["WebFetch(domain:*)"], "deny": [format!("Read({rule})"), format!("Edit({rule})")] });
+    }
     if let Some(tier) = service_tier { settings["fastMode"] = json!(tier == "fast"); }
     args.extend(["--settings".into(), settings.to_string()]);
     let mut files = BTreeMap::new();
@@ -444,8 +469,8 @@ pub async fn run_claude(opts: RunOptions) -> RunResult {
         Ok(b) => b,
         Err(e) => return RunResult::failed(e.to_string()),
     };
-    let tmp_dir = opts.cwd.join(".scarlet");
-    let cmd = build_claude_command(opts.model.as_deref(), opts.effort.as_deref(), opts.service_tier.as_deref(), &opts.system_prompt, &opts.instruction, opts.resume_session.as_deref(), can_run_bare(&opts.env), opts.plan, &opts.mcp, &bin, &tmp_dir);
+    let tmp_dir = opts.cwd.join(CONTROL_DIR);
+    let cmd = build_claude_command(opts.model.as_deref(), opts.effort.as_deref(), opts.service_tier.as_deref(), &opts.system_prompt, &opts.instruction, opts.resume_session.as_deref(), can_run_bare(&opts.env), opts.plan, opts.workspace.as_ref(), &opts.mcp, &bin, &tmp_dir);
     if let Err(e) = write_files(&cmd.files).await {
         return RunResult::failed(e.to_string());
     }
@@ -644,7 +669,7 @@ mod tests {
     #[test]
     fn builds_the_command_line_with_files_for_mcp_config_and_system_prompt() {
         let mcp = mcp();
-        let cmd = build_claude_command(Some("opus"), None, None, "SYS", "Make the first cut", None, false, false, &mcp, "claude", Path::new("/tmp/t"));
+        let cmd = build_claude_command(Some("opus"), None, None, "SYS", "Make the first cut", None, false, false, None, &mcp, "claude", Path::new("/tmp/t"));
         assert_eq!(cmd.args[0], "-p");
         assert_eq!(cmd.stdin.as_deref(), Some("Make the first cut"));
         assert!(cmd.args.windows(2).any(|a| a == ["--tools", ""]));
@@ -652,10 +677,10 @@ mod tests {
         assert!(cmd.args.windows(2).any(|a| a == ["--permission-mode", "dontAsk"]));
         assert!(cmd.args.iter().any(|a| a == "--restricted"));
         let option = "--settings={}";
-        let hostile = build_claude_command(None, None, None, "SYS", option, None, false, false, &mcp, "claude", Path::new("/tmp/t"));
+        let hostile = build_claude_command(None, None, None, "SYS", option, None, false, false, None, &mcp, "claude", Path::new("/tmp/t"));
         assert_eq!(hostile.stdin.as_deref(), Some(option));
         assert!(!hostile.args.iter().any(|a| a == option));
-        let tuned = build_claude_command(Some("opus"), Some("max"), Some("fast"), "SYS", "x", None, false, false, &mcp, "claude", Path::new("/tmp/t"));
+        let tuned = build_claude_command(Some("opus"), Some("max"), Some("fast"), "SYS", "x", None, false, false, None, &mcp, "claude", Path::new("/tmp/t"));
         assert_eq!(&tuned.args[tuned.args.len() - 6..tuned.args.len() - 1], &["--model", "opus", "--effort", "max", "--settings"]);
         let settings: Value = serde_json::from_str(tuned.args.last().unwrap()).unwrap();
         assert_eq!(settings["fastMode"], json!(true));
@@ -666,15 +691,15 @@ mod tests {
         let (_, mcp_json) = cmd.files.iter().find(|(k, _)| k.ends_with("mcp.json")).unwrap();
         let parsed: Value = serde_json::from_str(mcp_json).unwrap();
         assert_eq!(parsed["mcpServers"]["scarlet"], json!({"command": mcp.command, "args": mcp.args, "env": mcp.env}));
-        let long = build_claude_command(None, None, None, "SYS", "line1\nline2", None, false, false, &mcp, "claude", Path::new("/tmp/t"));
+        let long = build_claude_command(None, None, None, "SYS", "line1\nline2", None, false, false, None, &mcp, "claude", Path::new("/tmp/t"));
         assert_eq!(long.args[1], "--output-format");
         assert_eq!(long.stdin.as_deref(), Some("line1\nline2"));
         assert!(!cmd.args.iter().any(|a| a == "--no-session-persistence"));
         // Asked for the agent's plan, the CLI gets its own to-do tools and still nothing else of its own.
-        let planned = build_claude_command(None, None, None, "SYS", "line1\nline2", None, false, true, &mcp, "claude", Path::new("/tmp/t"));
+        let planned = build_claude_command(None, None, None, "SYS", "line1\nline2", None, false, true, None, &mcp, "claude", Path::new("/tmp/t"));
         assert!(planned.args.windows(2).any(|a| a == ["--tools", "TaskCreate,TaskUpdate,TodoWrite"]));
         assert_eq!(planned.args.len(), long.args.len());
-        let resumed = build_claude_command(None, None, None, "SYS", "The editor answered", Some("s1"), true, false, &mcp, "claude", Path::new("/tmp/t"));
+        let resumed = build_claude_command(None, None, None, "SYS", "The editor answered", Some("s1"), true, false, None, &mcp, "claude", Path::new("/tmp/t"));
         assert_eq!(&resumed.args[..2], &["-p", "--bare"]);
         assert!(resumed.args.join(" ").contains("--permission-mode dontAsk --resume s1 --settings"));
         assert_eq!(resumed.stdin.as_deref(), Some("The editor answered"));
@@ -944,4 +969,24 @@ mod tests {
             assert!(!run.ok && run.error.is_some() && run.exit_code.is_none(), "{run:?}");
         }
     }
+
+    #[test]
+    fn gives_a_request_its_own_tools_with_the_shell_sandboxed_and_the_control_files_closed() {
+        let mcp = McpSpec { command: "node".into(), args: vec![], env: BTreeMap::new() };
+        let ws = Workspace { bin_dir: Some("/w/.tools".into()), read_dirs: vec!["/Applications/Google Chrome.app".into()] };
+        let cmd = build_claude_command(None, None, None, "SYS", "x", None, false, false, Some(&ws), &mcp, "claude", Path::new("/w/.scarlet"));
+        let after = |flag: &str| cmd.args[cmd.args.iter().position(|a| a == flag).unwrap() + 1].clone();
+        assert_eq!(after("--tools"), "Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch");
+        assert_eq!(after("--allowedTools"), "mcp__scarlet__*,Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,WebFetch(domain:*)");
+        let settings: Value = serde_json::from_str(&after("--settings")).unwrap();
+        assert_eq!(settings, json!({
+            "sandbox": { "enabled": true, "allowUnsandboxedCommands": false, "autoAllowBashIfSandboxed": true,
+                "network": { "allowedDomains": ["*"] },
+                "filesystem": { "denyRead": ["/w/.scarlet"], "allowRead": ["/Applications/Google Chrome.app"] } },
+            "permissions": { "blockReadsOutsideWorkingDirectories": true, "allow": ["WebFetch(domain:*)"], "deny": ["Read(//w/.scarlet/**)", "Edit(//w/.scarlet/**)"] },
+        }));
+        let planned = build_claude_command(None, None, None, "SYS", "x", None, false, true, Some(&ws), &mcp, "claude", Path::new("/w/.scarlet"));
+        assert_eq!(planned.args[planned.args.iter().position(|a| a == "--tools").unwrap() + 1], "Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,TaskCreate,TaskUpdate,TodoWrite");
+    }
+
 }

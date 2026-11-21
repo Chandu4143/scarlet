@@ -6,6 +6,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- Scarlet can now find or make B-roll for a moment with any model you pick: it searches the web, captures an article or a post as a picture, and builds the shot its own way before laying it in.
+- B-roll Scarlet lays over your video is called B-roll, and when it came from the web, a link icon on its card shows the page as Scarlet captured it, the part in your video, and its address.
 - Scarlet now sees when you look down at your screen while you talk to it, so your screen can be up there too.
 - Scarlet’s note on an edit’s card now reads as it would tell you in person, in everyday words, instead of its own terms for the footage.
 - An edit’s card now says exactly what it did on its first line: the words a cut took out, a caption’s words, the file laid over the picture, how far a zoom goes or how loud the sound now plays.

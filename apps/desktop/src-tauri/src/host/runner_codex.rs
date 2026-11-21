@@ -14,7 +14,7 @@ use super::detect::api_key_vars;
 use super::runner::{cut_short, exit_error, report_usage, write_files, RunOptions, RunnerCommand};
 use super::spawn::{resolve_cli, spawn_lines, SpawnLinesOptions};
 use super::usage::{add_usage, codex_app_server_usage, codex_usage, AgentUsage};
-use super::types::{brief, brief_input, is_question_tool, plan_event, question_words, tail_summary, truthy, value_text, McpSpec, PlanStep, RunResult, RunnerEvent};
+use super::types::{brief, brief_input, is_question_tool, plan_event, question_words, tail_summary, truthy, value_text, McpSpec, PlanStep, RunResult, RunnerEvent, Workspace};
 
 #[derive(Debug, Default, Clone)]
 pub struct CodexState {
@@ -365,25 +365,35 @@ fn codex_executable(bin: &str) -> Option<String> {
     }
 }
 
-fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>) -> Vec<String> {
-    let executable_read = executable.map(|path| format!(",{}=\"read\"", toml_string(path))).unwrap_or_default();
+/// Codex features every run goes without. A B-roll run's agent keeps its shell and its look at pictures it made.
+const CODEX_OFF: [&str; 5] = ["computer_use", "multi_agent", "plugins", "apps", "hooks"];
+
+fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>, workspace: Option<&Workspace>) -> Vec<String> {
     // Forward slashes keep the TOML readable and work for node on Windows.
     let to_toml = |p: &str| p.replace('\\', "/");
+    // The programs the shell's launchers point at: readable, never writable. Everything else outside the task folder stays closed.
+    let reads: String = executable.map(str::to_string).into_iter()
+        .chain(workspace.iter().flat_map(|w| w.read_dirs.iter().map(|d| d.to_string_lossy().into_owned())))
+        .map(|path| format!(",{}=\"read\"", toml_string(&to_toml(&path)))).collect();
     let mut args = Vec::new();
     // The legacy Windows sandboxes cannot enforce this profile's denied root reads.
     #[cfg(windows)]
     args.extend(["-c".into(), r#"windows.sandbox="mxc""#.into()]);
-    for feature in ["shell_tool", "view_image", "computer_use", "multi_agent", "plugins", "apps", "hooks"] {
+    let off: Vec<&str> = if workspace.is_some() { CODEX_OFF.to_vec() } else { ["shell_tool", "view_image"].into_iter().chain(CODEX_OFF).collect() };
+    for feature in off {
         args.extend(["--disable".into(), feature.into()]);
     }
     args.extend([
         "-c".into(), r#"approval_policy="never""#.into(),
-        "-c".into(), r#"web_search="disabled""#.into(),
+        // A B-roll run's agent searches the live web; every other run has none.
+        "-c".into(), format!("web_search={}", if workspace.is_some() { r#""live""# } else { r#""disabled""# }),
         // Long edit prompts include the timeline, editor's notes and earlier answers.
         "-c".into(), "project_doc_max_bytes=4194304".into(),
         "-c".into(), r#"default_permissions="scarlet""#.into(),
-        "-c".into(), format!(r#"permissions.scarlet.filesystem={{":root"="deny",":minimal"="read",":workspace_roots"={{"."="write"}}{executable_read}}}"#),
-        "-c".into(), "permissions.scarlet.network.enabled=false".into(),
+        "-c".into(), format!(r#"permissions.scarlet.filesystem={{":root"="deny",":minimal"="read",":workspace_roots"={{"."="write"}}{reads}}}"#),
+        // A B-roll run's shell reaches the web, for the pages and clips it brings in. Scarlet's token stays out of the shell
+        // (`shell_environment_policy` below), so the engine is no nearer than before.
+        "-c".into(), format!("permissions.scarlet.network.enabled={}", workspace.is_some()),
         "-c".into(), r#"mcp_servers.scarlet.default_tools_approval_mode="approve""#.into(),
         "-c".into(), "mcp_servers.scarlet.required=true".into(),
         "-c".into(), "mcp_servers.scarlet.startup_timeout_sec=60".into(),
@@ -402,7 +412,7 @@ fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>) -> Vec<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_tier: Option<&str>, system_prompt: &str, instruction: &str, plan: bool, mcp: &McpSpec, cwd: &Path, bin: &str, tmp_dir: &Path) -> CodexCommand {
+pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_tier: Option<&str>, system_prompt: &str, instruction: &str, plan: bool, workspace: Option<&Workspace>, mcp: &McpSpec, cwd: &Path, bin: &str, tmp_dir: &Path) -> CodexCommand {
     let last_message_path = tmp_dir.join("last-message.md");
     let mut args: Vec<String> = vec![
         "exec".into(),
@@ -420,7 +430,7 @@ pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_ti
         "project_root_markers=[]".into(),
     ];
     let executable = codex_executable(bin);
-    args.extend(codex_tool_args(mcp, executable.as_deref()));
+    args.extend(codex_tool_args(mcp, executable.as_deref(), workspace));
     args.extend([
         "--output-last-message".into(),
         last_message_path.to_string_lossy().to_string(),
@@ -449,7 +459,7 @@ pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_ti
 
 fn app_server_args(opts: &RunOptions, executable: Option<&str>) -> Vec<String> {
     let mut args = vec!["app-server".into(), "--strict-config".into()];
-    args.extend(codex_tool_args(&opts.mcp, executable));
+    args.extend(codex_tool_args(&opts.mcp, executable, opts.workspace.as_ref()));
     args.extend([
         "--disable".into(), "goals".into(),
         "-c".into(), "project_root_markers=[]".into(),
@@ -572,7 +582,7 @@ pub async fn run_codex(mut opts: RunOptions) -> RunResult {
     };
     let tmp_dir = opts.cwd.join(".scarlet");
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
-    let built = build_codex_command(opts.model.as_deref(), opts.effort.as_deref(), opts.service_tier.as_deref(), &opts.system_prompt, &opts.instruction, opts.plan, &opts.mcp, &opts.cwd, &bin, &tmp_dir);
+    let built = build_codex_command(opts.model.as_deref(), opts.effort.as_deref(), opts.service_tier.as_deref(), &opts.system_prompt, &opts.instruction, opts.plan, opts.workspace.as_ref(), &opts.mcp, &opts.cwd, &bin, &tmp_dir);
     if let Err(e) = write_files(&built.cmd.files).await {
         return RunResult::failed(e.to_string());
     }
@@ -823,7 +833,7 @@ mod tests {
         std::fs::write(&target, "fixture").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let resolved = std::fs::canonicalize(&target).unwrap().to_string_lossy().into_owned();
-        let cmd = build_codex_command(None, None, None, "SYS", "x", false, &mcp(), Path::new("/w"), link.to_str().unwrap(), Path::new("/w/.scarlet")).cmd;
+        let cmd = build_codex_command(None, None, None, "SYS", "x", false, None, &mcp(), Path::new("/w"), link.to_str().unwrap(), Path::new("/w/.scarlet")).cmd;
         assert_eq!(cmd.file, resolved);
         assert!(cmd.args.contains(&format!("permissions.scarlet.filesystem={{\":root\"=\"deny\",\":minimal\"=\"read\",\":workspace_roots\"={{\".\"=\"write\"}},{path}=\"read\"}}", path = toml_string(&resolved))));
         assert!(cmd.args.contains(&"permissions.scarlet.network.enabled=false".to_string()));
@@ -838,7 +848,7 @@ mod tests {
     fn builds_c_overrides_as_valid_toml() {
         assert_eq!(toml_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
         let mcp = mcp();
-        let built = build_codex_command(Some("gpt-5-codex"), None, None, "SYS", "Cut it", false, &mcp, Path::new("C:\\work\\t1"), "codex.cmd", Path::new("C:\\work\\t1\\.scarlet"));
+        let built = build_codex_command(Some("gpt-5-codex"), None, None, "SYS", "Cut it", false, None, &mcp, Path::new("C:\\work\\t1"), "codex.cmd", Path::new("C:\\work\\t1\\.scarlet"));
         let cmd = built.cmd;
         assert_eq!(&cmd.args[..5], &["exec", "--json", "--skip-git-repo-check", "--cd", "C:\\work\\t1"]);
         assert!(cmd.args.windows(2).any(|p| p == ["--disable", "shell_tool"]));
@@ -851,15 +861,15 @@ mod tests {
         assert!(cmd.args.contains(&"mcp_servers.scarlet.required=true".to_string()));
         assert!(cmd.args.windows(2).any(|p| p == ["-c", "project_doc_max_bytes=4194304"]));
         assert_eq!(&cmd.args[cmd.args.len() - 3..], &["--model", "gpt-5-codex", "-"]);
-        let tuned = build_codex_command(None, Some("ultra"), Some("priority"), "SYS", "x", false, &mcp, Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
+        let tuned = build_codex_command(None, Some("ultra"), Some("priority"), "SYS", "x", false, None, &mcp, Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
         assert_eq!(&tuned.args[tuned.args.len() - 5..], &["-c", "model_reasoning_effort=\"ultra\"", "-c", "service_tier=\"priority\"", "-"]);
         assert!(cmd.files.keys().next().unwrap().ends_with("AGENTS.md"));
-        let long = build_codex_command(None, None, None, "SYS", "a\nb", false, &mcp, Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
+        let long = build_codex_command(None, None, None, "SYS", "a\nb", false, None, &mcp, Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
         assert_eq!(long.args.last().unwrap(), "-");
         assert_eq!(long.stdin.as_deref(), Some("a\nb"));
         // Codex's to-do tool is switched on only when the engine asks for the agent's plan.
         assert!(!long.args.iter().any(|a| a == "tools.update_plan.enabled=true"));
-        let planned = build_codex_command(None, None, None, "SYS", "a\nb", true, &mcp, Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
+        let planned = build_codex_command(None, None, None, "SYS", "a\nb", true, None, &mcp, Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
         assert_eq!(planned.args.iter().filter(|a| !long.args.contains(a)).collect::<Vec<_>>(), ["tools.update_plan.enabled=true"]);
         // Ephemeral: Scarlet runs stay out of the user's Codex thread list.
         assert!(cmd.args.iter().any(|a| a == "--ephemeral"));
@@ -1107,4 +1117,21 @@ cat >/dev/null
             assert_eq!((run.ok, run.error.as_deref(), run.aborted), (false, Some("cancelled"), true));
         }
     }
+
+    #[test]
+    fn gives_a_request_its_shell_a_look_at_pictures_the_live_web_and_reads_of_its_programs_folders() {
+        let ws = Workspace { bin_dir: Some("/w/.tools".into()), read_dirs: vec!["/Applications/Google Chrome.app".into(), "/opt/ff/bin".into()] };
+        let cmd = build_codex_command(None, None, None, "SYS", "x", false, Some(&ws), &mcp(), Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
+        let disabled = |args: &[String]| args.windows(2).filter(|p| p[0] == "--disable").map(|p| p[1].clone()).collect::<Vec<_>>();
+        assert_eq!(disabled(&cmd.args), ["computer_use", "multi_agent", "plugins", "apps", "hooks"]);
+        assert!(cmd.args.contains(&r#"web_search="live""#.to_string()));
+        assert!(cmd.args.contains(&"permissions.scarlet.network.enabled=true".to_string()));
+        assert!(cmd.args.contains(&r#"permissions.scarlet.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="write"},"/Applications/Google Chrome.app"="read","/opt/ff/bin"="read"}"#.to_string()));
+        assert!(cmd.args.contains(&r#"shell_environment_policy.exclude=["SCARLET_*"]"#.to_string()));
+        let side = build_codex_command(None, None, None, "SYS", "x", false, None, &mcp(), Path::new("/w"), "codex", Path::new("/w/.scarlet")).cmd;
+        assert_eq!(disabled(&side.args)[..2], ["shell_tool", "view_image"]);
+        assert!(side.args.contains(&r#"web_search="disabled""#.to_string()));
+        assert!(side.args.contains(&"permissions.scarlet.network.enabled=false".to_string()));
+    }
+
 }

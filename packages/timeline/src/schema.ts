@@ -57,9 +57,31 @@ export const Provenance = z.object({
   prompt: z.string().optional(),
   /** Change that introduced the asset, if any. */
   changeId: Id.optional(),
+  /** The run that added it, set by the engine from the run's own attempt. */
+  taskId: Id.optional(),
   createdAt: z.string().datetime().optional(),
 });
 export type Provenance = z.infer<typeof Provenance>;
+
+/** The part of a picture in use, as fractions of its width and height. */
+export const FrameBox = z.object({
+  left: z.number().min(0).max(1), top: z.number().min(0).max(1), right: z.number().min(0).max(1), bottom: z.number().min(0).max(1),
+}).refine(b => b.right > b.left && b.bottom > b.top, "right and bottom must be past left and top");
+export type FrameBox = z.infer<typeof FrameBox>;
+
+/**
+ * Where a picture or clip from outside the project came from, such as an article or a post Scarlet framed as B-roll:
+ * the page's address, when it was captured, the page as captured and the part of it in the video.
+ */
+export const WebSource = z.object({
+  url: z.string().trim().max(2048).url().refine(u => /^https?:\/\//i.test(u), "a web address"),
+  capturedAt: z.string().datetime().optional(),
+  /** The page as captured, an image relative to the project's folder. */
+  capture: z.string().optional(),
+  /** The part of the capture in the video. */
+  region: FrameBox.optional(),
+});
+export type WebSource = z.infer<typeof WebSource>;
 
 /** One-based audio stream ordinals confirmed for this particular recording. */
 export const DialogueVoiceRoles = z.object({
@@ -104,6 +126,8 @@ export const MediaAsset = z.object({
     model: z.string().optional(),
   }).optional(),
   provenance: Provenance.optional(),
+  /** Where it came from on the web, shown on the card of the edit that uses it. */
+  source: WebSource.optional(),
   /** A graphic Scarlet drew from a web page: the page it keeps, so a later request can revise it. */
   graphic: z.object({
     /** The page, relative to the project's folder. Files it links to sit beside it. */

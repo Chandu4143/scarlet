@@ -14,6 +14,8 @@ export const EDITING_TOOL_GROUPS = [
     tools: ["change_get", "change_list", "edit_flag", "notes_list", "note_reply", "note_resolve", "render_request", "render_status"] },
   { title: "Requests and skills", description: "Report progress, ask editorial questions, use saved instructions and offer rules to add to them.",
     tools: ["task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit", "shorts_plan"] },
+  { title: "B-roll", description: "Have a shot found on the web or made for a moment of the video, and capture pages from the web.",
+    tools: ["broll_make", "web_capture"] },
   { title: "Motion graphics", description: "Draw graphics from web pages, and read the files and style guide the editor gave.",
     tools: ["graphic_render", "graphic_get", "style_guide_save", "attachment_read"] },
   { title: "Frame inspection", description: "Examine a source frame or several moments from an edit together.",

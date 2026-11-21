@@ -19,7 +19,8 @@ import { runAgent as defaultRunAgent } from "./runners/index.js";
 import { codexHomeDir } from "./runners/codex.js";
 import { addUsage } from "./runners/usage.js";
 import { mcpEnv, nodeExecutable, resolveMcpCliPath } from "./runners/spawn.js";
-import { DEFAULT_STALL_MS, type McpSpec, type RunAgentFn, type RunAgentResult, type RunnerEvent } from "./runners/types.js";
+import { DEFAULT_STALL_MS, type McpSpec, type RunAgentFn, type RunAgentResult, type RunnerEvent, type Workspace } from "./runners/types.js";
+import { workspaceTools } from "./workspaceTools.js";
 
 export interface HostOptions {
   client: ScarletClient;
@@ -66,6 +67,8 @@ interface Prepared {
   plan?: boolean;
   /** The engine's words for the turn after a refused tool (`refusedTool`). */
   refusedTool?: string;
+  /** The harness's own shell, file and web tools, for a request (`workspace` on the engine's prompt). */
+  workspace?: Workspace;
   cwd: string;
   mcp: McpSpec;
 }
@@ -512,6 +515,7 @@ export class AgentHost {
       resumeSession: p.resumeSession,
       plan: p.plan,
       refusedTool: p.refusedTool,
+      workspace: p.workspace,
       cwd: p.cwd,
       mcp: p.mcp,
       signal,
@@ -632,6 +636,8 @@ export class AgentHost {
     // Read with care: an engine from before it had the words leaves them out.
     const refused = (prompt as { refusedTool?: unknown }).refusedTool;
     const refusedTool = typeof refused === "string" && refused.trim() ? refused : undefined;
+    // An engine from before the full toolset leaves it out: the run then has Scarlet's tools only, as it did.
+    const workspace = (prompt as { workspace?: unknown }).workspace === true ? await workspaceTools(cwd, this.opts.env ?? process.env) : undefined;
 
     const mcp: McpSpec = {
       command: nodeExecutable(),
@@ -647,7 +653,7 @@ export class AgentHost {
         SCARLET_WORKDIR: artifacts,
       }),
     };
-    return { systemPrompt, instruction, resumeSession, plan, refusedTool, cwd, mcp };
+    return { systemPrompt, instruction, resumeSession, plan, refusedTool, workspace, cwd, mcp };
   }
 }
 

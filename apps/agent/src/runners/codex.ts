@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { apiKeyVars, stripVars } from "../detect.js";
 import { privateDirectory, writePrivateFile } from "../private-files.js";
-import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, questionText, type CodexFallbackReason, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
+import { briefInput, COMPACTED, DEFAULT_STALL_MS, isQuestionTool, planEvent, questionText, workspaceEnv, type CodexFallbackReason, type RunAgentOptions, type RunAgentResult, type RunnerEvent } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, codexUsage, tokenCount, usageWithModel } from "./usage.js";
 import type { AgentUsage, PlanStep } from "@scarlet/shared";
@@ -218,7 +218,7 @@ export interface CodexCommand {
 }
 
 export function buildCodexCommand(
-  opts: Pick<RunAgentOptions, "model" | "effort" | "fast" | "serviceTier" | "systemPrompt" | "instruction" | "mcp" | "cwd" | "plan">,
+  opts: Pick<RunAgentOptions, "model" | "effort" | "fast" | "serviceTier" | "systemPrompt" | "instruction" | "mcp" | "cwd" | "plan" | "workspace">,
   bin: string,
   tmpDir: string,
 ): CodexCommand {
@@ -246,23 +246,32 @@ function codexExecutable(bin: string): string | undefined {
   return executable;
 }
 
-function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan">, executable: string | undefined): string[] {
+/** Codex features every run goes without. A B-roll run's agent keeps its shell and its look at pictures it made. */
+const CODEX_OFF = ["computer_use", "multi_agent", "plugins", "apps", "hooks"];
+
+function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan" | "workspace">, executable: string | undefined): string[] {
   // Forward slashes keep the TOML readable and work for node on Windows.
   const toToml = (p: string) => p.replace(/\\/g, "/");
+  const ws = opts.workspace;
+  // The programs the shell's links point at: readable, never writable. Everything else outside the task folder stays closed.
+  const reads = [...(executable ? [executable] : []), ...(ws?.readDirs ?? [])].map((p) => `,${tomlString(toToml(p))}="read"`).join("");
   return [
     // The legacy Windows sandboxes cannot enforce this profile's denied root reads.
     ...(process.platform === "win32" ? ["-c", 'windows.sandbox="mxc"'] : []),
-    ...["shell_tool", "view_image", "computer_use", "multi_agent", "plugins", "apps", "hooks"].flatMap((feature) => ["--disable", feature]),
+    ...(ws ? CODEX_OFF : ["shell_tool", "view_image", ...CODEX_OFF]).flatMap((feature) => ["--disable", feature]),
     "-c", 'approval_policy="never"',
-    "-c", 'web_search="disabled"',
+    // A B-roll run's agent searches the live web; every other run has none.
+    "-c", `web_search=${ws ? '"live"' : '"disabled"'}`,
     // Codex otherwise reads only the first 32 KiB of AGENTS.md. The prompt lists every clip ahead of the task, the
     // editor's notes, their earlier answers and their skills, so on a long timeline those would be cut off.
     "-c", "project_doc_max_bytes=4194304",
     // Codex's own to-do tool, which it reports as `todo_list` items. A Codex without this key refuses it under --strict-config.
     ...(opts.plan ? ["-c", "tools.update_plan.enabled=true"] : []),
     "-c", 'default_permissions="scarlet"',
-    "-c", `permissions.scarlet.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="write"}${executable ? `,${tomlString(executable)}="read"` : ""}}`,
-    "-c", 'permissions.scarlet.network.enabled=false',
+    "-c", `permissions.scarlet.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="write"}${reads}}`,
+    // A B-roll run's shell reaches the web, for the pages and clips it brings in. Scarlet's token stays out of the shell
+    // (`shell_environment_policy` below), so the engine is no nearer than before.
+    "-c", `permissions.scarlet.network.enabled=${ws ? "true" : "false"}`,
     "-c", 'mcp_servers.scarlet.default_tools_approval_mode="approve"',
     "-c", "mcp_servers.scarlet.required=true",
     "-c", "mcp_servers.scarlet.startup_timeout_sec=60",
@@ -395,7 +404,7 @@ function serverError(value: unknown) {
 
 async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin: string, home: string): Promise<RunAgentResult | undefined> {
   const executable = codexExecutable(bin);
-  const args = ["app-server", "--strict-config", ...codexConfig({ mcp: opts.mcp }, executable),
+  const args = ["app-server", "--strict-config", ...codexConfig({ mcp: opts.mcp, workspace: opts.workspace }, executable),
     "-c", "project_root_markers=[]", "-c", 'cli_auth_credentials_store="file"',
     "-c", `tools.update_plan.enabled=${!!opts.plan}`, "-c", "tools.experimental_request_user_input.enabled=false", "--disable", "goals",
     ...codexModelConfig({ effort: opts.effort })];
@@ -579,7 +588,8 @@ async function runCodexServer(opts: RunAgentOptions, env: NodeJS.ProcessEnv, bin
 }
 
 export async function runCodex(opts: RunAgentOptions): Promise<RunAgentResult> {
-  const env = { ...(opts.env ?? process.env), ...opts.mcp.env };
+  // Scarlet's server reads its variables from Codex's; the shell never gets them (`shell_environment_policy`).
+  const env = { ...workspaceEnv(opts.env ?? process.env, opts.workspace), ...opts.mcp.env };
   const bin = await resolveCli("codex", opts.bin, env);
   await writePrivateFile(join(opts.cwd, "AGENTS.md"), opts.systemPrompt);
   const isolation = await isolatedCodexHome(opts.cwd, env).catch(() => ({ reason: "isolation_unavailable" as const }));

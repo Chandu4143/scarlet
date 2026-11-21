@@ -277,7 +277,7 @@ export function changeRemovals(change: Change): { removed: TimeRange[]; version:
 }
 
 /** The project's files, so an edit that laid a graphic over the picture is told from b-roll. */
-type ProjectFiles = readonly Pick<MediaAsset, "id" | "kind">[];
+type ProjectFiles = readonly Pick<MediaAsset, "id" | "kind" | "source">[];
 
 /** Project the conversation's changes into distinct edit identities before translating their times. */
 function savedEdits(thread: Thread, visible: (version: string) => boolean, read?: (version: string) => Timeline | undefined, fps = 30, media?: ProjectFiles) {

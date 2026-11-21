@@ -52,6 +52,8 @@ interface Srv {
   carriesOn?: boolean;
   /** The engine's words for a refused tool, in the prompt it builds. */
   refusedTool?: string;
+  /** The engine launches this run with the harness's own tools (`workspace`). */
+  workspace?: boolean;
 }
 
 async function startServer(questionFailures = 0): Promise<Srv> {
@@ -98,7 +100,7 @@ async function startServer(questionFailures = 0): Promise<Srv> {
       srv.prompts.push({ id: prompt[1]!, ...query });
       const last = srv.taskEvents.filter((e) => e.type === "question" || e.type === "answer").at(-1);
       const resumeSession = !query.fresh && last?.type === "answer" ? srv.session : undefined;
-      const words = srv.refusedTool ? { refusedTool: srv.refusedTool } : {};
+      const words = { ...(srv.refusedTool && { refusedTool: srv.refusedTool }), ...(srv.workspace && { workspace: true }) };
       return send(200, resumeSession
         ? { systemPrompt: `SYS ${query.workDir}`, instruction: `The editor answered: "${last!.text}"`, resumeSession, ...words }
         : { systemPrompt: `SYS ${query.workDir}`, instruction: task.instruction, ...words });
@@ -556,6 +558,28 @@ describe("AgentHost", { timeout: 30_000 }, () => {
     });
     await startHostAndWait(host, once(srv.events, "complete", { signal }));
     expect(seen[0]!.refusedTool).toBe("{tool} doesn't run in Scarlet.");
+  });
+
+  it.skipIf(process.platform === "win32")("gives a request's runner its workspace, with launchers for the programs it found, and a side check none", async ({ signal }) => {
+    const bin = await mkdtemp(join(tmpdir(), "scarlet-host-bin-"));
+    onTestFinished(() => rm(bin, { recursive: true, force: true }));
+    await writeFile(join(bin, "ffmpeg"), "#!/bin/sh\n", { mode: 0o755 });
+    for (const workspace of [true, false]) {
+      const srv = await startServer();
+      srv.workspace = workspace;
+      const seen: RunAgentOptions[] = [];
+      const { host } = makeHost(srv, async (opts) => {
+        seen.push(opts);
+        return { ok: true, summary: "" };
+      }, undefined, { env: { PATH: bin, SCARLET_CHROME: "" } });
+      await startHostAndWait(host, once(srv.events, "complete", { signal }));
+      if (!workspace) { expect(seen[0]!.workspace).toBeUndefined(); continue; }
+      const ws = seen[0]!.workspace!;
+      expect(ws.binDir).toBe(join(seen[0]!.cwd, ".tools"));
+      // The ffmpeg on its PATH, by a launcher in the task folder; the folder it lives in is what the shell may read.
+      expect(ws.readDirs).toContain(bin);
+      expect(await readFile(join(ws.binDir!, "ffmpeg"), "utf8")).toBe(`#!/bin/sh\nexec '${join(bin, "ffmpeg")}' "$@"\n`);
+    }
   });
 
   it.skipIf(process.platform === "win32")("clears the notes of CLIs an earlier launch left as it starts", async ({ signal }) => {

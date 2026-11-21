@@ -248,6 +248,22 @@ describe("an editing prompt", () => {
     }
   });
 
+  it("briefs a B-roll run on its one moment, what it has to work with and how it hands the shot back", () => {
+    const prompt = buildSystemPrompt({ ...base, workDir: "/work/task_1/artifacts", capabilities: { images: true, audio: false, files: true, shell: true, web: true, plan: false, toolPrefix: "mcp__scarlet__" },
+      broll: { at: 62.5, duration: 4, want: "The Ledger's headline on agents, the line lit", says: "everyone is building an agent", url: "https://theledger.example/agents",
+        styleGuide: { name: "House style", text: "White on black." } } });
+    expect(prompt.startsWith("# You are making one piece of B-roll for a video being edited in Scarlet")).toBe(true);
+    expect(prompt).toContain("At 1:02 of the video (62.5 s), to hold for about 4 s.");
+    expect(prompt).toContain("What is said there: “everyone is building an agent”\nWhat should be on screen: The Ledger's headline on agents, the line lit\nTake it from this page: https://theledger.example/agents");
+    expect(prompt).toContain("Your task artifact directory is: /work/task_1/artifacts");
+    expect(prompt).toContain("a shell, sandboxed to this task's folder, with ffmpeg and ffprobe on its PATH where this machine has them, file tools, and web search.");
+    expect(prompt).toContain("`mcp__scarlet__web_capture` takes the picture of a page on the web");
+    expect(prompt).toContain("## The editor's style guide: House style\nWhite on black.");
+    expect(prompt).toContain("You place nothing in the video");
+    // It is told nothing of the request's thread or the timeline's clips.
+    expect(prompt).not.toContain("# Project");
+  });
+  // A request has Scarlet's tools only, so its prompt says nothing of a shell.
   it("mentions the artifact directory only to a harness that can write files there", () => {
     const withFiles = buildSystemPrompt({ ...base, workDir: "/work/task_1", capabilities: { images: true, audio: false, files: true } });
     expect(withFiles).toContain("Your task artifact directory is: /work/task_1");

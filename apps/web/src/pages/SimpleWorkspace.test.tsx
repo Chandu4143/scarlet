@@ -2310,6 +2310,57 @@ it("names a graphic's card Graphic, with Revise, Keep and Reject edit and nothin
   expect(createTask).not.toHaveBeenCalled();
 });
 
+it("names B-roll from the web B-roll, and opens where it came from behind the card's source icon, folded again on the next edit", async () => {
+  appliedEdits();
+  // Scarlet laid a page it captured over the picture, and said where the page came from.
+  const url = "https://theledger.example/2026/11/everyone-is-building-agents";
+  const article = { ...data.media[0]!, id: "med_article", kind: "image" as const, name: "ledger.png", transcriptId: undefined, duration: undefined,
+    source: { url, capturedAt: "2026-11-21T12:00:00.000Z", capture: "sources/ledger.png", region: { left: 0, top: 0, right: 1, bottom: 0.6 } } };
+  const head = data.timeline!;
+  const laid = { ...makeTrack("video", "B-roll", "v2"), clips: [makeMediaClip("med_article", 0, 3.5, 3, { id: "clip_article" })] };
+  const tracks = [...head.tracks];
+  tracks.splice(tracks.findIndex(t => t.kind === "video") + 1, 0, laid);
+  data = { ...data, media: [...data.media, article], timeline: { ...head, tracks } };
+  useProjectStore.setState({ current: data });
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "The Ledger’s article", range: { start: 3, end: 6.5 }, previous: [], kind: "broll" as const,
+        summary: "Laid The Ledger’s article over “everyone is building an agent”." },
+      { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], kind: "overlay" as const },
+    ] }));
+  const opened = vi.spyOn(desktop, "openUrl").mockResolvedValue(undefined);
+  await show();
+  await click(turnFor("chg_approved_2").querySelectorAll(".simple-edits .simple-edit")[1]!);
+  await act(async () => {});
+  const panel = editPanel()!;
+  expect(panel.querySelector(".edit-card-length.is-kind")?.textContent).toBe("B-roll");
+  // Its icon sits where a cut's transcript icon does, after Before/After, named on hover.
+  const sourceIcon = () => panel.querySelector<HTMLButtonElement>(".edit-card-side .edit-card-source");
+  expect([...panel.querySelectorAll(".edit-card-side button")].map(b => b.getAttribute("aria-label"))).toEqual(["Before", "Show source"]);
+  expect(panel.querySelector(".edit-source")).toBeNull();
+  await click(sourceIcon()!);
+  // The page as captured, with the part in the video lit, its address and when it was captured, between the note and
+  // the controls, where a cut's passage opens.
+  const row = panel.querySelector(".edit-card > .edit-source")!;
+  expect(row.nextElementSibling?.classList.contains("edit-card-controls")).toBe(true);
+  expect([sourceIcon()!.getAttribute("aria-label"), sourceIcon()!.getAttribute("aria-expanded")]).toEqual(["Hide source", "true"]);
+  expect(row.querySelector("img")!.getAttribute("src")).toContain("/media/med_article/source-capture");
+  expect((row.querySelector(".edit-source-capture i") as HTMLElement).style.height).toBe("60%");
+  expect(row.querySelector(".edit-source-url")!.textContent).toBe(url);
+  expect(row.querySelector(".edit-source-said")!.textContent).toBe("Captured Nov 21, 2026. The lit part is what’s in the video.");
+  // The address opens the page.
+  await click(row.querySelector(".edit-source-url")!);
+  expect(opened).toHaveBeenCalledWith(url);
+  // The next edit laid nothing from the web: no icon, and the row is folded.
+  await press("ArrowDown");
+  expect(openTitle()).toBe("wrap");
+  expect([editPanel()!.querySelector(".edit-card-length.is-kind")?.textContent, editPanel()!.querySelector(".edit-card-source"), editPanel()!.querySelector(".edit-source")])
+    .toEqual(["Overlay", null, null]);
+  await press("ArrowUp");
+  expect([openTitle(), editPanel()!.querySelector(".edit-source"), sourceIcon()?.getAttribute("aria-expanded")]).toEqual(["The Ledger’s article", null, "false"]);
+});
+
 it("opens a marker Scarlet left for the editor as a to-do: what to add first, nothing to compare or undo, and Done", async () => {
   appliedEdits();
   vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: data.project.head!,

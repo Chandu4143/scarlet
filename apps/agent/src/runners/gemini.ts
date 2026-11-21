@@ -1,12 +1,12 @@
 /**
  * Gemini via Antigravity CLI (`agy acp`), speaking Agent Client Protocol (JSON-RPC 2.0) over stdio.
- * Runs with `--sandbox` and an explicit `session/request_permission` handler that allows only
- * Scarlet MCP tools and rejects all built-in file/shell tools. Supports model selection,
+ * Runs with `--sandbox` and an explicit `session/request_permission` handler: a B-roll run's agent may use agy's own
+ * shell, file and web tools inside its task folder as well as Scarlet's, and a side check only Scarlet's. Supports model selection,
  * thinking level (`thought_level`), session resume (`session/resume`), and token usage reporting.
  */
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import {
   briefInput,
   DEFAULT_STALL_MS,
@@ -18,6 +18,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
   type RunnerEvent,
+  workspaceEnv,
 } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, geminiTranscriptStepUsage, geminiUsage, usageWithModel } from "./usage.js";
@@ -223,6 +224,39 @@ export function isScarletMcpPermission(params: unknown): boolean {
   }
   const names = [tc.name, tc.toolName].filter((name) => typeof name === "string" && name.trim());
   return (names.length ? names : [tc.title]).some(namesScarletTool);
+}
+
+/** Every path a permission request names: its locations, and any absolute path among its input's values. */
+function namedPaths(params: unknown): string[] {
+  const tc = asRecord(asRecord(params)?.toolCall);
+  const out: string[] = [];
+  const absolute = (v: string) => /^(?:\/|[a-zA-Z]:[\\/]|~\/)/.test(v.trim());
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 4) return;
+    if (typeof value === "string") { if (absolute(value) && value.length < 4096) out.push(value.trim()); return; }
+    if (Array.isArray(value)) { for (const v of value) visit(v, depth + 1); return; }
+    const rec = asRecord(value);
+    if (rec) for (const v of Object.values(rec)) visit(v, depth + 1);
+  };
+  if (Array.isArray(tc?.locations)) for (const loc of tc.locations) { const path = asString(asRecord(loc)?.path); if (path) out.push(path); }
+  visit(tc?.rawInput, 0);
+  return out;
+}
+
+/**
+ * Whether a B-roll run's agent may use one of agy's own tools: yes unless it names a path outside the folders it works in
+ * (its task folder, and those its programs live in). agy's sandbox restricts its terminal; its file tools reach as far
+ * as the user's files do, the library that holds Scarlet's token among them.
+ */
+export function workspacePermission(params: unknown, roots: string[]): boolean {
+  if (isScarletMcpPermission(params)) return true;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const within = roots.map(norm);
+  return namedPaths(params).every((path) => {
+    if (path.startsWith("~")) return false;
+    const p = norm(resolvePath(path));
+    return within.some((root) => p === root || p.startsWith(`${root}/`));
+  });
 }
 
 /** Pick the best ACP permission outcome for allow vs reject. */
@@ -448,7 +482,8 @@ type PendingStep =
   | "done";
 
 export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> {
-  const env = { ...(opts.env ?? process.env) };
+  // Scarlet's own variables stay out of agy, so its terminal never holds the token.
+  const env = workspaceEnv(opts.env ?? process.env, opts.workspace);
   const bin = await resolveCli("agy", opts.bin, env);
   const cmd = buildGeminiCommand(bin);
 
@@ -588,7 +623,9 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
       if (typeof msg.method === "string") {
         if (msg.id !== undefined) {
           if (msg.method === "session/request_permission") {
-            const allow = isScarletMcpPermission(msg.params);
+            // A B-roll run's agent has agy's own tools inside its folder; every other run has Scarlet's only.
+            const allow = opts.workspace ? workspacePermission(msg.params, [opts.cwd, ...opts.workspace.readDirs])
+              : isScarletMcpPermission(msg.params);
             if (!allow) refused.push(extractToolName(asRecord(asRecord(msg.params)?.toolCall) ?? {}));
             send({ id: msg.id, result: { outcome: permissionOutcome(msg.params, allow) } });
           } else {

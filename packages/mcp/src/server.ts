@@ -35,9 +35,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listToolsBriefly } from "./brief-tools.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, taskRunKind, agentCapabilities, workspaceCapabilities, isProjectEditTask, toolWait, DEFAULT_RESULT_CHARS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
   CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
-import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
+import type { BrollRunResponse, RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, Project, TimeRange, Transcript } from "@scarlet/timeline";
 import {
   applyOps,
@@ -117,6 +117,12 @@ const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_questio
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
 /** An area check looks at one frame and says what of it viewers may see, and nothing else. */
 const AREA_CHECK_TOOLS: ReadonlySet<string> = new Set(["media_frame", "screen_area"]);
+/**
+ * A B-roll run finds or makes one shot: it reads the project and the moment, captures and draws pages, and adds what it
+ * made to the media. It saves nothing to the video and asks the editor nothing; the run that asked does both.
+ */
+const BROLL_TOOLS: ReadonlySet<string> = new Set(["task_log", "project_get", "timeline_get", "timeline_at", "timeline_transcript", "transcript_get",
+  "transcript_search", "media_frame", "frame_contact_sheet", "screen_text", "skills_list", "web_capture", "graphic_render", "graphic_get", "attachment_read", "asset_add"]);
 /** Times one timeline_at call maps; the rest of a longer list come back to ask for. */
 const TIMES_AT_ONCE = 50;
 const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
@@ -154,6 +160,8 @@ export interface ScarletMcpContext {
   taskStartedAt?: string;
   /** Authoritative task fetched at startup, for task-specific tools. */
   task?: Task;
+  /** The guides this run's prompt holds in full, by name: the skills the editor chose for it and those they call. */
+  guides?: readonly string[];
   author: Author;
   /** Which CLI is driving this session; sets the default capabilities. */
   agent?: AgentId | string;
@@ -330,7 +338,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   if (ctx.taskId) apiPathId(ctx.taskId);
   if (ctx.task && ctx.task.projectId !== ctx.projectId) throw new Error("Task belongs to a different project");
   const evidence = new DialogueEvidence();
-  const caps = ctx.capabilities ?? agentCapabilities(ctx.agent);
+  // Only a B-roll run is launched with its harness's own shell, file and web tools.
+  const harness = ctx.capabilities ?? agentCapabilities(ctx.agent);
+  const caps = ctx.task?.kind === "broll_make" ? workspaceCapabilities(harness) : harness;
   type DialogueOperation = ReturnType<typeof taskDialogueOperation>;
   let legacyOperation: Promise<DialogueOperation> | undefined;
   const dialogueOperation = () => {
@@ -394,6 +404,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         ? "Scarlet exposes the tools for reading the editor’s skills and offering a rule for one; an empty MCP resource list is normal."
         : ctx.task?.kind === "area_check"
         ? "Scarlet exposes the tools for looking at one frame of a recording and saving what of it viewers may see; an empty MCP resource list is normal."
+        : ctx.task?.kind === "broll_make"
+        ? "Scarlet exposes the tools for reading one moment of a video, capturing and drawing pages, and adding the B-roll you make to the project's media; an empty MCP resource list is normal."
         : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand.",
     },
   );
@@ -1341,6 +1353,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // edits doesn't offer rules as well, so the editor never gets the same rule twice in two wordings.
     if (ctx.task?.kind === "learning_check" ? !LEARNING_CHECK_TOOLS.has(name) : name === "learning_suggest") return;
     if (ctx.task?.kind === "area_check" && !AREA_CHECK_TOOLS.has(name)) return;
+    if (ctx.task?.kind === "broll_make" && !BROLL_TOOLS.has(name)) return;
+    // A shot found or made is asked for by the editor, in their words or a skill of theirs, and started by the request's
+    // own run, which has no shell or web of its own and is told to start none unasked (the tool's description). A dialogue
+    // pass, and a request about one of its cuts, cut words: they are offered it when a skill of theirs calls the B-roll
+    // guide (`/b-roll`, or `extends`), which is the editor's skill asking, and otherwise read the tools they always have.
+    if (name === "broll_make" && !(ctx.task && isProjectEditTask(ctx.task) && (!taskRunKind(ctx.task) || ctx.guides?.includes("b-roll")))) return;
     const inputSchema = unsharedShape(shape);
     toolParameters.set(name, z.object(inputSchema));
     server.registerTool(name, { description, inputSchema, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
@@ -3968,13 +3986,22 @@ ${OPS_DOC}`,
 
   tool(
     "asset_add",
-    "Upload an existing file from this task’s artifact directory (for example an animation, graphic or music bed) into the project's media so it can be placed on the timeline with addClip. `kind` is video|audio|image|graphic (guessed from the extension when omitted). `provenance` records how it was made (prompt/tool) so others can revise it. Returns the new mediaId and probed duration. Agents never upload finished videos; Scarlet renders the edit.",
+    `Upload an existing file from this task’s artifact directory (for example an animation, graphic or music bed) into the project's media so it can be placed on the timeline with addClip. \`kind\` is video|audio|image|graphic (guessed from the extension when omitted). \`provenance\` records how it was made (prompt/tool) so others can revise it.${caps.shell ? " For B-roll taken from the web (an article, a post, a clip), \`source\` records the page's address, when it was captured, the page as captured (a PNG, JPEG or WebP in the artifact directory) and the part of that capture in the video (fractions of its width and height); the editor sees it on the card of the edit that lays the file over the picture." : ""} Returns the new mediaId and probed duration. Agents never upload finished videos; Scarlet renders the edit.`,
     {
       path: z.string().describe("File inside the task artifact directory (relative or absolute path)"),
       kind: z.enum(["video", "audio", "image", "graphic"]).optional(),
       provenance: z.object({ prompt: z.string().optional(), model: z.string().optional(), name: z.string().optional() }).optional(),
+      // Only a run that can reach the web has anything to say of where a file came from: a B-roll run.
+      ...(caps.shell ? { source: z.object({
+        url: z.string().describe("The page's web address"),
+        capturedAt: z.string().optional().describe("When it was captured, ISO 8601; default now"),
+        capture: z.string().optional().describe("The page as captured, a picture in the task artifact directory"),
+        region: z.object({ left: z.number(), top: z.number(), right: z.number(), bottom: z.number() }).optional()
+          .describe("The part of the capture in the video, as fractions of its width and height"),
+      }).optional() } : {}),
     },
-    async ({ path, kind, provenance }) => {
+    async ({ path, kind, provenance, ...rest }) => {
+      const source = (rest as { source?: { url: string; capturedAt?: string; capture?: string; region?: { left: number; top: number; right: number; bottom: number } } }).source;
       const data = await readArtifact(await artifactDir(), path);
       const name = basename(path);
       const guessed = kind ?? guessKind(name);
@@ -3985,15 +4012,42 @@ ${OPS_DOC}`,
         "provenance",
         JSON.stringify({ by: "agent", name: provenance?.name ?? ctx.author.name, model: provenance?.model ?? ctx.author.model, prompt: provenance?.prompt, createdAt: new Date().toISOString() }),
       );
+      if (source) {
+        const { capture, ...rest } = source;
+        fd.append("source", JSON.stringify({ ...rest, capturedAt: rest.capturedAt ?? new Date().toISOString() }));
+        if (capture) fd.append("capture", new Blob([await readArtifact(await artifactDir(), capture)]), basename(capture));
+      }
       const { media } = await client.post<{ media: ProjectDetail["project"]["media"][number] }>(`/projects/${ctx.projectId}/media`, fd);
       return json(media);
+    },
+  );
+
+  // -- B-roll ---------------------------------------------------------------
+
+  tool(
+    "broll_make",
+    "Have a shot found or made for one moment of the video, when the editor asked for one: an article, a post or a site from the web framed to the line being said, a clip or picture made for it, or a motion graphic built with more than graphic_render offers. Call it only when the editor asked: in their words for this request or earlier in its thread (“find me the article for this part”, “build a graphic for this moment”), or in one of their skills, where one that says to add B-roll or graphics wherever you see fit is the editor asking and leaves where to you. Never on your own initiative: a request that asks for neither gets none. A short run of its own does the work, with a shell, files, web search and page capture that this run doesn't have, and adds the result to the project's media; it places nothing. Give the moment (`at`, timeline seconds on the head version, and about how long the shot holds), what is said there, what should be on screen and anything the editor said about how it should look, and a page to take it from when they named one. Footage already in Media needs no run: lay it in yourself. Returns the run's id, its state, its own words on what it made and how it is meant to sit, and the mediaIds it added: lay one over the picture with timeline_propose (addClip on a video track above the footage), and look at it there as you would any edit. A run still at work when this call's wait ends answers `working`: call again with its `runId` alone to go on waiting, or carry on with other spots meanwhile. Up to three runs work at once.",
+    {
+      at: z.number().nonnegative().optional().describe("Timeline seconds where the shot starts, on the head version"),
+      duration: z.number().positive().max(600).optional().describe("About how many seconds it holds"),
+      want: z.string().optional().describe("What should be on screen, and anything about how it should look"),
+      says: z.string().optional().describe("What is said over it"),
+      url: z.string().optional().describe("A page to take it from, when one was named"),
+      runId: z.string().optional().describe("A run started earlier, to wait on instead of starting another"),
+    },
+    async ({ at, duration, want, says, url, runId }) => {
+      if (!runId && (at === undefined || !want?.trim())) return errorText("Give `at` and `want` for a new shot, or `runId` to wait on one already asked for.");
+      const run = await client.post<BrollRunResponse>(`/projects/${ctx.projectId}/broll-runs`,
+        runId ? { runId, waitMs: toolWait(caps, 20) * 1000 } : { at, duration, want, says, url, waitMs: toolWait(caps, 20) * 1000 });
+      return json(run.state === "working" ? { ...run, next: `Still at work. Call broll_make with runId ${run.runId} to wait on it.` } : run);
     },
   );
 
   // -- motion graphics -----------------------------------------------------
 
   registerGraphics({ tool, client, projectId: ctx.projectId, task: ctx.task, author: ctx.author, caps,
-    readArtifact: async path => readArtifact(await artifactDir(), path), getProject: getHeader });
+    readArtifact: async path => readArtifact(await artifactDir(), path), getProject: getHeader,
+    writeArtifact: async (path, data) => writeArtifact(await artifactDir(), path, data) });
 
   tool(
     "export_otio",

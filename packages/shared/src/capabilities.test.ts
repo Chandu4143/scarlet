@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentCapabilities, toolWait } from "./capabilities.js";
+import { agentCapabilities, toolWait, workspaceCapabilities } from "./capabilities.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -17,7 +17,7 @@ describe("agentCapabilities", () => {
     expect(agentCapabilities("claude", '{"plan":true}').plan).toBe(true);
     expect(agentCapabilities("codex", '{"plan":true}').plan).toBe(true);
     expect(agentCapabilities("codex", '{"audio":true,"files":false}')).toEqual({ images: true, audio: true, files: false, plan: false, resultChars: 40_000, toolWaitSeconds: 240 });
-    expect(agentCapabilities("claude", ' {"images": false, "audio": "yes", "files": 1, "shell": true} ')).toEqual({ images: false, audio: false, files: false, plan: false, resultChars: 40_000, toolPrefix: "mcp__scarlet__", toolWaitSeconds: 240 });
+    expect(agentCapabilities("claude", ' {"images": false, "audio": "yes", "files": 1, "shell": "yes"} ')).toEqual({ images: false, audio: false, files: false, plan: false, resultChars: 40_000, toolPrefix: "mcp__scarlet__", toolWaitSeconds: 240 });
     expect(agentCapabilities("codex", '{"resultChars":8000}').resultChars).toBe(8_000);
     // A tool wait and brief listing are set the same way, for a harness whose deadline or tool budget differs.
     expect(agentCapabilities("codex", '{"toolWaitSeconds":90,"briefTools":true}')).toMatchObject({ toolWaitSeconds: 90, briefTools: true });
@@ -58,5 +58,15 @@ describe("toolWait", () => {
     // Never under five seconds, never over the four minutes a launched harness allows.
     expect(toolWait({ toolWaitSeconds: 10 }, 20)).toBe(5);
     expect(toolWait({ toolWaitSeconds: 900 }, 20)).toBe(240);
+  });
+});
+
+describe("a run launched with its harness's own tools", () => {
+  it("has files, a shell and the web on every harness, and a request has none of the shell or the web", () => {
+    for (const agent of ["claude", "codex", "gemini"]) {
+      const request = agentCapabilities(agent);
+      expect([request.shell, request.web], agent).toEqual([undefined, undefined]);
+      expect(workspaceCapabilities(request), agent).toEqual({ ...request, files: true, shell: true, web: true });
+    }
   });
 });

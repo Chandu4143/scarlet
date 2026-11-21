@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildClaudeCommand, claudeCanRunBare, claudeRunUsage, newClaudeState, parseClaudeLine } from "./claude.js";
 import { buildCodexCommand, newCodexState, parseCodexLine, tomlInlineTable, tomlString } from "./codex.js";
-import { acpMcpServer, buildGeminiCommand, isScarletMcpPermission, newGeminiState, parseGeminiLine, permissionOutcome } from "./gemini.js";
+import { acpMcpServer, buildGeminiCommand, isScarletMcpPermission, newGeminiState, parseGeminiLine, permissionOutcome, workspacePermission } from "./gemini.js";
 import { quoteForCmd, spawnLines, spawnSpec } from "./spawn.js";
-import { briefInput, isQuestionTool, prettyToolName, type RunnerEvent } from "./types.js";
+import { briefInput, isQuestionTool, prettyToolName, workspaceEnv, type RunnerEvent } from "./types.js";
 
 function feed<S>(lines: string[], st: S, parse: (l: string, s: S) => RunnerEvent[]): RunnerEvent[] {
   const out: RunnerEvent[] = [];
@@ -129,6 +129,28 @@ describe("claude stream-json parser", () => {
     const evs = feed([use("t1", "TodoWrite", { todos }), done("t1", "Todos have been modified successfully", undefined), use("t2", "TodoWrite", { todos })], st, parseClaudeLine);
     expect(evs).toEqual([{ type: "plan", text: "[x] Read the scene\n[>] Trim the pause\n[ ] Check the join",
       data: { steps: [{ text: "Read the scene", state: "done" }, { text: "Trim the pause", state: "in_progress" }, { text: "Check the join", state: "pending" }] } }]);
+  });
+  it("gives a request's Claude Code its own shell, file and web tools, the shell sandboxed and the control files closed", () => {
+    const workspace = { binDir: "/w/.tools", readDirs: ["/Applications/Google Chrome.app"] };
+    const cmd = buildClaudeCommand({ instruction: "x", systemPrompt: "SYS", mcp, workspace }, "claude", "/w/.scarlet");
+    const after = (flag: string) => cmd.args[cmd.args.indexOf(flag) + 1];
+    expect(after("--tools")).toBe("Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch");
+    expect(after("--allowedTools")).toBe("mcp__scarlet__*,Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,WebFetch(domain:*)");
+    expect(after("--permission-mode")).toBe("dontAsk");
+    expect(JSON.parse(after("--settings"))).toEqual({
+      sandbox: { enabled: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: true,
+        network: { allowedDomains: ["*"] },
+        filesystem: { denyRead: ["/w/.scarlet"], allowRead: ["/Applications/Google Chrome.app"] } },
+      permissions: { blockReadsOutsideWorkingDirectories: true, allow: ["WebFetch(domain:*)"], deny: ["Read(//w/.scarlet/**)", "Edit(//w/.scarlet/**)"] },
+    });
+    // With its plan asked for too, both.
+    const planned = buildClaudeCommand({ instruction: "x", systemPrompt: "SYS", mcp, workspace, plan: true }, "claude", "/w/.scarlet");
+    expect(planned.args[planned.args.indexOf("--tools") + 1]).toBe("Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,TaskCreate,TaskUpdate,TodoWrite");
+  });
+  it("runs a CLI without Scarlet's own variables, the workspace's launchers first on its PATH", () => {
+    const env = workspaceEnv({ PATH: "/usr/bin", SCARLET_TOKEN: "secret", scarlet_server: "http://x", HOME: "/h" }, { binDir: "/w/.tools", readDirs: [] });
+    expect(env).toEqual({ PATH: `/w/.tools${process.platform === "win32" ? ";" : ":"}/usr/bin`, HOME: "/h" });
+    expect(workspaceEnv({ PATH: "/usr/bin", SCARLET_TOKEN: "secret" }, undefined)).toEqual({ PATH: "/usr/bin" });
   });
   it("builds the command line with files for mcp config and system prompt", () => {
     const cmd = buildClaudeCommand({ instruction: "Make the first cut", systemPrompt: "SYS", mcp, model: "opus" }, "claude", "/tmp/t");
@@ -255,6 +277,22 @@ describe("codex exec --json parser", () => {
     // A list Scarlet can't read is passed over.
     expect(parseCodexLine('{"type":"item.updated","item":{"id":"item_1","type":"todo_list"}}', st)).toEqual([]);
   });
+  it("gives a request's Codex its shell, a look at pictures, the live web and reads of its programs' folders", () => {
+    const workspace = { binDir: "/w/.tools", readDirs: ["/Applications/Google Chrome.app", "/opt/ffmpeg/bin"] };
+    const cmd = buildCodexCommand({ instruction: "x", systemPrompt: "SYS", mcp, cwd: "/w", workspace }, "codex", "/w/.scarlet");
+    const disabled = cmd.args.flatMap((a, i) => cmd.args[i - 1] === "--disable" ? [a] : []);
+    expect(disabled).toEqual(["computer_use", "multi_agent", "plugins", "apps", "hooks"]);
+    expect(cmd.args).toContain('web_search="live"');
+    expect(cmd.args).toContain("permissions.scarlet.network.enabled=true");
+    expect(cmd.args).toContain(`permissions.scarlet.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="write"},"/Applications/Google Chrome.app"="read","/opt/ffmpeg/bin"="read"}`);
+    // The token stays out of the shell, which has the network now.
+    expect(cmd.args).toContain('shell_environment_policy.exclude=["SCARLET_*"]');
+    // A side check has none of it.
+    const side = buildCodexCommand({ instruction: "x", systemPrompt: "SYS", mcp, cwd: "/w" }, "codex", "/w/.scarlet");
+    expect(side.args.flatMap((a, i) => side.args[i - 1] === "--disable" ? [a] : [])).toEqual(["shell_tool", "view_image", ...disabled]);
+    expect(side.args).toContain('web_search="disabled"');
+    expect(side.args).toContain("permissions.scarlet.network.enabled=false");
+  });
   it.skipIf(process.platform !== "darwin")("allows the resolved Codex executable without opening its installation directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "scarlet-codex-"));
     try {
@@ -357,6 +395,16 @@ describe("gemini ACP parser", () => {
   });
 
   it("enforces Scarlet MCP-only permissions and builds the agy acp command", () => {
+    // A request's agent may use agy's own tools inside its folders; a path outside them, or one in the home, is refused.
+    const roots = ["/w", "/Applications/Google Chrome.app"];
+    expect(workspacePermission({ toolCall: { name: "mcp__scarlet__timeline_get" } }, roots)).toBe(true);
+    expect(workspacePermission({ toolCall: { name: "run_shell_command", rawInput: { command: "ffmpeg -version" } } }, roots)).toBe(true);
+    expect(workspacePermission({ toolCall: { name: "write_file", locations: [{ path: "/w/artifacts/page.html" }] } }, roots)).toBe(true);
+    expect(workspacePermission({ toolCall: { name: "web_fetch", rawInput: { url: "https://example.com/story" } } }, roots)).toBe(true);
+    expect(workspacePermission({ toolCall: { name: "read_file", rawInput: { absolute_path: "/Users/me/Library/Application Support/com.forwardfuture.scarlet/data/access-token" } } }, roots)).toBe(false);
+    expect(workspacePermission({ toolCall: { name: "read_file", locations: [{ path: "/w/../etc/passwd" }] } }, roots)).toBe(false);
+    expect(workspacePermission({ toolCall: { name: "read_file", rawInput: { path: "~/.ssh/id_rsa" } } }, roots)).toBe(false);
+    expect(workspacePermission({ toolCall: { name: "list_dir", rawInput: { paths: ["/w/artifacts", "/w2"] } } }, roots)).toBe(false);
     expect(isScarletMcpPermission({ toolCall: { name: "mcp__scarlet__timeline_get" } })).toBe(true);
     expect(isScarletMcpPermission({ toolCall: { _meta: { mcpServer: "scarlet" }, title: "read" } })).toBe(true);
     expect(isScarletMcpPermission({ toolCall: { name: "bash", title: "Run shell" } })).toBe(false);
