@@ -355,7 +355,7 @@ export function completeTask(ctx: Ctx, task: Task, body: CompleteTaskRequest): T
       if (plays && (receipt?.remaining !== 0 || receipt.unavailable?.length)) {
         if (receipt?.unavailable?.length || (receipt?.returns ?? 0) >= 2 || (task.repeatAudit?.totalReturns ?? 0) >= MOST_CLOSING_CHECKS) {
           body = { ...body, state: "failed", interrupted: true, error: receipt?.unavailable?.join(" ") ||
-            "The final audio check still has repeats, silences or divided sentences to resolve. Resume to finish checking the saved edit." };
+            "The final check still has repeats, silences, divided sentences or pictures to resolve. Resume to finish checking the saved edit." };
         } else {
           // The pass's closing words are kept for the editor while the check runs: the check's own are about the check.
           const reply = task.reply ?? (body.summary?.trim() || undefined);
@@ -595,8 +595,9 @@ export function taskPrompt(ctx: Ctx, task: Task, opts: { workDir?: string; fresh
   if (checking) {
     // The goal and what counts as done, not the steps: the tools say how they check and repair.
     const finish = "The dialogue pass has saved its editing work. What is left is the closing check on the current playback: " +
-      "no word the cuts clipped should play, and each repeat, silence and divided sentence the check lists is cut, kept " +
-      "with its reason, or staged for the editor when you doubt it, as the skill and the editor ask. " +
+      "no word the cuts clipped should play, each repeat, silence and divided sentence the check lists is cut, kept " +
+      "with its reason, or staged for the editor when you doubt it, and each picture it lists is changed or kept with its reason, " +
+      "as the skill and the editor ask. " +
       "The pass is done once dialogue_check_repeats on the current version has nothing outstanding. " +
       "Honor the editor’s scope, preferences, protected footage and decisions.";
     return { systemPrompt, instruction: finish + "\nEditor’s request: " + firstAsked(ctx, task).trim() +
