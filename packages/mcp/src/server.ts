@@ -2,7 +2,7 @@ import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
 import { BRIEF_PICTURES_NEXT, edgesOntoRecordingCuts, flashesOntoCuts, MET_CUT_NEXT, MET_RECORDING_CUT_NEXT, newBriefPictures, type MetCut, type MetRecordingCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
-import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
+import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideReach as besideReachOf, framingReport } from "./framing-report.js";
 import { CORNERS, MOVE_EASES, boxInCorner, cornerOf, coverOnText, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
@@ -1106,11 +1106,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const framed = framingReport(before, made, project.media, project.settings);
     if (!framed.length) return { framed, covered: [], readOff: [] as Array<readonly [number, number]>, unread: [] as string[] };
     const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
-    const besideReach = besideSources(made, framed);
+    const besideReach = besideReachOf(made, framed);
     const [found, moving, beside] = await Promise.all([
       perception.readingsOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("the passages read aloud from the screen", error); return undefined; }),
       perception.motionOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("where the picture changes", error); return undefined; }),
-      besideReach.length ? perception.besideOn(made, project, besideReach, { start: range.start - BESIDE_MAX, end: range.end + BESIDE_MAX }, 0)
+      besideReach.sources.length ? perception.besideOn(made, project, besideReach.sources, { start: range.start - BESIDE_MAX, end: range.end + BESIDE_MAX }, 0, besideReach.clocks)
         .catch(error => { noteUnmeasured("what the screen shows beside the framed stretches", error); return undefined; }) : undefined,
     ]);
     const evidence = !!found?.readings.length || !!moving?.spans.length || !!beside;

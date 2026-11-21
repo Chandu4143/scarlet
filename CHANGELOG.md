@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- Scarlet now sees when you look down at your screen while you talk to it, so your screen can be up there too.
 - When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.
 
 ## November 20, 2026
