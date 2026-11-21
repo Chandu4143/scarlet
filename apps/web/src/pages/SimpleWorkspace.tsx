@@ -30,6 +30,7 @@ import { useCutReview, useSingleCutDraft, type SingleCutDrafts } from "../compon
 import { callToPrepare, editToPrepare, usePrepareReviewCuts, type PreparedCut, type CutToPrepare } from "../components/review/usePrepareNextCut";
 import { CutMark, CutWordsLine, EditPassage } from "../components/review/CutTranscript";
 import { editDetail } from "../lib/editDetail";
+import { editSource, SourceLink, SourceRow } from "../components/review/EditSource";
 import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
@@ -3255,6 +3256,10 @@ export function SimpleWorkspace() {
   // The transcript stays folded away. Its icon on the card opens it for this edit only.
   const scriptKey = reviewingEdit && beforeCut ? editKey(reviewingEdit) : undefined;
   const scriptOpen = !!scriptKey && scriptFor === scriptKey;
+  // B-roll from the web says where it came from, behind its own icon, and folds again on the next edit as a cut's words do.
+  const shownSource = reviewingEdit && !beforeCut ? editSource(reviewingEdit, timeline ?? undefined, media) : undefined;
+  const sourceKey = shownSource && `source ${editKey(reviewingEdit!)}`;
+  const sourceOpen = !!sourceKey && scriptFor === sourceKey;
   // Reject edit is about the open edit, whatever the message box is aimed at just then: a message
   // still being written may be about another one.
   const openTarget = reviewingEdit && shownChange && focusThread ? threadTimeline.selectedTarget : undefined;
@@ -3353,6 +3358,7 @@ export function SimpleWorkspace() {
       : <div className="edit-passage"><p className="review-spoken"><CutMark length={lengthLabel(removedLength)} />{" "}
         {cutBefore.error ? <button type="button" className="btn-quiet" title={cutBefore.error} onClick={cutBefore.retry}>Retry transcript</button>
           : <span className="edit-passage-wait working-text" role="status">Loading the words…</span>}</p></div>}</div>}
+    {sourceOpen && shownSource && <SourceRow key={sourceKey} file={shownSource} />}
     {/* The controls are a row of their own under the note: Before/After and the transcript at the left, the decisions at
         the right, the same on every card. */}
     <div className="edit-card-controls">
@@ -3362,6 +3368,8 @@ export function SimpleWorkspace() {
           : !shownMarker && <span ref={setCompareHost} className="review-compare" />}
         {/* A cut's words open above this row, behind a small icon. An edit that isn't a cut has none. */}
         {scriptKey && <TranscriptLink open={scriptOpen} toggle={() => setScriptFor(scriptOpen ? undefined : scriptKey)} />}
+        {/* B-roll from the web says where it came from behind an icon in the same place. */}
+        {sourceKey && <SourceLink open={sourceOpen} toggle={() => setScriptFor(sourceOpen ? undefined : sourceKey)} />}
       </span>
       <span className="edit-card-acts">
         <ReviewActions revise={() => actions.revise(focusThread, shownChange)} approve={keepShown}

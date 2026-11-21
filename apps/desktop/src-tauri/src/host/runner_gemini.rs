@@ -1,6 +1,6 @@
 //! Gemini via Antigravity CLI (`agy acp`), speaking Agent Client Protocol (JSON-RPC 2.0) over stdio.
-//! Runs with `--sandbox` and an explicit `session/request_permission` handler that allows only
-//! Scarlet MCP tools and rejects all built-in file/shell tools. Supports model selection,
+//! Runs with `--sandbox` and an explicit `session/request_permission` handler: a B-roll run's agent may use agy's own
+//! shell, file and web tools inside its task folder as well as Scarlet's, and a side check only Scarlet's. Supports model selection,
 //! thinking level (`thought_level`) and token usage reporting. The runner can open a session again
 //! (`session/resume`), but the engine never asks it to: Gemini isn't among the agents it resumes, so an
 //! answer or an interruption starts a fresh run with the earlier questions and answers, or the recap.
@@ -227,7 +227,7 @@ pub const SCARLET_TOOLS: &[&str] = &[
     "faces", "lip_sync",
     "change_get", "change_list", "edit_flag", "notes_list", "note_reply", "note_resolve", "render_request", "render_status",
     "task_log", "task_question", "skills_list", "learning_suggest", "skill_save_from_change", "skill_save_edit", "shorts_plan",
-    "graphic_render", "graphic_get", "style_guide_save", "attachment_read",
+    "broll_make", "web_capture", "graphic_render", "graphic_get", "style_guide_save", "attachment_read",
     "media_frame", "frame_contact_sheet", "frame_contact_sheet_batch", "screen_area",
     "change_review_cut", "source_audio",
     "captions_generate",
@@ -276,6 +276,56 @@ pub fn is_scarlet_mcp_permission(params: &Value) -> bool {
         return tc.get("title").and_then(Value::as_str).is_some_and(names_scarlet_tool);
     }
     names.into_iter().any(names_scarlet_tool)
+}
+
+/// Every path a permission request names: its locations, and any absolute path among its input's values.
+fn named_paths(params: &Value) -> Vec<String> {
+    fn absolute(v: &str) -> bool {
+        let v = v.trim();
+        v.starts_with('/') || v.starts_with("~/") || (v.len() > 2 && v.as_bytes()[1] == b':' && (v.as_bytes()[2] == b'\\' || v.as_bytes()[2] == b'/'))
+    }
+    fn visit(value: &Value, depth: usize, out: &mut Vec<String>) {
+        if depth > 4 { return; }
+        match value {
+            Value::String(v) if absolute(v) && v.len() < 4096 => out.push(v.trim().to_string()),
+            Value::Array(items) => items.iter().for_each(|v| visit(v, depth + 1, out)),
+            Value::Object(map) => map.values().for_each(|v| visit(v, depth + 1, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let Some(tc) = params.get("toolCall") else { return out };
+    if let Some(locations) = tc.get("locations").and_then(Value::as_array) {
+        out.extend(locations.iter().filter_map(|l| l.get("path").and_then(Value::as_str)).map(str::to_string));
+    }
+    if let Some(input) = tc.get("rawInput") { visit(input, 0, &mut out); }
+    out
+}
+
+/// A path with `.` and `..` worked out, as text, the way Node's `path.resolve` reads an absolute one.
+fn resolved(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    let unified = path.replace('\\', "/");
+    let (prefix, rest) = match unified.find(':') { Some(1) => unified.split_at(2), _ => ("", unified.as_str()) };
+    for part in rest.split('/') {
+        match part { "" | "." => {}, ".." => { parts.pop(); }, p => parts.push(p) }
+    }
+    format!("{prefix}/{}", parts.join("/"))
+}
+
+/// Whether a B-roll run's agent may use one of agy's own tools: yes unless it names a path outside the folders it works in
+/// (its task folder, and those its programs live in). agy's sandbox restricts its terminal; its file tools reach as far
+/// as the user's files do, the library that holds Scarlet's token among them.
+pub fn workspace_permission(params: &Value, roots: &[String]) -> bool {
+    if is_scarlet_mcp_permission(params) {
+        return true;
+    }
+    let roots: Vec<String> = roots.iter().map(|r| resolved(r)).collect();
+    named_paths(params).iter().all(|path| {
+        if path.starts_with('~') { return false; }
+        let p = resolved(path);
+        roots.iter().any(|root| p == *root || p.starts_with(&format!("{}/", root.trim_end_matches('/'))))
+    })
 }
 
 /// Pick the best ACP permission outcome for allow vs reject.
@@ -611,6 +661,8 @@ struct AcpSession {
     refused_tool: Option<String>,
     /// Tools Scarlet refused during the turn under way. agy ends Gemini's turn on a refusal.
     refused: Vec<String>,
+    /// A request's folders, inside which its agent may use agy's own tools. None for a side check: Scarlet's tools only.
+    roots: Option<Vec<String>>,
     carry_ons: u32,
     config_options: Vec<Value>,
     has_legacy_models: bool,
@@ -793,7 +845,8 @@ impl AcpSession {
             if let Some(id) = msg.get("id") {
                 if method == "session/request_permission" {
                     let params = msg.get("params").unwrap_or(&Value::Null);
-                    let allow = is_scarlet_mcp_permission(params);
+                    // A B-roll run's agent has agy's own tools inside its folders; every other run has Scarlet's only.
+                    let allow = match &self.roots { Some(roots) => workspace_permission(params, roots), None => is_scarlet_mcp_permission(params) };
                     if !allow {
                         self.refused.push(permission_tool(params));
                     }
@@ -1020,6 +1073,8 @@ pub async fn run_gemini(opts: RunOptions) -> RunResult {
         system_prompt: opts.system_prompt.clone(),
         refused_tool: opts.refused_tool.clone(),
         refused: Vec::new(),
+        roots: opts.workspace.as_ref().map(|ws| std::iter::once(opts.cwd.to_string_lossy().into_owned())
+            .chain(ws.read_dirs.iter().map(|d| d.to_string_lossy().into_owned())).collect()),
         carry_ons: 0,
         config_options: Vec::new(),
         has_legacy_models: false,
@@ -1636,4 +1691,19 @@ done
         assert_eq!((resumed_seen[0].input_tokens, resumed_seen[0].cache_read_tokens, resumed_seen[0].output_tokens), (300, 5000, 40));
         assert_eq!((resumed_seen[1].input_tokens, resumed_seen[1].cache_read_tokens, resumed_seen[1].output_tokens, resumed_seen[1].reasoning_tokens), (300, 5000, 40, 25));
     }
+
+    #[test]
+    fn lets_a_request_use_agys_own_tools_inside_its_folders_only() {
+        let roots = vec!["/w".to_string(), "/Applications/Google Chrome.app".to_string()];
+        let allow = |call: Value| workspace_permission(&json!({ "toolCall": call }), &roots);
+        assert!(allow(json!({ "name": "mcp__scarlet__timeline_get" })));
+        assert!(allow(json!({ "name": "run_shell_command", "rawInput": { "command": "ffmpeg -version" } })));
+        assert!(allow(json!({ "name": "write_file", "locations": [{ "path": "/w/artifacts/page.html" }] })));
+        assert!(allow(json!({ "name": "web_fetch", "rawInput": { "url": "https://example.com/story" } })));
+        assert!(!allow(json!({ "name": "read_file", "rawInput": { "absolute_path": "/Users/me/Library/Application Support/com.forwardfuture.scarlet/data/access-token" } })));
+        assert!(!allow(json!({ "name": "read_file", "locations": [{ "path": "/w/../etc/passwd" }] })));
+        assert!(!allow(json!({ "name": "read_file", "rawInput": { "path": "~/.ssh/id_rsa" } })));
+        assert!(!allow(json!({ "name": "list_dir", "rawInput": { "paths": ["/w/artifacts", "/w2"] } })));
+    }
+
 }

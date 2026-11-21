@@ -17,6 +17,32 @@ export interface McpSpec {
 export type CodexFallbackReason = "api_key" | "project_config" | "home_unavailable" | "auth_unavailable" | "isolation_unavailable" |
   "initialize_failed" | "thread_start_failed" | "thread_resume_failed" | "thread_policy_mismatch" | "app_server_unavailable";
 
+/**
+ * What a B-roll run's agent works with beyond Scarlet's tools: its harness's shell (sandboxed to the task folder,
+ * writing only there and reaching the web), file tools and web search. The editor chose this for every model, for the
+ * runs that need it (2026-11-21).
+ */
+export interface Workspace {
+  /** Links to ffmpeg, ffprobe and a headless Chrome, put first on the shell's PATH. Absent when the host has none. */
+  binDir?: string;
+  /** Folders outside the task folder the shell must read to run those programs. */
+  readDirs: string[];
+}
+
+/** The task folder's subfolder of CLI control files, which hold Scarlet's access token: never readable by the agent. */
+export const CONTROL_DIR = ".scarlet";
+
+/** A CLI's environment for a run: without Scarlet's own variables (the token among them), its links first on PATH. */
+export function workspaceEnv(env: NodeJS.ProcessEnv, workspace: Workspace | undefined, keep: readonly string[] = []): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) if (!/^SCARLET_/i.test(key) || keep.includes(key)) out[key] = value;
+  if (workspace?.binDir) {
+    const pathKey = Object.keys(out).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+    out[pathKey] = [workspace.binDir, out[pathKey]].filter(Boolean).join(process.platform === "win32" ? ";" : ":");
+  }
+  return out;
+}
+
 export interface RunAgentOptions {
   agent: AgentId;
   model?: string;
@@ -34,6 +60,11 @@ export interface RunAgentOptions {
   refusedTool?: string;
   /** Per-task workspace. The agent may write temp files here. */
   cwd: string;
+  /**
+   * The harness's own shell, file and web tools, beside Scarlet's, for a B-roll run. Absent for every other run, which
+   * has Scarlet's tools only.
+   */
+  workspace?: Workspace;
   mcp: McpSpec;
   onEvent: (ev: RunnerEvent) => void;
   onCodexFallback?: (reason: CodexFallbackReason) => void;

@@ -49,6 +49,8 @@ const toolActivity: Record<string, string> = {
   asset_add: "Adding media",
   graphic_render: "Drawing a graphic",
   graphic_get: "Reading a graphic",
+  web_capture: "Capturing a page from the web",
+  broll_make: "Finding B-roll",
   style_guide_save: "Saving the style guide",
   attachment_read: "Reading an attached file",
   export_otio: "Exporting timeline",

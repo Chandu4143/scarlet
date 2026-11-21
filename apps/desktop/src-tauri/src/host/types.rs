@@ -144,7 +144,25 @@ pub struct TaskPrompt {
     /// What to tell a model whose harness ended its turn on a tool Scarlet refused, `{tool}` standing for the tool.
     #[serde(default)]
     pub refused_tool: Option<String>,
+    /// Launch the CLI with its harness's own shell, file and web tools beside Scarlet's, the shell sandboxed to the task
+    /// folder: a B-roll run alone has them. An engine from before them leaves it out.
+    #[serde(default)]
+    pub workspace: bool,
 }
+
+/// What a B-roll run's agent works with beyond Scarlet's tools (Workspace in apps/agent/src/runners/types.ts): its harness's
+/// shell, sandboxed to the task folder and reaching the web, file tools and web search. The editor chose this for every
+/// model (2026-11-21).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Workspace {
+    /// Launchers for ffmpeg, ffprobe and a headless Chrome, put first on the shell's PATH. None when the host has none.
+    pub bin_dir: Option<std::path::PathBuf>,
+    /// Folders outside the task folder the shell must read to run those programs.
+    pub read_dirs: Vec<std::path::PathBuf>,
+}
+
+/// The task folder's subfolder of CLI control files, which hold Scarlet's access token: never readable by the agent.
+pub const CONTROL_DIR: &str = ".scarlet";
 
 // ---------------------------------------------------------------------------
 // Runner events (apps/agent/src/runners/types.ts)

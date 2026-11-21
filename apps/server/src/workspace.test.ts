@@ -3146,6 +3146,47 @@ it("serves active upload types as sandboxed attachments on both original routes 
   }
 });
 
+it("keeps where a picture from the web came from, with the page as captured, and serves that capture", async () => {
+  const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("page")]);
+  const upload = (fields: Record<string, string | [Buffer, string]>) => {
+    const form = new FormData();
+    form.append("file", new Blob([gif]), "article.gif");
+    form.append("kind", "image");
+    for (const [name, value] of Object.entries(fields)) {
+      if (typeof value === "string") form.append(name, value); else form.append(name, new Blob([value[0]]), value[1]);
+    }
+    return api("POST", projectsPath() + "/media", form);
+  };
+  const url = "https://theledger.example/2026/11/agents";
+  const source = JSON.stringify({ url, capturedAt: "2026-11-21T12:00:00.000Z", region: { left: 0, top: 0, right: 1, bottom: 0.6 }, capture: "../../escape.png" });
+  const res = await upload({ source, capture: [png, "page.png"] });
+  expect(res.status).toBe(201);
+  const { media } = await res.json();
+  // The capture is kept under the project's own name for it, whatever the request said.
+  expect(media.source).toMatchObject({ url, capturedAt: "2026-11-21T12:00:00.000Z", region: { left: 0, top: 0, right: 1, bottom: 0.6 } });
+  expect(media.source.capture).toMatch(/^sources\/[0-9a-f-]+\.png$/);
+  const served = await api("GET", `/media/${media.id}/source-capture`);
+  expect([served.status, served.headers.get("content-type")]).toEqual([200, "image/png"]);
+  expect(Buffer.from(await served.arrayBuffer())).toEqual(png);
+  // An address alone is enough; it has no capture to serve.
+  const bare = await (await upload({ source: JSON.stringify({ url }) })).json();
+  expect(bare.media.source).toEqual({ url });
+  expect((await api("GET", `/media/${bare.media.id}/source-capture`)).status).toBe(404);
+  // Refused: a capture without an address, an address that isn't on the web, and a capture that isn't a picture. None leaves a file.
+  const sources = workspace.ctx.paths.sources(project.id);
+  const before = readdirSync(sources).length;
+  for (const [fields, code] of [
+    [{ capture: [png, "page.png"] }, "bad_capture"],
+    [{ source: JSON.stringify({ url: "file:///etc/passwd" }) }, "bad_source"],
+    [{ source: JSON.stringify({ url }), capture: [Buffer.from("<script>"), "page.png"] }, "bad_capture"],
+  ] as const) {
+    const refused = await upload(fields as Record<string, string | [Buffer, string]>);
+    expect([refused.status, (await refused.json()).error?.code]).toEqual([400, code]);
+  }
+  expect(readdirSync(sources).length).toBe(before);
+});
+
 it("rejects invalid skill destinations before changing the old mirror", async () => {
   const created = await api("POST", "/skills", { name: "style", content: "Original" });
   const { skill } = await created.json();

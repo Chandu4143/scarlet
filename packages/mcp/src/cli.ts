@@ -92,6 +92,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     taskId: opts.task,
     taskStartedAt,
     task,
+    guides: assignment?.guides,
     agent: opts.agent,
     capabilities: agentCapabilities(opts.agent, process.env.SCARLET_AGENT_CAPS),
     workDir: opts.workDir,

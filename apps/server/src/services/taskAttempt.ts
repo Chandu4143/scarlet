@@ -29,7 +29,19 @@ export function requireProjectEditAttempt(ctx: Ctx, attempt: TaskAttempt | undef
   if (task?.kind === "area_check") {
     throw forbidden("This task says what of a recording viewers may see and cannot change the project.");
   }
+  if (task?.kind === "broll_make") {
+    throw forbidden("This run makes B-roll for a request and cannot change the video. Add what you made to the project's media, and the request places it.");
+  }
   return task;
+}
+
+/**
+ * A run that may add a file to the project's media: any that may change the project, and a B-roll run, which adds what
+ * it made and changes nothing else.
+ */
+export function requireProjectMediaAttempt(ctx: Ctx, attempt: TaskAttempt | undefined, projectId: string) {
+  const task = requireActiveAttempt(ctx, attempt, projectId);
+  return task?.kind === "broll_make" ? task : requireProjectEditAttempt(ctx, attempt, projectId);
 }
 
 /** Local pause work can prepare source measurements and address the notes that requested it. */

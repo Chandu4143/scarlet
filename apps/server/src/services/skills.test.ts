@@ -260,6 +260,16 @@ describe("the skills Scarlet comes with", () => {
     expect(createTask(app.ctx, { projectId: "prj_1", kind: "edit", agent: "codex", instruction: "/my-inline",
       context: { skillIds: [inline.id] }, createdBy: { type: "human", name: "Editor" } }).context.dialogueOperation).toBe("first-cut");
     expect(base.enabled && demo.enabled).toBe(true);
+    // A run is told the guides its prompt holds, so a guide can bring a tool with it: a pass whose style calls the
+    // B-roll guide is the editor's skill asking for B-roll, and one that doesn't reads the tools a pass always has.
+    const guidesOf = async (taskId: string) => (await (await app.app.request(`/api/projects/prj_1/tasks/${taskId}?events=none`,
+      { headers: { Authorization: `Bearer ${accessToken(app.ctx)}` } })).json() as { guides?: string[] }).guides;
+    const shots = createSkill(app.ctx, editor, { name: "my-shots", scope: "team",
+      content: "---\nname: my-shots\ndescription: My cut, with the articles I mention shown.\nextends: dialogue-pass\n---\n\nShow each article I name, as /b-roll has it.\n" });
+    const withShots = createTask(app.ctx, { projectId: "prj_1", kind: "edit", agent: "codex", instruction: "/my-shots", context: { skillIds: [shots.id] }, createdBy: { type: "human", name: "Editor" } });
+    expect(withShots.context.dialogueOperation).toBe("first-cut");
+    expect(await guidesOf(withShots.id)).toEqual(expect.arrayContaining(["dialogue-pass", "b-roll", "my-shots"]));
+    expect(await guidesOf(run.id)).toEqual(["dialogue-pass", "my-style"]);
     // Without the guide it builds on, the style still runs the pass on its own.
     updateSkill(app.ctx, editor, publicGuide()!, { enabled: false });
     expect(assistantSkills(app.ctx.repos.skills.select(), [style.id], true).map(s => s.name)).toEqual(["my-style"]);
