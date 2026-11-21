@@ -139,18 +139,20 @@ export function registerPerception(deps: PerceptionDeps) {
    * framed stretch.
    */
   async function besideOn(tl: Timeline, project: Project, sources: Array<{ id: string; from: number; to: number }>, range: { start: number; end: number }, wait: number) {
-    const [text, motion, transcripts] = await Promise.all([
+    const [text, motion, cuts, transcripts] = await Promise.all([
       readPictures<{ spans: ScreenLine[] }>("screen-text", sources, wait),
       readPictures<{ seconds: MotionSecond[] }>("screen-motion", sources, wait),
+      readPictures<{ cuts: RecordingCut[] }>("picture-cuts", sources, wait),
       wordsFor(tl, project).catch(() => new Map<string, TranscriptWord[]>()),
     ]);
     return {
       evidence: {
         lines: new Map(text.reads.map(({ id, read }) => [id, read.spans])),
         seconds: new Map(motion.reads.map(({ id, read }) => [id, read.seconds])),
+        cuts: new Map(cuts.reads.map(({ id, read }) => [id, read.cuts])),
         words: transcripts.size ? timelineWords(tl, transcripts, range) : [],
       },
-      unread: [...text.unread, ...motion.unread],
+      unread: [...text.unread, ...motion.unread, ...cuts.unread],
     };
   }
 

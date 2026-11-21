@@ -829,7 +829,7 @@ describe("timeline_propose", () => {
         { from: 4.9, to: 5.5, seconds: 0.6, shows: ["reply"], before: ["reply"], after: ["wide"], recordingCuts: [{ at: 4.9, clip: "reply", source: 101.9, changed: 100 }] },
       ]);
       // The camera that speaks plays as recorded: only the screen's cuts are read.
-      expect(mock.requests.filter(q => q.path.endsWith("/picture-cuts")).map(q => q.path)).toEqual(["/projects/prj_test/media/scr/picture-cuts"]);
+      expect([...new Set(mock.requests.filter(q => q.path.endsWith("/picture-cuts")).map(q => q.path))]).toEqual(["/projects/prj_test/media/scr/picture-cuts"]);
       // With more of the reply before the switch, the insert ends on the recording's first cut instead, and the result says so.
       mock.state.timeline = tl;
       const longer = await c.callTool({ name: "timeline_propose", arguments: { intent: "requested", description: "Show the reply", reason: "He reads the reply aloud.",
