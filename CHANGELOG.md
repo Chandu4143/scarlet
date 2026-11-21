@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Scarlet holds the frame on a chart or table while you read through it, instead of nudging the zoom between rows.
 - Scarlet can now keep your screen up across a cut that waits for your call, so approving it no longer flashes the camera full screen for a moment between two stretches of screen.
 - While you watch paused, the picture stays the video as it plays, with a screen and your camera inset, when Scarlet saves another edit, instead of switching to the camera alone.
 - A demo Scarlet framed on screen now reads as an overlay, not a cut, and no longer adds cuts of its own to the list.
