@@ -6918,6 +6918,17 @@ it("keeps a pass's own later save from changing footage under a cut that waits f
     description: "Frame the presenter closer", ops: [{ op: "updateClip", clipId: "raw", patch: { transform: { x: 0, y: 0, scale: 1.13 }, opacity: .9 } }] }).change;
   expect(reframed.state).toBe("approved");
   expect(ctx.repos.changes.get(staged.id)!.state).toBe("ready");
+  // So does laying the screen over it on a track that already shows it elsewhere: refused, a pass left the screen off
+  // over two calls and the camera flashed full frame between screens once they were approved (2026-11-20).
+  ctx.repos.projects.putMedia(project.id, { id: "screen", name: "screen", path: "screen.mov", kind: "video", duration: 60, hasAudio: false }, "ready");
+  const screen = (id: string, timelineIn: number, sourceIn: number, sourceOut: number) =>
+    ({ id, kind: "media" as const, mediaId: "screen", timelineIn, sourceIn, sourceOut });
+  expect(proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Show the screen",
+    ops: [{ op: "addTrack", track: { id: "v_screen", kind: "video", name: "Screen", clips: [screen("s0", 0, 0, 2)] } }] }).change.state).toBe("approved");
+  const laid = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Show the screen through the restart",
+    ops: [{ op: "addClip", trackId: "v_screen", clip: screen("s1", 5, 5, 20) }] }).change;
+  expect(laid.state).toBe("approved");
+  expect(ctx.repos.changes.get(staged.id)!.state).toBe("ready");
 });
 
 it("puts away a save the video had moved on from once its run has saved the work again", async () => {
