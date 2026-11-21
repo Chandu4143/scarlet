@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.
 - Every edit card now has the same two rows: the note on top, and below it Before/After and the transcript on the left with Revise, Keep and the × that rejects on the right, each showing its key.
 - A call’s card now has the same actions as an applied edit’s: Keep, Revise and the × that rejects it, in place of Approve and Skip.
 - X rejects the edit or call on screen.
