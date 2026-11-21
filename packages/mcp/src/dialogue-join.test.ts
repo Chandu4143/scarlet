@@ -244,6 +244,20 @@ describe("native retake boundaries", () => {
     const held = wordCutRange(words, 1, 1, at, .3, pace, .25);
     expect([held.start, held.end]).toEqual([expect.closeTo(1.44 + .05), expect.closeTo(3.4 - .25)]);
   });
+  it("trims a pause between its words' sound, wherever their timings put them", () => {
+    // “done … I think”: “I” sounds 2.40–2.50 s and is timed 60 ms late. The quiet after it ended a trim of the pause
+    // before it, which took “I” out whole.
+    const said = [{ start: 1, end: 1.4, text: "done" }, { start: 2.46, end: 2.56, text: "I" }, { start: 3.2, end: 3.6, text: "think" }];
+    const sounds = [{ start: 1, end: 1.4 }, { start: 2.4, end: 2.5 }, { start: 3.2, end: 3.6 }];
+    const rms = Array.from({ length: 250 }, (_, i) => sounds.some(v => v.start <= i/50 && i/50 < v.end) ? .12 : .001);
+    const heard = joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds });
+    const before = pauseCutRange(said[0]!, said[1]!, () => heard, .25);
+    expect(before.end).toBeLessThanOrEqual(2.4);
+    // Timed 60 ms early, the quiet before it started a trim of the pause after it.
+    const early = [said[0]!, { start: 2.34, end: 2.44, text: "I" }, said[2]!];
+    const after = pauseCutRange(early[1]!, early[2]!, () => joinEvidence(early, { from: 0, to: 5, peaks: rms, rms, speechActivity: sounds }), .25);
+    expect(after.start).toBeGreaterThanOrEqual(2.5);
+  });
   it("trims nothing from a pause asked to play at its full length, whatever sounds in the middle of it", () => {
     // A breath at 2.7–2.9 s splits the quiet between “first” and “next” in two. Each edge used to be pulled into the
     // quiet run beside its word, so a pause asked to stay 1.2 s long still lost the breath and the quiet around it.

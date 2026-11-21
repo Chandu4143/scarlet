@@ -133,6 +133,9 @@ describe("an editing prompt", () => {
     // The order is the model's. How far down it the editor is asked to look is theirs, and balanced when they haven't said.
     expect(pass()).toContain("order those cuts from the most likely to be wrong to the least");
     expect([pass(), pass("less"), pass("balanced"), pass("more")].map(asked)).toEqual(["about one in four", "about one in ten", "about one in four", "about half"]);
+    // The closing check after the pass, a fresh session, has no memory of the order and is not asked to flag a second share.
+    expect(buildSystemPrompt({ ...base, task: { kind: "edit" as const, instruction: "/dialogue-pass", agent: "claude",
+      context: { dialogueOperation: "first-cut" as const }, repeatAudit: { version: "v2", returns: 1 } } })).not.toContain("Before the pass is done");
     // A request about one cut or edit of the pass, a pause tightening and any other edit are not asked.
     for (const context of [{ dialogueOperation: "first-cut", cutIndex: 0, changeId: "chg_1" }, { dialogueOperation: "first-cut", editIndex: 2 }, { dialogueOperation: "local-pauses" }, {}])
       expect(buildSystemPrompt({ ...base, checkIn: "more", task: task(context) })).not.toContain("Before the pass is done");

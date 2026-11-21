@@ -76,6 +76,38 @@ describe("dialogue plan", () => {
     expect(dispute!.reason).toContain("give the range in timeline seconds as the kind of cut it is");
   });
 
+  it("reads a pause given in seconds for words and holds one whose edge stays in a word, as it does a pause named by its word", async () => {
+    // The fixture's quiet runs 2.26–3.4 s between “first” and “next”.
+    const { tl, sources } = fixture();
+    const plan = (start: number, end: number) => planDialogueCuts({ tl, localPauses: false, cuts: [cut({ kind: "pause", start, end, reason: "Wait." })] }, sources);
+    // A range over “first” is not a pause: it goes back with the words it holds, and nothing is saved.
+    const over = await plan(1.5, 3.2);
+    expect(over.outcome).toBe("needsRevision");
+    const [dispute] = over.outcome === "needsRevision" ? over.disputedEdges : [];
+    expect(dispute!.reason).toContain("It holds “first” at 1.80–2.20 s on version");
+    expect(dispute!.reason).toContain("A pause trim removes quiet only, so this one was not saved.");
+    // Words only the scan read are words too.
+    sources.evidence.scans.push({ ...page, segments: [{ id: "s", start: 1, end: 3.86, text: "", words: [...words.slice(0, 2), { start: 2.7, end: 2.9, text: "so" }, words[2]!] }] });
+    const heard = await plan(2.4, 3.2);
+    expect(heard.outcome).toBe("needsRevision");
+    expect(heard.outcome === "needsRevision" && heard.disputedEdges[0]!.reason).toContain("The scan read “so” at 2.70–2.90 s on version");
+    sources.evidence.scans.length = 0;
+    // Quiet throughout, it saves.
+    expect(await plan(2.4, 3.2)).toMatchObject({ outcome: "ready", decisions: [{ review: false }] });
+    // An edge typed into the start of “next” goes back onto the quiet before it, which keeps the word.
+    const into = await plan(2.4, 3.5);
+    expect(into).toMatchObject({ outcome: "ready", decisions: [{ review: false, end: expect.closeTo(3.35, 1) }] });
+    // Typed into two words said straight through, short of either's middle, it has no quiet to go to. It is held for a
+    // closer look, not applied with both edges inside words.
+    const said = [{ start: 1, end: 1.5, text: "alpha" }, { start: 1.5, end: 2, text: "beta" }, { start: 3, end: 3.5, text: "gamma" }];
+    const talk = [{ start: 1, end: 2 }, { start: 3, end: 3.5 }];
+    const rms = Array.from({ length: 250 }, (_, i) => talk.some(v => v.start <= i / 50 && i / 50 < v.end) ? .12 : .001);
+    sources.pages = () => [{ ...page, edges: joinEvidence(said, { from: 0, to: 5, peaks: rms, rms, speechActivity: talk }) }];
+    sources.words = async () => said;
+    const inWords = await plan(1.3, 1.7);
+    expect(inWords).toMatchObject({ outcome: "ready", decisions: [{ start: 1.3, end: 1.7, review: true }] });
+  });
+
   it("keeps short named words inside a removal when the only quiet is on their far sides", async () => {
     const { tl, sources } = fixture();
     const said = [

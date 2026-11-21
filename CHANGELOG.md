@@ -6,6 +6,10 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- After an update, Scarlet keeps what it already read of your recordings, so the first dialogue cut after an update starts sooner.
+- Words Scarlet puts back into a transcript beside a restart are no longer written twice or squeezed to nothing.
+- A pause Scarlet trims no longer takes a short word beside it, and a pause given by its times is checked for words as one named by its word is.
+- After a dialogue cut's closing check, Scarlet no longer flags a second batch of the same cuts for you to check.
 - Scarlet's last check for restarts now catches a line you start again on a longer word, like “so perfect, so perfectly realistic”.
 - Pause then Resume now picks an edit up where it left off, instead of starting it over.
 - A request you take back with ⌘Z no longer offers a rule in Learnings, and Scarlet doesn't read your words for rules while editing is paused.

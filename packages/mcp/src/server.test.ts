@@ -2753,7 +2753,7 @@ it("submits the chosen cut, review and fade and preserves engine receipts", asyn
   };
   try {
     const result = await editor.callTool({ name: "dialogue_apply_cuts", arguments: { version: tl.version, description: "Tighten", crossfadeFrames: 4,
-      cuts: [{ start: 1, end: 1.4, kind: "pause", decision: "cut", reason: "Long pause." },
+      cuts: [{ start: 1.85, end: 2.4, kind: "pause", decision: "cut", reason: "Long pause." },
         { start: 3, end: 3.3, kind: "filler", decision: "keep", reason: "Keep her hesitation." },
         { start: 4, end: 4.5, kind: "coaching", decision: "review", reason: "Off-mic note." }] } }) as CallToolResult;
     expect(result.isError, textOf(result)).toBeFalsy();
@@ -3773,8 +3773,12 @@ it("says what the recording holds between two words, in the transcript and in wh
       "To remove sound there, give the range in timeline seconds as the kind of cut it is." }]);
     expect(reads).toBe(1);
     expect(mock.state.timeline.version).toBe(tl.version);
-    // Cut in seconds up to the quiet before the second “you can”, that take's start still plays before “see”.
-    const partly = await apply({ kind: "pause", reason: "Wait before “see”.", start: 3, end: 4.1, decision: "cut" });
+    // Given in seconds, the pause is read the same way: it holds the first “see”.
+    const typed = await apply({ kind: "pause", reason: "Wait before “see”.", start: 3, end: 4.1, decision: "cut" });
+    expect(typed.needsRevision).toBe(true);
+    expect(typed.disputedEdges[0].reason).toContain("It holds 0.40 s of sound at speaking level that no word explains, at 3.10–3.50 s on version restart");
+    // Cut as the take it is, up to the quiet before the second “you can”, that take's start still plays before “see”.
+    const partly = await apply({ kind: "retake", reason: "First take.", start: 3, end: 4.1, decision: "cut", keepRepeat: ["You can"] });
     expect(partly.unexplainedSound).toEqual([{ at: 4.2, mediaId: "m1", seconds: .3, after: "can", before: "see", sourceSeconds: [4.2, 4.5] }]);
   } finally {
     Object.assign(mock.state, original);
