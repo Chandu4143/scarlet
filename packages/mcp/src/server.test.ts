@@ -4211,7 +4211,7 @@ it("cuts by word reference: edges go in the measured gaps, and every gate decisi
     expect(pauseCheck).toMatchObject({ words: "pause after “Um,”", originalRange: { start: 3, end: 3.567 } });
     // The same pause with the voice held back a fifth of a second after the cut: as long, and the cut earlier in it.
     const heldBack = JSON.parse(textOf(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, ...pause, voiceIn: .2 } }) as CallToolResult));
-    expect(heldBack).toMatchObject({ words: "pause after “Um,”", originalRange: { start: 2.867, end: 3.433 } });
+    expect(heldBack).toMatchObject({ words: "pause after “Um,”", originalRange: { start: 2.833, end: 3.4 } });
     // With none, the cut is on the next word's first sound.
     const onWord = JSON.parse(textOf(await editor.callTool({ name: "dialogue_check_join", arguments: { version: tl.version, ...pause, voiceIn: 0 } }) as CallToolResult));
     expect(onWord).toMatchObject({ words: "pause after “Um,”", originalRange: { start: 3.067, end: 3.6 } });

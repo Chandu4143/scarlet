@@ -528,7 +528,8 @@ describe("native retake boundaries", () => {
     expect([alone.start, alone.end]).toEqual([expect.closeTo(1.44 + AIR_AFTER_SPEECH), expect.closeTo(3.4 - .12)]);
     // A pause shorter than twice the air before the voice is halved.
     expect(splitLeave(.06)).toEqual({ after: .03, before: .03 });
-    expect(splitLeave(.4, undefined, .3)).toEqual({ after: .2, before: .2 });
+    // A voiceIn takes all but the pace's air after the last word: 0.05 s by default.
+    expect(splitLeave(.4, undefined, .3)).toEqual({ after: expect.closeTo(.1), before: .3 });
     // A voiceIn the model gives takes the rest of a longer pause once the last word has the pace's air after it.
     expect(splitLeave(.6, { after: .05, before: .05 }, .55)).toEqual({ after: expect.closeTo(.05), before: expect.closeTo(.55) });
     expect(splitLeave(.6, { after: .05, before: .05 }, .7)).toEqual({ after: expect.closeTo(.05), before: expect.closeTo(.55) });
