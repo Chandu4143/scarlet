@@ -49,6 +49,14 @@ Add an entry to `ledger.json` with the editor's words, the project, run and time
 - **trials** (costs model tokens): only model passes can show it. Record what the last trials found in `last`.
 - **none**: say why, and what would make it checkable.
 
+**Count the class, not only the spot.** A report is one instance of a kind of mistake. Before fixing, find how many
+others of the same kind his edits play now, and which gate let each through: not found (the transcript or a finder
+missed it), found but held and routed around, or found and kept (a keep plays on and is never shown to him). For
+restarts, `tsx evals/src/leftovers.ts` lists every phrase each project's current edit plays twice, and how many repeats
+its pass kept silently, from the library alone. Write the count in the entry's `note`, and fix the gate that lets most
+of them through, not just the one the reported spot went through. A finder the engine and the evals share
+(`findRestarts`) is fixed in both, or the entry says why not.
+
 Run the new entry on the current code before you fix anything: it should fail. An entry that passes on the code that
 made the mistake doesn't check it.
 
@@ -185,5 +193,6 @@ Reading it:
 ## 6. Record
 
 - After the change merges, run `ledger.ts check --record --label "<PR>"` on main, so the next thread compares against it.
-- Mark the entry `fixed` with the PR, and update `history.md`: the cause, what worked, what didn't and what's left open.
+- Mark the entry `fixed` with the PR, and update `history.md`: the cause, what worked, what didn't and what's left open,
+  with the class count before and after.
 - `ledger.ts board` shows the runs over time: the count of passing entries should only go up.

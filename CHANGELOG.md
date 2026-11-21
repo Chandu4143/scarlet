@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Scarlet's last check for restarts now catches a line you start again on a longer word, like “so perfect, so perfectly realistic”.
 - Pause then Resume now picks an edit up where it left off, instead of starting it over.
 - A request you take back with ⌘Z no longer offers a rule in Learnings, and Scarlet doesn't read your words for rules while editing is paused.
 - Claude Code edits no longer fail on computers where its sandbox can't start.
