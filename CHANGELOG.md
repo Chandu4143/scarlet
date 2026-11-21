@@ -7,6 +7,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 20, 2026
 
 - When you stumble on a word (“who who thinks of this”), Scarlet leans toward taking out the first saying of it, so the line runs on as you said it instead of jumping from the broken word into the next.
+- Learnings now offers a rule only when you state one yourself or ask for the same kind of fix a few times, not after a single note about one cut.
+- Scarlet holds the frame on a chart or table while you read through it, instead of nudging the zoom between rows.
 - Scarlet can now keep your screen up across a cut that waits for your call, so approving it no longer flashes the camera full screen for a moment between two stretches of screen.
 - While you watch paused, the picture stays the video as it plays, with a screen and your camera inset, when Scarlet saves another edit, instead of switching to the camera alone.
 - A demo Scarlet framed on screen now reads as an overlay, not a cut, and no longer adds cuts of its own to the list.
