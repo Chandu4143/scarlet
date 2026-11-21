@@ -29,6 +29,7 @@ interface AcpConfigOption {
 
 export interface GeminiParseState {
   texts: string[];
+  lastMessage?: string;
   /** Accumulated streamed assistant message (delta chunks). */
   partial: string;
   /** Accumulated streamed reasoning/thought chunks. */
@@ -95,9 +96,11 @@ function flushThought(st: GeminiParseState, events: RunnerEvent[]) {
 }
 
 function flushPartial(st: GeminiParseState, events: RunnerEvent[]) {
-  if (st.partial.trim()) {
-    st.texts.push(st.partial);
-    events.push({ type: "log", text: st.partial });
+  const text = st.partial.trim();
+  if (text) {
+    st.texts.push(text);
+    st.lastMessage = text;
+    events.push({ type: "log", text });
   }
   st.partial = "";
 }
@@ -578,7 +581,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
             st.completed = true;
             opts.onEvent({
               type: "result",
-              text: tailSummary(st.texts) || "done",
+              text: st.lastMessage ?? "done",
               ...(result.usage ? { data: { usage: result.usage } } : {}),
             });
             stopSession();
@@ -613,7 +616,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
   const ok = !st.failed && st.completed;
   return {
     ok,
-    summary: tailSummary(st.texts),
+    summary: st.lastMessage ?? tailSummary(st.texts),
     error: ok
       ? undefined
       : st.failed ?? `agy exited with code ${outcome.code}${outcome.stderr ? `: ${outcome.stderr.trim().slice(-800)}` : ""}`,

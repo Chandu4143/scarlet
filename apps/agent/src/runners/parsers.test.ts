@@ -313,6 +313,20 @@ describe("gemini ACP parser", () => {
     expect(st.question).toBe("9:16 or 16:9?");
     expect(st.questionPosted).toBe(true);
     expect(st.shouldStop).toBe(true);
+    expect(st.lastMessage).toBe("Reading the transcript.");
+  });
+
+  it("trims flushed assistant messages and keeps the latest one as lastMessage", () => {
+    const st = newGeminiState();
+    const evs = feed([
+      upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\nChecking the transitions.\n" } }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "c1", name: "mcp__scarlet__timeline_get", rawInput: {} }),
+      upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\nFraming the demo." } }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "c2", name: "mcp__scarlet__timeline_propose", rawInput: {} }),
+    ], st, parseGeminiLine);
+    expect(evs.filter((e) => e.type === "log").map((e) => e.text)).toEqual(["Checking the transitions.", "Framing the demo."]);
+    expect(st.texts).toEqual(["Checking the transitions.", "Framing the demo."]);
+    expect(st.lastMessage).toBe("Framing the demo.");
   });
 
   it("maps ACP plan updates and failed tool calls", () => {

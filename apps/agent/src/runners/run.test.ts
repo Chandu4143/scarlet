@@ -679,6 +679,31 @@ describe("runGemini", { timeout: 20_000 }, () => {
     ]);
   });
 
+  it("uses only the trimmed final assistant message as the summary, without prior progress chatter or truncation", async () => {
+    const earlier = `\n\n${"Checking transition areas. ".repeat(90)}and checking the last transition areas.`;
+    const progress = "\n\nFraming the benchmark graph demo cleanly inside the Kimi window.";
+    const finalReply = `Synced and tightened the video.\n\n${"Detailed follow-up note. ".repeat(100)}All cuts are ready.`;
+    expect(finalReply.length).toBeGreaterThan(2000);
+    const { result, events } = await run(runGemini, {
+      acp: true,
+      lines: [
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: earlier } }),
+        upd({ sessionUpdate: "tool_call", toolCallId: "t1", name: "mcp__scarlet__timeline_get", rawInput: {} }),
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: progress } }),
+        upd({ sessionUpdate: "tool_call", toolCallId: "t2", name: "mcp__scarlet__timeline_propose", rawInput: {} }),
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n\n${finalReply}\n` } }),
+      ],
+    }, { agent: "gemini" });
+    expect(result).toMatchObject({ ok: true, summary: finalReply });
+    expect(events.find((e) => e.type === "result")?.text).toBe(finalReply);
+    expect(events.filter((e) => e.type === "log").map((e) => e.text)).toEqual([
+      "Gemini session started (gemini-2.5-pro)",
+      earlier.trim(),
+      progress.trim(),
+      finalReply,
+    ]);
+  });
+
   it("reports a run at its time cap as timed out, not stalled", async () => {
     const capped = await run(runGemini, { acp: true, sleep: 30 }, { agent: "gemini", timeoutMs: 300 });
     expect(capped.result).toMatchObject({ ok: false, error: "timed out", timedOut: true, stalled: false });
