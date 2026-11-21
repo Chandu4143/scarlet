@@ -7,13 +7,12 @@ import { isIP } from "node:net";
 import { capturePage, findChrome } from "@scarlet/render";
 import { Hono } from "hono";
 import { z } from "zod/v3";
-import { BrollRunRequest, GraphicRenderRequest, SaveStyleGuideRequest } from "@scarlet/shared";
-import { brollRun } from "../services/brollRuns.js";
+import { GraphicRenderRequest, SaveStyleGuideRequest } from "@scarlet/shared";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, HttpError, notFound } from "../errors.js";
 import { serveFile } from "../files.js";
-import { requestAttempt, requireLocalPauseTarget, requireProjectEditAttempt, requireProjectMediaAttempt } from "../services/taskAttempt.js";
+import { requestAttempt, requireLocalPauseTarget, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { assetPath, findAttachment, mimeFor, graphicSource, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_PAGES, readDocument, removeStyleGuide, renderProjectGraphic,
   saveAttachment, saveStyleGuide } from "../services/graphics.js";
 import { jsonBody, multipartError, requireProject, requireProjectHeader } from "./util.js";
@@ -125,7 +124,7 @@ export function graphicRoutes(ctx: Ctx) {
   r.post("/projects/:id/graphics", async (c) => {
     const project = requireProject(ctx, c.req.param("id"));
     const attempt = requestAttempt(c.req.raw);
-    const check = () => requireLocalPauseTarget(requireProjectMediaAttempt(ctx, attempt, project.id));
+    const check = () => requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, project.id));
     check();
     let options: GraphicRenderRequest | undefined;
     let html: string | undefined;
@@ -149,17 +148,6 @@ export function graphicRoutes(ctx: Ctx) {
     const signal = AbortSignal.any([ctx.projectSignal(project.id), c.req.raw.signal]);
     const result = await ctx.track(renderProjectGraphic(ctx, project, { options, html, assets, taskId: attempt?.taskId || undefined }, c.var.user, check, signal), project.id);
     return c.json(result, result.media ? 201 : 200);
-  });
-
-  // -- B-roll runs -----------------------------------------------------------
-
-  // A request's run asks for a shot found or made, or waits on one it asked for. The run that makes it is a task.
-  r.post("/projects/:id/broll-runs", async (c) => {
-    const project = requireProjectHeader(ctx, c.req.param("id"));
-    const attempt = requestAttempt(c.req.raw);
-    requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, project.id));
-    const body = await jsonBody(c, BrollRunRequest);
-    return c.json(await brollRun(ctx, project.id, attempt?.taskId || undefined, body, AbortSignal.any([ctx.projectSignal(project.id), c.req.raw.signal])));
   });
 
   // -- pages from the web ----------------------------------------------------

@@ -365,7 +365,7 @@ fn codex_executable(bin: &str) -> Option<String> {
     }
 }
 
-/// Codex features every run goes without. A B-roll run's agent keeps its shell and its look at pictures it made.
+/// Codex features a side check runs without. A request's agent keeps its shell and its look at pictures it made.
 const CODEX_OFF: [&str; 5] = ["computer_use", "multi_agent", "plugins", "apps", "hooks"];
 
 fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>, workspace: Option<&Workspace>) -> Vec<String> {
@@ -385,13 +385,13 @@ fn codex_tool_args(mcp: &McpSpec, executable: Option<&str>, workspace: Option<&W
     }
     args.extend([
         "-c".into(), r#"approval_policy="never""#.into(),
-        // A B-roll run's agent searches the live web; every other run has none.
+        // A request's agent searches the live web; a side check has none.
         "-c".into(), format!("web_search={}", if workspace.is_some() { r#""live""# } else { r#""disabled""# }),
         // Long edit prompts include the timeline, editor's notes and earlier answers.
         "-c".into(), "project_doc_max_bytes=4194304".into(),
         "-c".into(), r#"default_permissions="scarlet""#.into(),
         "-c".into(), format!(r#"permissions.scarlet.filesystem={{":root"="deny",":minimal"="read",":workspace_roots"={{"."="write"}}{reads}}}"#),
-        // A B-roll run's shell reaches the web, for the pages and clips it brings in. Scarlet's token stays out of the shell
+        // A request's shell reaches the web, for the pages and clips it brings in. Scarlet's token stays out of the shell
         // (`shell_environment_policy` below), so the engine is no nearer than before.
         "-c".into(), format!("permissions.scarlet.network.enabled={}", workspace.is_some()),
         "-c".into(), r#"mcp_servers.scarlet.default_tools_approval_mode="approve""#.into(),

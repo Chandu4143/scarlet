@@ -246,7 +246,7 @@ function codexExecutable(bin: string): string | undefined {
   return executable;
 }
 
-/** Codex features every run goes without. A B-roll run's agent keeps its shell and its look at pictures it made. */
+/** Codex features a side check runs without. A request's agent keeps its shell and its look at pictures it made. */
 const CODEX_OFF = ["computer_use", "multi_agent", "plugins", "apps", "hooks"];
 
 function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan" | "workspace">, executable: string | undefined): string[] {
@@ -260,7 +260,7 @@ function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan" | "workspace">, 
     ...(process.platform === "win32" ? ["-c", 'windows.sandbox="mxc"'] : []),
     ...(ws ? CODEX_OFF : ["shell_tool", "view_image", ...CODEX_OFF]).flatMap((feature) => ["--disable", feature]),
     "-c", 'approval_policy="never"',
-    // A B-roll run's agent searches the live web; every other run has none.
+    // A request's agent searches the live web; a side check has none.
     "-c", `web_search=${ws ? '"live"' : '"disabled"'}`,
     // Codex otherwise reads only the first 32 KiB of AGENTS.md. The prompt lists every clip ahead of the task, the
     // editor's notes, their earlier answers and their skills, so on a long timeline those would be cut off.
@@ -269,7 +269,7 @@ function codexConfig(opts: Pick<RunAgentOptions, "mcp" | "plan" | "workspace">, 
     ...(opts.plan ? ["-c", "tools.update_plan.enabled=true"] : []),
     "-c", 'default_permissions="scarlet"',
     "-c", `permissions.scarlet.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="write"}${reads}}`,
-    // A B-roll run's shell reaches the web, for the pages and clips it brings in. Scarlet's token stays out of the shell
+    // A request's shell reaches the web, for the pages and clips it brings in. Scarlet's token stays out of the shell
     // (`shell_environment_policy` below), so the engine is no nearer than before.
     "-c", `permissions.scarlet.network.enabled=${ws ? "true" : "false"}`,
     "-c", 'mcp_servers.scarlet.default_tools_approval_mode="approve"',

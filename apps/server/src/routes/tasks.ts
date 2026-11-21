@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { assistantSkills } from "../services/skills.js";
 import { checkAttachments } from "../services/graphics.js";
 import { z } from "zod/v3";
 import { CompleteTaskRequest, CreateTaskRequest, EDITING_TOOL_GROUPS, queueWaits, RecordTaskUsageRequest, RepeatAuditRequest, RewordTaskRequest, RunChoice, TaskEvent, TaskState, UsageGroupBy, type Task } from "@scarlet/shared";
@@ -58,7 +57,7 @@ export function taskRoutes(ctx: Ctx) {
     if (body.kind === "skill_edit") throw badRequest("use_skill_edit", "Ask for a change to a skill with /skills/:skillId/edit");
     if (body.kind === "learning_check") throw badRequest("not_a_request", "Scarlet starts this check itself, with each request.");
     if (body.kind === "area_check") throw badRequest("not_a_request", "Scarlet starts this check itself, when a save needs it.");
-    if (body.kind === "broll_make") throw badRequest("not_a_request", "Scarlet starts this run itself, when a request asks for B-roll.");
+    if (body.kind === "broll_make") throw badRequest("not_a_request", "This kind of run is retired.");
     const { mediaId, version } = body.context ?? {};
     if (mediaId && !ctx.db.prepare("SELECT 1 FROM media WHERE id = ? AND project_id = ?").get(mediaId, project.id)) {
       throw badRequest("unknown_media", "The selected footage does not belong to this project.");
@@ -137,11 +136,7 @@ export function taskRoutes(ctx: Ctx) {
     }
     const view = c.req.query("events");
     const events = view === "none" ? [] : ctx.repos.taskEvents.list(task.id, view === "conversation" ? "conversation" : "all");
-    // The guides this run's prompt holds in full: the skills the editor chose for it, and those they call. A tool a
-    // guide brings with it, as the B-roll guide brings the tool that asks for a shot in a dialogue pass, is offered from this.
-    const chosen = task.context.skillIds;
-    const guides = chosen?.length ? assistantSkills(ctx.repos.skills.select("1=1", [], "name ASC"), chosen, true).flatMap(s => [...new Set([s.name, s.bundledName ?? s.name])]) : [];
-    return c.json({ task, checksTaskAttempts: true, events, guides });
+    return c.json({ task, checksTaskAttempts: true, events });
   });
 
   // Called by agent hosts before each run. workDir is the task artifact directory on the host; timeLimit is the run's limit in minutes.

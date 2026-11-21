@@ -384,7 +384,7 @@ impl RunningTask {
 
 /// A short check beside a request that saves nothing to the video (`isSideCheck` in packages/shared/src/api.ts).
 fn is_side_check(kind: &str) -> bool {
-    matches!(kind, "learning_check" | "area_check" | "broll_make")
+    matches!(kind, "learning_check" | "area_check")
 }
 
 /// Side checks run at once per runtime beside `max_parallel` requests (`sideCheckSlots` in packages/shared/src/api.ts).
@@ -1112,7 +1112,7 @@ impl HostRuntime {
         if let Some(started_at) = &task.started_at {
             mcp.env.insert("SCARLET_TASK_STARTED_AT".into(), started_at.clone());
         }
-        // A B-roll run's agent gets its harness's own tools, and launchers for the programs this machine has. An engine from
+        // A request's agent gets its harness's own tools, and launchers for the programs this machine has. An engine from
         // before them leaves `workspace` out, and the run has Scarlet's tools only, as it did.
         let workspace = if prompt.workspace {
             Some(workspace::workspace_tools(&cwd, self.paths.resource_dir.as_deref(), &crate::util::env_map())?)
@@ -2144,7 +2144,7 @@ mod tests {
 
     #[test]
     fn side_check_kinds_and_slots_match_the_engine() {
-        assert!(is_side_check("area_check") && is_side_check("learning_check") && is_side_check("broll_make"));
+        assert!(is_side_check("area_check") && is_side_check("learning_check"));
         assert!(!is_side_check("skill_edit") && !is_side_check("edit") && !is_side_check("revise"));
         assert_eq!((side_check_slots(1), side_check_slots(3), side_check_slots(8)), (2, 6, 12));
     }

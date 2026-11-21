@@ -712,39 +712,6 @@ export const RegisterHostRequest = z.object({
 
 export const SkillSlug = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 
-/** What a B-roll run is asked for: a moment of the video, and what should be on screen there. */
-export const BrollBrief = z.object({
-  /** Where in the video, in seconds on the version the request was editing. */
-  at: Seconds,
-  /** About how long the shot is to hold. */
-  duration: z.number().positive().max(600).optional(),
-  /** What should be on screen, and anything about how it should look, in the asking run's words. */
-  want: z.string().trim().min(1).max(2000),
-  /** What is said over it. */
-  says: z.string().trim().max(2000).optional(),
-  /** A page to take it from, when the request or the editor named one. */
-  url: z.string().trim().max(4096).optional(),
-});
-export type BrollBrief = z.infer<typeof BrollBrief>;
-
-export const BrollRunRequest = BrollBrief.extend({
-  /** A run started earlier, to wait on again instead of starting another. */
-  runId: Id.optional(),
-  /** How long to wait for it to finish before answering that it is still at work. */
-  waitMs: z.number().int().min(0).max(240_000).optional(),
-}).partial({ at: true, want: true }).refine(b => !!b.runId || (b.at !== undefined && !!b.want), "Give the moment and what should be on screen, or a run to wait on.");
-export type BrollRunRequest = z.infer<typeof BrollRunRequest>;
-
-export interface BrollRunResponse {
-  runId: string;
-  state: "working" | "done" | "failed";
-  /** The run's own closing words: what it made and how it is meant to sit. */
-  summary?: string;
-  error?: string;
-  /** The files it added to the project's media. */
-  media: Array<{ id: string; kind: string; name: string; duration?: number; width?: number; height?: number; hasAlpha?: boolean; source?: { url: string } }>;
-}
-
 export const TaskKind = z.enum([
   "edit", // free-form instruction against the project ("make the first cut as a 9:16 short")
   "note", // respond to a specific review note
@@ -753,7 +720,7 @@ export const TaskKind = z.enum([
   "skill_edit", // revise one skill as the editor described; not part of a project's conversation
   "learning_check", // read one request for a standing rule to offer; started with the request, beside it
   "area_check", // look at one frame of a recording and say what of it viewers may see; started when a save needs it
-  "broll_make", // find or make one piece of B-roll for a request, with the harness's own shell, file and web tools; started when the request asks
+  "broll_make", // retired 2026-11-21: a run beside a request that made one piece of B-roll. Every request has the shell and the web now. Kept so saved tasks still read.
   "transcribe", // server-side job, not dispatched to hosts
 ]);
 export type TaskKind = z.infer<typeof TaskKind>;
@@ -833,8 +800,6 @@ export const Task = z.object({
       checksTaskId: Id.optional(),
       /** The frame an area_check task looks at: a recording and a source second. */
       areaCheck: z.object({ mediaId: Id, at: Seconds }).optional(),
-      /** What a broll_make task is to find or make: the moment of the video it is for, and what should be on screen there. */
-      broll: BrollBrief.optional(),
       time: Seconds.optional(),
       end: Seconds.optional(),
       clipIds: z.array(Id).optional(),
@@ -1032,15 +997,12 @@ export function isAreaCheck(task: Pick<Task, "kind">): boolean {
   return task.kind === "area_check";
 }
 
-/**
- * The run that finds or makes one piece of B-roll for a request. It runs beside that request with the harness's own
- * shell, file and web tools, adds what it made to the project's media and places nothing: the request does.
- */
+/** A retired kind of run, which made one piece of B-roll beside a request. One saved earlier stays out of the conversation. */
 export function isBrollMake(task: Pick<Task, "kind">): boolean {
   return task.kind === "broll_make";
 }
 
-/** A run that edits no video, so it stays out of the project's conversation and queue: a skill edit, a learning check, an area check or a B-roll run. */
+/** A run that edits no video, so it stays out of the project's conversation and queue: a skill edit, a learning check, or an area check. */
 export function isAsideTask(task: Pick<Task, "kind">): boolean {
   return isSkillEdit(task) || isLearningCheck(task) || isAreaCheck(task) || isBrollMake(task);
 }
@@ -1052,11 +1014,11 @@ export function isAsideTask(task: Pick<Task, "kind">): boolean {
  * took 12 minutes, 2026-11-20). A skill edit rewrites a skill and isn't one.
  */
 export function isSideCheck(task: Pick<Task, "kind">): boolean {
-  return isLearningCheck(task) || isAreaCheck(task) || isBrollMake(task);
+  return isLearningCheck(task) || isAreaCheck(task);
 }
 
 /** The kinds `isSideCheck` names, for the engine's claim query. */
-export const SIDE_CHECK_KINDS = ["learning_check", "area_check", "broll_make"] as const satisfies readonly TaskKind[];
+export const SIDE_CHECK_KINDS = ["learning_check", "area_check"] as const satisfies readonly TaskKind[];
 
 /**
  * Side checks a host runs at once per runtime, beside its `maxParallel` requests: twice as many, up to 12. Each looks at
@@ -1279,9 +1241,9 @@ export const TaskPrompt = z.object({
   refusedTool: z.string().optional(),
   /**
    * Launch the CLI with its harness's own shell, file and web tools beside Scarlet's, the shell sandboxed to the task
-   * folder (`workspaceCapabilities` in capabilities.ts). Only a B-roll run has them (`broll_make`): a request asks for
-   * one when it needs a shot found or made, so no other run carries their definitions. Absent, the host offers
-   * Scarlet's tools only.
+   * folder (`workspaceCapabilities` in capabilities.ts). Every request has them, and what to use them for is the
+   * model's call (the editor's decision, 2026-11-21: no rule in Scarlet's code picks which run gets them). A side check
+   * and a skill's revision, which edit no video, don't. Absent, the host offers Scarlet's tools only.
    */
   workspace: z.boolean().optional(),
 });
