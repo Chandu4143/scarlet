@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- An edit’s card now says exactly what it did on its first line: the words a cut took out, a caption’s words, the file laid over the picture, how far a zoom goes or how loud the sound now plays.
 - Before Scarlet finishes an edit, it checks every place the video flicks between your screen and your camera, or goes back to your camera while your screen still shows what you're talking about, and fixes it or says why it stays.
 - Scarlet keeps your screen recording up for as long as you're talking about it, instead of going back to your camera at the first chance.
 - When you read text off your screen aloud, Scarlet now knows your screen isn't showing and puts it up.

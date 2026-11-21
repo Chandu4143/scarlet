@@ -28,7 +28,8 @@ import { usePlaybackCache } from "../components/player/usePlaybackCache";
 import { focusAround } from "../components/player/SimpleProgress";
 import { useCutReview, useSingleCutDraft, type SingleCutDrafts } from "../components/review/useCutReview";
 import { callToPrepare, editToPrepare, usePrepareReviewCuts, type PreparedCut, type CutToPrepare } from "../components/review/usePrepareNextCut";
-import { CutMark, EditPassage } from "../components/review/CutTranscript";
+import { CutMark, CutWordsLine, EditPassage } from "../components/review/CutTranscript";
+import { editDetail } from "../lib/editDetail";
 import { useReviewTimeline } from "../components/review/useReviewTimeline";
 import { ReviewActions } from "../components/review/ReviewActions";
 import { BeforeToggle } from "../components/review/BeforeToggle";
@@ -3244,6 +3245,13 @@ export function SimpleWorkspace() {
   // A marker left for the editor changed nothing in the video: its card says what it is, and has nothing to compare or undo.
   const shownMarker = !!reviewingEdit?.marker;
   const shownKind = reviewingEdit && (shownMarker ? "To do" : editKindWord(reviewingEdit));
+  // The card's first line says exactly what the edit did: a cut's words, struck, or for any other edit what its steps
+  // set (a caption's words, the file laid over the picture, how far a zoom goes). A moment holds several edits, and a
+  // spot marked for the editor changed nothing, so neither has one.
+  const editDid = !reviewingEdit || threadTimeline.selectedMoment || shownMarker ? undefined
+    : beforeCut ? cutBefore.timeline && <CutWordsLine key={editKey(reviewingEdit)} timeline={cutBefore.timeline} media={media}
+      range={beforeCut.removed} length={lengthLabel(removedLength)} verb="Took out" />
+    : (detail => detail && <p className="edit-card-what">{detail}</p>)(editDetail(shownChange, reviewingEdit, { timeline, media }));
   // The transcript stays folded away. Its icon on the card opens it for this edit only.
   const scriptKey = reviewingEdit && beforeCut ? editKey(reviewingEdit) : undefined;
   const scriptOpen = !!scriptKey && scriptFor === scriptKey;
@@ -3327,7 +3335,8 @@ export function SimpleWorkspace() {
         : editPlace >= 0 && <span className="edit-card-count" title="Edits still to check">{editPlace + 1} of {flaggedRows.length}</span>}
       {/* The note explains the choice and includes any cue for the editor to check. */}
       {/* It's on up to two lines, so an edit with a short note is a single line. A clipped note opens on a click. */}
-      <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} />
+      {editDid ? <div className="edit-card-text">{editDid}<EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} /></div>
+        : <EditNote key={editKey(reviewingEdit)} text={editNote(reviewingEdit, !!reviewRange)} />}
       {/* A moment of a pass's list is its edits together: the pill says how many, and names them on hover. */}
       {threadTimeline.selectedMoment ? <span className="edit-card-length is-kind" title={threadTimeline.selectedMoment.members.map(e => e.label).join("\n")}>
         {threadTimeline.selectedMoment.edits.length} edits</span>
@@ -3417,7 +3426,11 @@ export function SimpleWorkspace() {
       <span className="edit-card-count" title={callAt !== undefined ? `Cut at ${clockLabel(callAt)}` : undefined}>Cut {callNo.get(openCall.index)}</span>
       {callHistory.length > 0 && <EditVersion n={callHistory.length + 1}
         title={`v${callHistory.length}: ${callHistory.at(-1)!.reason ?? "Scarlet’s earlier version."}${callHistory.at(-1)!.note ? `\nYou: “${callHistory.at(-1)!.note}”` : ""}`} />}
-      <EditNote key={callKey} text={openCall.reason} unchecked={openCall.unchecked} />
+      {/* What Keep would take out, struck, over Scarlet's reason. A revision that leaves the footage in has no such line. */}
+      {callWords && !conflict && approves(openCall) === "cut" ? <div className="edit-card-text">
+        <CutWordsLine key={callKey} timeline={callWords.timeline} media={media} range={callWords.range} length={callLength!} verb="Takes out" />
+        <EditNote key={callKey} text={openCall.reason} unchecked={openCall.unchecked} /></div>
+        : <EditNote key={callKey} text={openCall.reason} unchecked={openCall.unchecked} />}
     </div>
     {/* A call hasn't come out yet, so its words are marked in amber. When the pass's version couldn't be loaded there
         is nothing to read them on: the passage stops waiting and offers to ask again, as it does for the words. */}
