@@ -32,6 +32,8 @@ function defaultSpeedTitle(profiles: ModelOptions[]) {
   return value && profiles.every(p => p.defaultSpeed === value) ? `Provider default (${value})` : "Use provider default";
 }
 
+const STANDARD_SPEEDS = new Set(["standard", "default", "auto"]);
+
 function optionLabel(option: { id: string; label?: string }) {
   return option.label ?? option.id.charAt(0).toUpperCase() + option.id.slice(1);
 }
@@ -276,6 +278,8 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
   const profiles = selected?.profiles ?? [];
   const efforts = pickerOptions(profiles, "efforts").filter(o => o.id.toLowerCase() !== "auto");
   const speeds = pickerOptions(profiles, "speeds");
+  // A model that names its own standard speed (Claude's) is offered it in place of the provider-default row, so Standard shows once.
+  const standardSpeed = speeds.find(o => STANDARD_SPEEDS.has(o.id.toLowerCase()) || optionLabel(o).toLowerCase() === "standard");
   const effort = efforts.find(o => o.id === effective?.effort);
   const dialEffort = effort ?? efforts.find(o => o.id === selected?.defaultEffort);
   const effortLabel = dialEffort ? optionLabel(dialEffort) + (effort ? "" : " (provider default)") : "Provider default";
@@ -393,10 +397,10 @@ export function AgentChip({ direction = "up", threadInput, variant = "chip" }: {
                 {speeds.length > 0 && (
                   <OptionList
                     label="Speed"
-                    value={effective.serviceTier ?? ""}
+                    value={effective.serviceTier ?? standardSpeed?.id ?? ""}
                     onChange={(v) => choose({ serviceTier: v || undefined })}
                     options={[
-                      { id: "", label: "Standard", title: defaultSpeedTitle(profiles) },
+                      ...(standardSpeed ? [] : [{ id: "", label: "Standard", title: defaultSpeedTitle(profiles) }]),
                       ...speeds.map(o => ({ id: o.id, label: optionLabel(o), title: o.description })),
                     ]}
                   />

@@ -29,7 +29,8 @@ export interface AgentCapabilities {
   /**
    * How long one tool call may wait for evidence still being measured before it answers "still running" and costs the
    * model a turn. Scarlet's hosts launch Claude Code (MCP_TOOL_TIMEOUT) and Codex (tool_timeout_sec) with a 300 s tool
-   * deadline; a client Scarlet didn't launch keeps the common 60 s one, so it waits less.
+   * deadline; agy ends a tool call at 180 s whatever Scarlet asks; a client Scarlet didn't launch keeps the common 60 s
+   * one, so it waits less.
    */
   toolWaitSeconds?: number;
   /**
@@ -43,8 +44,9 @@ export interface AgentCapabilities {
 export const DEFAULT_TOOL_WAIT_SECONDS = 45;
 
 /**
- * Seconds one tool call may wait for evidence still being measured: `margin` under the harness's tool deadline, to
- * leave time for the answer itself. 220 s for a harness Scarlet launched and 25 s for a client it didn't, at a margin of 20.
+ * Seconds one tool call may wait for evidence still being measured: `margin` under the harness's `toolWaitSeconds`, to
+ * leave time for the answer itself. At a margin of 20: 220 s on Claude Code and Codex, 100 s on Gemini and 25 s for a
+ * client Scarlet didn't launch.
  */
 export function toolWait(caps: Pick<AgentCapabilities, "toolWaitSeconds">, margin: number): number {
   return Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - margin));
@@ -69,7 +71,9 @@ const KNOWN: Record<string, AgentCapabilities> = {
   // Brief tools: agy 1.x keeps about 60 KB of MCP tool definitions a session and drops the largest past it, listing
   // nothing in their place. On 2026-11-19 it dropped seven of Scarlet's 50 (117 KB), timeline_propose and
   // dialogue_apply_cuts among them, so a Gemini pass couldn't save an edit; listed briefly (43 KB) all 51 stayed.
-  gemini: { images: true, audio: false, files: false, plan: false, briefTools: true },
+  // Tool wait: agy 1.x ends a tool call at 180 s (two saves on 2026-11-20 failed at 181 s; a 94 s call answered). With
+  // no wait set, Gemini's calls waited 45 s less their margin, so a save that needed area checks gave up at once.
+  gemini: { images: true, audio: false, files: false, plan: false, briefTools: true, toolWaitSeconds: 120 },
 };
 
 // An agent Scarlet didn't launch is someone's own MCP client, such as Claude Code or Claude Desktop pointed at Scarlet,
@@ -85,8 +89,9 @@ export function agentCapabilities(agent: string | undefined, override?: Partial<
     try {
       const parsed = JSON.parse(override) as Record<string, unknown>;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-      for (const key of ["images", "audio", "files", "plan"] as const) if (typeof parsed[key] === "boolean") extra[key] = parsed[key] as boolean;
+      for (const key of ["images", "audio", "files", "plan", "briefTools"] as const) if (typeof parsed[key] === "boolean") extra[key] = parsed[key] as boolean;
       if (typeof parsed.resultChars === "number") extra.resultChars = parsed.resultChars;
+      if (typeof parsed.toolWaitSeconds === "number" && Number.isFinite(parsed.toolWaitSeconds) && parsed.toolWaitSeconds > 0) extra.toolWaitSeconds = parsed.toolWaitSeconds;
     } catch {
       extra = {};
       // The value is the user's own text, so it stays out of the log.

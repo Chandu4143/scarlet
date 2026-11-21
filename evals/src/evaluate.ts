@@ -1,4 +1,6 @@
 /** Gather a finished task's artifacts from the engine (read-only) and score them. */
+import { publishedGradingInputs } from "./gradingEvidence.ts";
+import { readJson } from "./paths.ts";
 import { createHash } from "node:crypto";
 import type { Change, MediaAsset, Timeline } from "../../packages/timeline/src/index.ts";
 import type { LoadedCase } from "./case.ts";
@@ -8,7 +10,8 @@ import { mediaEvidence, type StoredEvidence } from "./evidence.ts";
 import { loadMoments } from "./moments.ts";
 import { DEFAULT_EDGE_OPTIONS, submittedPlans, toolName, type EdgeOptions, type EventLike, type MediaEvidence, type SubmittedPlan } from "./metrics.ts";
 import { scoreRun, type Score } from "./score.ts";
-import { audibleMediaIds, type MediaInfo } from "./timeline.ts";
+import { subtract, total } from "./intervals.ts";
+import { audibleMediaIds, keptSource, type MediaInfo } from "./timeline.ts";
 
 export interface Artifacts {
   task: TaskRecord;
@@ -47,9 +50,20 @@ async function assemble(task: TaskRecord, events: EventLike[], changes: Change[]
   const submitted = submittedPlans(events);
   // Some runs assemble the raw footage themselves. Grade the cut from that assembly.
   const first = requested.find(c => c.cutReasons?.length);
-  const source = first?.appliedOnto ?? first?.fromVersion ?? submitted[0]?.version ?? reviews[0]?.fromVersion
+  let source = first?.appliedOnto ?? first?.fromVersion ?? submitted[0]?.version ?? reviews[0]?.fromVersion
     ?? requested[0]?.appliedOnto ?? requested[0]?.fromVersion ?? task.context.version;
   if (!source) throw new Error(`Task ${task.id} produced no dialogue cut to evaluate and names no source version.`);
+  // A pass that cut with an ordinary edit before its first dialogue submission is graded from where it was asked to
+  // start, or that cut counts as the recording: one pass's "Removed the opening setup and retakes" went unscored, and its
+  // two trials were graded from different sources (2026-11-20). Only a pass that added footage is graded from its assembly.
+  const requestedOn = task.context.version;
+  if (requestedOn && requestedOn !== source) {
+    const [from, at] = await Promise.all([load(requestedOn), load(source)]).catch(() => [undefined, undefined]);
+    if (from && at) {
+      const asked = keptSource(from, project.media);
+      if (![...keptSource(at, project.media)].some(([id, rs]) => total(subtract(rs, asked.get(id) ?? [])) > 0.05)) source = requestedOn;
+    }
+  }
   // A normal timeline edit can polish the pass after its last dialogue submission.
   let appliedVersion = source;
   const parts: Change[] = [];
@@ -175,6 +189,12 @@ export async function evaluateTask(engine: Engine, taskId: string, opts: Evaluat
   const evidence = new Map<string, MediaEvidence>();
   for (const id of audibleMediaIds(a.timelines.get(a.versions.source)!, a.media)) {
     evidence.set(id, opts.loaded?.evidence.get(id) ?? await mediaEvidence(engine, a.projectId, a.media.find(m => m.id === id)!, opts.refreshEvidence));
+  }
+  if (opts.loaded?.file.gradingEvidence) {
+    const grading = publishedGradingInputs(opts.loaded);
+    if (!grading) throw new Error("Fixed grading evidence requires a verified published reference.");
+    const mediaId = opts.loaded.file.gradingEvidence.mediaId;
+    evidence.set(mediaId, readJson<StoredEvidence>(grading.evidence));
   }
   let reference: ReferenceInput | undefined;
   if (opts.referenceVersion) {

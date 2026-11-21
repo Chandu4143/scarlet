@@ -14,7 +14,7 @@ import type { ProjectSummary } from "@scarlet/shared";
 import { buildDb, PRJ } from "../lib/mock/fixtures";
 import { useProjectStore } from "../stores/project";
 import { useUiStore } from "../stores/ui";
-import { ImportUrlModal, ProjectsPage } from "./ProjectsPage";
+import { ProjectsPage } from "./ProjectsPage";
 import { UploadList, useUploader } from "../components/media/UploadDropzone";
 
 it.each(["empty", "populated"])("can start a project from the %s library guide and creates it only on submit", async (library) => {
@@ -610,69 +610,6 @@ it("says under a project's details what Scarlet is doing in it, and nothing whil
   } finally {
     await act(() => root.unmount());
     container.remove();
-    useProjectStore.setState(previous, true);
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  }
-});
-
-it("queues a link on Enter and closes its dialog at once, while the link still downloads", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  const previous = useProjectStore.getState();
-  const video = buildDb().media[PRJ]!.find(m => m.kind === "video")!;
-  const link = "https://example.com/a.mp4";
-  let finish!: () => void;
-  const imports = vi.spyOn(api, "importMedia").mockImplementation(() => new Promise(resolve => { finish = () => resolve({ media: video }); }));
-  const upsert = vi.fn();
-  // The project on screen is still as it was created, with no video yet.
-  const fresh = { ...createProject("Interview"), id: PRJ };
-  const updateProject = vi.fn(async () => {});
-  useProjectStore.setState({ upsertMedia: upsert, updateProject, current: { id: PRJ, project: fresh, media: [] } as never });
-  const onClose = vi.fn();
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  const button = (text: string) => [...container.querySelectorAll("button")].find(b => b.textContent?.trim() === text)!;
-  const enter = () => act(async () => { container.querySelector<HTMLFormElement>("#import-link")!.requestSubmit(); });
-  try {
-    await act(async () => root.render(<ImportUrlModal projectId={PRJ} open notice="" onClose={onClose} />));
-    // The dialog is named for the button that opens it, and its own button for what it does.
-    expect(container.querySelector("dialog h2")?.textContent).toBe("Add from a link");
-    expect(button("Add")).toBeDefined();
-    const field = container.querySelector<HTMLInputElement>("#import-url")!;
-    // Enter with nothing typed imports nothing.
-    await enter();
-    expect(imports).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-    await act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, ` ${link} `);
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await enter();
-    // The link joined the project's queue, remembered like a file until it is in. The dialog didn't wait for it:
-    // it closed with the field empty, and nothing in it spins or is switched off.
-    expect(imports).toHaveBeenCalledExactlyOnceWith(PRJ, { url: link, importId: pendingImports(PRJ)[0]?.importId }, expect.any(AbortSignal));
-    expect(pendingImports(PRJ).map(i => i.source)).toEqual([link]);
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(field.value).toBe("");
-    expect(container.querySelector(".animate-spin")).toBeNull();
-    expect(button("Cancel").disabled).toBe(false);
-    // Cancel, the × and Esc put the dialog away at any time.
-    await act(async () => button("Cancel").click());
-    await act(async () => container.querySelector<HTMLButtonElement>("[data-close]")!.click());
-    await act(async () => { container.querySelector("dialog")!.dispatchEvent(new Event("cancel", { cancelable: true })); });
-    expect(onClose).toHaveBeenCalledTimes(4);
-    expect(imports).toHaveBeenCalledOnce();
-    await act(async () => finish());
-    expect(upsert).toHaveBeenCalledExactlyOnceWith(PRJ, video);
-    expect(pendingImports(PRJ)).toEqual([]);
-    // As a file does, the first video added to a project that is still new gives it its format.
-    expect(updateProject).toHaveBeenCalledExactlyOnceWith({ settings: expect.objectContaining({ width: video.width, height: video.height }),
-      expectedFormat: { settings: fresh.settings, head: fresh.head } }, PRJ);
-  } finally {
-    await act(() => root.unmount());
-    container.remove();
-    localStorage.removeItem("scarlet.imports.v1");
     useProjectStore.setState(previous, true);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

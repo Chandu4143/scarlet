@@ -3588,9 +3588,12 @@ it("keeps the other calls' dots on the timeline while a call is open, so one pre
   const dots = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
   const numbers = () => dots().map(d => d.querySelector(".simple-timeline-number")?.textContent);
   expect(numbers()).toEqual(["1", "2", "3"]);
-  // The open call's dot is lit at the start of its band. The calls still waiting that are in view keep theirs.
+  // Waiting calls are dots only, as any cut is: nothing is drawn over the footage they'd take out until one is open.
+  expect(container.querySelector(".simple-timeline-band, .simple-timeline-cut")).toBeNull();
+  // The open call's dot is lit at the start of its band. The calls still waiting that are in view keep theirs. Its band
+  // is a cut's, with a dashed edge, since its footage is still in the video until it's approved.
   await openCall("Breath before the price.");
-  expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
+  expect(container.querySelector(".simple-timeline-band")?.classList.contains("is-proposed")).toBe(true);
   expect(numbers()).toEqual(["1", "2", "3"]);
   expect(dots().map(d => [d.dataset.state, d.classList.contains("is-on")])).toEqual([["check", false], ["check", true], ["check", false]]);
   // A press on one opens that call in the card, and the timeline zooms to it.
@@ -6679,7 +6682,7 @@ it("marks the menu while a rule waits in Learnings, and lists each with its skil
   // Each is said once in the chat, under the request it came from.
   const from = container.querySelector<HTMLElement>(`.unit[data-run="${data.tasks[0]!.id}"]`)!;
   expect([...from.querySelectorAll(".simple-learned")].map(l => l.textContent))
-    .toEqual(["Learned for dialogue-pass: “Leave the breath before a punchline.” Review", "Learned for frame-screen: “Keep a laugh in.” Review"]);
+    .toEqual(["Learned for dialogue-pass: “Leave the breath before a punchline.” Review Decline", "Learned for frame-screen: “Keep a laugh in.” Review Decline"]);
   expect(container.querySelectorAll(".simple-learned")).toHaveLength(2);
   await openMenu();
   expect(menuRow("Learnings").querySelector(".menu-dot")?.getAttribute("aria-label")).toBe("2 rules to review");
@@ -6742,6 +6745,29 @@ it("opens Learnings at a rule from Review on its line in the chat, and takes the
     useProjectStore.setState({ current: data });
   });
   expect(container.querySelector(".simple-learned")).toBeNull();
+});
+
+it("declines a rule from Decline on its line in the chat, and says why when that fails", async () => {
+  useSkillsStore.setState({ skills: [skillNamed("skl_dialogue", "dialogue-pass")], status: "ready", error: null });
+  const declineLearning = vi.fn().mockRejectedValueOnce(new Error("Scarlet is offline.")).mockResolvedValue(undefined);
+  data = { ...data, learnings: [learning("lrn_a")] };
+  useProjectStore.setState({ current: data, declineLearning });
+  await show();
+  const line = () => container.querySelector<HTMLElement>(".simple-learned");
+  // Decline rests muted after Review, as the chat's other links do.
+  expect([...line()!.querySelectorAll("button")].map(b => [b.textContent, b.className]))
+    .toEqual([["Review", "simple-learned-review"], ["Decline", "simple-learned-decline"]]);
+  await click(buttonIn(line()!, "Decline")!);
+  expect(declineLearning).toHaveBeenCalledWith("lrn_a");
+  expect(line()!.querySelector('[role="alert"]')?.textContent).toBe(" Couldn't decline. Scarlet is offline.");
+  await click(buttonIn(line()!, "Decline")!);
+  expect(line()!.querySelector('[role="alert"]')).toBeNull();
+  // Declined, the line leaves the chat.
+  await act(async () => {
+    data = { ...data, learnings: [learning("lrn_a", { state: "declined" })] };
+    useProjectStore.setState({ current: data });
+  });
+  expect(line()).toBeNull();
 });
 
 it("names a rule's skill in full on hover, and moves the decisions under it together where the panel is too narrow for both", async () => {
@@ -9669,8 +9695,12 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
   await act(async () => {});
   expect([pass().querySelector(".simple-pass-list")?.getAttribute("aria-label"), pass().querySelectorAll(".simple-pass-list > li").length, link().textContent])
     .toEqual(["Every edit", 1, "Hide"]);
+  const passage = vi.spyOn(player, "audition");
   await click(rows()[0]!);
   expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe("An um.");
+  await act(async () => {});
+  const playing = player.element();
+  const listens = passage.mock.calls.length;
 
   const secondCut = { start: 8, end: 9, reason: "A false start." };
   const secondPart = { ...part, id: "chg_second_part", fromVersion: part.toVersion, toVersion: "ver_second_part",
@@ -9678,6 +9708,14 @@ it("opens the edits so far and keeps the selected cut open when a running pass s
   await event(d => ({ ...d, project: { ...d.project, head: secondPart.toVersion },
     timeline: { ...applyOps(d.timeline!, [{ op: "rippleDelete", start: secondCut.start, end: secondCut.end }]), version: secondPart.toVersion, parent: secondPart.fromVersion },
     changes: [...d.changes, secondPart], tasks: d.tasks.map(t => t.id === "task_done" ? { ...t, changeIds: [...t.changeIds, secondPart.id] } : t) }));
+  await act(async () => {});
+  // The cut plays on with its card: the part saved meanwhile waits until the editor pauses.
+  expect([usePlayerStore.getState().playing, player.element()]).toEqual([true, playing]);
+  expect(passage).toHaveBeenCalledTimes(listens);
+  expect(rows().map(row => [row.querySelector(".simple-pass-words")?.textContent, row.getAttribute("aria-current")])).toEqual([["An um.", "true"]]);
+  expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe("An um.");
+  await pauses();
+  await act(async () => {});
   expect(rows().map(row => [row.querySelector(".simple-pass-words")?.textContent, row.getAttribute("aria-current")]))
     .toEqual([["An um.", "true"], ["A false start.", null]]);
   expect(editPanel()?.querySelector(".edit-card-title")?.textContent).toBe("An um.");
@@ -11224,6 +11262,47 @@ it("plays an open edit on without a break when a new working cut lands while it 
   expect(player.element()).not.toBe(was);
   expect(passage).toHaveBeenLastCalledWith({ start: 0, end: 5.4 }, expect.any(Number), undefined, true);
   expect([player.element()!.paused, usePlayerStore.getState().time]).toEqual([true, 1.5]);
+});
+
+it("plays an open edit on without a break when a request about another of its edits lands while it plays", async () => {
+  madeRequest();
+  // The engine lists a request's edits on the working cut as it is now, not the one held on screen while the video plays.
+  vi.mocked(api.threadEdits).mockImplementation(async (_project, threadId) => ({ version: useProjectStore.getState().current!.project.head!,
+    edits: threadId !== threadWith("chg_approved_2").id ? [] : [
+      { changeId: "chg_approved_2", spot: 0, label: "music bed", range: { start: 0, end: 16 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 1, label: "captions", range: { start: 0.2, end: 2.4 }, previous: [] },
+      { changeId: "chg_approved_2", spot: 2, label: "wrap", range: { start: 11.5, end: 16 }, previous: [], check: CHECK, summary: SUMMARY },
+    ] }));
+  const passage = vi.spyOn(player, "previewRange");
+  await show();
+  await click(editRows("chg_approved_2")[1]!);
+  await act(async () => {});
+  expect(openTitle()).toBe("captions");
+  await act(async () => player.seek(1.5, true));
+  const was = player.element()!;
+  expect(was.paused).toBe(false);
+  const listens = passage.mock.calls.length;
+  // A note on the wrap, sent earlier, lands as a new edit of the same request while the captions play.
+  const made = data.changes.find(c => c.id === "chg_approved_2")!;
+  const wrapFix = { ...made, id: "chg_wrap_fix", taskId: "task_made", fromVersion: made.appliedVersion ?? made.toVersion, toVersion: "ver_next", appliedVersion: "ver_next",
+    description: "Let the wrap's last word finish", timelineEdits: [{ label: "wrap", range: { start: 11.5, end: 16 } }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await event(d => ({ ...d, changes: [...d.changes, wrapFix], project: { ...d.project, head: "ver_next" }, timeline: { ...d.timeline!, version: "ver_next" } }));
+  await act(async () => {});
+  await act(async () => {});
+  // The card stays open on the captions and the same listen plays on.
+  expect(openTitle()).toBe("captions");
+  expect(editPanel()).not.toBeNull();
+  expect(player.element()).toBe(was);
+  expect(passage).toHaveBeenCalledTimes(listens);
+  expect([was.paused, usePlayerStore.getState().time]).toEqual([false, 1.5]);
+  // Paused, the newest working cut comes up, with the card still on the captions and the video still paused.
+  await pauses();
+  await act(async () => {});
+  await act(async () => {});
+  expect(useShownCutStore.getState().head).toBe("ver_next");
+  expect(openTitle()).toBe("captions");
+  expect(player.element()!.paused).toBe(true);
 });
 
 it("plays the video on without a break while a pass saves new working cuts, and shows the newest once paused", async () => {

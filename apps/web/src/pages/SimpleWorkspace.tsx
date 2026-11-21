@@ -265,7 +265,8 @@ interface ChatActions {
 
 /**
  * A rule Scarlet picked up from this request, under what the request did: the skill it is for and the rule in quotes,
- * then Review, which opens Learnings at it. Nothing is decided here; the line goes once the editor decides in Learnings.
+ * then Review, which opens Learnings at it, and Decline, which turns the rule down from here. The line goes once the
+ * editor decides, here or in Learnings.
  */
 function LearnedLine({ learning, onReview }: { learning: Learning; onReview?(id: string): void }) {
   const skill = useSkillsStore(s => s.skills.find(k => k.id === learning.skillId)?.name);
@@ -273,11 +274,23 @@ function LearnedLine({ learning, onReview }: { learning: Learning; onReview?(id:
   // again from here: the line says "Learned:" without the name, and Learnings tries again as it opens.
   const loadSkills = useSkillsStore(s => s.load);
   useEffect(() => { if (useSkillsStore.getState().status === "idle") void loadSkills(); }, [loadSkills]);
+  const [declining, setDeclining] = useState(false);
+  const [failed, setFailed] = useState("");
+  const decline = () => {
+    setDeclining(true);
+    setFailed("");
+    useProjectStore.getState().declineLearning(learning.id)
+      .catch(e => setFailed(errorMessage(e)))
+      .finally(() => setDeclining(false));
+  };
   return <p className="simple-learned">
     <Icon name="bulb" size={13} />
     <span>{skill ? `Learned for ${skill}: ` : "Learned: "}<span className="simple-learned-rule">“{learning.rule}”</span>
       {onReview && <> <button type="button" className="simple-learned-review" onClick={() => onReview(learning.id)}
-        title="Approve, revise or decline it in Learnings">Review</button></>}</span>
+        title="Approve or revise it in Learnings">Review</button></>}
+      {" "}<button type="button" className="simple-learned-decline" disabled={declining} onClick={decline}
+        title="Don't learn this">Decline</button>
+      {failed && <span className="simple-learned-failed" role="alert"> Couldn't decline. {failed}</span>}</span>
   </p>;
 }
 
@@ -2737,7 +2750,9 @@ export function SimpleWorkspace() {
     : shownEdit ? `Showing “${shownEdit.label}” at ${clockLabel(reviewRange?.start ?? shownEdit.at ?? shownEdit.range.start)}`
     : chosenSource && source === chosenSource ? `Showing ${chosenSource.name}` : undefined;
   // A call's passage is shaded where its footage is on the working cut. One that can't be placed there shades nothing.
-  const lineFocus = listening ? callView ? callView.focus : heard && callTimeline && focusAround(heard, callDuration ?? 0, conflict ? "Current passage" : `Removed · ${lengthLabel(heard.end - heard.start)}`)
+  // A call's cut isn't in the video until the editor approves it, so its band is drawn as any cut's with a dashed edge.
+  const callFocus = listening ? callView ? callView.focus : heard && callTimeline && focusAround(heard, callDuration ?? 0, conflict ? "Current passage" : `Removed · ${lengthLabel(heard.end - heard.start)}`) : undefined;
+  const lineFocus = listening ? callFocus ? { ...callFocus, tone: "proposed" as const } : undefined
     : places.length ? suggestionLine
     : appliedCut ? focusAround(appliedCut, beforeDuration, `Removed · ${lengthLabel(appliedCut.end - appliedCut.start)}`, { playbackEnd: afterListen?.end })
     // Until the earlier version arrives, a line marks the join in the working cut and says how much came out there.

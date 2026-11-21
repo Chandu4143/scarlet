@@ -76,6 +76,10 @@ jobs:
         if: runner.os != 'Windows'
         run: pnpm -r test
 
+      - name: Test the evals' scoring
+        if: runner.os == 'Linux'
+        run: node_modules/.bin/vitest run --config evals/vitest.config.ts
+
       - name: Test with user-owned Windows fixtures
         if: runner.os == 'Windows'
         shell: powershell

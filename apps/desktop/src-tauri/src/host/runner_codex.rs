@@ -1,5 +1,6 @@
-//! Run an ephemeral Codex edit over App Server stdio. `codex exec --json`
-//! remains available when App Server cannot use Scarlet's isolated configuration.
+//! Run a Codex edit over App Server stdio, in a thread kept in the run's private Codex home so an answer or a resume
+//! after a quit carries on in it. `codex exec --json`, whose threads are ephemeral, remains available when App Server
+//! cannot use Scarlet's isolated configuration.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -13,7 +14,7 @@ use super::detect::api_key_vars;
 use super::runner::{cut_short, exit_error, report_usage, write_files, RunOptions, RunnerCommand};
 use super::spawn::{resolve_cli, spawn_lines, SpawnLinesOptions};
 use super::usage::{add_usage, codex_app_server_usage, codex_usage, AgentUsage};
-use super::types::{brief, brief_input, is_question_tool, plan_event, tail_summary, truthy, value_text, McpSpec, PlanStep, RunResult, RunnerEvent};
+use super::types::{brief, brief_input, is_question_tool, plan_event, question_words, tail_summary, truthy, value_text, McpSpec, PlanStep, RunResult, RunnerEvent};
 
 #[derive(Debug, Default, Clone)]
 pub struct CodexState {
@@ -21,6 +22,8 @@ pub struct CodexState {
     pub last_message: Option<String>,
     final_message: Option<String>,
     pub question: Option<String>,
+    /// The item of the question call `question` came from, which its result settles.
+    question_item: Option<Value>,
     pub question_posted: bool,
     pub should_stop: bool,
     pub failed: Option<String>,
@@ -36,6 +39,11 @@ pub struct CodexState {
     pub plan: Option<Vec<PlanStep>>,
     /// Whether this Codex reports a compaction as an item, so its older `thread/compacted` notice isn't a second one.
     compaction_items: bool,
+    /// The run carries on in a thread an earlier run left (`thread/resume`).
+    resumed: bool,
+    /// What a resumed thread had counted before this run, taken off each count it reports: the engine adds one count
+    /// per run, so a total that carried the earlier runs' tokens would count them twice.
+    usage_base: Option<AgentUsage>,
 }
 
 /// The steps of a `todo_list` item: Codex's `update_plan`, as `codex exec --json` reports it. Each step is its text and
@@ -151,22 +159,38 @@ fn codex_events(kind: &str, msg: &Value, st: &mut CodexState) -> Vec<RunnerEvent
                     let status = item.get("status").and_then(Value::as_str);
                     let has_error = truthy(item.get("error"));
                     if is_question_tool(tool.as_deref()) {
-                        let question_text = arguments.and_then(|a| a.get("text")).and_then(Value::as_str).filter(|text| !text.trim().is_empty());
-                        // App Server may withhold the arguments until the tool finishes.
-                        let has_question = question_text.is_some() || itype == "mcp_tool_call";
-                        if st.question.is_none() && has_question && (started || completed) {
-                            let text = question_text.map(str::to_string).unwrap_or_else(|| brief(arguments));
-                            st.question = Some(text.clone());
-                            let mut data = serde_json::Map::new();
-                            data.insert("tool".into(), Value::String(name.clone()));
-                            if let Some(id) = item.get("id") {
-                                data.insert("itemId".into(), id.clone());
-                            }
-                            events.push(RunnerEvent::with("question", text, Value::Object(data)));
+                        // Only a call with words to ask is a question. App Server may withhold the arguments until the
+                        // tool finishes, so the words can first come with its result.
+                        let id = item.get("id").cloned();
+                        if let (None, Some(text)) = (&st.question, question_words(arguments)) {
+                            st.question = Some(text);
+                            st.question_item = id.clone();
                         }
                         if completed {
-                            st.question_posted = status != Some("failed") && !has_error && !truthy(item.pointer("/result/isError"));
-                            st.should_stop = st.question.is_some();
+                            let refused = status == Some("failed") || has_error || truthy(item.pointer("/result/isError"));
+                            let asked = st.question.is_some() && st.question_item == id;
+                            if asked && !refused {
+                                // The question is the editor's now: said once posted, and the turn stops on it.
+                                st.question_posted = true;
+                                st.should_stop = true;
+                                let mut data = serde_json::Map::new();
+                                data.insert("tool".into(), Value::String(name.clone()));
+                                if let Some(id) = id {
+                                    data.insert("itemId".into(), id);
+                                }
+                                events.push(RunnerEvent::with("question", st.question.clone().unwrap_or_default(), Value::Object(data)));
+                            } else {
+                                // A question the MCP server refused, or a call with no words, isn't asked: the model hears
+                                // why and carries on, and so does the run.
+                                if asked {
+                                    st.question = None;
+                                    st.question_item = None;
+                                }
+                                if refused {
+                                    let detail = if has_error { item.get("error") } else { item.get("result") };
+                                    events.push(RunnerEvent::new("error", format!("{name} failed: {}", brief_input(detail, 400))));
+                                }
+                            }
                         }
                     } else if started {
                         let text = format!("{name} {}", brief(arguments)).trim().to_string();
@@ -274,8 +298,18 @@ fn app_server_events(method: &str, params: &Value, st: &mut CodexState) -> Vec<R
             Vec::new()
         }
         "thread/tokenUsage/updated" => {
-            if let Some(usage) = codex_app_server_usage(params.pointer("/tokenUsage/total"), st.model.as_deref()) {
-                st.usage = Some(usage);
+            // `total` is the thread's, from its first turn. On a resumed thread the first count's `total` less its
+            // `last`, the call it is about, is what the earlier runs used; a Codex that starts the count again has
+            // nothing there to take off. Without a `last` the whole first count is taken for theirs.
+            if let Some(total) = codex_app_server_usage(params.pointer("/tokenUsage/total"), st.model.as_deref()) {
+                if st.resumed && st.usage_base.is_none() {
+                    let last = codex_app_server_usage(params.pointer("/tokenUsage/last"), None);
+                    st.usage_base = Some(last.map_or_else(|| total.clone(), |last| total.clone().less(&last)));
+                }
+                st.usage = Some(match &st.usage_base {
+                    Some(base) => total.less(base),
+                    None => total,
+                });
             }
             Vec::new()
         }
@@ -380,6 +414,10 @@ pub fn build_codex_command(model: Option<&str>, effort: Option<&str>, service_ti
         "--ignore-user-config".into(),
         "--ignore-rules".into(),
         "--ephemeral".into(),
+        // As App Server: the task folder is the project's root, so Codex reads no AGENTS.md or project config from a
+        // folder above it.
+        "-c".into(),
+        "project_root_markers=[]".into(),
     ];
     let executable = codex_executable(bin);
     args.extend(codex_tool_args(mcp, executable.as_deref()));
@@ -479,7 +517,7 @@ async fn try_app_server(opts: &RunOptions, bin: &str, home: &Path) -> Option<Run
     // can make Codex trust a project and load its local configuration.
     let thread = json!({ "model": opts.model, "serviceTier": opts.service_tier });
     let turn = json!({ "input": [{ "type": "text", "text": opts.instruction, "text_elements": [] }] });
-    let st = Arc::new(Mutex::new(CodexState::default()));
+    let st = Arc::new(Mutex::new(CodexState { resumed: opts.resume_session.is_some(), ..Default::default() }));
     let live_state = st.clone();
     let (on_event, on_usage) = (opts.on_event.clone(), opts.on_usage.clone());
     let requested_model = opts.model.clone();
@@ -686,6 +724,48 @@ mod tests {
     }
 
     #[test]
+    fn a_question_the_mcp_server_refused_or_with_no_words_is_no_question() {
+        let call = |kind: &str, args: Value, end: Value| {
+            let mut item = json!({"id":"q","type":"mcp_tool_call","server":"scarlet","tool":"task_question","arguments":args});
+            item.as_object_mut().unwrap().extend(end.as_object().unwrap().clone());
+            json!({"type":kind,"item":item}).to_string()
+        };
+        let kinds = |evs: &[RunnerEvent]| evs.iter().map(|e| e.kind.clone()).collect::<Vec<_>>();
+        // Words under another key, or none worth asking: an ordinary call. Its raw input never becomes the question.
+        for args in [json!({"question":"Which take?"}), json!({"text":""}), json!({"text":"  "}), json!({"text":7})] {
+            let mut st = CodexState::default();
+            let evs = feed(&[&call("item.started", args.clone(), json!({"status":"in_progress"})), &call("item.completed", args.clone(), json!({"status":"failed","error":{"message":"text: Required"}}))], &mut st);
+            assert_eq!(kinds(&evs), ["error"], "{args}");
+            assert!(st.question.is_none() && !st.should_stop && !st.question_posted, "{args}");
+        }
+        // A question with words that the server refused, whichever way it says so: dropped, and the run goes on.
+        for end in [json!({"status":"failed"}), json!({"status":"completed","error":"busy"}), json!({"status":"completed","result":{"isError":true,"content":[]}})] {
+            let mut st = CodexState::default();
+            let evs = feed(&[&call("item.started", json!({"text":"Which take?"}), json!({"status":"in_progress"})), &call("item.completed", json!({"text":"Which take?"}), end.clone())], &mut st);
+            assert_eq!(kinds(&evs), ["error"], "{end}");
+            assert!(st.question.is_none() && !st.should_stop && !st.question_posted, "{end}");
+            // The model asks again, and that one is the editor's.
+            let evs = feed(&[&call("item.completed", json!({"text":"Keep the cold open?"}), json!({"status":"completed"}))], &mut st);
+            assert_eq!(evs, vec![RunnerEvent::with("question", "Keep the cold open?", json!({"tool":"scarlet.task_question","itemId":"q"}))]);
+            assert!(st.question_posted && st.should_stop);
+        }
+        // App Server can withhold the words until the call finishes: they arrive with its result.
+        let mut st = CodexState::default();
+        let started = json!({"item":{"id":"q1","type":"mcpToolCall","server":"scarlet","tool":"task_question","status":"inProgress"}});
+        let done = json!({"item":{"id":"q1","type":"mcpToolCall","server":"scarlet","tool":"task_question","arguments":{"text":"Which take?"},"status":"completed"}});
+        let mut evs = app_server_events("item/started", &started, &mut st);
+        assert!(evs.is_empty() && st.question.is_none());
+        evs.extend(app_server_events("item/completed", &done, &mut st));
+        assert_eq!(evs, vec![RunnerEvent::with("question", "Which take?", json!({"tool":"scarlet.task_question","itemId":"q1"}))]);
+        assert!(st.question_posted && st.should_stop);
+        // And a finished call with no words at all is still no question.
+        let mut st = CodexState::default();
+        let bare = json!({"item":{"id":"q2","type":"mcpToolCall","server":"scarlet","tool":"task_question","status":"completed"}});
+        assert!(app_server_events("item/completed", &bare, &mut st).is_empty());
+        assert!(st.question.is_none() && !st.should_stop);
+    }
+
+    #[test]
     fn carries_on_after_codex_recovers_from_a_dropped_stream() {
         let drop = "stream disconnected before completion: websocket closed by server before response.completed";
         let mut st = CodexState::default();
@@ -784,6 +864,40 @@ mod tests {
         // Ephemeral: Scarlet runs stay out of the user's Codex thread list.
         assert!(cmd.args.iter().any(|a| a == "--ephemeral"));
         assert!(!cmd.args.iter().any(|a| a == "resume"));
+        // The task folder is the project's root, as for App Server: nothing above it lends AGENTS.md or config.
+        assert!(cmd.args.windows(2).any(|p| p == ["-c", "project_root_markers=[]"]));
+    }
+
+    #[test]
+    fn counts_only_this_runs_tokens_on_a_thread_it_resumed() {
+        let update = |total: u64, last: u64| json!({"tokenUsage": {
+            "total": {"inputTokens": total, "cachedInputTokens": total / 2, "outputTokens": total / 10, "reasoningOutputTokens": total / 20},
+            "last": {"inputTokens": last, "cachedInputTokens": last / 2, "outputTokens": last / 10, "reasoningOutputTokens": last / 20},
+        }});
+        let counts = |st: &CodexState| st.usage.as_ref().map(|u| (u.input_tokens, u.cache_read_tokens, u.output_tokens, u.reasoning_tokens));
+        // A resumed thread that kept the earlier runs' 10,000 tokens: this run counts from its own first call.
+        let mut resumed = CodexState { resumed: true, ..Default::default() };
+        app_server_events("thread/tokenUsage/updated", &update(12_000, 2_000), &mut resumed);
+        assert_eq!(counts(&resumed), Some((1_000, 1_000, 200, 100)));
+        app_server_events("thread/tokenUsage/updated", &update(15_000, 3_000), &mut resumed);
+        assert_eq!(counts(&resumed), Some((2_500, 2_500, 500, 250)));
+        // A Codex that starts the count again on a resumed thread: nothing to take off.
+        let mut fresh_count = CodexState { resumed: true, ..Default::default() };
+        app_server_events("thread/tokenUsage/updated", &update(2_000, 2_000), &mut fresh_count);
+        app_server_events("thread/tokenUsage/updated", &update(5_000, 3_000), &mut fresh_count);
+        assert_eq!(counts(&fresh_count), Some((2_500, 2_500, 500, 250)));
+        // A count that doesn't say which call it is about: all of it is taken for the earlier runs', and this run's
+        // own count starts from there.
+        let mut unsure = CodexState { resumed: true, ..Default::default() };
+        let without_last = |total: u64| json!({"tokenUsage": {"total": {"inputTokens": total, "cachedInputTokens": total / 2, "outputTokens": total / 10, "reasoningOutputTokens": total / 20}}});
+        app_server_events("thread/tokenUsage/updated", &without_last(12_000), &mut unsure);
+        assert_eq!(counts(&unsure), Some((0, 0, 0, 0)));
+        app_server_events("thread/tokenUsage/updated", &update(15_000, 3_000), &mut unsure);
+        assert_eq!(counts(&unsure), Some((1_500, 1_500, 300, 150)));
+        // A new thread's total is all this run's.
+        let mut started = CodexState::default();
+        app_server_events("thread/tokenUsage/updated", &update(12_000, 2_000), &mut started);
+        assert_eq!(counts(&started), Some((6_000, 6_000, 1_200, 600)));
     }
 
     #[test]
@@ -958,6 +1072,16 @@ cat >/dev/null
             // A turn that completed counts, whatever the exit code.
             let (opts, _) = options("codex", dir.path(), Some(fake_cli(dir.path(), &[STARTED, MESSAGE, DONE], "exit 1")));
             assert!(run_codex(opts).await.ok);
+        }
+
+        #[tokio::test]
+        async fn finishes_a_run_whose_question_was_refused_without_asking_the_editor() {
+            let dir = tempfile::tempdir().unwrap();
+            let refused = r#"{"type":"item.completed","item":{"id":"q","type":"mcp_tool_call","server":"scarlet","tool":"task_question","arguments":{"text":""},"status":"failed","error":{"message":"text must not be empty"}}}"#;
+            let (opts, _) = options("codex", dir.path(), Some(fake_cli(dir.path(), &[STARTED, refused, MESSAGE, DONE], "exit 0")));
+            let run = run_codex(opts).await;
+            assert!(run.ok && run.question.is_none() && !run.question_posted, "{run:?}");
+            assert_eq!(run.summary, "Proposed the first cut.");
         }
 
         #[tokio::test]

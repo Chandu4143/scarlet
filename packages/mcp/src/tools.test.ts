@@ -349,6 +349,38 @@ describe("timeline_framing", () => {
     } finally { await c.close(); }
   });
 
+  it("waits within one tool call's time across every measurement a save waits for", async () => {
+    // The engine takes each wait it is given in full: the recording's cuts, then its edges, then a look at a frame.
+    const waited: Array<[string, number]> = [];
+    const others = mock.state.extra!;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    mock.state.extra = (req, res) => {
+      const wait = Number(req.query.get("wait") ?? 0);
+      const answer = (body: object) => {
+        waited.push([req.path.split("/").slice(-2).join("/"), wait]);
+        vi.setSystemTime(Date.now() + wait * 1000);
+        return reply(res, body);
+      };
+      if (req.path.endsWith("/picture-cuts")) return answer({ from: 0, to: 120, readSeconds: 1, done: false, cuts: [] });
+      if (req.path.endsWith("/show-area")) return answer({ mediaId: "scr", step: 5, done: true, areas: [], unset: [[0, 120]] });
+      if (req.path.endsWith("/show-area/ask")) return answer({ mediaId: "scr", step: 5, done: true, areas: [], unset: [[0, 120]], asked: 1, answered: 1 });
+      return others(req, res);
+    };
+    const c = await connect({ taskId: "task-waits" });
+    try {
+      await ok(c, "timeline_get");
+      const refused = await call(c, "timeline_propose", { ops: [{ op: "updateClip", clipId: "s0", patch: { transform: { cropLeft: 0.1, cropTop: 0.1, cropRight: 0.2, cropBottom: 0.1 } } }],
+        intent: "requested", description: "Cropped the demo.", reason: "The window is the subject." });
+      expect(textOf(refused)).toContain("no area says what viewers may see");
+      expect(waited.map(([what]) => what)).toEqual(expect.arrayContaining(["scr/picture-cuts", "scr/show-area"]));
+      // Claude Code's calls wait 240 s at most: each wait has what the ones before it left.
+      expect(waited.reduce((sum, [, wait]) => sum + wait, 0)).toBeLessThanOrEqual(240);
+    } finally {
+      vi.useRealTimers();
+      await c.close();
+    }
+  });
+
   describe("with areas viewers may see on record", () => {
     // One window from 0 to 60 s of the screen recording: 10-80% across, 10-90% down. Nothing is set after that.
     const window = { at: 5, area: [0.1, 0.1, 0.8, 0.9], noLine: [], holds: [[0, 60]] };
@@ -375,7 +407,10 @@ describe("timeline_framing", () => {
         expect(result.areas).toEqual([{ at: 5, area: [10, 10, 80, 90], holds: [[0, 60]], heldSeconds: 60 }]);
         // The edit plays nothing of the recording past 30 s, so the unset stretch is not on picture.
         expect(result.unset).toEqual([{ from: 60, to: 120, onPicture: 0, look: 90 }]);
-        expect(textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }] }))).toContain("at least 5 percent each way");
+        expect(textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }] }))).toContain("set[0].area is [left, top, right, bottom] in percent, at least 5 percent each way");
+        // Every area too small is named in one refusal.
+        const several = textOf(await call(c, "screen_area", { mediaId: "scr", set: [{ at: 5, area: [10, 10, 12, 90] }, { at: 9, area: [10, 10, 80, 90] }, { at: 20, area: [10, 10, 80, 11] }] }));
+        expect(several).toContain("set[0].area and set[2].area are each [left, top, right, bottom] in percent");
       } finally { await c.close(); }
     });
 
@@ -725,6 +760,28 @@ describe("tool annotations", () => {
     } finally { await c.close(); }
   });
 
+  it.each(["claude", "codex", "gemini"])("lists every parameter %s's model is shown with its own type: no $ref, no untyped branch", async agent => {
+    // A run's session, which has the tools only a request has.
+    const task = Task.parse({ id: "typed-task", state: "running", projectId: "prj_test", kind: "edit", agent, instruction: "/first-cut-dialogue",
+      context: {}, createdBy: { type: "human", name: "Editor" } });
+    const c = await connect({ agent, taskId: task.id, task, author: { type: "agent", id: agent, name: agent } });
+    try {
+      const { tools } = await c.listTools();
+      expect(tools.map(t => t.name)).toEqual(expect.arrayContaining(["dialogue_check_join", "dialogue_apply_cuts", "timeline_propose", "captions_generate"]));
+      const untyped: string[] = [];
+      const walk = (node: unknown, path: string) => {
+        if (!node || typeof node !== "object") return;
+        if ("$ref" in node) untyped.push(`${path} is a $ref`);
+        for (const [key, value] of Object.entries(node)) {
+          if (key === "anyOf" && Array.isArray(value)) value.forEach((branch, i) => { if (!branch?.type) untyped.push(`${path}.anyOf[${i}] has no type`); });
+          walk(value, `${path}.${key}`);
+        }
+      };
+      for (const t of tools) walk(t.inputSchema, t.name);
+      expect(untyped).toEqual([]);
+    } finally { await c.close(); }
+  });
+
   it("marks exactly the tools that change something as writes, and nothing as destructive", () => {
     expect(every.filter(name => !toolAnnotations(name).readOnlyHint).sort()).toEqual([...writes].sort());
     for (const name of every) {
@@ -1019,6 +1076,116 @@ describe("what goes to stderr when a read fails and the tool answers without it"
       expect(saved).toMatchObject({ continueFrom: "pf", changes: [{ id: "staged" }] });
       const line = "[scarlet-mcp] failed to prepare the review of staged ahead: Scarlet server error 500 (engine_error): The database is busy.";
       await vi.waitFor(() => expect(logged()).toContain(line), { timeout: 5000 });
+    } finally { await c.close(); }
+  });
+});
+
+describe("dialogue_apply_cuts's receipt of what a saved part still plays", () => {
+  it("reads it while the engine saves and its lists at once, and says the same as reading one after another", async () => {
+    const tl = emptyTimeline("prj_test");
+    tl.version = "tidied";
+    tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 12, 0)];
+    // A mic nobody transcribed: its words are asked for on every read.
+    tl.tracks[1]!.clips = [makeMediaClip("m2", 10, 12, 10)];
+    mock.state.timeline = tl;
+    const applied = { ...tl, version: "applied", tracks: [{ ...tl.tracks[0]!, clips: [makeMediaClip("m1", 0, 7, 0), makeMediaClip("m1", 9, 12, 7)] },
+      { ...tl.tracks[1]!, clips: [makeMediaClip("m2", 10, 12, 8)] }] };
+    const stored = [["And", .5, .75], ["it", 1.1, 1.5], ["just", 5.3, 5.6], ["feels", 5.6, 5.9], ["like", 5.9, 6.1], ["this.", 6.1, 6.4],
+      ["so", 9.4, 9.6], ["so", 9.7, 9.9], ["quiet", 10.3, 10.6], ["words", 10.6, 10.9], ["done.", 11.4, 11.8]]
+      .map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+    mock.state.transcripts = { m1: { ...transcript, segments: [{ ...transcript.segments[0]!, words: stored, text: stored.map(w => w.text).join(" "), end: 11.8 }] } };
+    // Speech at -20 dBFS, “quiet words” at -48, room tone between, and a false start the transcript left out at 1.75–2.3.
+    const sound = [...stored, { start: 1.75, end: 2.3 }];
+    mock.state.waveform = (mediaId, from, to, points) => {
+      const rms = Array.from({ length: points }, (_, i) => {
+        const t = from + (i + .5) * (to - from) / points;
+        if (mediaId !== "m1" || !sound.some(w => w.start <= t && t < w.end)) return .001;
+        return t >= 10.3 && t < 10.9 ? .004 : .1;
+      });
+      return { mediaId, from, to, peaks: rms, rms, speechActivity: mediaId === "m1" ? stored.map(w => ({ start: w.start, end: w.end })) : [] };
+    };
+    const read = [["And", .5, .7], ["it", .7, .8], ["just", .95, 1.3], ["feel,", 1.4, 1.75], ["uh.", 1.75, 2.3], ["It", 5.2, 5.3], ["just", 5.3, 5.6],
+      ["feels", 5.6, 5.9], ["like", 5.9, 6.1], ["this.", 6.1, 6.4]].map(([text, start, end]) => ({ text: text as string, start: start as number, end: end as number }));
+    // When each request reached the engine and when it was answered. The save, the media list and the scan's words are slow.
+    const seen: Array<{ path: string; version: string | null; kind?: unknown; start: number; end: number }> = [];
+    let saved = false;
+    mock.state.extra = (req, res) => {
+      const span = { path: req.path, version: req.query.get("version"), kind: (req.body as { data?: { kind?: unknown } } | undefined)?.data?.kind,
+        start: performance.now(), end: performance.now() };
+      seen.push(span);
+      const later = (ms: number, body: unknown) => {
+        setTimeout(() => { span.end = performance.now(); reply(res, body); }, ms);
+        return true;
+      };
+      if (req.path.endsWith("/dialogue-cuts")) {
+        saved = true;
+        return later(100, { changes: [{ id: "chg_1", intent: "requested", state: "approved", fromVersion: "tidied", toVersion: "applied", description: "Tightened" }], head: "applied" });
+      }
+      if (req.path === "/projects/prj_test/timeline" && req.query.get("version") === "applied") return reply(res, { timeline: applied });
+      if (req.path.endsWith("/dialogue-verbatim")) return later(60, { words: read, covered: [{ start: 0, end: 12 }] });
+      if (req.path === "/projects/prj_test/media" && saved) return later(200, { media: mock.state.project.media });
+      if (req.path.endsWith("/repeat-audit")) return reply(res, { version: "applied", heard: 9, remaining: 0, repeats: [], staged: 0 });
+      return false;
+    };
+    const task = Task.parse({ id: "tsk_receipt", projectId: "prj_test", kind: "edit", state: "running", agent: "claude", instruction: "Tighten the dialogue",
+      context: {}, createdBy: { type: "human", name: "Editor" }, repeatAudit: { version: "tidied" } });
+    const c = await connect({ taskId: task.id, task });
+    try {
+      const result = await ok(c, "dialogue_apply_cuts", { version: "tidied", description: "Tightened", range: { start: 0, end: 12 },
+        cuts: [{ start: 7, end: 9, kind: "pause", decision: "cut", reason: "A long wait.", summary: "Shortened the wait before “so”" }] });
+      // Byte for byte the receipt these reads gave one after another, every list in it, and nothing it went without.
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify({
+        changes: [{ id: "chg_1", intent: "requested", state: "approved", fromVersion: "tidied", toVersion: "applied", description: "Tightened" }], continueFrom: "applied",
+        audioRecheck: { version: "applied", heard: 9, remaining: 0, repeats: [], staged: 0, sync: { pairs: [{ reference: "m1", secondary: "m2", offset: 0, togetherSeconds: 2,
+          outOfLine: [], heard: [], unheard: 0 }], summary: "talk.mp4 and mic.wav: placed in line throughout; not compared by sound, as one has none." } },
+        gate: { unchangedCuts: 1, decisions: [] },
+        keptSilences: [{ at: 1.5, seconds: 3.8, after: "it", before: "just" }],
+        keptPauses: [{ at: 0.75, mediaId: "m1", seconds: 0.35, after: "And", before: "it", afterWord: 0 }, { at: 6.4, mediaId: "m1", seconds: 1, after: "this.", before: "so" },
+          { at: 7.9, mediaId: "m1", seconds: 0.4, after: "so", before: "quiet", afterWord: 7 }, { at: 8.9, mediaId: "m1", seconds: 0.5, after: "words", before: "done.", afterWord: 9 }],
+        repeatedWords: [{ at: 7.4, mediaId: "m1", text: "so so", fromWord: 6, toWord: 6, pause: 0.1 }],
+        unexplainedSound: [{ at: 1.75, mediaId: "m1", seconds: 0.55, after: "it", before: "just", sourceSeconds: [1.75, 2.3] }],
+        heardNotInTranscript: [{ at: 0.95, seconds: 4.35, text: "just feel, uh. It", context: "And it just feel, uh. It just feels like this.", mediaId: "m1", sourceSeconds: [0.95, 5.3] }],
+        keptQuietPhrases: [{ at: 8.3, mediaId: "m1", fromWord: 8, toWord: 9, start: 10.3, end: 10.9, text: "quiet words", levelDbfs: -48, beforeDbfs: -20, afterDbfs: -20 }],
+      }) }]);
+      expect(mock.state.events.map(e => e.data?.kind ?? e.type)).toEqual(["editor_progress", "pass_progress", "change"]);
+      const at = (path: string) => seen.filter(s => s.path.endsWith(path));
+      const save = at("/dialogue-cuts")[0]!, progress = at("/events").find(s => s.kind === "editor_progress")!;
+      // The mic's words are asked for once for both lists, after the editor is told the save is under way and while it runs.
+      expect(at("/media/m2/transcript").filter(s => s.start < save.end).map(s => s.start > progress.start)).toEqual([true]);
+      // The quiet phrases' media list, the scan's words and the repeat check overlap.
+      const media = at("/projects/prj_test/media").at(-1)!, scanWords = at("/dialogue-verbatim")[0]!, audit = at("/repeat-audit")[0]!;
+      expect(scanWords.start).toBeLessThan(media.end);
+      expect(audit.start).toBeLessThan(media.end);
+      // The repeat check starts once the scan's words are read: in a language it reads from the scan, it can save pages they'd read.
+      expect(audit.start).toBeGreaterThanOrEqual(scanWords.end);
+      // The lists share one read of the version the pass continues on; the sync check reads it as it always has.
+      expect(seen.filter(s => s.path === "/projects/prj_test/timeline" && s.version === "applied")).toHaveLength(2);
+    } finally { await c.close(); }
+  });
+
+  it("names what the lists went without in the order they are read, whichever fails first", async () => {
+    const tl = emptyTimeline("prj_test");
+    tl.version = "typing";
+    tl.tracks[0]!.clips = [makeMediaClip("m1", 0, 10, 0)];
+    mock.state.timeline = tl;
+    const words = [...transcript.segments[0]!.words, { text: "Next.", start: 5.8, end: 6.2 }, { text: "Then", start: 8, end: 8.3 }];
+    mock.state.transcripts = { m1: { ...transcript, segments: [{ ...transcript.segments[0]!, words, end: 8.3 }] } };
+    let saved = false;
+    const busy = { error: { code: "engine_error", message: "The database is busy." } };
+    // The quiet phrases' media list fails last, the kept silences' read of the new version first.
+    mock.state.extra = (req, res) => {
+      if (req.path.endsWith("/dialogue-cuts")) { saved = true; return reply(res, { changes: [], head: "applied" }); }
+      if (req.path === "/projects/prj_test/timeline" && req.query.get("version") === "applied") return reply(res, busy, 500);
+      if (req.path === "/projects/prj_test/media" && saved) { setTimeout(() => reply(res, busy, 500), 50); return true; }
+      return false;
+    };
+    const c = await connect();
+    try {
+      const result = await ok(c, "dialogue_apply_cuts", { version: "typing", description: "Tightened", range: { start: 0, end: 10 },
+        cuts: [{ start: 6.6, end: 7.6, kind: "pause", decision: "cut", reason: "A long wait.", summary: "Shortened the wait before “Then”" }] });
+      expect(result.content.at(-1)).toEqual({ type: "text", text: "Not measured: " +
+        "failed to place the quiet phrases the part still plays (Scarlet server error 500 (engine_error): The database is busy.); " +
+        "failed to place the kept silences on applied (Scarlet server error 500 (engine_error): The database is busy.)." });
     } finally { await c.close(); }
   });
 });

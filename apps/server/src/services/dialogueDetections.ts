@@ -104,6 +104,8 @@ export function dialogueDetector(ctx: Ctx) {
   /** `work`: the page's place in the audio lanes, while it is analysed. */
   type Page = { analyzed: Promise<DialogueDetections>; ready: Promise<DialogueDetections>; work?: AudioWork };
   const pending = new Map<string, Page>();
+  /** Recordings being read ahead of any pass, by project and recording. */
+  const readingAhead = new Set<string>();
   const unalignedPages = new WeakSet<DialogueDetections>();
   function scanEdit(projectId: string, taskId: string, startedAt?: string): ScanEdit {
     const owner = ctx.repos.tasks.get(taskId);
@@ -501,5 +503,41 @@ export function dialogueDetector(ctx: Ctx) {
     return wordsFromPages(rows.filter(r => !seen.has(`${r.start}-${r.end}`) && seen.add(`${r.start}-${r.end}`))
       .map(r => ({ start: r.start, end: r.end, words: (JSON.parse(r.result) as DialogueDetections).segments.flatMap(s => s.words) })));
   }
-  return { detect, checkpoints, start, prefetch, savedWords };
+  /**
+   * Read a recording's pages before any pass asks, so the first pass on a new recording finds them saved. On one
+   * 45-minute recording a page took about 30 s of the audio lane, and a pass that met the recording unread waited out
+   * tool calls of four minutes on its pages and cut 23 s; passes that found the pages saved cut 25 minutes (2026-11-20).
+   * Pages go one at a time on the same grid a pass reads (60 s, overlapping by 2 s), at the back of the lane and below
+   * the editor's playback, and stop with the project's media work. Once a pass reads the recording, its own scan takes
+   * over. Only a local reading is made unasked: one sent to a cloud service is paid for by the minute.
+   */
+  async function scanAhead(projectId: string, media: MediaAsset) {
+    const policy = ctx.repos.settings.transcriptionPolicy();
+    if (policy.settings.provider !== "whispercpp" || !media.duration || (media.kind !== "audio" && !media.hasAudio)) return;
+    const key = `${projectId}/${media.id}`;
+    if (readingAhead.has(key)) return;
+    readingAhead.add(key);
+    const end = media.duration;
+    let read = 0;
+    try {
+      const saved = new Map((await checkpoints(projectId, media, 0, end, policy.settings)).map(p => [p.start, p.end]));
+      for (let start = 0; start < end;) {
+        const to = Math.min(end, start + 60);
+        if (saved.get(start) !== to) {
+          const lane = audioLane(ctx);
+          if (lane.focusedOn(media.id) || ctx.mediaSignal(projectId).aborted || policy.signal.aborted) break;
+          const result = await (await openPage(projectId, media, start, to, undefined, policy)).ready;
+          // A page that couldn't be saved would be read again, page after page, for nothing.
+          if (result.speakerIssue || result.voiceRoleIssue) break;
+          read++;
+        }
+        if (to === end) break;
+        start = to - 2;
+      }
+    } finally {
+      readingAhead.delete(key);
+      if (read) ctx.log(`[dialogue-scan] ${media.id}: read ${read} page${read === 1 ? "" : "s"} ahead of any pass`);
+    }
+  }
+  return { detect, checkpoints, start, prefetch, savedWords, scanAhead };
 }

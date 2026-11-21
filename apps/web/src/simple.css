@@ -114,6 +114,8 @@
 /* The passage Scarlet asks the editor to look at or hear: amber, as everything that waits on them is. */
 .simple-timeline-band.is-check { background: rgba(237, 194, 133, .10); border: 1.5px solid rgba(237, 194, 133, .75); }
 .simple-timeline-band.is-check span { color: var(--color-warn); }
+/* A call's cut: red as any cut, but its edge dashed, since the footage is still in the video until the call is approved. */
+.simple-timeline-band.is-proposed { border-style: dashed; }
 .simple-timeline-band.is-added { background: color-mix(in srgb, var(--color-ok) 14%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--color-ok) 70%, transparent); }
 /* Footage another cut in the same pass took out. On After it isn't in the media, so it greys out instead of looking
@@ -309,8 +311,8 @@
 .learn-saving { font-size: 12.5px; }
 /* A rule opened from its line in the chat is the one the editor came for: a faint band says which. */
 .learn-item[aria-current="true"] { margin: 0 -14px; padding-left: 14px; padding-right: 14px; background: rgb(255 255 255 / 4%); }
-/* The line under a request that taught Scarlet a rule: the skill, the rule in quotes and Review in amber, which opens
-   Learnings at it. It goes once the editor decides there. */
+/* The line under a request that taught Scarlet a rule: the skill, the rule in quotes, Review in amber, which opens
+   Learnings at it, and Decline, muted as the chat's other links rest. It goes once the editor decides. */
 .simple-learned { display: flex; align-items: baseline; gap: 7px; margin: 6px 0 2px; font-size: 12.5px; line-height: 1.45;
   color: var(--color-muted); overflow-wrap: anywhere; }
 .simple-learned > svg { flex: none; position: relative; top: 2px; color: var(--color-warn); }
@@ -319,6 +321,12 @@
   text-decoration: underline; text-underline-offset: 3px; }
 .simple-learned-review:is(:hover, :focus-visible) { text-decoration-thickness: 2px; }
 .simple-learned-review:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
+.simple-learned-decline { margin-left: 6px; padding: 0; border: 0; background: none; font: inherit; color: var(--color-muted); white-space: nowrap; cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--color-dim); text-underline-offset: 3px; }
+.simple-learned-decline:hover:not(:disabled) { color: var(--color-fg); }
+.simple-learned-decline:disabled { opacity: .6; cursor: default; }
+.simple-learned-decline:focus-visible { outline: 2px solid var(--color-muted); outline-offset: 2px; border-radius: 3px; }
+.simple-learned-failed { color: var(--color-warn); }
 .learn-empty { padding: 11px 0 12px; }
 .learn-empty p { margin: 0; font-size: 13.5px; line-height: 1.45; color: var(--color-fg); }
 .learn-empty p + p { margin-top: 2px; font-size: 12.5px; color: var(--color-dim); }

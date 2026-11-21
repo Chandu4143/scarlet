@@ -12,7 +12,7 @@ import { levelProfile, pauseStats, retakeGroups } from "./media-profile.js";
 import { json, noteEvidenceMiss, text } from "./tool-result.js";
 import { OTHER_INPUT } from "./analysis.js";
 import { screenReadings, type ScreenLine } from "./screen-reading.js";
-import { motionSpans, type MotionSecond } from "./screen-motion.js";
+import { motionSpans, type DetailFrame, type MotionSecond } from "./screen-motion.js";
 import type { RecordingCut } from "./brief-pictures.js";
 
 type ToolRegistrar = <Shape extends z.ZodRawShape>(name: ScarletToolName, description: string, shape: Shape,
@@ -22,9 +22,10 @@ interface PerceptionDeps {
   tool: ToolRegistrar;
   client: ScarletClient;
   projectId: string;
-  /** The agent's own read of a version: edits it proposes next are based on it. */
-  getTimeline(version?: string): Promise<Timeline>;
-  /** A version read to measure or compare, which leaves the base of the agent's next edit alone. */
+  /**
+   * A version read to measure or compare, which leaves the base of the agent's next edit alone. Every read here is one:
+   * only timeline_get, timeline_at and project_get move that base.
+   */
   peekTimeline(version: string): Promise<Timeline>;
   /** The portion of an edited transcript actually returned to the agent. */
   readPassage(version: string, range: { start: number; end: number }): void;
@@ -139,18 +140,21 @@ export function registerPerception(deps: PerceptionDeps) {
    * framed stretch.
    */
   async function besideOn(tl: Timeline, project: Project, sources: Array<{ id: string; from: number; to: number }>, range: { start: number; end: number }, wait: number) {
-    const [text, motion, transcripts] = await Promise.all([
+    const [text, motion, cuts, transcripts] = await Promise.all([
       readPictures<{ spans: ScreenLine[] }>("screen-text", sources, wait),
-      readPictures<{ seconds: MotionSecond[] }>("screen-motion", sources, wait),
+      readPictures<{ seconds: MotionSecond[]; detail?: DetailFrame[] }>("screen-motion", sources, wait),
+      readPictures<{ cuts: RecordingCut[] }>("picture-cuts", sources, wait),
       wordsFor(tl, project).catch(() => new Map<string, TranscriptWord[]>()),
     ]);
     return {
       evidence: {
         lines: new Map(text.reads.map(({ id, read }) => [id, read.spans])),
         seconds: new Map(motion.reads.map(({ id, read }) => [id, read.seconds])),
+        detail: new Map(motion.reads.map(({ id, read }) => [id, read.detail ?? []])),
+        cuts: new Map(cuts.reads.map(({ id, read }) => [id, read.cuts])),
         words: transcripts.size ? timelineWords(tl, transcripts, range) : [],
       },
-      unread: [...text.unread, ...motion.unread],
+      unread: [...text.unread, ...motion.unread, ...cuts.unread],
     };
   }
 
@@ -222,7 +226,7 @@ export function registerPerception(deps: PerceptionDeps) {
   }
 
   async function readTranscript({ version, from, to, detail }: { version?: string; from?: number; to?: number; detail: "lines" | "words" }) {
-    const [tl, { project }] = await Promise.all([deps.getTimeline(version), deps.getProject()]);
+    const [tl, { project }] = await Promise.all([deps.peekTimeline(version ?? "head"), deps.getProject()]);
     const duration = timelineDuration(tl);
     const range = { start: from ?? 0, end: to ?? duration };
     const transcripts = await wordsFor(tl, project);
@@ -272,7 +276,7 @@ export function registerPerception(deps: PerceptionDeps) {
         tl = after;
         joins = newJoins(before, after, project);
       } else {
-        tl = await deps.getTimeline(version);
+        tl = await deps.peekTimeline(version ?? "head");
         joins = timelineJoins(tl, project);
       }
       const all = timelineJoins(tl, project);
@@ -291,7 +295,7 @@ export function registerPerception(deps: PerceptionDeps) {
     "Summarize what changed between two timeline versions: duration, the edits in plain lines, the affected ranges, and how many joins were added or removed.",
     { from: z.string().describe("Earlier version"), to: z.string().optional().describe("Later version; default head") },
     async ({ from, to }) => {
-      const after = await deps.getTimeline(to);
+      const after = await deps.peekTimeline(to ?? "head");
       const [{ diff, description }, before, { project }] = await Promise.all([
         client.diff(deps.projectId, from, after.version, "id"), deps.peekTimeline(from), deps.getProject()]);
       const added = newJoins(before, after, project).length, removed = newJoins(after, before, project).length;
@@ -370,7 +374,7 @@ export function registerPerception(deps: PerceptionDeps) {
       mediaId: z.string().optional().describe("The recording whose text on screen to match"),
       offset: z.number().int().min(0).default(0) },
     async ({ version, from, to, mediaId, offset }) => {
-      const [tl, { project }] = await Promise.all([deps.getTimeline(version), deps.getProject()]);
+      const [tl, { project }] = await Promise.all([deps.peekTimeline(version ?? "head"), deps.getProject()]);
       const range = { start: from ?? 0, end: to ?? timelineDuration(tl) };
       const found = await readingsOn(tl, project, range, { mediaId, wait: 20 });
       if (!found) return text(`Version ${tl.version} plays no transcribed speech.`);
@@ -391,7 +395,7 @@ export function registerPerception(deps: PerceptionDeps) {
       mediaId: z.string().optional().describe("The recording whose picture to follow"),
       offset: z.number().int().min(0).default(0) },
     async ({ version, from, to, mediaId, offset }) => {
-      const [tl, { project }] = await Promise.all([deps.getTimeline(version), deps.getProject()]);
+      const [tl, { project }] = await Promise.all([deps.peekTimeline(version ?? "head"), deps.getProject()]);
       const range = { start: from ?? 0, end: to ?? timelineDuration(tl) };
       const { spans, ids, unread } = await motionOn(tl, project, range, { mediaId, wait: 20 });
       const pct = (n: number) => Math.round(n * 1000) / 10;

@@ -399,6 +399,8 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
         continue;
       }
       if (built && joined) shown.set(joined, edit);
+      // A save of the whole video: the join an edit is named on, as a point or a stretch, is that edit's.
+      else if (found && cut && (joined || edit.beforeCut || range.start === range.end)) shown.set(cut, edit);
       const removed = change.appliedReview?.joins[spot]?.removed ?? cut?.removed;
       if (removed && range.start === range.end) edit.beforeCut = { version: beforeVersion, removed };
       const kind = edit.beforeCut ? "cut" : kinds[spot];
@@ -443,12 +445,16 @@ function savedEdits(thread: Thread, visible: (version: string) => boolean, read?
       if (edit.marker && !edit.check && edit.todo) edit.check = edit.todo;
     }
     // The stretches it left out that Scarlet named no edit for are cuts all the same, listed after the ones it named.
-    if (built && taken) {
+    // So are the ones a save of the whole video took out: a first pass that rewrote the timeline to tighten the dialogue
+    // named ten edits for some two hundred joins, and the rest could not be opened, revised or undone (2026-11-16).
+    // One of those where an earlier cut already joins moved that cut's join, and is that cut (`resaved`).
+    if ((built || found) && taken) {
       let spot = entries.length;
       for (const cut of taken) {
         if (shown.has(cut)) continue;
-        const edit: SavedEdit = { changeId: change.id, spot: spot++, label: cut.label, range: cut.range, version: change.toVersion, previous: [],
-          beforeCut: { version: built.version, removed: cut.removed }, kind: "cut", ...(change.reason && { reason: change.reason }) };
+        const edit: SavedEdit = { changeId: change.id, spot: spot++, label: LEFT_OUT, range: cut.range, version: change.toVersion, previous: [],
+          beforeCut: { version: beforeVersion, removed: cut.removed }, kind: "cut", ...(change.reason && { reason: change.reason }),
+          ...(found && { resaved: true }) };
         raise(edit, flagOn(change, edit.spot));
         edits.push(edit);
       }

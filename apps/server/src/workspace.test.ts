@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it as vitestIt, vi, onTestFinished } from "vitest";
 import { partedIt } from "../../../test/parts";
-import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
+import { clipEnd, createProject, isPlayableMedia, cutPlaybackWindow, LEFT_OUT_READING, planPlaybackSegments, sha256, spanningSections, timelineDuration, timelineFromKeepRanges, Transform, type Change, type Clip, type Project } from "@scarlet/timeline";
 import { buildThreads, isThreadDone, queueOrder, queueWait, taskPlan, taskRecoveryAction, threadRevision, type Render, type Task } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "./app.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
@@ -792,7 +792,9 @@ it.each(["whispercpp", "openai"] as const)("resumes %s recognition after two app
       workspace = openWorkspace({}, env);
     }
     while (workspace.ctx.pending.size) await Promise.allSettled([...workspace.ctx.pending]);
-    expect(calls.map(c => c.word)).toEqual(["un", "deux", "deux", "trois", "trois"]);
+    // Once the transcript is saved, its pages are read ahead of any dialogue pass: those calls come after it, unprogressed.
+    expect(calls.slice(0, 5).map(c => c.word)).toEqual(["un", "deux", "deux", "trois", "trois"]);
+    expect(calls.slice(5).every(c => c.progress === undefined)).toBe(true);
     for (const index of [2, 4]) {
       expect(calls[index]!.progress).toBeGreaterThan(0);
       expect(calls[index]!.progress).toBeCloseTo(calls[index - 1]!.progress!, 3);
@@ -1727,6 +1729,11 @@ it("reads the footage a change left out as it built the video, when it is applie
   ctx.repos.changes.put({ ...change, id: "chg_ripple", ops: [{ op: "rippleDelete", start: 1, end: 2 }], leftOut: undefined });
   recordLeftOutFootage(ctx);
   expect(ctx.repos.changes.get("chg_ripple")!.leftOut).toEqual({ joins: [] });
+  // Joins an earlier reading found are read again with this one, once.
+  expect(change.leftOut.reading).toBe(LEFT_OUT_READING);
+  ctx.repos.changes.put({ ...change, leftOut: { version: change.leftOut.version, joins: [...change.leftOut.joins, { at: 12, removed: { start: 27, end: 28 } }] } });
+  recordLeftOutFootage(ctx);
+  expect(ctx.repos.changes.get(change.id)!.leftOut).toEqual(change.leftOut);
   const stamp = ctx.repos.changes.get(change.id)!.updatedAt;
   const read = vi.spyOn(ctx.repos.changes, "parse");
   recordLeftOutFootage(ctx);
@@ -6910,6 +6917,17 @@ it("keeps a pass's own later save from changing footage under a cut that waits f
   const reframed = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id,
     description: "Frame the presenter closer", ops: [{ op: "updateClip", clipId: "raw", patch: { transform: { x: 0, y: 0, scale: 1.13 }, opacity: .9 } }] }).change;
   expect(reframed.state).toBe("approved");
+  expect(ctx.repos.changes.get(staged.id)!.state).toBe("ready");
+  // So does laying the screen over it on a track that already shows it elsewhere: refused, a pass left the screen off
+  // over two calls and the camera flashed full frame between screens once they were approved (2026-11-20).
+  ctx.repos.projects.putMedia(project.id, { id: "screen", name: "screen", path: "screen.mov", kind: "video", duration: 60, hasAudio: false }, "ready");
+  const screen = (id: string, timelineIn: number, sourceIn: number, sourceOut: number) =>
+    ({ id, kind: "media" as const, mediaId: "screen", timelineIn, sourceIn, sourceOut });
+  expect(proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Show the screen",
+    ops: [{ op: "addTrack", track: { id: "v_screen", kind: "video", name: "Screen", clips: [screen("s0", 0, 0, 2)] } }] }).change.state).toBe("approved");
+  const laid = proposeChange(ctx, localUser(ctx), project.id, { intent: "requested", taskId: pass.id, description: "Show the screen through the restart",
+    ops: [{ op: "addClip", trackId: "v_screen", clip: screen("s1", 5, 5, 20) }] }).change;
+  expect(laid.state).toBe("approved");
   expect(ctx.repos.changes.get(staged.id)!.state).toBe("ready");
 });
 
