@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Lines you said twice that Scarlet would have left in now come to you in For you, as many as Checking with you asks for, starting with the likeliest restarts.
 - After an update, Scarlet keeps what it already read of your recordings, so the first dialogue cut after an update starts sooner.
 - Words Scarlet puts back into a transcript beside a restart are no longer written twice or squeezed to nothing.
 - A pause Scarlet trims no longer takes a short word beside it, and a pause given by its times is checked for words as one named by its word is.
