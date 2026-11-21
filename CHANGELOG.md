@@ -7,6 +7,8 @@ Add one line under today's date for each change an editor would notice. Leave ou
 ## November 20, 2026
 
 - Settings › About now keeps the What’s new list short up front with a toggle for the rest, and collapses earlier days by date.
+- A cut waiting for your approval is now drawn on the timeline over the footage it would take out, dashed until you approve it, so while you watch you can see that part is still in and waiting on you; its tag opens it.
+- When the cut that takes out a whole stumble can't be placed in a pause, Scarlet asks you to hear it instead of making a cleaner cut that leaves part of the stumble in.
 - A cut after you finish talking now comes right after your last word: a beat Scarlet keeps before a new demo or topic plays after the cut instead of as quiet after you stop.
 - An edit you play no longer starts over when Scarlet saves another edit of the same request meanwhile: it plays on, and the new edit comes in when you pause.
 - The model picker lists Standard speed once for Claude models instead of twice.

@@ -69,7 +69,8 @@ createInterface({ input: process.stdin }).on("line", line => {
 `;
 
 const FAKE_ACP = `
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
 const { createInterface } = require("node:readline");
 const dir = process.env.FAKE_DIR;
 writeFileSync(dir + "/args", process.argv.slice(2).join("\\n") + "\\n");
@@ -79,6 +80,7 @@ const send = message => console.log(JSON.stringify({ jsonrpc: "2.0", ...message 
 const emit = name => process.stdout.write(readFileSync(dir + "/" + name));
 let promptId = null;
 let prompts = 0;
+let pendingReply = null;
 const configOptions = [
   { id: "model", category: "model", currentValue: "gemini-2.5-pro", options: [{ value: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }, { value: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }] },
   { id: "thought_level", category: "thought_level", currentValue: "medium", options: [{ value: "low" }, { value: "medium" }, { value: "high" }] },
@@ -88,6 +90,11 @@ rl.on("line", line => {
   appendFileSync(dir + "/stdin", line + "\\n");
   const msg = JSON.parse(line);
   const { id, method, params } = msg;
+  if (!method && pendingReply && id === pendingReply.id) {
+    const resume = pendingReply.resume;
+    pendingReply = null;
+    return resume();
+  }
   if (method === "initialize") return send({ id, result: { protocolVersion: 1 } });
   if (method === "authenticate") return send({ id, result: {} });
   if (method === "session/new") return send({ id, result: { sessionId: "g1", configOptions } });
@@ -99,6 +106,26 @@ rl.on("line", line => {
   if (method === "session/prompt") {
     promptId = id;
     if (process.env.FAKE_ACP_FAIL_PROMPT) return send({ id, error: { code: -32603, message: process.env.FAKE_ACP_FAIL_PROMPT } });
+    if (process.env.FAKE_ACP_SCRIPT_TURNS) {
+      const turns = JSON.parse(process.env.FAKE_ACP_SCRIPT_TURNS);
+      const turn = turns[prompts++] ?? {};
+      const transcriptPath = join(process.env.HOME || process.env.USERPROFILE, ".gemini", "antigravity-cli", "brain", "g1", ".system_generated", "logs", "transcript.jsonl");
+      mkdirSync(dirname(transcriptPath), { recursive: true });
+      const steps = [...(turn.steps ?? [])];
+      const runNext = () => {
+        while (steps.length > 0) {
+          const step = steps.shift();
+          if (step.append) appendFileSync(transcriptPath, step.append);
+          if (step.line) process.stdout.write(step.line + "\\n");
+          if (step.waitForReplyId !== undefined) {
+            pendingReply = { id: step.waitForReplyId, resume: runNext };
+            return;
+          }
+        }
+        send({ id, result: { stopReason: "end_turn", ...(turn.usage ? { usage: turn.usage } : {}) } });
+      };
+      return runNext();
+    }
     // A turn after the first is the run carrying on: it says nothing more, unless every turn repeats the first.
     if (prompts++ === 0 || process.env.FAKE_ACP_EVERY_TURN) emit("out");
     if (process.env.FAKE_ACP_STOP_REASON) return send({ id, result: { stopReason: process.env.FAKE_ACP_STOP_REASON } });
@@ -224,6 +251,7 @@ async function run(runner: RunAgentFn, fake: Fake, opts: Partial<RunAgentOptions
     mcp,
     bin: bins.get(runner) ?? bin,
     onEvent: (ev) => events.push(ev),
+    ...opts,
     env: {
       PATH: process.env.PATH,
       CODEX_HOME: codexHome,
@@ -240,9 +268,9 @@ async function run(runner: RunAgentFn, fake: Fake, opts: Partial<RunAgentOptions
       ...(fake.code === undefined ? {} : { FAKE_CODE: String(fake.code) }),
       ...(fake.stderr ? { FAKE_ERR: fake.stderr } : {}),
       ...(fake.sleep ? { FAKE_SLEEP: String(fake.sleep) } : {}),
-      ...(fake.last ? { FAKE_LAST: fake.last } : {}),
+    ...(fake.last ? { FAKE_LAST: fake.last } : {}),
+    ...opts.env,
     },
-    ...opts,
   });
   const read = (name: string) => readFile(join(dir, name), "utf8");
   return { result, events, cwd, read, args: async () => (await read("args")).split("\n").slice(0, -1), stdin: () => read("stdin"), server: () => read("server") };
@@ -595,7 +623,7 @@ describe("runGemini", { timeout: 20_000 }, () => {
       error: undefined,
       exitCode: 0,
       sessionId: "g1",
-      usage: { model: "gemini-2.5-flash", inputTokens: 60, outputTokens: 9, cacheReadTokens: 40, cacheWriteTokens: 0, reasoningTokens: 0 },
+      usage: { model: "gemini-2.5-flash", inputTokens: 100, outputTokens: 9, cacheReadTokens: 40, cacheWriteTokens: 0, reasoningTokens: 0 },
     });
     // agy ended the first turn on the refused bash tool: the run carried on, and was told why.
     expect(events.map((e) => [e.type, e.text])).toEqual([
@@ -679,9 +707,135 @@ describe("runGemini", { timeout: 20_000 }, () => {
     ]);
   });
 
+  it("uses only the trimmed final assistant message as the summary, without prior progress chatter or truncation", async () => {
+    const earlier = `\n\n${"Checking transition areas. ".repeat(90)}and checking the last transition areas.`;
+    const progress = "\n\nFraming the benchmark graph demo cleanly inside the Kimi window.";
+    const finalReply = `Synced and tightened the video.\n\n${"Detailed follow-up note. ".repeat(100)}All cuts are ready.`;
+    expect(finalReply.length).toBeGreaterThan(2000);
+    const { result, events } = await run(runGemini, {
+      acp: true,
+      lines: [
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: earlier } }),
+        upd({ sessionUpdate: "tool_call", toolCallId: "t1", name: "mcp__scarlet__timeline_get", rawInput: {} }),
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: progress } }),
+        upd({ sessionUpdate: "tool_call", toolCallId: "t2", name: "mcp__scarlet__timeline_propose", rawInput: {} }),
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n\n${finalReply}\n` } }),
+      ],
+    }, { agent: "gemini" });
+    expect(result).toMatchObject({ ok: true, summary: finalReply });
+    expect(events.find((e) => e.type === "result")?.text).toBe(finalReply);
+    expect(events.filter((e) => e.type === "log").map((e) => e.text)).toEqual([
+      "Gemini session started (gemini-2.5-pro)",
+      earlier.trim(),
+      progress.trim(),
+      finalReply,
+    ]);
+  });
+
   it("reports a run at its time cap as timed out, not stalled", async () => {
     const capped = await run(runGemini, { acp: true, sleep: 30 }, { agent: "gemini", timeoutMs: 300 });
     expect(capped.result).toMatchObject({ ok: false, error: "timed out", timedOut: true, stalled: false });
+  });
+
+  it("streams live token counts from agy's transcript.jsonl, sums carry-on turns, and skips prior steps on resume", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "scarlet-agy-home-"));
+    try {
+      const bash = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 100,
+        method: "session/request_permission",
+        params: { toolCall: { name: "bash" }, options: [{ optionId: "deny", kind: "reject_once" }] },
+      });
+      const turns = [
+        {
+          steps: [
+            {
+              append:
+                JSON.stringify({ step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", input_tokens: 1000, cache_read_tokens: 0, output_tokens: 50 }) +
+                "\n" +
+                '{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":200,',
+              line: upd({ sessionUpdate: "usage_update", used: 1050, size: 1048576 }),
+            },
+            {
+              line: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 77,
+                method: "session/request_permission",
+                params: { toolCall: { name: "mcp__scarlet__timeline_get" }, options: [{ optionId: "yes", kind: "allow_once" }] },
+              }),
+              waitForReplyId: 77,
+            },
+            {
+              append: '"cache_read_tokens":1000,"output_tokens":30}\n',
+              line: upd({ sessionUpdate: "usage_update", used: 1230, size: 1048576 }),
+            },
+            { line: bash },
+          ],
+          usage: { inputTokens: 1200, outputTokens: 80, cachedReadTokens: 1000, thoughtTokens: 60, totalTokens: 2280 },
+        },
+        {
+          steps: [
+            {
+              append: JSON.stringify({ step_index: 3, type: "PLANNER_RESPONSE", status: "DONE", input_tokens: 400, cache_read_tokens: 2000, output_tokens: 20 }) + "\n",
+              line: upd({ sessionUpdate: "usage_update", used: 2420, size: 1048576 }),
+            },
+          ],
+          usage: { inputTokens: 400, outputTokens: 20, cachedReadTokens: 2000, thoughtTokens: 10, totalTokens: 2420 },
+        },
+      ];
+      const live: AgentUsage[] = [];
+      const first = await run(
+        runGemini,
+        { acp: true },
+        {
+          agent: "gemini",
+          model: "gemini-4-neon",
+          env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, FAKE_ACP_SCRIPT_TURNS: JSON.stringify(turns) },
+          onUsage: (u) => live.push(u),
+        },
+      );
+      expect(first.result.ok).toBe(true);
+      expect(live).toEqual([
+        { model: "gemini-4-neon", inputTokens: 1000, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+        { model: "gemini-4-neon", inputTokens: 1200, outputTokens: 80, cacheReadTokens: 1000, cacheWriteTokens: 0, reasoningTokens: 0 },
+        { model: "gemini-4-neon", inputTokens: 1200, outputTokens: 80, cacheReadTokens: 1000, cacheWriteTokens: 0, reasoningTokens: 60 },
+        { model: "gemini-4-neon", inputTokens: 1600, outputTokens: 100, cacheReadTokens: 3000, cacheWriteTokens: 0, reasoningTokens: 60 },
+        { model: "gemini-4-neon", inputTokens: 1600, outputTokens: 100, cacheReadTokens: 3000, cacheWriteTokens: 0, reasoningTokens: 70 },
+      ]);
+      expect(first.result.usage).toEqual(live.at(-1));
+
+      // Resuming the same session skips earlier claims' lines in transcript.jsonl.
+      const resumedLive: AgentUsage[] = [];
+      const resumedTurns = [
+        {
+          steps: [
+            {
+              append: JSON.stringify({ step_index: 10, type: "PLANNER_RESPONSE", status: "DONE", input_tokens: 300, cache_read_tokens: 5000, output_tokens: 40 }) + "\n",
+              line: upd({ sessionUpdate: "usage_update", used: 5340, size: 1048576 }),
+            },
+          ],
+          usage: { inputTokens: 300, outputTokens: 40, cachedReadTokens: 5000, thoughtTokens: 25, totalTokens: 5340 },
+        },
+      ];
+      const resumed = await run(
+        runGemini,
+        { acp: true },
+        {
+          agent: "gemini",
+          model: "gemini-4-neon",
+          resumeSession: "g1",
+          env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, FAKE_ACP_SCRIPT_TURNS: JSON.stringify(resumedTurns) },
+          onUsage: (u) => resumedLive.push(u),
+        },
+      );
+      expect(resumed.result.ok).toBe(true);
+      expect(resumedLive).toEqual([
+        { model: "gemini-4-neon", inputTokens: 300, outputTokens: 40, cacheReadTokens: 5000, cacheWriteTokens: 0, reasoningTokens: 0 },
+        { model: "gemini-4-neon", inputTokens: 300, outputTokens: 40, cacheReadTokens: 5000, cacheWriteTokens: 0, reasoningTokens: 25 },
+      ]);
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
   });
 });
 

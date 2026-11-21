@@ -3588,10 +3588,15 @@ it("keeps the other calls' dots on the timeline while a call is open, so one pre
   const dots = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-mark.is-numbered")];
   const numbers = () => dots().map(d => d.querySelector(".simple-timeline-number")?.textContent);
   expect(numbers()).toEqual(["1", "2", "3"]);
+  // Each call's footage is drawn dashed from its dot, since it still plays until the call is approved.
+  const proposed = () => [...container.querySelectorAll<HTMLElement>(".simple-timeline-proposed")].map(b => b.style.left);
+  expect(proposed()).toEqual(dots().map(d => d.style.left));
   // The open call's dot is lit at the start of its band. The calls still waiting that are in view keep theirs.
   await openCall("Breath before the price.");
   expect(container.querySelector(".simple-timeline-band")).not.toBeNull();
   expect(numbers()).toEqual(["1", "2", "3"]);
+  // The open call has its own band instead of a dashed one.
+  expect(proposed()).toEqual(dots().filter(d => !d.classList.contains("is-on")).map(d => d.style.left));
   expect(dots().map(d => [d.dataset.state, d.classList.contains("is-on")])).toEqual([["check", false], ["check", true], ["check", false]]);
   // A press on one opens that call in the card, and the timeline zooms to it.
   const strip = container.querySelector<HTMLElement>(".simple-timeline-hover")!;
