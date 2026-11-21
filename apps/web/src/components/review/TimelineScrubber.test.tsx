@@ -167,11 +167,8 @@ it("draws each call still waiting on the editor dashed over the footage it would
     .toEqual([["10%", "20.00", "true"], ["40%", "2.00", "true"], ["85%", "0.50", "true"]]);
   // Its tag says which call, where it fits: one only a few pixels wide, as on the whole video, has none.
   expect(tags().map(t => [t.textContent, t.style.left])).toEqual([["Cut 1", "calc(10% + 11px)"]]);
-  // Hovering inside one says the call waits there.
+  // Hovering inside one shows only the frame and its time, as anywhere on the timeline.
   await pointer("pointermove", 200);
-  expect(container.querySelector(".simple-timeline-need")?.textContent).toBe("Cut 1 needs you");
-  expect(bands()[0]!.classList.contains("is-hot")).toBe(true);
-  await pointer("pointermove", 500);
   expect(container.querySelector(".simple-timeline-need")).toBeNull();
   // A press on the tag opens the call and doesn't scrub.
   await act(async () => { tags()[0]!.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, button: 0, isPrimary: true, clientX: 120, bubbles: true })); });

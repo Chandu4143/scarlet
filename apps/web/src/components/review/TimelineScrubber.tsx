@@ -687,42 +687,27 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
   // the call; a press anywhere else in it scrubs, as anywhere on the timeline.
   const proposed = useMemo(() => marks?.filter(dot => dot.end !== undefined && dot.end > dot.time && dot.state === "check" && !dot.current) ?? [],
     [marks]);
-  const proposedKey = (dot: TimelineDot) => `${dot.group ?? ""}/${dot.time}/${dot.end}`;
-  const [hotProposedKey, setHotProposed] = useState<string>();
-  const hotProposed = hotProposedKey === undefined ? undefined : proposed.find(dot => proposedKey(dot) === hotProposedKey);
   const proposedNodes = useMemo(() => <>{proposed.map(dot => {
     const left = Math.max(0, percent(dot.time)), right = Math.min(100, percent(dot.end!));
     if (right <= 0 || left >= 100) return null;
     // The tag sits just past the call's dot, over the strip that picks markers, so a press on it reaches it.
     const room = (right - left) * width / 100 - PROPOSED_TAG_INSET;
     const label = dot.need && width > 0 && room > 0 ? bandLabel(dot.need, room) : "";
-    const key = proposedKey(dot);
-    return <Fragment key={key}>
-      <span aria-hidden="true" className={key === hotProposedKey ? "simple-timeline-proposed is-hot" : "simple-timeline-proposed"}
-        style={{ left: `${left}%`, width: `${right - left}%` }} />
+    return <Fragment key={`${dot.group ?? ""}/${dot.time}/${dot.end}`}>
+      <span aria-hidden="true" className="simple-timeline-proposed" style={{ left: `${left}%`, width: `${right - left}%` }} />
       {label && <span aria-hidden="true" className="simple-timeline-proposed-tag" style={{ left: `calc(${left}% + ${PROPOSED_TAG_INSET}px)` }}
         onPointerDown={dot.open ? e => {
           if (e.button !== 0 || !e.isPrimary || drag.current) return;
           e.stopPropagation();
-          setHotProposed(undefined);
           dot.open!();
         } : undefined}>{label}</span>}
     </Fragment>;
-  })}</>, [proposed, hotProposedKey, from, span, width]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Hovering one says which call waits there, as its dot does, over the frame under the pointer.
-  const hoverProposed = (e: PointerEvent<HTMLElement>) => {
-    if (!proposed.length || e.pointerType === "touch") return;
-    const box = slider.current?.getBoundingClientRect();
-    const time = box && box.width > 0 ? from + span * (e.clientX - box.left) / box.width : undefined;
-    const under = time === undefined ? undefined : proposed.find(dot => time >= dot.time && time <= dot.end!);
-    setHotProposed(under && proposedKey(under));
-  };
+  })}</>, [proposed, from, span, width]); // eslint-disable-line react-hooks/exhaustive-deps
   // Hovering a marker shows the frame and its time, as anywhere on the timeline. One holding what waits on the editor
   // says which, and the frame is that one's.
   const hotDots = hotMark === undefined ? undefined : markLayout.find(mark => mark.key === hotMark)?.dots;
   const waiting = hotDots?.find(dot => dot.state === "check" && dot.need);
-  const needNote = (waiting ?? hotProposed)?.need;
-  const markNote = needNote && <span className="simple-timeline-need">{needNote} needs you</span>;
+  const markNote = waiting && <span className="simple-timeline-need">{waiting.need} needs you</span>;
   // Skipped footage can be heard: a press hands it to the caller. Its label says which cut took it out.
   const gapNodes = useMemo(() => <>{gaps?.map(gap => {
     const left = Math.max(0, percent(gap.start)), right = Math.min(100, percent(gap.end));
@@ -879,7 +864,6 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       }}
       onPointerMove={e => {
         const gesture = drag.current;
-        if (!gesture) hoverProposed(e);
         if (gesture?.id !== e.pointerId) return;
         if (!gesture.fine && gesture.y0 - e.clientY >= 24 && gesture.time !== undefined && fps > 0 && Number.isFinite(fps)) {
           // Enter at the last coarse position. Movement from here is relative, independent of the timeline zoom.
@@ -888,7 +872,6 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
         gesture.x = e.clientX;
         gesture.paint ??= requestAnimationFrame(seek);
       }}
-      onPointerLeave={() => setHotProposed(undefined)}
       onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish}>
       <TimelineRuler start={from} duration={span} width={width} endInset={zoomSpace} />
       {onRange && total > 0 && <div aria-hidden="true" className="timeline-range-zone" title="Drag to mark a range for your message" />}
