@@ -11,6 +11,15 @@ export function interactiveFrameUrl(src: string | undefined, width?: number) {
   return url.toString();
 }
 
+/** The timeline's stills go ahead of the agent's pictures, behind the editor's own (`PictureLane`). */
+export function timelineFrameUrl(src: string | undefined) {
+  if (!src || IS_MOCK) return src;
+  const url = new URL(src, window.location.href);
+  if (!url.pathname.endsWith("/frame")) return src;
+  url.searchParams.set("priority", "timeline");
+  return url.toString();
+}
+
 const clipIndexes = new WeakMap<Timeline, ReturnType<typeof indexClipsAt>>();
 const mediaIndexes = new WeakMap<readonly MediaAsset[], Map<string, MediaAsset>>();
 /** Scrubbing and the original waveform sample the same immutable media list many times. */
