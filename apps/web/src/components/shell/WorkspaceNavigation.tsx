@@ -1,8 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Link, NavLink, useMatch } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { IS_MOCK } from "../../lib/client";
-import { useUiStore } from "../../stores/ui";
 import { Icon } from "../ui/primitives";
 import { ConnectionStatus } from "./StatusIndicators";
 
@@ -130,25 +129,10 @@ export function MenuItem({ onClick, children, to, danger, disabled, title }: { o
 }
 
 export function WindowActions({ inSettings = false }: { inSettings?: boolean }) {
-  const projectId = useMatch("/p/:id/*")?.params.id;
-  const setProjectSettingsOpen = useUiStore(s => s.setProjectSettingsOpen);
   return <div className="flex shrink-0 items-center gap-1">
       {IS_MOCK && <span className="demo-tag" title="This workspace uses sample projects">Demo</span>}
       <ConnectionStatus />
 
-      {projectId ? <Dropdown label="Settings menu" align="right" width={180} button={<span className="btn-icon"><Icon name="settings" size={15} /></span>}>
-        {(close) => (
-          <>
-            {projectId && (
-              <MenuItem onClick={() => { close(); setProjectSettingsOpen(true); }}>
-                Project settings
-              </MenuItem>
-            )}
-            <MenuItem to="/settings" onClick={close}>
-              App settings
-            </MenuItem>
-          </>
-        )}
-      </Dropdown> : !inSettings && <NavLink to="/settings" aria-label="Settings" title="Settings" className="btn-icon"><Icon name="settings" size={16} /></NavLink>}
+      {!inSettings && <NavLink to="/settings" aria-label="Settings" title="Settings" className="btn-icon"><Icon name="settings" size={16} /></NavLink>}
   </div>;
 }

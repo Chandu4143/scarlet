@@ -21,6 +21,8 @@ export interface AgentContext {
   reviewRef?: EditRef;
   /** Number shown on the thread timeline. The agent uses changeId and editIndex for identity. */
   editNumber?: number;
+  /** The other edits of the moment the message is about, when the editor was on a moment of the list and not one edit. */
+  momentEdits?: { changeId: string; spot: number; label?: string }[];
   /**
    * A stretch the editor marked on the timeline's ruler for this message, on the version the timeline showed. It rides
    * along with whatever the message is aimed at: a cut or an edit keeps its own time, and Scarlet is told both.

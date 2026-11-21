@@ -1,7 +1,7 @@
 import { DialogueScanPage, requestText, type Task, type TaskEvent } from "@scarlet/shared";
 import { cutSummary, mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { appliedEditSummary } from "../components/review/cutReviewDetails";
-import { clock, lengthLabel, plural } from "./format";
+import { clock, lengthLabel, plural, tokenLabel } from "./format";
 import { editConfirmation, inputMediaIds, taskChatText, toolName, waitLabels, waitTools } from "./taskActivity";
 
 /**
@@ -77,7 +77,7 @@ const transcript: StepSpec = { group: "transcript", verb: "Read", doing: "Readin
 /** Tools grouped into plain steps. Tools that make an edit show up as the edit itself. `once` skips a repeat of the same call. */
 const toolSteps: Record<string, StepSpec> = {
   project_get: project, timeline_get: project, timeline_summary: project, timeline_at: project, timeline_diff: project,
-  skills_list: project, media_list: project, template_list: project, template_get: project, graphic_get: project,
+  skills_list: project, media_list: project, graphic_get: project,
   attachment_read: { group: "attachment", verb: "Read", doing: "Reading", detail: n => n > 1 ? `${n} attached files` : "an attached file", once: true }, change_list: project, change_get: project, notes_list: project,
   timeline_transcript: { group: "edit-transcript", verb: "Read", doing: "Reading", detail: () => "the edit’s transcript", once: true },
   timeline_join_audit: { group: "joins", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} joins` : "a join", once: true },
@@ -88,9 +88,12 @@ const toolSteps: Record<string, StepSpec> = {
   } },
   media_profile: sound, waveform_get: sound, sound_picture: sound, source_audio: sound,
   audio_sync: { group: "sync", verb: "Lined up", doing: "Lining up", detail: () => "the sound", once: true },
-  media_frame: picture, frame_contact_sheet: picture, frame_contact_sheet_batch: picture,
+  media_frame: picture, frame_contact_sheet: picture, frame_contact_sheet_batch: picture, screen_area: picture,
   screen_text: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
+  screen_reading: { group: "screen-text", verb: "Read", doing: "Reading", detail: () => "the text on screen", once: true },
+  screen_motion: picture,
   faces: { group: "faces", verb: "Found", doing: "Finding", detail: () => "where the faces are", once: true },
+  lip_sync: { group: "lip-sync", verb: "Checked", doing: "Checking", detail: () => "the lip sync", once: true },
   dialogue_check_repeats: sound,
   dialogue_check_join: { group: "joins", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} joins` : "a join", once: true },
   dialogue_review_inspect: { group: "inspect", verb: "Checked", doing: "Checking", detail: n => n > 1 ? `${n} suggested cuts` : "a suggested cut", once: true },
@@ -113,6 +116,16 @@ export function noteText(text: string) {
   return sentences.slice(0, 2).join(" ");
 }
 
+const eventNotes = new WeakMap<TaskEvent, string | null>();
+
+function eventNote(event: TaskEvent) {
+  const known = eventNotes.get(event);
+  if (known !== undefined) return known ?? undefined;
+  const note = noteText(event.text);
+  eventNotes.set(event, note ?? null);
+  return note;
+}
+
 /**
  * What the agent said the whole request will come to, before it began: its first words, when they come ahead of its
  * first look at the project. The chat keeps that one sentence above the run's steps for as long as it works. An agent
@@ -127,7 +140,7 @@ export function runAim(events: readonly TaskEvent[]): { text: string; note: stri
     const kind = event.data?.kind;
     if (kind === "editor_progress" && (event.data?.scanPage || typeof event.data?.reviewCounter === "string")) return undefined;
     if (kind && kind !== "editor_progress") continue;
-    const note = noteText(event.text);
+    const note = eventNote(event);
     if (note) return { text: note.split(/(?<=[.!?…”"])\s+/u)[0]!, note };
   }
   return undefined;
@@ -213,12 +226,12 @@ export function runItems(task: Task, events: readonly TaskEvent[], changes: read
         continue;
       }
       if (typeof event.data.reviewCounter === "string") continue;
-      const text = noteText(event.text);
+      const text = eventNote(event);
       if (text && !notes.has(text)) { notes.add(text); items.push({ kind: "note", at, text }); finishGroup(); }
       continue;
     }
     if (event.type === "log" && !event.data?.kind) {
-      const text = noteText(event.text);
+      const text = eventNote(event);
       // The agent's last message is the reply under the bundle, not an update inside it.
       if (text && !notes.has(text) && !(final && event.text.trim() === final) && !(reply && event.text.trim() === reply)) { notes.add(text); items.push({ kind: "note", at, text }); finishGroup(); }
       continue;
@@ -345,6 +358,19 @@ export function workTimeLabel(ms: number, working: boolean): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * What the requests about one cut or edit took, for the hover of the word its row ends on: their active time and,
+ * with `usage` (when tokens show), the tokens they reported, and nothing else. The request itself leaves the chat once
+ * it's done, so the row is where this still reads. None when nothing was recorded.
+ */
+export function spentLabel(attempts: readonly Task[], events: Record<string, readonly TaskEvent[]>,
+  usage: Record<string, { totalTokens: number }> | undefined, now = Date.now()): string | undefined {
+  const times = attempts.flatMap(task => { const ms = workTime(task, events[task.id] ?? [], now); return ms === undefined ? [] : [ms]; });
+  const time = times.length ? workTimeLabel(times.reduce((total, ms) => total + ms, 0), attempts.some(t => t.state === "claimed" || t.state === "running")) : undefined;
+  const tokens = usage ? attempts.reduce((total, task) => total + (usage[task.id]?.totalTokens ?? 0), 0) : 0;
+  return [time, tokens ? tokenLabel(tokens) : undefined].filter(Boolean).join(" · ") || undefined;
 }
 
 /** One line in an opened run: a step and how long it took, or an update from the agent. */

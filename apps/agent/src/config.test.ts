@@ -1,14 +1,36 @@
+import { execFile } from "node:child_process";
 import { chmod, link, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { configPath, loadConfig, requireConfig, sameServer, saveConfig, scarletHome, workRoot } from "./config.js";
 import { main } from "./cli.js";
+import { windowsAclShell } from "./private-files.js";
 
 afterEach(() => vi.unstubAllEnvs());
 
 // Reading and writing the private config starts a separate ACL process on Windows.
 const configFileTimeout = process.platform === "win32" ? 30_000 : undefined;
+
+/** Who can open a file: its permission bits on POSIX, and on Windows each access rule on it, as in run.test.ts. */
+const OWNER_ONLY = process.platform === "win32" ? ["current-user:FullControl:Allow"] : ["0600"];
+async function whoCanOpen(path: string): Promise<string[]> {
+  if (process.platform !== "win32") return [((await stat(path)).mode & 0o777).toString(8).padStart(4, "0")];
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "$me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+    "$acl=[System.IO.File]::GetAccessControl($env:SCARLET_CHECKED_FILE)",
+    "$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]) | ForEach-Object {" +
+      " $who = if ($_.IdentityReference -eq $me) { 'current-user' } else { $_.IdentityReference.Value };" +
+      " $who + ':' + $_.FileSystemRights + ':' + $_.AccessControlType }",
+  ].join(";");
+  const shell = windowsAclShell();
+  const { stdout } = await promisify(execFile)(shell.executable, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    windowsHide: true, env: { ...shell.env, SCARLET_CHECKED_FILE: path },
+  });
+  return stdout.split(/\r?\n/).filter(Boolean);
+}
 
 it("replaces old broad permissions and drops credentials on a destination change", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scarlet-config-"));
@@ -79,25 +101,39 @@ describe("config", () => {
     expect(await loadConfig({ ...env, SCARLET_TOKEN: "env-token" })).toMatchObject({ token: "env-token", hostId: "h1" });
   }, configFileTimeout);
 
-  it.skipIf(process.platform === "win32")("closes a config file others could read as it loads it", async () => {
+  it("closes a config file others could read as it loads it", async () => {
     const env = await home();
     await writeFile(configPath(env), JSON.stringify({ server: "http://localhost:4000", token: "t" }), { mode: 0o644 });
-    await chmod(configPath(env), 0o644);
+    if (process.platform === "win32") {
+      // A rule on the file itself, which a new access list on its folder leaves in place.
+      await promisify(execFile)("icacls", [configPath(env), "/grant", "*S-1-1-0:R"], { windowsHide: true });
+      expect(await whoCanOpen(configPath(env))).toContainEqual(expect.stringMatching(/^S-1-1-0:.*:Allow$/));
+    } else {
+      await chmod(configPath(env), 0o644);
+    }
     expect(await loadConfig(env)).toMatchObject({ token: "t" });
-    expect((await stat(configPath(env))).mode & 0o777).toBe(0o600);
-  });
+    expect(await whoCanOpen(configPath(env))).toEqual(OWNER_ONLY);
+  }, configFileTimeout);
 
-  it.skipIf(process.platform === "win32")("refuses a config that is a link or has a second name, so the token is never read from or shared with another file", async () => {
+  it("refuses a config that has a second name, so the token is never shared with another file", async () => {
+    const env = await home();
+    await saveConfig({ server: "http://localhost:4000", token: "t" }, env);
+    await link(configPath(env), join(env.SCARLET_HOME!, "copy.json"));
+    await expect(loadConfig(env)).rejects.toThrow("Expected a private agent config file");
+    await rm(join(env.SCARLET_HOME!, "copy.json"));
+    expect(await loadConfig(env)).toMatchObject({ token: "t" });
+  }, configFileTimeout);
+
+  it("refuses a config that is a link, so the token is never read from another file", async (ctx) => {
     const real = await home();
     await saveConfig({ server: "http://localhost:4000", token: "t" }, real);
-
     const linked = await home();
-    await symlink(configPath(real), configPath(linked));
-    await expect(loadConfig(linked)).rejects.toThrow(/ELOOP|EMLINK/);
-
-    await link(configPath(real), join(real.SCARLET_HOME!, "copy.json"));
-    await expect(loadConfig(real)).rejects.toThrow("Expected a private agent config file");
-    await rm(join(real.SCARLET_HOME!, "copy.json"));
-    expect(await loadConfig(real)).toMatchObject({ token: "t" });
-  });
+    // Windows lets only an elevated account, or one in Developer Mode, make a symbolic link.
+    const made = await symlink(configPath(real), configPath(linked)).then(() => true, (err: NodeJS.ErrnoException) => {
+      if (process.platform === "win32" && err.code === "EPERM") return false;
+      throw err;
+    });
+    if (!made) ctx.skip();
+    await expect(loadConfig(linked)).rejects.toThrow(process.platform === "win32" ? "Expected a private agent config file" : /ELOOP|EMLINK/);
+  }, configFileTimeout);
 });

@@ -7,17 +7,27 @@ import { tokenBreakdown, tokenLabel } from "../../lib/format";
 import { useProjectStore } from "../../stores/project";
 import { useUiStore } from "../../stores/ui";
 import { runProgress } from "../../lib/runProgress";
-import { runNow } from "../../lib/runNow";
+import { runNow, STARTING } from "../../lib/runNow";
 import { runningTranscription, transcriptionProgressLabel, transcriptsProgress } from "../../lib/transcriptionProgress";
 import { runAim, runIsActive, runItems, runLines, runSummary, workTime, workTimeLabel, type RunItem, type RunLine } from "../../lib/taskRun";
 import { pendingMediaWaits, TRANSCRIPT_WAIT } from "../../lib/taskActivity";
 
 /**
- * Tokens the agent used on a request. Hovering or focusing the count opens a note above it with every part: input,
- * output, cache read and write, and how many runs it took. Shown only when turned on in Settings → Usage.
+ * Hovering or focusing the count shows the token breakdown and estimated API cost.
+ * Shown only when turned on in Settings → Usage.
  * The note is placed against the window, so the pinned request's scrolling box doesn't clip it.
  */
-type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens">;
+type RunUsage = Omit<UsageTotals, "firstAt" | "lastAt" | "models" | "reasoningTokens" | "runs">;
+const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+
+function listOf(items: string[]) {
+  return items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
+}
+
+function formatEstimatedCost(estimate: RunUsage["estimatedApiCostUsd"]) {
+  if (estimate == null) return "Unavailable";
+  return estimate > 0 && estimate < 0.01 ? `<${usd.format(0.01)}` : usd.format(estimate);
+}
 
 function Tokens({ usage, className, time, details = [] }: {
   usage?: RunUsage; className?: string; time?: string; details?: [label: string, value: string][];
@@ -72,11 +82,15 @@ function Tokens({ usage, className, time, details = [] }: {
   ];
   const label = tokenLabel(usage.totalTokens);
   const [count, unit] = label.split(" ");
-  const breakdown = tokenBreakdown(usage);
-  const accessibleDetails = details.map(([name, value]) => `${name}: ${value}`).join(", ");
+  const breakdown = tokenBreakdown({ ...usage, runs: undefined });
+  const cost = formatEstimatedCost(usage.estimatedApiCostUsd);
+  const costDescription = usage.estimatedApiCostUsd == null
+    ? usage.unpricedModels?.length ? `No price for ${listOf(usage.unpricedModels)} yet.` : "API pricing is unavailable for some or all of the reported usage."
+    : "Reported tokens at standard API rates for short context and default cache duration.";
+  const accessibleDetails = [...details.map(([name, value]) => `${name}: ${value}`), `Estimated API cost: ${cost}`].join(", ");
   return <><button ref={ref} type="button" className={`run-dim run-tokens${className ? ` ${className}` : ""}`} title=""
-    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}${accessibleDetails ? `. ${accessibleDetails}` : ""}`} data-breakdown={breakdown}
-    aria-expanded={open} aria-controls={open ? id : undefined}
+    aria-label={`${time ? `${time} active time, ` : ""}${label}: ${breakdown}. ${accessibleDetails}`} data-breakdown={breakdown}
+    aria-description={costDescription} aria-expanded={open} aria-controls={open ? id : undefined}
     onPointerEnter={e => { if (e.pointerType !== "touch") setMode(value => value ?? "preview"); }}
     onPointerLeave={() => { if (!ref.current?.matches(":focus-visible")) setMode(value => value === "preview" ? null : value); }}
     onFocus={() => setMode(value => value ?? "preview")} onBlur={() => setMode(null)}
@@ -88,8 +102,8 @@ function Tokens({ usage, className, time, details = [] }: {
       {details.map(([name, value]) => <span key={name}><span>{name}</span><b>{value}</b></span>)}
       {parts.filter(([label, n]) => n || label === "Input" || label === "Output").map(([label, n]) =>
         <span key={label}><span>{label}</span><b>{n.toLocaleString()}</b></span>)}
-      {usage.runs > 1 && <span><span>Runs</span><b>{usage.runs}</b></span>}
       <span className="tokens-tip-total"><span>Total</span><b>{usage.totalTokens.toLocaleString()}</b></span>
+      <span title={costDescription} style={mode === "pinned" ? { pointerEvents: "auto" } : undefined}><span>Est Cost</span><b>{cost}</b></span>
     </span>, document.body)}</>;
 }
 
@@ -220,12 +234,15 @@ export function RequestMetrics({ attempts, events }: { attempts: readonly Task[]
     return duration === undefined ? [] : [duration];
   });
   const time = durations.length ? workTimeLabel(durations.reduce((total, ms) => total + ms, 0), working) : undefined;
-  const sum = (key: keyof RunUsage) => reports.reduce((total, usage) => total + (usage?.[key] ?? 0), 0);
+  const sum = (key: Exclude<keyof RunUsage, "unpricedModels">) => reports.reduce((total, usage) => total + (usage?.[key] ?? 0), 0);
   const totalTokens = sum("totalTokens");
   const usage = totalTokens ? {
-    runs: sum("runs"), inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+    inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
     cacheReadTokens: sum("cacheReadTokens"), cacheWriteTokens: sum("cacheWriteTokens"),
     totalTokens,
+    estimatedApiCostUsd: reports.some(report => report?.totalTokens && report.estimatedApiCostUsd == null)
+      ? null : sum("estimatedApiCostUsd"),
+    unpricedModels: [...new Set(reports.flatMap(report => report?.unpricedModels ?? []))],
   } : undefined;
   const models = new Set<string>();
   const efforts = new Set<string>();
@@ -267,8 +284,12 @@ function WorkingRun({ task, events: all, changes, callNumber, say, result, onSto
     const progress = transcriptsProgress(tasks ?? [], media ?? [], ids);
     return progress && progress.stage !== "queued" ? transcriptionProgressLabel(progress) : undefined;
   }, [doing, events, tasks, media]);
+  // A run cut short, by Scarlet closing or restarting or by a pause, carries on under a new task. Until that attempt
+  // makes its first call the line says so: the editor who just reopened Scarlet sees the edit wasn't started over.
+  const pickingUp = !!task.resumeRootId && !rerun && !voice && (!doing || doing === STARTING);
   const words = transcripts ? `Transcribing the recordings · ${transcripts}`
-    : doing ?? (voice ? voicePhase[voice.phase] : task.state === "claimed" ? "Getting started" : WORKING);
+    : pickingUp ? PICKING_UP
+    : doing ?? (voice ? voicePhase[voice.phase] : task.state === "claimed" ? STARTING : WORKING);
   return <div className="req" data-state="working" aria-label="Scarlet’s work" aria-busy>
     {aim && <div className="req-said req-lead"><Said className="req-say" text={aim.text} /></div>}
     <div className="req-row req-now">
@@ -365,6 +386,7 @@ function FinishedRun({ task, finalChange, say, told, result, recovery, summary, 
 
 /** What the line says when nothing names the work of the moment. */
 const WORKING = "Working on your edit";
+const PICKING_UP = "Picking up where it left off";
 
 /** How a run that didn't finish ended, in the words its block says: paused for its transcripts, stopped, or failed. */
 export function runEnded(task: Task) {

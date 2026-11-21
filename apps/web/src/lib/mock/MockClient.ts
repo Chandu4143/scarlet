@@ -22,7 +22,6 @@ import type {
   ServerSettings,
   Skill,
   SkillVersion,
-  GraphicTemplateSummary,
   TaskAttachment,
   Task,
   TaskEvent,
@@ -32,10 +31,10 @@ import type {
   WsEvent,
 } from "@scarlet/shared";
 import type { Author, Change, MediaAsset, Note, Project, Timeline, TimelineDiff, TimeRange, Transcript } from "@scarlet/timeline";
-import { planRevert, toOtio, toFcpxml, usedMedia, handoffFileNames, handoffLosses, handoffReadMe, toSrt, captionTracks, exactRate, type HandoffSource, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
+import { CaptionExportError, captionExportHttpStatus, captionExportRange, toCaptions, planRevert, toOtio, toFcpxml, usedMedia, handoffFileNames, handoffLosses, handoffReadMe, timelineToSrt, captionTracks, exactRate, type HandoffSource, applyOps, canApproveSpots, clipEnd, withHandles, describeDiff, diffTimelines, emptyTimeline, formatTimecode, newId, planApply, timelineDuration, ASPECT_PRESETS, TimelineOp } from "@scarlet/timeline";
 import type { ActivityEntry, ApproveResponse, HandoffFile, HandoffResponse, TrashedProject } from "@scarlet/shared";
 import type { ScarletApi } from "../api";
-import { buildDb, mc, SAMPLE_TRANSCRIPTION_MODEL, templatePreviewSvg, type MockDb } from "./fixtures";
+import { buildDb, mc, SAMPLE_TRANSCRIPTION_MODEL, type MockDb } from "./fixtures";
 import sampleWaveform from "./sample-waveform.json";
 
 class Emitter {
@@ -248,6 +247,7 @@ export class MockClient implements ScarletApi {
   async recordEditReview(): Promise<void> { /* The demo has no analytics engine. */ }
   /** The demo has no runs to tell: this window remembers its Keeps. */
   async keepEdits(): Promise<void> {}
+  async unkeepEdits(): Promise<void> {}
   async threadEdits(id: string, threadId: string) {
     const project = this.projectById(id);
     const thread = this.projectThread(id, threadId);
@@ -543,6 +543,11 @@ export class MockClient implements ScarletApi {
     const list = (this.db.versions[projectId] ?? []).map((v) => ({ ...v, isHead: v.version === head }));
     return this.latency({ versions: list });
   }
+  /** The sample project has no engine to put an edit back: the × asks Scarlet, as it does wherever the engine can't. */
+  async rejectEdits(): Promise<{ project: Project; change: Change }> {
+    this.requireAuth();
+    throw new ScarletApiError(409, "needs_scarlet", "This edit can’t be put back as it was.");
+  }
   async historyEdit(projectId: string, target: string, action: "revert" | "restore", expectedHead: string, branch: string) {
     this.requireAuth();
     const project = this.projectById(projectId);
@@ -592,6 +597,25 @@ export class MockClient implements ScarletApi {
     const otio = tl ? toOtio({ ...project, media: this.db.media[projectId] ?? project.media }, tl, { mediaRoot: "C:/scarlet/media" }) : {};
     return `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(otio, null, 2))}`;
   }
+  srtUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }): string {
+    return this.captionDataUrl(projectId, version, "srt", opts);
+  }
+  vttUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }): string {
+    return this.captionDataUrl(projectId, version, "vtt", opts);
+  }
+  private captionDataUrl(projectId: string, version: string, format: "srt" | "vtt", opts?: { trackId?: string; start?: number; end?: number }): string {
+    const project = this.projectById(projectId);
+    const tl = this.db.timelines[version === "head" ? (project.head ?? "") : version];
+    if (!tl) throw notFound("Version");
+    try {
+      const text = toCaptions(tl, format, { trackId: opts?.trackId, range: captionExportRange(opts?.start, opts?.end) });
+      const type = format === "vtt" ? "text/vtt" : "text/plain";
+      return `data:${type};charset=utf-8,${encodeURIComponent(text)}`;
+    } catch (err) {
+      if (err instanceof CaptionExportError) throw new ScarletApiError(captionExportHttpStatus(err.code), err.code, err.message);
+      throw err;
+    }
+  }
 
   /** The demo's folder for another app: real timeline files, with the sample video standing in for every clip. */
   async handoff(projectId: string, version: string, folder: string): Promise<HandoffResponse> {
@@ -606,7 +630,7 @@ export class MockClient implements ScarletApi {
       url: `file://${encodeURI(`${folder}/Media/${names[i]}`)}`, fileName: names[i]!, hasVideo: a.kind !== "audio", hasAudio: a.hasAudio !== false,
       rate: a.fps ? exactRate(a.fps).rate : undefined, width: a.width, height: a.height, duration: a.duration ?? 0,
     }]));
-    const captions = captionTracks(tl).map(({ cues }) => ({ path: `${base} captions.srt`, text: toSrt(cues) })).slice(0, 1);
+    const captions = captionTracks(tl).map(({ track }) => ({ path: `${base} captions.srt`, text: timelineToSrt(tl, { trackId: track.id }) })).slice(0, 1);
     const files: HandoffFile[] = [
       { path: `${base}.fcpxml`, text: toFcpxml(project, tl, sources) },
       { path: `${base}.otio`, text: JSON.stringify(toOtio(project, tl, { sources }), null, 2) },
@@ -1136,7 +1160,7 @@ export class MockClient implements ScarletApi {
     const followUp = body.context?.threadId;
     this.log(projectId, "request.created", `${this.currentUser().name} asked ${AGENT_NAMES[body.agent]}: “${body.context?.message ?? body.instruction}”${followUp ? " (follow-up)" : ""}`);
     // As the engine does: what the person said is the request itself, unless the app sent their words apart from what
-    // it asks of the agent. Save as template reads "Save as template" in the chat and the queue.
+    // it asks of the agent.
     const said = body.context?.message ?? body.instruction;
     const task = this.makeTask(projectId, { kind: body.kind ?? "edit", agent: body.agent, model: body.model, effort: body.effort, serviceTier: body.serviceTier, instruction: body.instruction,
       context: { ...(body.context ?? {}), ...(followUp ? { message: said, asked: said === body.instruction ? undefined : body.instruction } : {}) } });
@@ -1321,15 +1345,7 @@ export class MockClient implements ScarletApi {
     this.requireAuth();
     return this.latency({ skills: this.db.skills }, 150);
   }
-  // --- graphic templates and attachments -------------------------------------------------
-  async listTemplates(): Promise<{ templates: GraphicTemplateSummary[] }> {
-    this.requireAuth();
-    return this.latency({ templates: this.db.templates }, 120);
-  }
-  templatePreviewUrl(templateId: string): string {
-    const template = this.db.templates.find(t => t.id === templateId);
-    return template ? templatePreviewSvg(template) : "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E";
-  }
+  // --- attachments ----------------------------------------------------------------------
   async uploadAttachment(projectId: string, file: Blob | { path: string }, name?: string): Promise<{ attachment: TaskAttachment }> {
     this.requireAuth();
     this.projectById(projectId);

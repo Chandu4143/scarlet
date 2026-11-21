@@ -41,10 +41,26 @@ import {
   segmentKey,
   snapRange,
   spawnStats,
+  timelinePreviewDecoder,
   usesRevisedProxyClock,
   waveformFromCache,
   wrapText,
 } from "./index.js";
+
+/** Stands in for an FFmpeg built without libfreetype: real FFmpeg on PATH, without drawtext, which it refuses as such a build does. */
+async function ffmpegWithoutText(dir: string): Promise<string> {
+  const bin = path.join(dir, "ffmpeg-no-text");
+  await fs.writeFile(bin, [
+    "#!/bin/sh",
+    "for a; do",
+    "  if [ \"$a\" = -filters ]; then ffmpeg \"$@\" | grep -v ' drawtext '; exit 0; fi",
+    "  case \"$a\" in *drawtext*) refuse=1;; *.txt) [ -f \"$a\" ] && grep -q drawtext \"$a\" && refuse=1;; esac",
+    "done",
+    "if [ -n \"$refuse\" ]; then echo \"[AVFilterGraph @ 0x1] No such filter: 'drawtext'\" >&2; echo 'Error : Filter not found' >&2; exit 8; fi",
+    "exec ffmpeg \"$@\"",
+  ].join("\n") + "\n", { mode: 0o755 });
+  return bin;
+}
 
 let dir: string;
 let src: string;
@@ -185,6 +201,24 @@ it("exports a resized frame range with optional captions and an equally long aud
     return (await runCapture("ffmpeg", ["-v", "error", "-ss", "0.5", "-i", file, "-frames:v", "1", "-f", "md5", "-"])).stdout.toString();
   };
   expect(await saved(true)).not.toBe(await saved(false));
+});
+
+it.skipIf(process.platform === "win32")("says before encoding that an FFmpeg without drawtext can't draw captions, and exports without them", async () => {
+  const { project, timeline } = fixture();
+  const ffmpegPath = await ffmpegWithoutText(dir);
+  const cache = path.join(dir, "no-text-cache");
+  const options = { mediaRoot: dir, quality: "delivery" as const, hwaccel: "none" as const, exportHeight: 90,
+    exportRange: { start: 1, end: 2 }, segmentSeconds: 1, ffmpegPath };
+  const file = path.join(dir, "no-text-captions.mp4");
+  const refused = renderFullCached(project, timeline, cache, file, options);
+  await expect(refused).rejects.toBeInstanceOf(ffmpeg.MissingFilterError);
+  await expect(refused).rejects.toThrow(ffmpeg.missingTextFilterMessage("draw the video’s captions"));
+  expect(syncFs.existsSync(file)).toBe(false);
+  // Nothing was encoded before the check.
+  expect(syncFs.existsSync(cache) ? await fs.readdir(cache) : []).toEqual([]);
+  const plain = path.join(dir, "no-text-plain.mp4");
+  await renderFullCached(project, timeline, cache, plain, { ...options, omitCaptions: true });
+  expect((await probeMedia(plain)).duration).toBeCloseTo(1, 1);
 });
 
 describe("ffmpeg", () => {
@@ -796,6 +830,13 @@ describe("render", () => {
     expect(fallback?.exact).not.toBe(true);
     if (fallback) expect(await fs.realpath(fallback.file)).not.toBe(await fs.realpath(outside));
     expect(resolveFontFile("Inter", { fontFile: outside })).toEqual({ file: outside, exact: true });
+  });
+
+  it("uses threaded AVC for automatic timeline previews on supported Macs and honors explicit decoders", () => {
+    expect(timelinePreviewDecoder("auto", "videotoolbox")).toBe(ffmpeg.threadedAvcPreview ? "videotoolbox-hevc" : "videotoolbox");
+    expect(timelinePreviewDecoder("videotoolbox", "videotoolbox")).toBe("videotoolbox");
+    expect(timelinePreviewDecoder("auto", "cuda")).toBe("cuda");
+    expect(timelinePreviewDecoder("none", undefined)).toBeUndefined();
   });
 
   it("uses the probed playback codec for hardware decoding older imports", async () => {
@@ -2210,7 +2251,13 @@ it("assembles a cut's preview window from cached playback sections and encodes o
   const frames = Number((await runCapture("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0",
     "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", file])).stdout.toString().trim());
   expect(frames).toBe(11 * 30);
-  // The sound runs the length of the window across the copied and the encoded section.
+  // The sound runs the length of the window across the copied and the encoded section: the file says so, and decoding
+  // it gives the whole window and no more than its packets hold. How much of each section's encoder lead-in a decode
+  // drops differs between ffmpeg builds (1,792 samples over on one, 2,432 on another), so the count isn't held to a tolerance.
+  const audio = JSON.parse((await runCapture("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration,nb_frames",
+    "-of", "json", file])).stdout.toString()).streams[0] as { duration: string; nb_frames: string };
+  expect(Number(audio.duration)).toBeCloseTo(11, 2);
   const sound = await runCapture("ffmpeg", ["-v", "error", "-i", file, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"]);
-  expect(Math.abs(sound.stdout.length / 2 - 11 * 48000)).toBeLessThan(48000 * 0.05);
+  expect(sound.stdout.length / 2).toBeGreaterThanOrEqual(11 * 48000 - 1024);
+  expect(sound.stdout.length / 2).toBeLessThanOrEqual(Number(audio.nb_frames) * 1024);
 }, 60_000);

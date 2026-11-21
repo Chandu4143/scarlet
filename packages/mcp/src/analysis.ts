@@ -178,7 +178,7 @@ function describeClip(clip: Clip, fps = 30): string {
   if (clip.kind === "media") {
     const speed = clip.speed && clip.speed !== 1 ? ` x${clip.speed}` : "";
     const vol = clip.volume === 0 ? " muted" : "";
-    const fades = clip.audioFadeIn || clip.audioFadeOut ? ` fades ${clip.audioFadeIn}/${clip.audioFadeOut}` : "";
+    const fades = clip.audioFadeIn || clip.audioFadeOut ? ` fades ${round3(clip.audioFadeIn ?? 0)}/${round3(clip.audioFadeOut ?? 0)}` : "";
     return `${clip.id}${label} ${range} <- ${clip.mediaId} ${clip.sourceIn.toFixed(2)}–${clip.sourceOut.toFixed(2)}${speed}${vol}${fades}${off}`;
   }
   if (clip.kind === "caption") {
@@ -187,15 +187,30 @@ function describeClip(clip: Clip, fps = 30): string {
   return `${clip.id}${label} ${range} color ${clip.color}${off}`;
 }
 
-export function summarizeTimeline(timeline: Timeline, fps = 30): string {
+/**
+ * A timeline track by track, each clip on a line. Given `brief`, a timeline with more clips than that lists only the
+ * clips near `near` (or none): the prompt is read again on every turn of a run, and a finished video's 300 clips cost
+ * a revision of one cut about a third of its tokens (2026-11-18). The tools read the rest when a request needs it.
+ */
+export function summarizeTimeline(timeline: Timeline, fps = 30, brief?: { most: number; near?: TimeRange }): string {
   const lines: string[] = [];
   lines.push(
     `Timeline "${timeline.name}" version ${timeline.version} — duration ${formatTimecode(timelineDuration(timeline), fps)} (${timelineDuration(timeline).toFixed(2)} s), ${timeline.tracks.length} tracks, ${timeline.markers.length} markers`,
   );
+  const total = timeline.tracks.reduce((n, t) => n + t.clips.length, 0);
+  const short = brief && total > brief.most ? brief : undefined;
+  const pad = 15;
+  const shown = (c: Clip) => !short || (!!short.near && c.timelineIn < short.near.end + pad && clipEnd(c) > short.near.start - pad);
   for (const t of timeline.tracks) {
     const flags = [t.muted ? "muted" : "", t.hidden ? "hidden" : ""].filter(Boolean).join(", ");
-    lines.push(`Track ${t.id} (${t.kind}) "${t.name}" — ${t.clips.length} clips${flags ? ` [${flags}]` : ""}`);
-    for (const c of [...t.clips].sort((a, b) => a.timelineIn - b.timelineIn)) lines.push(`  ${describeClip(c, fps)}`);
+    const span = short && t.clips.length ? `, ${formatTimecode(Math.min(...t.clips.map(c => c.timelineIn)), fps)}–${formatTimecode(Math.max(...t.clips.map(clipEnd)), fps)}` : "";
+    lines.push(`Track ${t.id} (${t.kind}) "${t.name}" — ${t.clips.length} clips${span}${flags ? ` [${flags}]` : ""}`);
+    for (const c of [...t.clips].sort((a, b) => a.timelineIn - b.timelineIn)) if (shown(c)) lines.push(`  ${describeClip(c, fps)}`);
+  }
+  if (short) {
+    lines.push(short.near
+      ? `Listed: the clips within ${pad} s of ${formatTimecode(short.near.start, fps)}–${formatTimecode(short.near.end, fps)}, of ${total}. \`timeline_get\` lists every clip and \`timeline_at\` reads what plays at a time.`
+      : `The ${total} clips aren't listed here: \`timeline_get\` lists every clip and \`timeline_at\` reads what plays at a time.`);
   }
   if (timeline.markers.length) {
     lines.push("Markers:");
@@ -206,7 +221,7 @@ export function summarizeTimeline(timeline: Timeline, fps = 30): string {
   return lines.join("\n");
 }
 
-export function summarizeProject(project: Project, timeline: Timeline | null): string {
+export function summarizeProject(project: Project, timeline: Timeline | null, brief?: { most: number; near?: TimeRange }): string {
   const s = project.settings;
   const lines = [
     `Project "${project.name}" (${project.id}) — ${s.width}x${s.height} ${s.aspect} @ ${s.fps} fps, head version ${project.head ?? "none"}`,
@@ -219,13 +234,13 @@ export function summarizeProject(project: Project, timeline: Timeline | null): s
       m.width && m.height ? `${m.width}x${m.height}` : "",
       m.hasAudio ? "audio" : "",
       m.kind === "graphic" ? "" : m.transcriptId ? "transcript" : "no transcript",
-      m.graphic ? `drawn from ${m.graphic.source}${m.graphic.templateId ? ` (template ${m.graphic.templateId})` : ""}` : "",
+      m.graphic ? `drawn from ${m.graphic.source}` : "",
     ]
       .filter(Boolean)
       .join(", ");
     lines.push(`  ${m.id} ${m.kind} "${m.name}" ${dur}${extra ? ` (${extra})` : ""}`);
   }
-  if (timeline) lines.push(summarizeTimeline(timeline, s.fps));
+  if (timeline) lines.push(summarizeTimeline(timeline, s.fps, brief));
   // The empty timeline's tracks are stated: three passes in three began by adding a video track "v1" and were refused.
   else lines.push("No timeline yet. The first edit starts from an empty one that already has a video track v1 and an audio track a1.");
   return lines.join("\n");

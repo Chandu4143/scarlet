@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { cli, isMain, list, main } from "./args.ts";
-import { listCases, loadCase, type LoadedCase } from "./case.ts";
+import { listCases, loadCase, type CaseFile, type LoadedCase } from "./case.ts";
 import { scoreEntrances } from "./entrances.ts";
 import type { Timeline } from "../../packages/timeline/src/index.ts";
 import { Engine, type TaskRecord } from "./engine.ts";
@@ -25,16 +25,31 @@ import { evaluateCaseOrigin, evaluateTask } from "./evaluate.ts";
 import { DEFAULT_EDGE_OPTIONS, KEPT_SIDE_EDGE_OPTIONS } from "./metrics.ts";
 import { checkedPath, dataDir, fileComponent, readJson, REPO_ROOT, resultsDir, timestamp, writeJson, writeText } from "./paths.ts";
 import { evaluationMarkdown, runMarkdown, type TrialRow } from "./report.ts";
+import { card, configSlug as slug, eligibleTrials, readTrial, scorecardMarkdown } from "./scorecard.ts";
 
 const USAGE = `Usage:
   run.ts --evaluate-task <taskId> [--case <id>] [--reference-version <v>] [--kept-side] [--refresh] [--engine <url>]
   run.ts --evaluate-case <id> [--kept-side]           (re-score the run a case was built from, offline)
-  run.ts (--cases <a,b> | --suite capability|regression) --configs <agent:model:effort,...> [--service-tier ID] [--trials N] [--skills name,... | --add-skills name,...] [--timeout-min M] (--dry-run | --yes)
+  run.ts (--cases <a,b> | --suite capability|regression) --configs <agent:model:effort,...> [--service-tier ID] [--trials N] [--skills name,... | --add-skills name,...] [--timeout-min M] [--partial-score] (--dry-run | --yes)
   run.ts --summarize <run dir>
+
+A case with no published video attached scores only 2 of the scorecard's 15 lines, so --yes refuses it unless
+--partial-score says that is what you want.
 
 Results go to $SCARLET_EVAL_DATA/results (default: Scarlet's application support folder /evals).`;
 
 interface AgentConfig { agent: string; model?: string; effort?: string; serviceTier?: string }
+
+/**
+ * Why a case's trials would come back with a mostly empty scorecard, or nothing when they won't. The scorecard reads a
+ * cut against the published video matched to the recordings (`reference.published`); an audio map or an editor's
+ * version alone feed other figures, not the card.
+ */
+export function scorecardGap(file: Pick<CaseFile, "id" | "reference">): string | undefined {
+  if (file.reference?.published) return undefined;
+  return `Case ${file.id} has no published video attached, so its scorecard would fill only 2 of 15 lines (mid-word cuts and restarts left in). ` +
+    "Attach one with dataset.ts build … --published-media (see evals/README.md), or pass --partial-score to spend the tokens anyway.";
+}
 
 async function transcriptSnapshot(engine: Engine, loaded: LoadedCase) {
   return Promise.all(loaded.file.dialogueMedia.map(async mediaId => {
@@ -67,7 +82,6 @@ function parseConfig(spec: string): AgentConfig {
   return { agent: parts[0]!, model: parts.slice(1, -1).join(":") || undefined, effort: parts.at(-1) || undefined };
 }
 const configLabel = (c: AgentConfig) => [c.agent, c.model ?? "default", c.effort ?? "default", ...(c.serviceTier ? [c.serviceTier] : [])].join(":");
-const slug = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-|-$/g, "");
 
 /** The exact request the app's composer sends for a first cut, on a dedicated branch. */
 function taskRequest(loaded: LoadedCase, config: AgentConfig, branch: string, skillIds: string[]) {
@@ -158,7 +172,9 @@ export function reportPublishedWords(inputs: NonNullable<ReturnType<typeof publi
     "--reference", inputs.reference, "--case-dir", loaded.dir, "--evidence", inputs.evidence, "--timeline", timeline, "--verified-keeps", "--matched-joins"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })) as
     { referenceSha256: string; gradingEvidenceSha256: string; verifiedPublishedWords: number; missingVerifiedWords: number; verifiedWordRecall: number | null;
       cutWordDistance: { labeledWords: number; differingWords: number; differingFraction: number | null; retainedSkippedWords: number };
-      spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null } };
+      spacing?: { editorWordRemovingCuts: number; recoveredWordRemovingCuts: number; sharedJoins: number; meanAbsErrorMs: number | null };
+      editorEdges?: { sharedEdges?: number; withinEditorWindowFraction?: number | null; speechMisses?: number; speechMissesOver100Ms?: number;
+        playsRemovedSpeech?: number; dropsKeptSpeech?: number } };
   if (published.referenceSha256 !== inputs.referenceSha256 || published.gradingEvidenceSha256 !== inputs.evidenceSha256) {
     throw new Error("The scored reference or grading evidence differs from its frozen digest.");
   }
@@ -169,7 +185,11 @@ export function reportPublishedWords(inputs: NonNullable<ReturnType<typeof publi
     differingLabeledWords: published.cutWordDistance.differingWords, differingWordFraction: published.cutWordDistance.differingFraction,
     ...(published.spacing && { editorWordRemovingCuts: published.spacing.editorWordRemovingCuts,
       recoveredWordRemovingCuts: published.spacing.recoveredWordRemovingCuts, matchedAudioJoins: published.spacing.sharedJoins,
-      matchedPauseErrorMs: published.spacing.meanAbsErrorMs }) });
+      matchedPauseErrorMs: published.spacing.meanAbsErrorMs }),
+    ...(published.editorEdges?.sharedEdges !== undefined && { editorEdgesShared: published.editorEdges.sharedEdges,
+      editorEdgesInWindow: published.editorEdges.withinEditorWindowFraction ?? null, editorEdgeSpeechMisses: published.editorEdges.speechMisses ?? null,
+      editorEdgeSpeechMissesOver100Ms: published.editorEdges.speechMissesOver100Ms ?? null,
+      editorEdgePlaysRemovedSpeech: published.editorEdges.playsRemovedSpeech ?? null, editorEdgeDropsKeptSpeech: published.editorEdges.dropsKeptSpeech ?? null }) });
 }
 
 async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig, trial: number, runId: string, dir: string, timeoutMs: number, selection: SkillSelection): Promise<TrialRow> {
@@ -232,6 +252,16 @@ async function runTrial(engine: Engine, loaded: LoadedCase, config: AgentConfig,
 function summarize(runDir: string, title: string): TrialRow[] {
   const rows = readJson<TrialRow[]>(checkedPath(runDir, join(runDir, "trials.json")));
   writeText(join(runDir, "summary.md"), runMarkdown(title, rows), runDir);
+  // The same trials as percentages, a card for each configuration. A run with nothing scored has none.
+  const configs = [...new Set(rows.filter(r => r.state === "done" && r.headline).map(r => r.config))];
+  const cards = configs.flatMap(config => {
+    const trials = eligibleTrials(runDir, config).map(({ file, row }) => readTrial(file, row));
+    return trials.length ? [card(config, trials)] : [];
+  });
+  if (cards.length) {
+    writeText(join(runDir, "scorecard.md"), scorecardMarkdown(cards), runDir);
+    console.log(scorecardMarkdown(cards));
+  }
   return rows;
 }
 
@@ -249,6 +279,7 @@ async function runCli(argv = process.argv.slice(2)) {
     configs: { type: "string" }, trials: { type: "string" }, "timeout-min": { type: "string" }, "dry-run": { type: "boolean" }, yes: { type: "boolean" },
     "reference-version": { type: "string" }, "kept-side": { type: "boolean" }, refresh: { type: "boolean" }, engine: { type: "string" },
     summarize: { type: "string" }, skills: { type: "string" }, "add-skills": { type: "string" }, "service-tier": { type: "string" },
+    "partial-score": { type: "boolean" },
   }, USAGE, argv);
 
   if (values.summarize) {
@@ -299,6 +330,7 @@ async function runCli(argv = process.argv.slice(2)) {
   }
   const runId = timestamp() + "-" + randomUUID().slice(0, 8);
   const runDir = join(resultsDir(), "runs", runId);
+  const gaps = cases.map(c => scorecardGap(c.file)).filter((g): g is string => !!g);
 
   if (values["dry-run"] || !values.yes) {
     let engine: Engine | undefined;
@@ -321,10 +353,12 @@ async function runCli(argv = process.argv.slice(2)) {
         console.log(`    wait (≤ ${values["timeout-min"] ?? 120} min, cancel on a question) → switch back to “${project?.branch ?? "<branch>"}” → score → ${join(runDir, loaded.file.id, slug(configLabel(config)), `trial-${t}`)}`);
       }
     }
+    for (const gap of gaps) console.log(`\n${values["partial-score"] ? "Note" : "Would refuse"}: ${gap}`);
     if (!values["dry-run"]) console.log(`\nNothing launched. Add --yes to run ${total} billed agent task(s); trials run one at a time and switch the project's branch while they run.`);
     return;
   }
 
+  if (gaps.length && !values["partial-score"]) throw new Error(gaps.join("\n"));
   const engine = await Engine.connect({ url: values.engine });
   const rows: TrialRow[] = [];
   for (const loaded of cases) for (const config of configs) for (let t = 1; t <= trials; t++) {

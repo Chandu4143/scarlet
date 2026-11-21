@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { REVISED_CHECK, type ThreadEdit } from "@scarlet/shared";
-import { editFocus, editKindWord, editNote } from "./editKind";
+import { editFocus, editKindWord, editNote, editRowWord } from "./editKind";
 
 const edit = (extra: Partial<ThreadEdit>): ThreadEdit => ({ changeId: "c", spot: 0, label: "An edit", range: { start: 27, end: 200 }, previous: [], ...extra });
 
@@ -31,6 +31,12 @@ describe("drawing an applied edit on the timeline", () => {
   it("leaves an assembly or a mixed edit unnamed", () => {
     expect(editKindWord(edit({ kind: "other" }))).toBeUndefined();
     expect(editKindWord(edit({}))).toBeUndefined();
+  });
+
+  it("gives every row in a list a word, a mix included", () => {
+    expect(editRowWord(edit({ kind: "zoom" }))).toBe("Zoom");
+    expect(editRowWord(edit({ kind: "other" }))).toBe("Edit");
+    expect(editRowWord(edit({ kind: "other", marker: true }))).toBe("To do");
   });
 });
 

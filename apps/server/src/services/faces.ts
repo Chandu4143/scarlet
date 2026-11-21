@@ -15,8 +15,8 @@ import { FACE_MODEL, FACE_SIDE, iou, type Face } from "../transcribe/faceModel.j
 import { LocalWhisperModel } from "../transcribe/localModel.js";
 import { pictureReader, r3, rememberLast, withFrames, type VideoMedia } from "./pictureReading.js";
 
-/** Bump when the reading changes: the model, the sampling or what a frame keeps. Kept readings are read again. */
-const FACES_VERSION = 1;
+/** Bump when the reading changes: the model, the sampling or what a frame keeps. Kept readings are read again. 2: the eyes. */
+const FACES_VERSION = 2;
 /** Seconds of a video read and kept together. */
 const FACES_WINDOW = 60;
 /** Frames a second decoded. Half are looked at, and the rest where the faces moved between them. */
@@ -37,14 +37,14 @@ const HOLD = 1.5;
 /** A face turned this far from where its span looks, in two frames running, starts another span. A presenter glancing at a screen beside the camera turns 20-30°. */
 const TURN = 45;
 
-/** The faces in one frame looked at: its source second and each face as [left, top, right, bottom, score, yaw]. */
-export interface FaceSample { at: number; faces: Array<[number, number, number, number, number, number]> }
+/** The faces in one frame looked at: its source second and each face as [left, top, right, bottom, score, yaw, eyes x, eyes y]. */
+export interface FaceSample { at: number; faces: Array<[number, number, number, number, number, number, number, number]> }
 
-/** One face over a stretch of time: source seconds, a box (fractions of the frame) that holds it throughout, roughly where it looks and how sure the detector was. */
-export interface FaceSpan { track: number; start: number; end: number; box: [number, number, number, number]; yaw: number; confidence: number }
+/** One face over a stretch of time: source seconds, a box (fractions of the frame) that holds it throughout, where its eyes usually are, roughly where it looks and how sure the detector was. */
+export interface FaceSpan { track: number; start: number; end: number; box: [number, number, number, number]; eyes: [number, number]; yaw: number; confidence: number }
 
-/** A face followed through the video: when it is first and last seen, for how long, its usual box and how sure the detector usually was. */
-export interface FaceTrack { track: number; start: number; end: number; seconds: number; box: [number, number, number, number]; confidence: number }
+/** A face followed through the video: when it is first and last seen, for how long, its usual box and eyes and how sure the detector usually was. */
+export interface FaceTrack { track: number; start: number; end: number; seconds: number; box: [number, number, number, number]; eyes: [number, number]; confidence: number }
 
 const median = (values: readonly number[]) => {
   const sorted = [...values].sort((a, b) => a - b), mid = sorted.length >> 1;
@@ -53,10 +53,10 @@ const median = (values: readonly number[]) => {
 
 /** A frame's faces as kept: fractions to three places, scores to two and yaw to the degree. */
 export function faceSample(at: number, faces: readonly Face[]): FaceSample {
-  return { at: r3(at), faces: faces.map(f => [...f.box.map(r3), Math.round(f.score * 100) / 100, f.yaw] as FaceSample["faces"][number]) };
+  return { at: r3(at), faces: faces.map(f => [...f.box.map(r3), Math.round(f.score * 100) / 100, f.yaw, ...f.eyes.map(r3)] as FaceSample["faces"][number]) };
 }
 
-interface Seen { at: number; next: number; box: [number, number, number, number]; score: number; yaw: number }
+interface Seen { at: number; next: number; box: [number, number, number, number]; score: number; yaw: number; eyes: [number, number] }
 
 /**
  * Tracks and spans from the windows read so far, in order. A face in one frame is the same as one in the frame before
@@ -75,7 +75,7 @@ export function faceTracks(windows: ReadonlyArray<{ start: number; end: number; 
     const joined = following && Math.abs(following.start - window.end) < 1e-6 && following.samples.length ? following.samples[0]!.at : window.end;
     window.samples.forEach((sample, s) => {
       const next = s + 1 < window.samples.length ? window.samples[s + 1]!.at : joined;
-      const faces = sample.faces.map(([x0, y0, x1, y1, score, yaw]) => ({ at: sample.at, next, box: [x0, y0, x1, y1] as Seen["box"], score, yaw }));
+      const faces = sample.faces.map(([x0, y0, x1, y1, score, yaw, ex, ey]): Seen => ({ at: sample.at, next, box: [x0, y0, x1, y1], score, yaw, eyes: [ex, ey] }));
       // Every pair a face and a track could make, best first: an overlap with a recent track, then with an old one, then
       // a recent track merely near. A presenter who walked off and back was otherwise taken for whoever stood up first.
       const pairs: Array<{ face: number; track: number; rank: number }> = [];
@@ -109,6 +109,7 @@ export function faceTracks(windows: ReadonlyArray<{ start: number; end: number; 
     const close = () => {
       if (!run.length) return;
       own.push({ track, start: run[0]!.at, end: run.at(-1)!.next, box: union.map(r3) as FaceSpan["box"],
+        eyes: [0, 1].map(i => r3(median(run.map(s => s.eyes[i]!)))) as FaceSpan["eyes"],
         yaw: Math.round(median(run.map(s => s.yaw)) / 5) * 5, confidence: Math.round(median(run.map(s => s.score)) * 100) / 100 });
       run = [];
     };
@@ -135,14 +136,14 @@ export function faceTracks(windows: ReadonlyArray<{ start: number; end: number; 
     close();
     spans.push(...own);
     const seconds = own.reduce((n, s) => n + s.end - s.start, 0);
-    const weighted = (side: number) => {
-      const sorted = own.map(s => ({ v: s.box[side]!, w: s.end - s.start })).sort((a, b) => a.v - b.v);
+    const weighted = (of: (span: FaceSpan) => number) => {
+      const sorted = own.map(s => ({ v: of(s), w: s.end - s.start })).sort((a, b) => a.v - b.v);
       let total = 0;
       for (const { v, w } of sorted) if ((total += w) >= seconds / 2) return v;
       return sorted.at(-1)!.v;
     };
-    summary.push({ track, start: own[0]!.start, end: own.at(-1)!.end, seconds: r3(seconds), box: [0, 1, 2, 3].map(weighted) as FaceTrack["box"],
-      confidence: Math.round(median(seen.map(s => s.score)) * 100) / 100 });
+    summary.push({ track, start: own[0]!.start, end: own.at(-1)!.end, seconds: r3(seconds), box: [0, 1, 2, 3].map(i => weighted(s => s.box[i]!)) as FaceTrack["box"],
+      eyes: [0, 1].map(i => weighted(s => s.eyes[i]!)) as FaceTrack["eyes"], confidence: Math.round(median(seen.map(s => s.score)) * 100) / 100 });
   });
   spans.sort((a, b) => a.start - b.start || a.track - b.track);
   return { tracks: summary, spans };
@@ -180,6 +181,16 @@ const reading = pictureReader<FaceSample[]>({ name: "faces", window: FACES_WINDO
 /** The tracks followed through each video's windows, for the 32 videos asked about last. */
 const followed = new Map<string, { windows: string; result: ReturnType<typeof faceTracks> }>();
 const MAX_FOLLOWED = 32;
+
+/**
+ * The faces as each frame looked at saw them, in a range, finding what hasn't been found yet: a box per frame, where
+ * `faces` gives one box that holds a face through a span. Waits up to `waitMs`, as `faces` does.
+ */
+export async function faceSamples(ctx: Ctx, media: MediaAsset & { projectId: string }, range: { from: number; to: number },
+  opts: { waitMs?: number; signal?: AbortSignal } = {}): Promise<{ samples: FaceSample[]; done: boolean; error?: string }> {
+  const read = await reading.read(ctx, media, range, opts);
+  return { samples: read.ready.flatMap(w => w.value).filter(s => s.at >= range.from && s.at < range.to), done: read.done, ...(read.error && { error: read.error }) };
+}
 
 export interface FacesResult {
   mediaId: string;

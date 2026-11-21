@@ -3,7 +3,7 @@
  */
 import { FILMSTRIP_SEEK_BATCH, sparseFilmstrip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
 import { buildFilterGraph, type GraphOptions } from "./graph.js";
-import { INDEXED_MP4_INPUT, LOCAL_MEDIA_INPUT, failureReason, ffSeconds, resolveFfmpeg, runCapture, withStreamInfoFallback } from "./exec.js";
+import { INDEXED_MP4_INPUT, LOCAL_MEDIA_INPUT, failureReason, ffSeconds, requireDrawtext, resolveFfmpeg, runCapture, withStreamInfoFallback } from "./exec.js";
 import { isStoredAsShown } from "./probe.js";
 import { resolveFontFile } from "./fonts.js";
 import { escapeFilterPath } from "./effects.js";
@@ -64,6 +64,8 @@ export function percentGrid(area: [number, number, number, number], width: numbe
 
 /** Decode the frame at `tSeconds` and return it as a JPEG. */
 export async function extractFrame(file: string, tSeconds: number, opts: FrameOptions = {}): Promise<Buffer> {
+  // A grid without its percents can't be read, so that says why instead.
+  if (opts.grid) await requireDrawtext("label the grid’s lines; the frame without grid needs no text", opts.ffmpegPath);
   // The GPU path keeps frames on the GPU, where a clip stored sideways or a photo with a turn is not turned,
   // so that file decodes on the CPU.
   if (opts.decoder && await isStoredAsShown(file, { signal: opts.signal })) {

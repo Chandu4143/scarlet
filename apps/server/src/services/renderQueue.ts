@@ -2,7 +2,8 @@ import { mkdirSync, rmSync, statSync } from "node:fs";
 import { quietProgress } from "./progressSave.js";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
-import { DELIVERY_AUDIO_REVISION, lutFileStamps, PROXY_CLOCK_REVISION, RENDER_REVISION, segmentKey, snapRange, usesRevisedProxyClock } from "@scarlet/render";
+import { DELIVERY_AUDIO_REVISION, lutFileStamps, MissingFilterError, missingTextFilterMessage, NO_DRAWTEXT, PROXY_CLOCK_REVISION, RENDER_REVISION, segmentKey, snapRange,
+  usesRevisedProxyClock } from "@scarlet/render";
 import type { Render, RenderKind } from "@scarlet/shared";
 import { clipEnd, intervalCandidates, newId, planPlaybackSegments, planTransitions, sha256, spanningSections, stableStringify, timelineDuration, type Clip, type Project, type Timeline, type TimeRange, type TransitionJoin } from "@scarlet/timeline";
 import { engineIsAlive, type Ctx } from "../context.js";
@@ -72,8 +73,10 @@ function workerPid(render: Pick<Render, "queuePid" | "demandPid" | "export">): n
  * `sources`: the files the render read, by the names the editor gave them.
  */
 function renderFailure(error: unknown, sources: ReadonlyArray<{ name: string; file: string }>, what: string): string {
-  if (error instanceof HttpError) return error.message;
+  if (error instanceof HttpError || error instanceof MissingFilterError) return error.message;
   const said = `${error instanceof Error ? error.message : String(error)}\n${(error as { stderr?: unknown } | undefined)?.stderr ?? ""}`;
+  // The renderer checks for drawtext before it draws captions. Anything else that asks for it says so here.
+  if (NO_DRAWTEXT.test(said)) return missingTextFilterMessage("draw the video’s captions");
   if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOSPC" || /no space left on device/i.test(said))
     return "There isn’t enough free disk space to render this: free some space, then try again.";
   // Every source is Scarlet's own copy in the project's files. Only the one ffmpeg names is the one it couldn't use.
@@ -341,7 +344,7 @@ export class RenderQueue {
   }
 
   private projectFor(input: Pick<RenderInput, "projectId" | "kind" | "range" | "version"> & { projectSettings?: Project["settings"] }) {
-    if (input.kind !== "playback" || !input.range) return this.ctx.repos.projects.get(input.projectId);
+    if ((input.kind !== "playback" && input.kind !== "segment") || !input.range) return this.ctx.repos.projects.get(input.projectId);
     const header = this.ctx.repos.projects.header(input.projectId);
     if (!header) return null;
     const entry = this.version(header, input.version);

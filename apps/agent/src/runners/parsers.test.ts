@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildClaudeCommand, claudeCanRunBare, claudeRunUsage, newClaudeState, parseClaudeLine } from "./claude.js";
 import { buildCodexCommand, newCodexState, parseCodexLine, tomlInlineTable, tomlString } from "./codex.js";
-import { buildGeminiCommand, newGeminiState, parseGeminiLine } from "./gemini.js";
+import { acpMcpServer, buildGeminiCommand, isScarletMcpPermission, newGeminiState, parseGeminiLine, permissionOutcome } from "./gemini.js";
 import { quoteForCmd, spawnLines, spawnSpec } from "./spawn.js";
 import { briefInput, isQuestionTool, prettyToolName, type RunnerEvent } from "./types.js";
 
@@ -38,6 +38,11 @@ describe("claude stream-json parser", () => {
     expect(st.result).toBe("Proposed one change: chg_1.");
     expect(st.mcpStatus).toBe("connected");
     expect(st.sessionId).toBe("s1");
+  });
+  it("reports a compaction once it happens", () => {
+    const st = newClaudeState();
+    const evs = feed(['{"type":"system","subtype":"compact_boundary","session_id":"s1","compact_metadata":{"trigger":"auto","pre_tokens":161204}}'], st, parseClaudeLine);
+    expect(evs).toEqual([{ type: "log", text: "Context compacted", data: { kind: "compaction", trigger: "auto", preTokens: 161204 } }]);
   });
   it("sees a resume that found no session as never started", () => {
     // Recorded from claude 2.1.316 with --resume <unknown id>.
@@ -286,48 +291,77 @@ describe("codex exec --json parser", () => {
   });
 });
 
-describe("gemini stream-json parser", () => {
+describe("gemini ACP parser", () => {
+  const upd = (update: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "g1", update } });
   const fixture = [
-    '{"type":"init","session_id":"g1","model":"gemini-2.5-pro"}',
-    '{"type":"message","role":"assistant","content":"Reading the ","delta":true}',
-    '{"type":"message","role":"assistant","content":"transcript.","delta":true}',
-    '{"type":"tool_use","tool_name":"transcript_get","tool_id":"c1","parameters":{"mediaId":"m1"}}',
-    '{"type":"tool_result","tool_id":"c1","status":"success","output":"..."}',
-    '{"type":"tool_use","tool_name":"task_question","tool_id":"c2","parameters":{"text":"9:16 or 16:9?"}}',
-    '{"type":"tool_result","tool_id":"c2","status":"success","output":"Question posted"}',
-    '{"type":"result","status":"success","stats":{"total_tokens":100}}',
+    upd({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Checking transcript first." } }),
+    upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading the " } }),
+    upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "transcript." } }),
+    upd({ sessionUpdate: "tool_call", toolCallId: "c1", name: "mcp__scarlet__transcript_get", rawInput: { mediaId: "m1" } }),
+    upd({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", rawOutput: { text: "ok" } }),
+    upd({ sessionUpdate: "tool_call", toolCallId: "c2", name: "mcp__scarlet__task_question", rawInput: { text: "9:16 or 16:9?" } }),
+    upd({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "completed", rawOutput: "Question posted" }),
   ];
-  it("accumulates deltas, maps tools and detects the question", () => {
+
+  it("accumulates thought and text deltas, maps tools and detects the question", () => {
     const st = newGeminiState();
     const evs = feed(fixture, st, parseGeminiLine);
-    expect(evs.map((e) => e.type)).toEqual(["log", "log", "tool", "question", "result"]);
+    expect(evs.map((e) => e.type)).toEqual(["log", "log", "tool", "question"]);
+    expect(evs[0]!.text).toBe("(thinking) Checking transcript first.");
     expect(evs[1]!.text).toBe("Reading the transcript.");
-    expect(evs[2]!.text).toBe('transcript_get {"mediaId":"m1"}');
+    expect(evs[2]!.text).toBe('scarlet.transcript_get {"mediaId":"m1"}');
     expect(st.question).toBe("9:16 or 16:9?");
     expect(st.questionPosted).toBe(true);
-    expect(st.result?.status).toBe("success");
+    expect(st.shouldStop).toBe(true);
+    expect(st.lastMessage).toBe("Reading the transcript.");
   });
-  it("handles errors and non-success results", () => {
+
+  it("trims flushed assistant messages and keeps the latest one as lastMessage", () => {
     const st = newGeminiState();
-    const evs = feed(
-      ['{"type":"error","severity":"warning","message":"slow"}', '{"type":"error","message":"quota exceeded"}', '{"type":"result","status":"error"}'],
-      st,
-      parseGeminiLine,
-    );
-    expect(evs.map((e) => e.type)).toEqual(["log", "error", "error"]);
-    expect(st.failed).toBe("quota exceeded");
+    const evs = feed([
+      upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\nChecking the transitions.\n" } }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "c1", name: "mcp__scarlet__timeline_get", rawInput: {} }),
+      upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\nFraming the demo." } }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "c2", name: "mcp__scarlet__timeline_propose", rawInput: {} }),
+    ], st, parseGeminiLine);
+    expect(evs.filter((e) => e.type === "log").map((e) => e.text)).toEqual(["Checking the transitions.", "Framing the demo."]);
+    expect(st.texts).toEqual(["Checking the transitions.", "Framing the demo."]);
+    expect(st.lastMessage).toBe("Framing the demo.");
   });
-  it("builds settings.json + GEMINI.md and the command", () => {
-    const cmd = buildGeminiCommand({ instruction: "Add captions", systemPrompt: "SYS", mcp, cwd: "/w", model: "gemini-2.5-flash" }, "gemini");
-    expect(cmd.stdin).toBe("Add captions");
-    expect(cmd.args).toEqual(["--sandbox", "--skip-trust", "--allowed-mcp-server-names", "scarlet", "--extensions", "none", "--admin-policy", expect.stringMatching(/scarlet-policy\.toml$/), "--output-format", "stream-json", "--model", "gemini-2.5-flash"]);
-    const settings = JSON.parse(cmd.files[Object.keys(cmd.files).find((k) => k.endsWith("settings.json"))!]!);
-    expect(settings.tools.core).toEqual([]);
-    const policy = Object.entries(cmd.files).find(([p]) => p.endsWith("scarlet-policy.toml"))![1];
-    expect(policy).toContain('toolName = "*"\ndecision = "deny"');
-    expect(policy).toContain('toolName = "*"\nmcpName = "scarlet"\ndecision = "allow"');
-    expect(settings.mcpServers.scarlet).toMatchObject({ command: mcp.command, args: mcp.args, env: mcp.env });
-    expect(cmd.files[Object.keys(cmd.files).find((k) => k.endsWith("GEMINI.md"))!]).toBe("SYS");
+
+  it("maps ACP plan updates and failed tool calls", () => {
+    const st = newGeminiState();
+    const evs = feed([
+      upd({ sessionUpdate: "plan", entries: [{ content: "Inspect footage", status: "completed" }, { content: "Cut pauses", status: "in_progress" }] }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "c1", name: "mcp__scarlet__timeline_propose", rawInput: {} }),
+      upd({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "failed", rawOutput: { error: "Invalid ops" } }),
+    ], st, parseGeminiLine);
+    expect(evs.map((e) => e.type)).toEqual(["plan", "tool", "error"]);
+    expect(evs[0]!.data).toEqual({ steps: [{ text: "Inspect footage", state: "done" }, { text: "Cut pauses", state: "in_progress" }] });
+    expect(evs[2]!.text).toContain("Invalid ops");
+  });
+
+  it("enforces Scarlet MCP-only permissions and builds the agy acp command", () => {
+    expect(isScarletMcpPermission({ toolCall: { name: "mcp__scarlet__timeline_get" } })).toBe(true);
+    expect(isScarletMcpPermission({ toolCall: { _meta: { mcpServer: "scarlet" }, title: "read" } })).toBe(true);
+    expect(isScarletMcpPermission({ toolCall: { name: "bash", title: "Run shell" } })).toBe(false);
+    expect(isScarletMcpPermission({ toolCall: { name: "read_file", _meta: { mcpServer: "other" } } })).toBe(false);
+
+    const opts = [{ optionId: "a1", kind: "allow_once" }, { optionId: "r1", kind: "reject_once" }];
+    expect(permissionOutcome({ options: opts }, true)).toEqual({ outcome: "selected", optionId: "a1" });
+    expect(permissionOutcome({ options: opts }, false)).toEqual({ outcome: "selected", optionId: "r1" });
+    expect(permissionOutcome({ options: [] }, false)).toEqual({ outcome: "cancelled" });
+
+    expect(buildGeminiCommand("agy")).toEqual({ file: "agy", args: ["acp", "--sandbox", "--disable-telemetry"] });
+    expect(acpMcpServer(mcp)).toEqual({
+      name: "scarlet",
+      command: mcp.command,
+      args: mcp.args,
+      env: [
+        { name: "SCARLET_SERVER", value: "http://localhost:4000" },
+        { name: "SCARLET_TOKEN", value: 'a"b' },
+      ],
+    });
   });
 });
 
@@ -461,32 +495,27 @@ describe("less common lines", () => {
     expect(failure('{"type":"error","message":""}')).toEqual([[["error", '{"type":"error","message":""}']], '{"type":"error","message":""}']);
   });
 
-  it("gemini: whole messages, text held back until the next step, and a result that only says it failed", () => {
+  it("gemini: non-JSON lines, partial chunks held until a tool call, and failed question updates", () => {
     const st = newGeminiState();
+    const upd = (update: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "g1", update } });
     const evs = feed([
       "Loaded cached credentials.",
-      '{"type":"message","content":"Looking at the timeline."}',
-      '{"type":"message","role":"user","content":"Make the first cut"}',
-      '{"type":"message","role":"model","text":"Cutting ","delta":true}',
-      '{"type":"message","role":"model","content":{"text":"the pause."},"delta":true}',
-      '{"type":"tool_call","tool":{"name":"timeline_propose"},"id":7,"input":{}}',
-      '{"type":"tool_result","id":7,"status":"error","output":"Invalid ops"}',
-      '{"type":"message","role":"assistant","content":42,"delta":true}',
-      '{"type":"message","role":"assistant","content":"Giving up.","delta":true}',
-      '{"type":"telemetry"}',
-      '{"type":"result","error":{"message":"quota"},"content":"Stopped early."}',
+      upd({ sessionUpdate: "agent_message_chunk", content: [{ text: "Cutting " }, "the pause."] }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "t1", title: "timeline_propose", rawInput: {} }),
+      upd({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "error", rawOutput: { error: "Invalid ops" } }),
+      upd({ sessionUpdate: "tool_call", toolCallId: "q1", name: "mcp__scarlet__task_question" }),
+      upd({ sessionUpdate: "tool_call_update", toolCallId: "q1", status: "failed", rawInput: { text: "Keep intro?" }, rawOutput: { error: "offline" } }),
+      upd({ sessionUpdate: "unknown_event" }),
     ], st, parseGeminiLine);
     expect(evs.map((e) => [e.type, e.text])).toEqual([
       ["log", "Loaded cached credentials."],
-      ["log", "Looking at the timeline."],
       ["log", "Cutting the pause."],
       ["tool", "timeline_propose"],
-      ["error", "Tool error: Invalid ops"],
-      ["log", "Giving up."],
-      ["error", "Stopped early."],
+      ["error", 'timeline_propose failed: {"error":"Invalid ops"}'],
+      ["question", "Keep intro?"],
     ]);
-    expect(st.texts).toEqual(["Looking at the timeline.", "Cutting the pause.", "Giving up."]);
-    expect(st).toMatchObject({ failed: "Stopped early.", result: { status: "error", text: "Stopped early." }, partial: "" });
+    expect(st.texts).toEqual(["Cutting the pause."]);
+    expect(st).toMatchObject({ question: "Keep intro?", questionPosted: false, shouldStop: true, partial: "" });
   });
 
   it("shortens what it shows of a tool's input, and shows nothing for an empty one", () => {

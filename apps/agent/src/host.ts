@@ -10,11 +10,12 @@ import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 import type { AgentAvailability, AgentId, AgentUsage, Task, TaskEvent } from "@scarlet/shared";
-import { ScarletClient, TaskState } from "@scarlet/shared";
+import { isSideCheck, ScarletClient, sideCheckSlots, TaskState } from "@scarlet/shared";
 import { privateDirectory } from "./private-files.js";
 import type { AgentConfig } from "./config.js";
 import { CLI_AGENTS, detect as detectAgents, runnerEnv } from "./detect.js";
 import { runAgent as defaultRunAgent } from "./runners/index.js";
+import { codexHomeDir } from "./runners/codex.js";
 import { addUsage } from "./runners/usage.js";
 import { mcpEnv, nodeExecutable, resolveMcpCliPath } from "./runners/spawn.js";
 import { DEFAULT_STALL_MS, type McpSpec, type RunAgentFn, type RunAgentResult, type RunnerEvent } from "./runners/types.js";
@@ -76,7 +77,10 @@ export class AgentHost {
   private running = new Map<string, RunningTask>(); // taskId -> run
   /** Running task count per runtime; each may run up to maxParallel at once. */
   private busy = new Map<AgentId, number>();
+  /** Running side checks per runtime, in slots of their own (`sideCheckSlots`), so a request never waits for its own checks behind itself. */
+  private checking = new Map<AgentId, number>();
   private stopped = false;
+  private stopController = new AbortController();
   private wakeResolve: (() => void) | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private ws: WebSocket | null = null;
@@ -102,10 +106,14 @@ export class AgentHost {
   /** Register, start heartbeats, WS and the claim loop. Resolves when the loop ends (after stop()). */
   async start(): Promise<void> {
     this.stopped = false;
+    this.stopController = new AbortController();
     // An old folder's Claude sessions go with it, unless Claude Code was told to keep its files somewhere other than the home.
     const home = (this.opts.env ?? process.env).CLAUDE_CONFIG_DIR ? undefined : homedir();
-    await pruneTaskDirs(this.opts.workRoot, undefined, home).catch((err) => this.log(`could not prune old task folders: ${errMsg(err)}`));
-    this.agents = await (this.opts.detect ?? (() => detectAgents({ models: this.config.models, log: this.log })))();
+    const [agents] = await Promise.all([
+      (this.opts.detect ?? (() => detectAgents({ models: this.config.models, log: this.log })))(),
+      pruneTaskDirs(this.opts.workRoot, undefined, home).catch((err) => this.log(`could not prune old task folders: ${errMsg(err)}`)),
+    ]);
+    this.agents = agents;
     await this.register();
     this.heartbeatTimer = setInterval(() => void this.heartbeat(), this.opts.heartbeatMs ?? 30_000);
     if (this.opts.ws !== false) this.connectWs();
@@ -117,6 +125,7 @@ export class AgentHost {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopController.abort();
     this.wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.wsTimer) clearTimeout(this.wsTimer);
@@ -204,7 +213,7 @@ export class AgentHost {
   /** Recover cancellations missed before subscribing or while disconnected. */
   private async checkCancellations(): Promise<void> {
     await Promise.allSettled([...this.running.values()].map(async (run) => {
-      const { task } = await this.client.task(run.task.id);
+      const { task } = await this.client.task(run.task.id, "none");
       if (task.state === "cancelled") run.controller.abort("server-cancelled");
     }));
   }
@@ -238,12 +247,14 @@ export class AgentHost {
 
   private async claimLoop(): Promise<void> {
     const limit = Math.min(8, Math.max(1, this.config.maxParallel ?? 3));
+    const checkLimit = sideCheckSlots(limit);
     while (!this.stopped) {
       const available = this.agents.filter(a => a.installed && a.loggedIn !== false && (CLI_AGENTS as string[]).includes(a.id));
       const idle = available.filter(a => (this.busy.get(a.id) ?? 0) < limit).map(a => a.id);
+      const checkIdle = available.filter(a => (this.checking.get(a.id) ?? 0) < checkLimit).map(a => a.id);
       // A long poll cannot gain another runtime when one of our workers finishes.
-      const wait = idle.length === available.length ? this.opts.claimWaitSeconds ?? 25 : 0;
-      if (!idle.length) {
+      const wait = idle.length === available.length && checkIdle.length === available.length ? this.opts.claimWaitSeconds ?? 25 : 0;
+      if (!idle.length && !checkIdle.length) {
         await this.sleep(5000);
         continue;
       }
@@ -251,7 +262,12 @@ export class AgentHost {
       try {
         // `wait` makes the server hold the request until a task is queued (long-poll);
         // `agents` restricts the claim to runtimes that are idle here.
-        const res = await this.client.post<{ task: Task | null }>(`/hosts/${this.config.hostId}/claim?wait=${wait}`, { agents: idle });
+        const res = await this.client.request<{ task: Task | null }>(
+          "POST",
+          `/hosts/${this.config.hostId}/claim?wait=${wait}`,
+          { agents: idle, checkAgents: checkIdle },
+          { signal: this.stopController.signal },
+        );
         task = res?.task ?? null;
       } catch (err) {
         if (this.stopped) break;
@@ -277,13 +293,15 @@ export class AgentHost {
     const controller = new AbortController();
     this.running.get(task.id)?.controller.abort("superseded");
     const agent = task.agent;
-    this.busy.set(agent, (this.busy.get(agent) ?? 0) + 1);
+    // A side check counts in its own slots, whichever pool the engine handed it from.
+    const slots = isSideCheck(task) ? this.checking : this.busy;
+    slots.set(agent, (slots.get(agent) ?? 0) + 1);
     const promise = this.runTask(task, controller.signal)
       .catch((err) => this.log(`task ${task.id} crashed: ${errMsg(err)}`))
       .finally(() => {
         if (this.running.get(task.id)?.controller === controller) this.running.delete(task.id);
         this.subscribeRunningProjects();
-        this.busy.set(agent, Math.max(0, (this.busy.get(agent) ?? 1) - 1));
+        slots.set(agent, Math.max(0, (slots.get(agent) ?? 1) - 1));
         this.wake();
       });
     this.running.set(task.id, { task, controller, promise });
@@ -375,6 +393,10 @@ export class AgentHost {
         const interrupted = (state === "cancelled" && this.stopped) || stopped;
         if (real && landed && !interrupted && !(this.opts.env ?? process.env).CLAUDE_CONFIG_DIR) {
           await removeClaudeSessions(real).catch((err) => this.log(`could not remove Claude sessions: ${errMsg(err)}`));
+        }
+        // A Codex run keeps its thread in a home beside the folder, on the same terms.
+        if (task.agent === "codex" && landed && !interrupted) {
+          await rm(codexHomeDir(cwd), { recursive: true, force: true }).catch((err) => this.log(`could not remove the Codex home: ${errMsg(err)}`));
         }
       }
     };
@@ -517,7 +539,7 @@ export class AgentHost {
 
   /** Prepare the task folder, fetch the engine's prompt and build the MCP spec. `fresh` skips resuming the CLI session. */
   async prepare(task: Task, fresh = false): Promise<Prepared> {
-    const { task: current } = await this.client.task(task.id);
+    const { task: current } = await this.client.task(task.id, "none");
     if (current.state === "cancelled") {
       this.running.get(task.id)?.controller.abort("server-cancelled");
       throw new Error("Task cancelled");

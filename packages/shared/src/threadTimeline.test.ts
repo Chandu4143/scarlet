@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Change, emptyTimeline, leftOutJoins, timelineDuration, timelineFromKeepRanges } from "@scarlet/timeline";
-import { buildThreads } from "./threads.js";
+import { buildThreads, type Thread } from "./threads.js";
 import { Task } from "./api.js";
-import { changeRemovals, matchesEdit, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
+import { changeRemovals, matchesEdit, namedTimelineEdits, REVISED_CHECK, threadEditList, threadTimeline } from "./threadTimeline.js";
 
 const head = { ...timelineFromKeepRanges("project", "interview", [{ start: 0, end: 3468 }]), version: "v2" };
 const earlier = { ...head, version: "v1" };
@@ -117,6 +117,38 @@ describe("reviewing one thread on the working interview timeline", () => {
       ops: reasons.map(({ start, end }) => ({ op: "rippleDelete", start, end })).reverse() };
     const result = threadTimeline(thread([cuts]), head, links, () => earlier, 30);
     expect(result.map(e => [e.label, e.check])).toEqual([["False start", reasons[0]!.check], ["Repeated line", undefined]]);
+  });
+
+  it("drops a cut whose footage a later save put back, and moves its reason to look to the cut that is there now", () => {
+    // A pause trim took out “five point five”; a later cut was made beside it; a save of the whole timeline then put the
+    // words back without naming the trim. The flag was raised on the last version, about the join that is left.
+    const keep = (version: string, ranges: Array<{ start: number; end: number }>) => ({ ...timelineFromKeepRanges("project", "interview", ranges), version });
+    const base = keep("base", [{ start: 0, end: 100 }]);
+    const trimmed = keep("v1", [{ start: 0, end: 10 }, { start: 11, end: 100 }]);
+    const both = keep("v2", [{ start: 0, end: 10 }, { start: 11, end: 20 }, { start: 21, end: 100 }]);
+    const restored = keep("v3", [{ start: 0, end: 20 }, { start: 21, end: 100 }]);
+    const versions = new Map([base, trimmed, both, restored].map(tl => [tl.version, tl]));
+    const lineage = [{ version: "base", parent: null }, { version: "v1", parent: "base" }, { version: "v2", parent: "v1" }, { version: "v3", parent: "v2" }];
+    const cut = (id: string, from: string, to: string, start: number, end: number, summary: string, createdAt: string) => ({ ...change, id, fromVersion: from, toVersion: to,
+      createdAt, ops: [{ op: "rippleDelete", start, end }], ranges: [{ start, end: start }], cutReasons: [{ start, end, reason: summary, summary, kind: "pause" }] });
+    const trim = { ...cut("trim", "base", "v1", 10, 11, "Tightened the pause", "2026-01-01T00:00:00Z"),
+      flags: [{ spot: 0, check: "Listen to ‘and and’.", taskId: "pass", at: "2026-01-01T00:05:00Z", location: { version: "v3", range: { start: 19, end: 20.5 } } }] };
+    const beside = cut("beside", "v1", "v2", 19, 20, "Cut the wait", "2026-01-01T00:01:00Z");
+    const pass = Task.parse({ id: "pass", projectId: "project", kind: "edit", agent: "codex", instruction: "pass", state: "done",
+      createdBy: { type: "human", name: "Editor" }, createdAt: "2026-01-01T00:00:00Z", context: { threadId: "request" } });
+    const of = (changes: object[]) => buildThreads({ changes: changes.map(item => Change.parse(item)), notes: [], tasks: [pass] })[0]!;
+    const listed = threadTimeline(of([trim, beside]), restored, lineage, version => versions.get(version), 30);
+    expect(listed.map(e => [e.changeId, e.at, e.check])).toEqual([["beside", 20, "Listen to ‘and and’."]]);
+    // Keeping it answers the flag that was raised, under that flag's own identity.
+    expect(listed[0]).toMatchObject({ reviewRef: { changeId: "trim", spot: 0 }, beforeCut: { version: "v1", removed: { start: 19, end: 20 } } });
+    // With no cut left at the flagged place, the flag stays as a passage to check, not as a cut.
+    const whole = keep("v3", [{ start: 0, end: 100 }]);
+    const alone = threadTimeline(of([trim]), whole, [{ version: "base", parent: null }, { version: "v1", parent: "base" }, { version: "v3", parent: "v1" }],
+      version => version === "v3" ? whole : versions.get(version), 30);
+    expect(alone).toHaveLength(1);
+    expect(alone[0]).toMatchObject({ changeId: "trim", kind: "other", check: "Listen to ‘and and’." });
+    expect(alone[0]).not.toHaveProperty("beforeCut");
+    expect(alone[0]).not.toHaveProperty("at");
   });
 
   it("reads a cut named by the footage around its join as a cut, with the footage it removed", () => {
@@ -363,6 +395,27 @@ describe("listing a thread's edits in the chat", () => {
     expect(matchesEdit(edits[1]!, { changeId: batch.id, spot: 1 })).toBe(true);
   });
 
+  it("lists an edit the editor rejected under its own words, marked rejected, with nothing left to check", () => {
+    const batch = Change.parse({ ...change, timelineEdits: [
+      { label: "Hold the scorecard", range: { start: 9, end: 13 }, summary: "Held the scorecard." },
+      { label: "Mute the false start", range: { start: 10, end: 10.1 }, summary: "Muted the false start.", check: "Listen to the last syllable" },
+    ] });
+    const back = { ...change, id: "back", fromVersion: "v1", toVersion: "v2", createdAt: "2026-01-02T00:00:00Z",
+      timelineEdits: [{ label: "Restored the false start", range: { start: 10, end: 10.1 }, reason: "Put back what the rejected edit changed.",
+        replaces: { changeId: batch.id, spot: 1 } }] };
+    // The engine's own put-back says it is a rejection; one Scarlet made is known by the request the × sent.
+    const rows = (changes: Change[], tasks: Thread["tasks"] = []) => threadTimeline({ ...thread(changes), tasks }, head, links, () => earlier, 30)
+      .map(edit => [edit.label, edit.summary, edit.check, edit.rejected]);
+    const rejected = [["Hold the scorecard", "Held the scorecard.", undefined, undefined], ["Mute the false start", "Muted the false start.", undefined, true]];
+    // The engine names its put-back as the row read when the editor rejected it, and the row keeps those words.
+    const engine = { ...back, rejects: true, timelineEdits: [{ ...back.timelineEdits[0]!, label: "Mute the false start after “score”" }] };
+    expect(rows([batch, Change.parse(engine)])).toEqual([rejected[0], ["Mute the false start after “score”", "Muted the false start.", undefined, true]]);
+    const asked = { id: "task_reject", instruction: "The editor rejected edit 2.", context: { message: "Reject edit" } } as Thread["tasks"][number];
+    expect(rows([batch, Change.parse({ ...back, taskId: asked.id })], [asked])).toEqual(rejected);
+    // The same change from a revision the editor typed is a revision: theirs to check again.
+    expect(rows([batch, Change.parse(back)])[1]).toEqual(["Restored the false start", undefined, "Revised", undefined]);
+  });
+
   it("numbers edits in timeline order, folds a revision into the edit it replaces, and keeps the reason to check", () => {
     const batch = { ...change, timelineEdits: [
       { label: "Raise narration volume", range: { start: 14, end: 18 }, check: "Room tone comes up with it",
@@ -567,4 +620,14 @@ describe("a doubt a later request raises about an edit already in the video", ()
     const note = { ...marks, ops: [{ op: "addMarker", marker: { id: "n", time: 144.21, kind: "chapter", text: "Boats", resolved: false } }] };
     expect(threadTimeline(thread([note]), head, links, () => earlier, 30)[0]?.check).toBeUndefined();
   });
+});
+
+it("names a cut saved without a summary by what came out, not by why it was made", () => {
+  const pass = Change.parse({ ...change, ops: [{ op: "rippleDelete", start: 30, end: 31 }, { op: "rippleDelete", start: 10, end: 10.6 }],
+    ranges: [{ start: 10, end: 10 }, { start: 29.4, end: 29.4 }], cutReasons: [
+      { start: 10, end: 10.6, reason: "Kept a short beat between parts of the same thought.", kind: "pause" },
+      { start: 30, end: 31, reason: "Kept the completed line.", summary: "Cut the false start ‘so the’", kind: "retake" }] });
+  expect(namedTimelineEdits(pass)?.map(e => [e.label, e.reason])).toEqual([
+    ["Shortened a pause", "Kept a short beat between parts of the same thought."],
+    ["Cut the false start ‘so the’", "Kept the completed line."]]);
 });

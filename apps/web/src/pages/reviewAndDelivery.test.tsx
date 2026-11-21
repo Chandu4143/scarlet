@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
-import { selectOption } from "../../test/selectOption";
+import { openOptions, selectOption } from "../../test/selectOption";
 import { act, StrictMode, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Link, MemoryRouter, Outlet } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { fullRenderContext, type Render } from "@scarlet/shared";
-import { timelineDuration } from "@scarlet/timeline";
+import { NO_CAPTION_TRACK, NO_CAPTIONS_IN_RANGE, snapToFrame, timelineDuration } from "@scarlet/timeline";
 import { MonitorPlayback } from "../components/player/MonitorPlayback";
 import { usePictureWait } from "../components/player/usePictureWait";
 import { TimelineScrubber } from "../components/review/TimelineScrubber";
@@ -26,14 +26,14 @@ import { CutPreview } from "./WatchPage";
 import { usePlayerStore } from "../stores/player";
 import * as cutStream from "../lib/cutStream";
 import { desktop } from "../lib/desktop";
-import { ExportSheet } from "../components/review/ExportVideo";
+import { ExportSheet, LOADING_LATEST_EDIT } from "../components/review/ExportVideo";
 import { resumeExports, useExports } from "../lib/exportJobs";
 import { ExportStarNotice } from "../components/shell/ExportStarNotice";
 
 vi.mock("../components/shell/AppShell", () => ({
   AppShell: () => <Outlet />,
 }));
-vi.mock("./ProjectsPage", () => ({ ProjectsPage: () => <><Link to="/">Projects</Link><WindowActions /></>, ImportUrlModal: () => null }));
+vi.mock("./ProjectsPage", () => ({ ProjectsPage: () => <><Link to="/">Projects</Link><WindowActions /></> }));
 vi.mock("../components/agent/Composer", () => ({ Composer: () => null }));
 
 let root: Root;
@@ -82,6 +82,15 @@ afterEach(async () => {
 const show = (element: ReactNode) => act(async () => root.render(element));
 const click = (element: HTMLElement) => act(async () => element.click());
 const labeled = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+const zoomLevel = () => container.querySelector<HTMLOutputElement>(".timeline-zoom-level")!;
+const zoomSlider = () => container.querySelector<HTMLInputElement>(".timeline-zoom-slider")!;
+// Dragging the zoom slider to its left end shows the whole video: there is no Fit button.
+const fitBySlider = () => act(() => {
+  const input = zoomSlider();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "0");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+});
 const exportButton = () => container.querySelector<HTMLButtonElement>('button[form="export-working-cut"]');
 const buttonByText = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === text);
 const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
@@ -312,39 +321,75 @@ it("writes the ruler's times as the player does, counting the hours past one", a
   expect(stamps()).toEqual(["0:00", "15:00", "30:00", "45:00", "1:00:00", "1:15:00"]);
 });
 
-it("zooms from the timeline controls and draws no edit points, zoomed or not", async () => {
+it("keeps zoom controls in the row under the timeline and draws no edit points, zoomed or not", async () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(132);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
   const source = data.media[0]!.id;
   const timeline = { ...data.timeline!, tracks: [{ ...data.timeline!.tracks[0]!, kind: "video" as const, hidden: false,
     clips: [mc("a", source, 0, 1, 50), mc("b", source, 0, 2, 51)] }] };
-  const seek = vi.fn();
+  const seek = vi.fn(), scrub = vi.fn(), selectRange = vi.fn();
   const render = () => show(<TimelineScrubber duration={200} playhead={150}
-    waveform={{ timeline, media: [] }} frameAt={() => undefined} onSeek={seek} />);
+    waveform={{ timeline, media: [] }} frameAt={() => undefined} onSeek={seek} onScrubStart={scrub} onRange={selectRange} />);
   const rail = () => container.querySelector(".timeline-cuts, .timeline-cut, .timeline-cut-group");
   await render();
   expect(rail()).toBeNull();
-  const trigger = labeled("Timeline controls");
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
-  expect(labeled("Zoom in")).toBeNull();
-  await click(trigger);
-  expect(labeled("Zoom out").disabled).toBe(true);
-  expect(button("Show edit points")).toBeUndefined();
-  await click(labeled("Zoom in"));
-  expect(rail()).toBeNull();
+  const controls = container.querySelector(".timeline-foot > [aria-label='Timeline zoom']");
   const zoomIn = labeled("Zoom in");
+  expect(controls?.contains(zoomIn)).toBe(true);
+  expect(labeled("Timeline controls")).toBeNull();
+  expect(labeled("Zoom out").disabled).toBe(true);
+  expect(zoomLevel().textContent).toBe("100%");
+  expect(zoomSlider().value).toBe("0");
+  expect(button("Show edit points")).toBeUndefined();
+  const ruler = container.querySelector(".timeline-ruler")!;
+  expect(ruler.textContent).toContain("2:00");
+  expect(ruler.textContent).toContain("3:00");
+  expect(ruler.querySelector('.ruler-major[style*="75%"]')).toBeTruthy();
+  await act(() => zoomIn.dispatchEvent(new PointerEvent("pointerdown", { button: 0, isPrimary: true, bubbles: true })));
+  await click(zoomIn);
+  expect(rail()).toBeNull();
   await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true, cancelable: true })));
-  expect(container.querySelector(".timeline-zoom-level")?.textContent).toBe("4×");
-  await click(labeled("Fit timeline"));
+  expect(zoomLevel().textContent).toBe("400%");
+  await act(() => zoomIn.dispatchEvent(new KeyboardEvent("keydown", { key: "-", bubbles: true, cancelable: true })));
+  expect(zoomLevel().textContent).toBe("200%");
+  expect(Number(zoomSlider().value)).toBeGreaterThan(0);
+  await fitBySlider();
+  expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
-  await act(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-  expect(labeled("Zoom in")).toBeNull();
-  expect(document.activeElement).toBe(trigger);
-  await click(trigger);
+  expect(scrub).not.toHaveBeenCalled();
+  expect(selectRange).not.toHaveBeenCalled();
+  const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  await act(() => zoomIn.dispatchEvent(escape));
+  expect(escape.defaultPrevented).toBe(false);
   await act(() => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(labeled("Zoom in")).toBe(zoomIn);
   expect(container.textContent).not.toContain("edit points");
+});
+
+it("brings the playhead part of the way to the middle with each zoom in, and leaves it where it is zooming out", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  vi.spyOn(window, "matchMedia").mockReturnValue(Object.create(reduced, { matches: { value: true } }));
+  await show(<TimelineScrubber activeShortcuts duration={200} playhead={190} frameAt={() => undefined} onSeek={() => {}} />);
+  const key = (name: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
+  const at = () => parseFloat(container.querySelector<HTMLElement>(".timeline-playhead")!.style.left);
+  expect(at()).toBeCloseTo(95, 0);
+  const seen = [];
+  for (let i = 0; i < 4; i++) {
+    await key("+");
+    seen.push(at());
+  }
+  // Each zoom moves it closer, never past the middle and never all the way at once.
+  for (const [i, left] of seen.entries()) {
+    expect(left).toBeGreaterThan(50);
+    expect(left).toBeLessThan(i ? seen[i - 1]! : 95);
+  }
+  expect(seen[0]).toBeGreaterThan(70);
+  const near = seen.at(-1)!;
+  await key("-");
+  expect(at()).toBeCloseTo(near, 5);
 });
 
 it("keeps the stretch the editor zoomed to when a new working cut builds the timeline again", async () => {
@@ -361,10 +406,10 @@ it("keeps the stretch the editor zoomed to when a new working cut builds the tim
   const whole = stamps();
   await key("+");
   await key("+");
-  // 4×: fifty seconds around the playhead.
+  // 4×: fifty seconds around the playhead, which each zoom brought nearer the middle.
   const zoomed = stamps();
   expect(zoomed).not.toEqual(whole);
-  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:00$/), expect.stringMatching(/2:30$/)]);
+  expect([zoomed[0], zoomed.at(-1)]).toEqual([expect.stringMatching(/2:10$/), expect.stringMatching(/2:40$/)]);
   // A revision lands. The head moves first and the new cut arrives a moment later, ten seconds shorter. The timeline is
   // built again each time, on the stretch it showed.
   await render(undefined, 200);
@@ -460,8 +505,7 @@ it("draws crowded edits as one pill that zooms to its run on a press, and a dot 
   expect(seek).not.toHaveBeenCalled();
   expect(markers().map(m => m.textContent)).toEqual(["1", "2", "3", "4"]);
   // Back on the whole video, a press on a dot opens its edit; beside a marker a press scrubs as before.
-  await click(container.querySelector<HTMLElement>(".timeline-view-trigger")!);
-  await click(labeled("Fit timeline"));
+  await fitBySlider();
   vi.spyOn(strip(), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 24));
   await point("pointermove", 620);
   expect(strip().classList.contains("is-aimed")).toBe(false);
@@ -522,8 +566,6 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
   vi.spyOn(track, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 0, 400, 120));
   const slider = labeled("Position in the video");
   const playheadX = () => slider.querySelector<HTMLElement>(".timeline-playhead")?.style.left;
-  await click(labeled("Timeline controls"));
-  const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
   vi.useFakeTimers();
   try {
     // x=200 is one quarter of this nonzero-based timeline, directly over its playhead.
@@ -535,32 +577,32 @@ it("anchors wheel and pinch zoom to the pointer and defers new media samples unt
     });
     frameAt.mockClear();
     await wheel(-50);
-    expect(level()).toBe("1.3×");
+    expect(zoomLevel().textContent).toBe("135%");
     await wheel(-50, true);
-    expect(level()).toBe("2.5×");
+    expect(zoomLevel().textContent).toBe("246%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     expect(frameAt).not.toHaveBeenCalled();
     await act(() => { vi.advanceTimersByTime(150); });
     expect(frameAt).toHaveBeenCalled();
-    await click(labeled("Fit timeline"));
+    await fitBySlider();
     await act(() => vi.advanceTimersByTime(550));
     for (const [type, scale] of [["gesturestart", 1], ["gesturechange", 2], ["gesturechange", 3], ["gestureend", 3]] as const) {
       const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 200 });
       await act(() => track.dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
     }
-    expect(level()).toBe("3×");
+    expect(zoomLevel().textContent).toBe("300%");
     expect(parseFloat(playheadX()!)).toBeCloseTo(25);
     const key = (value: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: value, cancelable: true })));
     await key("+");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("6×");
+    expect(zoomLevel().textContent).toBe("600%");
     await key("-");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("3×");
+    expect(zoomLevel().textContent).toBe("300%");
     await key("0");
     await act(() => vi.advanceTimersByTime(550));
-    expect(level()).toBe("1×");
+    expect(zoomLevel().textContent).toBe("100%");
     expect(seek).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
 });
@@ -1207,7 +1249,7 @@ it("asks for the file's name once, in the system's Save dialog, which opens on t
   vi.spyOn(desktop, "finishVideoExport").mockRejectedValue(new Error("Disk full"));
   await show(<ExportSheet hasCut onClose={() => {}} />);
   // The sheet has no box for the name and no row for the folder: what to export, the video's options, and one button.
-  expect([...container.querySelectorAll("form label")].filter(label => !label.closest("details")).map(label => label.textContent)).toEqual(["Range"]);
+  expect([...container.querySelectorAll("form label")].filter(label => !label.closest("details")).map(label => label.textContent)).toEqual(["Format", "Range"]);
   // The range starts on the whole video, by that name.
   expect(container.querySelector("#export-range")!.textContent).toBe("Whole video");
   expect(container.querySelector("form input, #export-folder")).toBeNull();
@@ -1254,6 +1296,113 @@ it("goes back from Advanced export to the video's settings", async () => {
   await click(buttonByText("Back")!);
   expect(container.querySelector("#export-range")).not.toBeNull();
   expect(buttonByText("Advanced export")).toBeTruthy();
+});
+
+it("exports captions as a sidecar, keeps the range, and does not start a video render", async () => {
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 21, path: "/chosen/Interview.srt" });
+  const request = vi.spyOn(api, "requestRender");
+  const save = vi.spyOn(desktop, "finishVideoExport").mockResolvedValue("/chosen/Interview.srt");
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  const formats = await openOptions(container.querySelector<HTMLButtonElement>("#export-format")!);
+  expect(formats.map(o => o.textContent)).toEqual(expect.arrayContaining(["Captions (.srt)", "Captions (.vtt)"]));
+  await act(() => formats.find(o => o.textContent?.includes("Captions (.srt)"))!.click());
+  expect(container.querySelector("#export-range")!.hasAttribute("disabled") || container.querySelector("#export-range")!.getAttribute("aria-disabled")).toBeFalsy();
+  expect(container.querySelector("#export-resolution")).toBeNull();
+  expect(container.textContent).not.toContain("The timeline links to the original media");
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-range")!, "Custom range");
+  await click(exportButton()!);
+  expect(choose).toHaveBeenCalledWith(`${data.project.name}.srt`);
+  expect(request).not.toHaveBeenCalled();
+  const duration = snapToFrame(timelineDuration(data.timeline!), data.project.settings.fps);
+  expect(save).toHaveBeenCalledWith(21, api.srtUrl(PRJ, data.project.head!, { trackId: "c1", start: 0, end: duration }));
+});
+
+it("disables caption export when the video has no caption track", async () => {
+  const timeline = { ...data.timeline!, tracks: data.timeline!.tracks.filter(t => t.kind !== "caption") };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTION_TRACK);
+});
+
+it("tells a new project with no cut to add captions when captions are chosen", async () => {
+  const timeline = { ...data.timeline!, tracks: data.timeline!.tracks.filter(t => t.kind !== "caption") };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut={false} onClose={() => {}} />);
+  expect(container.textContent).toContain("There’s no video to export yet.");
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTION_TRACK);
+  expect(container.textContent).not.toContain("There’s no video to export yet.");
+});
+
+it("disables caption export when the range has no cues", async () => {
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-range")!, "Custom range");
+  await act(() => {
+    const set = (id: string, value: string) => {
+      const field = container.querySelector<HTMLInputElement>(id)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    set("#export-start", "0:12.000");
+    set("#export-end", "0:15.000");
+  });
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTIONS_IN_RANGE);
+});
+
+it("does not throw when the chosen caption track is removed while Export is open", async () => {
+  const extra = { id: "c2", kind: "caption" as const, name: "Titles", muted: false, hidden: false, clips: [
+    { id: "t1", kind: "caption" as const, timelineIn: 0.5, timelineOut: 1.5, text: "Title", enabled: true },
+  ] };
+  const timeline = { ...data.timeline!, tracks: [...data.timeline!.tracks, extra] };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-track")!, "Titles");
+  const withoutTitles = { ...data.timeline!, tracks: data.timeline!.tracks };
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline: withoutTitles } }));
+  expect(container.querySelector("#export-track")).toBeNull();
+  expect(exportButton()!.disabled).toBe(false);
+});
+
+it("waits for the timeline of a new head before it exports captions", async () => {
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.srt\)/);
+  expect(exportButton()!.disabled).toBe(false);
+  // An edit lands while the sheet is open: the head moves before its timeline is loaded.
+  expect(container.textContent).not.toContain(LOADING_LATEST_EDIT);
+  await act(async () => useProjectStore.setState({ current: { ...data, project: { ...data.project, head: "v-next" } } }));
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(LOADING_LATEST_EDIT);
+  await act(async () => useProjectStore.setState({ current: {
+    ...data, project: { ...data.project, head: "v-next" }, timeline: { ...data.timeline!, version: "v-next" },
+  } }));
+  expect(exportButton()!.disabled).toBe(false);
+  expect(container.textContent).not.toContain(LOADING_LATEST_EDIT);
+});
+
+it("offers a caption track picker only when more than one caption track is visible", async () => {
+  const extra = { id: "c2", kind: "caption" as const, name: "Titles", muted: false, hidden: false, clips: [] };
+  const timeline = { ...data.timeline!, tracks: [...data.timeline!.tracks, extra] };
+  const choose = vi.spyOn(desktop, "chooseVideoExport").mockResolvedValue({ ticket: 22, path: "/chosen/Interview.vtt" });
+  const save = vi.spyOn(desktop, "finishVideoExport").mockResolvedValue("/chosen/Interview.vtt");
+  vi.spyOn(desktop, "discardVideoExport").mockResolvedValue();
+  await act(async () => useProjectStore.setState({ current: { ...data, timeline } }));
+  await show(<ExportSheet hasCut onClose={() => {}} />);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-format")!, /Captions \(\.vtt\)/);
+  expect(container.querySelector("#export-track")!.textContent).toBe("Captions");
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-track")!, "Titles");
+  expect(exportButton()!.disabled).toBe(true);
+  expect(container.textContent).toContain(NO_CAPTIONS_IN_RANGE);
+  await selectOption(container.querySelector<HTMLButtonElement>("#export-track")!, "Captions");
+  await click(exportButton()!);
+  expect(choose).toHaveBeenCalledWith(`${data.project.name}.vtt`);
+  expect(save).toHaveBeenCalledWith(22, api.vttUrl(PRJ, data.project.head!, { trackId: "c1" }));
 });
 
 it("says an export is waiting to start or finishing, with no percent that would sit still", async () => {
@@ -1308,22 +1457,21 @@ it("adds a second zoom step to the one under way, and turns a zoom back from whe
   usePlayerStore.setState({ time: 50, playing: true });
   await render(50);
   const slider = container.querySelector(".timeline-slider");
-  const level = () => container.querySelector(".timeline-zoom-level")?.textContent;
-  await click(labeled("Timeline controls"));
   await click(labeled("Zoom in"));
-  expect(level()).toBe("1×");
+  expect(zoomLevel().textContent).toBe("100%");
   await advance(130);
-  const halfway = parseFloat(level()!);
-  expect(halfway).toBeGreaterThan(1);
+  const halfway = parseFloat(zoomLevel().textContent!);
+  expect(halfway).toBeGreaterThan(100);
+  expect(halfway).toBeLessThan(200);
   await render(51); // An unrelated playback tick must not pull the view back.
   expect(container.querySelector(".timeline-slider")).toBe(slider);
   await click(labeled("Zoom in")); // A second step compounds the pending destination.
   await advance(500);
-  expect(level()).toBe("4×");
+  expect(zoomLevel().textContent).toBe("400%");
   await click(labeled("Zoom out"));
   await advance(60);
-  await click(labeled("Fit timeline")); // Reverse an in-flight zoom from its current pose.
+  await fitBySlider(); // Reverse an in-flight zoom from its current pose.
   await advance(500);
-  expect(level()).toBe("1×");
+  expect(zoomLevel().textContent).toBe("100%");
   expect(seek).not.toHaveBeenCalled();
 });

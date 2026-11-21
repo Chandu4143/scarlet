@@ -4,7 +4,7 @@ import {
   DEFAULT_EDGE_OPTIONS, DEFAULT_PACING_OPTIONS, KEPT_SIDE_EDGE_OPTIONS, classifyEdges, compareToDecisions, compareToReference, cutEdges, joinEdges, labelWords,
   levelIn, levelStats, matchEdges, pacing, planMetrics, prf, removedSource, sentences, summarizeEdges, traceMetrics, type EventLike, type MediaEvidence,
 } from "../src/metrics.ts";
-import { keptSource, playedWords, timelineRangeToSource, wordsWithout } from "../src/timeline.ts";
+import { dividedJoins, keptSource, playedWords, timelineRangeToSource, wordsWithout } from "../src/timeline.ts";
 import { BREATH_DB, FLOOR_DB, SPEECH_DB, cut, lines, media, recording } from "./fixtures.ts";
 
 const MIC = "med_mic";
@@ -162,6 +162,24 @@ describe("against a reference", () => {
   });
 });
 
+describe("divided joins", () => {
+  it("lists the joins of a version that took words out of a sentence, and not a pause or whole sentences taken out", () => {
+    const said = "This is the watch. Do not use tools. Do, do not use tools. Now the reason is speed. Sorry, phone. It holds up.".split(" ");
+    const ev = recording(MIC, 12, said.map((text, i) => [text, 1 + i * .4, 1.3 + i * .4] as [string, number, number]));
+    const evidence = new Map([[MIC, ev]]);
+    // A pause trimmed after “watch.”, the restart cut with its first word left in, and an aside taken out whole.
+    const tl = cut("A", MIC, [[0, 2.5], [2.6, 4.55], [6.15, 8.15], [8.95, 12]]);
+    expect(dividedJoins(tl, [media(MIC)], evidence)).toMatchObject([
+      { mediaId: MIC, before: "Do not use tools. Do,", after: "Now the reason is speed.", removed: 4, removedStart: "do not use tools.", split: ["out"] }]);
+  });
+
+  it("doesn't count a word the recording has no sound for as played", () => {
+    // “out there.” then an “I” the aligner gave no time, in front of an aside that was cut: nothing stray plays.
+    const ev = recording(MIC, 8, [["model", 1, 1.3], ["out", 1.4, 1.7], ["there.", 1.8, 2.1], ["I", 2.1, 2.1], ["mean,", 3, 3.3], ["wow.", 3.4, 3.7], ["This", 4.2, 4.5], ["works.", 4.6, 4.9]]);
+    expect(dividedJoins(cut("A", MIC, [[0, 2.2], [4.1, 8]]), [media(MIC)], new Map([[MIC, ev]]))).toEqual([]);
+  });
+});
+
 describe("pacing", () => {
   it("scores a version with staged cuts taken out: words inside go, later words move up across a new join", () => {
     const w = (text: string, start: number, end: number) => ({ text, start, end, sourceStart: start, sourceEnd: end, mediaId: MIC, piece: 0 });
@@ -242,14 +260,32 @@ describe("trace", () => {
   const task = { id: "tsk_1", state: "done", agent: "codex", createdAt: at(-5), startedAt: at(0), finishedAt: at(600),
     usage: { inputTokens: 1000, outputTokens: 200, cache: { read: 50 } } };
 
+  it("prefers cumulative workedMs when recorded on a resumed task", () => {
+    const resumed = { ...task, startedAt: at(500) };
+    expect(traceMetrics({ ...resumed, workedMs: 420000 }, events)).toMatchObject({ activeSeconds: 420, finishSeconds: 605, firstCallSeconds: 201 });
+  });
+
   it("counts tools, errors, inspection and active time without the editor's wait", () => {
     const m = traceMetrics(task, events);
-    expect(m).toMatchObject({ activeSeconds: 540, queueSeconds: 5, waitingSeconds: 60, firstChangeSeconds: 201, firstCallSeconds: 202,
+    expect(m).toMatchObject({ finishSeconds: 605, activeSeconds: 540, queueSeconds: 5, waitingSeconds: 60, firstChangeSeconds: 201, firstCallSeconds: 202,
       firstRecommendationSeconds: 260, toolCalls: 5, errors: 1, questions: 1 });
     expect(m.byTool).toMatchObject({ dialogue_scan: 1, dialogue_check_join: 1, frame_contact_sheet: 1, dialogue_apply_cuts: 1, dialogue_review_save: 1 });
     expect(m.errorsByTool).toEqual({ frame_contact_sheet: 1 });
     expect(m.inspection).toMatchObject({ listened: 1, usedAudio: true, usedVisual: true, levels: 2 });
     expect(m.usage).toEqual({ inputTokens: 1000, outputTokens: 200, "cache.read": 50 });
+  });
+
+  it("times a task claimed again from its first event, not its latest start", () => {
+    const m = traceMetrics({ ...task, startedAt: at(250) }, events);
+    expect(m).toMatchObject({ finishSeconds: 605, activeSeconds: 539, queueSeconds: 6, firstChangeSeconds: 200 });
+  });
+
+  it("takes the engine's cost estimate, and none when a model has no price", () => {
+    expect(traceMetrics({ ...task, usage: { inputTokens: 10, estimatedApiCostUsd: 4.0954064, models: ["gpt-6.2-sol"] } }, events))
+      .toMatchObject({ costUsd: 4.0954, unpricedModels: [], usage: { inputTokens: 10, estimatedApiCostUsd: 4.0954064 } });
+    expect(traceMetrics({ ...task, usage: { inputTokens: 10, estimatedApiCostUsd: null, unpricedModels: ["halo-alpha"] } }, events))
+      .toMatchObject({ costUsd: null, unpricedModels: ["halo-alpha"] });
+    expect(traceMetrics(task, events)).toMatchObject({ costUsd: null, unpricedModels: [] });
   });
 
   it("summarizes the submitted plan and how many edged cuts were checked", () => {

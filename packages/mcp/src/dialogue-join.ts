@@ -1,22 +1,32 @@
-import { applyReviewRemovals, clipDuration, crossfadeJoins, sourceToTimeline, timelineDuration, timelineToSource, type MediaAsset, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
+import { applyReviewRemovals, clipDuration, clipEnd, intervalCandidates, crossfadeJoins, sourceToTimeline, timelineDuration, timelineToSource, type MediaAsset, type MediaClip, type Project, type TimeRange, type Timeline, type TranscriptWord } from "@scarlet/timeline";
 import { JOIN_WORD_SECONDS, normalizeTranscriptToken } from "@scarlet/shared";
 import { audibleClipsByTrack, dbfs, isTag, round3 } from "./analysis.js";
 import { REPEAT_WITHIN } from "./dialogue-leftovers.js";
 import { partialRepeatAtJoin, type FragmentSide } from "./dialogue-fragment-repeat.js";
-import { QUIET_PEAK, QUIET_RMS, quietRms } from "./gap-sound.js";
+import { QUIET_RMS, quietBuckets, quietRms } from "./gap-sound.js";
 import { MAX_CROSSFADE, timelineJoins, type JoinSide } from "./timeline-perception.js";
 
 type Word = Pick<TranscriptWord, "text" | "start" | "end">;
+/** A word as the join check reads it: where the recording has it, and, when that is not where the transcript times it, `timed`. */
+type JoinWord = Word & { timed?: TimeRange };
 interface Waveform { from: number; to: number; peaks: number[]; rms?: number[]; speechActivity?: TimeRange[] }
 /** Measured RMS level of the source in dBFS, one value per waveform bucket. */
 export interface AudioLevels { from: number; step: number; db: number[] }
-export interface JoinPage extends TimeRange { mediaId: string; audioStream?: number; edges?: { words: Word[]; quiet: TimeRange[]; valleys: TimeRange[]; voice: TimeRange[]; levels?: AudioLevels } }
+export interface JoinPage extends TimeRange { mediaId: string; audioStream?: number; edges?: { words: JoinWord[]; quiet: TimeRange[]; valleys: TimeRange[]; voice: TimeRange[]; levels?: AudioLevels } }
 export interface JoinCheck extends TimeRange {
   /** `snapped` moved an edge a few frames onto measured silence and is safe to apply as proposed. */
   status: "unchanged" | "snapped" | "adjusted" | "partial" | "review";
   reason?: string;
   /** The scan has no audio measurements at a failing edge, so the check found nothing either way. */
   unmeasured?: boolean;
+  /** Edges left in sound at speaking level, with no quiet or low point Scarlet could move them to within the words asked for. */
+  inSound?: Array<"start" | "end">;
+  /** Of those, the edges inside a transcript word that is sounding there. */
+  inWord?: Array<"start" | "end">;
+  /** Both edges are where sameWordJoin puts them: inside the word said on either side of the cut. */
+  sameWord?: string;
+  /** Where this removal could switch takes inside the word said on either side of it, when its start has no quiet. */
+  sameWordJoin?: TimeRange & { word: string; reason: string; takesFirst?: true };
 }
 
 export function dialogueAudioStream(source: object) {
@@ -36,21 +46,93 @@ export function joinEvidence(words: Word[], wf: Waveform): JoinPage["edges"] {
   if (step > 0.031) return; // A coarse waveform cannot locate an edge between syllables.
   const quiet: TimeRange[] = [], valleys: TimeRange[] = [];
   const quietBelow = quietRms(wf.rms, step);
-  let voice = 0;
+  const spoken = words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text));
+  const still = quietBuckets(wf.rms, wf.peaks, wf.from, step, wf.speechActivity, quietBelow, spoken);
   for (let i = 0; i < wf.rms.length; i++) {
     const start = wf.from + i * step, end = wf.from + (i + 1) * step;
-    while (voice < wf.speechActivity.length && wf.speechActivity[voice]!.end <= start) voice++;
-    if (wf.rms[i]! <= quietBelow && wf.peaks[i]! <= QUIET_PEAK && (wf.speechActivity[voice]?.start ?? Infinity) >= end)
-      appendInterval(quiet, start, end);
+    if (still[i]) appendInterval(quiet, start, end);
     // A speech detector can stay active through a real inter-word gap. Offer a deep
     // level trough there for audition, but keep that disagreement explicit.
     // Deep against this recording's floor too: a breath 10 dB over a very quiet room is under any fixed level.
     if (wf.rms[i]! <= Math.min(.002, quietBelow) && wf.peaks[i]! <= .012) appendInterval(valleys, start, end);
   }
-  const db = wf.rms.map(dbfs);
-  return { voice: wf.speechActivity, valleys, words: words.filter(w => w.end > w.start && w.text.trim() && !isTag(w.text)),
-    quiet, levels: { from: wf.from, step, db } };
+  const db = wf.rms.map(dbfs), levels = { from: wf.from, step, db };
+  return { voice: wf.speechActivity, valleys, words: onTheirSound(spoken, [...quiet, ...valleys.filter(v => v.end - v.start >= silentValley)], levels),
+    quiet, levels };
 }
+
+/**
+ * Words placed where the recording has them, when the transcript's timing can't be. A word timed too short to have been
+ * said, on sound it shares with a neighbour, beside a stretch of speech that no word explains, was said in that
+ * stretch: "Opus 5.5 · and the… · and GPT" was timed with “5.5” in 80 ms at the start of “and”, and the second of
+ * “five point five” before it carried no word. A cut of the restart was held for want of a quiet point between
+ * “5.5” and “and”, and the closing check then kept the restart, since the edge in the quiet before “and” seemed to take
+ * “5.5” with it (2026-11-17). The aligner has spelled numbers since, but a transcript keeps the times it was made with.
+ * A moved word keeps its transcript times as `timed`; every edge, note and nearby word reads where it sounds.
+ */
+function onTheirSound(words: Word[], silent: TimeRange[], levels: AudioLevels): JoinWord[] {
+  if (!levels.db.length || words.length < 2) return words;
+  const end = levels.from + levels.step * levels.db.length;
+  const sorted = [...levels.db].sort((a, b) => a - b);
+  const speech = sorted[Math.floor(sorted.length * .85)]!;
+  const index = (t: number) => Math.min(levels.db.length, Math.max(0, Math.round((t - levels.from) / levels.step)));
+  // Runs of speech: what lies between the measured silences, at a syllable's length and level. A silence shorter than
+  // a pause is inside a word or between two said in one breath: “five point five” has one.
+  const runs: TimeRange[] = [];
+  let at = levels.from;
+  for (const q of [...silent].filter(q => q.end - q.start >= silentValley).sort((a, b) => a.start - b.start)) {
+    if (q.start > at) runs.push({ start: at, end: q.start });
+    at = Math.max(at, q.end);
+  }
+  if (at < end) runs.push({ start: at, end });
+  const sounds = runs.filter(r => r.end - r.start >= MIN_WORD_SOUND && Math.max(...levels.db.slice(index(r.start), index(r.end))) >= speech - SYLLABLE_BELOW_DB);
+  const middle = (w: TimeRange) => (w.start + w.end) / 2;
+  const runOf = (t: number) => sounds.findIndex(r => r.start <= t && t < r.end);
+  const owns = (r: TimeRange, w: Word) => middle(w) >= r.start && middle(w) < r.end;
+  const placed: JoinWord[] = [...words];
+  words.forEach((w, i) => {
+    const syllables = spokenSyllables(w.text);
+    if (w.end - w.start >= syllables * SHORTEST_SYLLABLE) return;
+    const run = runOf(middle(w));
+    if (run < 0) return;
+    const prev = words[i - 1], next = words[i + 1];
+    // On sound a neighbour's timing holds too: the word is not where it is timed.
+    const shared = [prev, next].filter((n): n is Word => !!n && owns(sounds[run]!, n));
+    if (!shared.length) return;
+    // The next run of speech away from that neighbour, if no word is timed in it and it is long enough for this word.
+    const toward = shared.includes(next!) && !shared.includes(prev!) ? -1 : shared.includes(prev!) && !shared.includes(next!) ? 1 : 0;
+    if (!toward) return;
+    const beside = sounds[run + toward];
+    if (!beside) return;
+    // Of that run, the part no other word's timing reaches: a word said straight before it can share the run.
+    const others = words.filter(o => o !== w && o.end > beside.start && o.start < beside.end);
+    const free = toward < 0
+      ? { start: Math.max(beside.start, ...others.map(o => o.end)), end: beside.end }
+      : { start: beside.start, end: Math.min(beside.end, ...others.map(o => o.start)) };
+    if (others.some(o => o.end > free.start + WORD_SLACK && o.start < free.end - WORD_SLACK)) return;
+    // Nor past the word timed next to it on that side: the words keep the order they were said in.
+    const across = toward < 0 ? prev : next;
+    if (across && (toward < 0 ? across.end > free.start + WORD_SLACK : across.start < free.end - WORD_SLACK)) return;
+    const length = free.end - free.start;
+    if (length < syllables * SHORTEST_SYLLABLE || length > syllables * LONGEST_SYLLABLE + WORD_SLACK * 2) return;
+    placed[i] = { text: w.text, start: free.start, end: free.end, timed: { start: w.start, end: w.end } };
+  });
+  return placed;
+}
+
+/** How many syllables a transcript word takes to say, at least: a numeral's digits are said too. */
+function spokenSyllables(text: string) {
+  const t = text.toLowerCase().replace(/[^a-z0-9.%$]/g, "").replace(/\.$/, "");
+  const digits = (t.match(/[0-9]/g) ?? []).length + (t.match(/[0-9]\.[0-9]/g) ?? []).length + 2 * (t.match(/[%$]/g) ?? []).length;
+  const vowels = (t.replace(/[^a-z]/g, "").replace(/e$/, "").match(/[aeiouy]+/g) ?? []).length;
+  return Math.max(1, digits + vowels);
+}
+/** No syllable is said in less than this. */
+const SHORTEST_SYLLABLE = .06;
+/** A stretch longer than this per syllable holds more than the word. */
+const LONGEST_SYLLABLE = .45;
+/** How far a neighbour's timing may reach into a run of speech that still has no word of its own. */
+const WORD_SLACK = .05;
 
 const reach = .75, wordMargin = .02, quietMargin = .03;
 
@@ -60,16 +142,65 @@ const reach = .75, wordMargin = .02, quietMargin = .03;
  * AIR_BEFORE_SPEECH before kept speech resumes (a natural entrance, no clipped breath onset).
  * A run shorter than both splits proportionally. An edge the model already put in silence stays put:
  * pacing is the model's call, and timeline_join_audit reports the air either side. How long a join's pause plays is
- * pacing too, so the model can say it per cut (`leave`), by the pace its skill and the editor ask for; the split
- * between the two sides stays in these proportions.
+ * pacing too, so the model can say it per cut (`leave`), and how soon the voice comes in after the cut (`voiceIn`),
+ * by the pace its skill and the editor ask for.
+ * A pause plays on the outgoing side of the cut: the air before the voice is the same short length whatever the
+ * pause (splitLeave). It was a share of the pause, 0.10 s of the default beat, and a word takes another 0.03 to 0.05 s
+ * to reach speaking level after the quiet ends: on a 105-cut pass the voice came in a median 0.12 s after the picture
+ * cut, and 0.21 s after a tenth of them, where the model had asked for a longer pause. The editor heard the wait after
+ * each cut (2026-11-16).
  */
-export const AIR_AFTER_SPEECH = .15;
-export const AIR_BEFORE_SPEECH = .10;
+export const AIR_AFTER_SPEECH = .20;
+export const AIR_BEFORE_SPEECH = .05;
+/**
+ * The room tone a join leaves: `after` the last kept word and `before` speech resumes, in the recording's seconds. A
+ * skill sets it as a pace; Scarlet's defaults are AIR_AFTER_SPEECH and AIR_BEFORE_SPEECH.
+ */
+export interface JoinPace { after: number; before: number }
+export const DEFAULT_PACE: JoinPace = { after: AIR_AFTER_SPEECH, before: AIR_BEFORE_SPEECH };
+/**
+ * The air either side of a join that plays `leave` seconds word to word. `voiceIn` of them, or the pace's `before`,
+ * sit between the cut and the voice, and the rest plays before the cut. A pause shorter than twice the pace's `before`
+ * is halved. A `voiceIn` the model gives may take more than half, down to the pace's `after` left for the last word's
+ * release: halved, a 0.6 s beat asked for after the cut played 0.3 s of it after the last word instead, and on
+ * camera that quiet showed the speaker look away (2026-11-20).
+ */
+export const splitLeave = (leave: number, pace: JoinPace = DEFAULT_PACE, voiceIn?: number): JoinPace => {
+  const half = leave / 2;
+  const before = voiceIn === undefined ? Math.min(pace.before, half) : Math.min(voiceIn, leave - Math.min(pace.after, half));
+  return { after: leave - before, before };
+};
+
+/**
+ * A cut that asks for less than quietMargin before the voice is asked to land on the word: its edge goes to the end of
+ * the quiet before the word, on the frame nearest it, and may sit this far into the word's first sound while that
+ * sound is still under speaking level. A soft start (“This”) takes a tenth of a second to rise, and an editor cutting
+ * by ear put the cut on its first frame; a hard one (“But”) is at level at once, and the edge stays before it.
+ */
+const ONSET_REACH = .02;
+/** The least a cut can ask for before the voice: none, the cut on the word's first sound. */
+export const LEAST_VOICE_IN = 0;
+/** The latest an edge may sit beside the sound that ends quiet run `run`: its end, or a little into a soft start. */
+function onsetLimit(page: JoinPage["edges"] | undefined, runEnd: number): number {
+  const levels = page?.levels;
+  if (!levels) return runEnd;
+  let limit = runEnd;
+  for (let i = Math.floor((runEnd - levels.from) / levels.step + 1e-6); i >= 0 && i < levels.db.length; i++) {
+    const from = levels.from + i * levels.step;
+    if (from >= runEnd + ONSET_REACH - 1e-9 || levels.db[i]! > SPEECH_DBFS) break;
+    limit = Math.min(runEnd + ONSET_REACH, from + levels.step);
+  }
+  return limit;
+}
+/** Whether an edge at `t` that starts a clip is on the first sound after a measured silence: nothing of the word is cut off. */
+function onWordOnset(page: NonNullable<JoinPage["edges"]>, t: number): boolean {
+  return gaps(page).some(q => q.end - q.start >= 2 * quietMargin && q.end - quietMargin < t && t <= onsetLimit(page, q.end) + 1e-6);
+}
 
 /**
  * Where an edge sits in quiet run `run`. A `start` edge follows kept speech; an `end` edge precedes it.
  */
-export function padEdge(run: TimeRange, side: "start" | "end", air: { after: number; before: number } = { after: AIR_AFTER_SPEECH, before: AIR_BEFORE_SPEECH }): number {
+export function padEdge(run: TimeRange, side: "start" | "end", air: JoinPace = DEFAULT_PACE): number {
   const { after, before } = air;
   const length = run.end - run.start;
   const target = length < after + before
@@ -85,7 +216,9 @@ const FRAME_TOLERANCE = .001;
 /** A shorter quiet run inside a transcript word may be a stop consonant's closure, not a gap between words. */
 const inWordGap = .1;
 interface SourceEdge { clip: MediaClip; page: NonNullable<JoinPage["edges"]>; at: number; clipped: Word[]; touching: Word[] }
-interface Edge { at: number; label?: string; problem?: string; note?: string; snapped?: boolean; unmeasured?: boolean; dip?: boolean }
+interface Edge { at: number; label?: string; problem?: string; note?: string; snapped?: boolean; unmeasured?: boolean; dip?: boolean; inSound?: boolean; inWord?: boolean;
+  /** Placed further than a snap, by giving footage back up to a pause with no word between. */
+  gaveBack?: boolean }
 type Sound = "quiet" | "valley" | "sound";
 
 /** The instant is inside the word's timing, clear of both its edges. */
@@ -153,9 +286,12 @@ export function soundBesideEdge(pages: JoinPage[], mediaId: string, stream: numb
   }
 }
 
-function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number): Edge {
+/**
+ * `paced`: the edge belongs to a range given in seconds with the pause its join should play (`leave`), so an edge in
+ * quiet goes where `pace` puts it in that quiet, as a word reference's edge does, instead of staying where it was typed.
+ */
+function checkEdge(at: number, direction: 1 | -1, nearby: MediaClip[], pages: JoinPage[], fps: number, streams: Map<string, number>, namedEdge?: number, pace: JoinPace = DEFAULT_PACE, paced = false): Edge {
   const sources: SourceEdge[] = [];
-  const nearby = clips.filter(c => c.timelineIn <= at + reach && c.timelineIn + clipDuration(c) >= at - reach);
   for (const clip of nearby) {
     const lo = clip.timelineIn, hi = lo + clipDuration(clip);
     if (at <= lo + 1e-6 || at >= hi - 1e-6) continue; // An existing clip edge doesn't bisect this clip.
@@ -188,9 +324,30 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
     }
     return Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? { start: lo, end: hi } : undefined;
   };
+  /** Move a quiet frame to the padded position in its run, on the frame grid, without crossing a clip edge. */
+  const padInRun = (t: number, side: "start" | "end") => {
+    const run = runAt(t);
+    if (!run) return t;
+    const target = padEdge(run, side, pace);
+    let best = t;
+    for (let f = Math.ceil((run.start + quietMargin) * fps - 1e-7); f / fps <= run.end - quietMargin + 1e-7; f++) {
+      if (Math.abs(f / fps - target) < Math.abs(best - target)) best = f / fps;
+    }
+    return !crossesClip(t, best) && sound(best) === "quiet" ? best : t;
+  };
+  // A removal that ends on the first sound of the word it resumes with was asked to (voiceIn): the word plays whole.
+  if (direction === -1 && sources.length && sources.every(s => onWordOnset(s.page, s.at))) return { at };
   // The measured audio decides. A quiet gap is a clean edge even if a stretched word timing spans it. The engine saves
   // a removal on whole frames, rounded inward, and the inward frame can be the first sound of the word beside it.
   if (sound(at) === "quiet") {
+    // Seconds typed from word timings sit wherever those timings put them: two joins a pass placed that way played
+    // 0.45 s and 0.4 s of quiet after the last word where its skill asked for 0.14 s (2026-11-17). Given the pause,
+    // the edge goes where it puts it in this quiet, which takes out or keeps only quiet.
+    if (paced) {
+      const placed = padInRun(at, direction === 1 ? "start" : "end"), move = Math.abs(placed - at);
+      if (move > 1e-6) return { at: placed, snapped: true, note: (direction === 1 ? "start" : "end") + " moved " + move.toFixed(2) + " s " +
+        (placed > at ? "later" : "earlier") + " in its quiet, for the pause leave asks" };
+    }
     // The frame the engine would round to: later for a start, earlier for an end. When it is quiet too, the edge stays as given.
     const inward = (direction === 1 ? Math.ceil((at - FRAME_TOLERANCE) * fps) : Math.floor((at + FRAME_TOLERANCE) * fps)) / fps;
     const run = runAt(at);
@@ -206,17 +363,6 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
   if (sources.some(s => soundAt(s.page, s.at) !== "quiet" && (!s.page.voice.length || !s.page.words.length)))
     return { ...fail("The scan lacks the voice activity or word timings to place this edge."), unmeasured: true };
 
-  /** Move a quiet frame to the padded position in its run, on the frame grid, without crossing a clip edge. */
-  const padInRun = (t: number, side: "start" | "end") => {
-    const run = runAt(t);
-    if (!run) return t;
-    const target = padEdge(run, side);
-    let best = t;
-    for (let f = Math.ceil((run.start + quietMargin) * fps - 1e-7); f / fps <= run.end - quietMargin + 1e-7; f++) {
-      if (Math.abs(f / fps - target) < Math.abs(best - target)) best = f / fps;
-    }
-    return !crossesClip(t, best) && sound(best) === "quiet" ? best : t;
-  };
   const lowest = Math.ceil((at - reach) * fps - 1e-7), highest = Math.floor((at + reach) * fps + 1e-7);
   const frames: number[] = [];
   for (let frame = lowest; frame <= highest; frame++) if (Math.abs(frame / fps - at) > 1e-7) frames.push(frame / fps);
@@ -246,11 +392,12 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
     if (!levels || !pageReaches(s.page, s.at)) return;
     const { db } = levels, centre = (i: number) => levels.from + (i + .5) * levels.step;
     const here = Math.floor((s.at - levels.from) / levels.step), k = Math.round(TROUGH_SEARCH / levels.step);
+    const near = Math.round(LOW_POINT_REACH / levels.step);
     const floorOf = (way: 1 | -1) => {
       for (let d = 0; d <= k; d++) {
         let i = here + way * d;
         if (i < 0 || i >= db.length) return;
-        if (!isDip(levels, i)) continue;
+        if (!isDip(levels, i, d <= near ? LOW_POINT_DBFS : TROUGH_DBFS)) continue;
         while (i + way >= 0 && i + way < db.length && db[i + way]! <= db[i]!) i += way;
         return i;
       }
@@ -290,10 +437,11 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
     const i = levels ? Math.floor((t - levels.from) / levels.step) : -1;
     return !!levels && i >= 0 && i < levels.db.length && isDip(levels, i);
   });
-  // Not inside a word, and not past a whole one: a dip moves an edge to a word boundary, never across a word.
+  // Not inside a word, and not past a whole one or its middle: a dip moves an edge to a word boundary, never across a
+  // word, and so never takes out a word the range keeps or keeps one it takes out, as the trough's move above.
   const betweenWords = (timeline: number) => sources.every(s => {
     const t = timelineToSource(s.clip, timeline), from = Math.min(s.at, t), to = Math.max(s.at, t);
-    return !s.page.words.some(w => inWord(w, t) || (from <= w.start && w.end <= to));
+    return !s.page.words.some(w => inWord(w, t) || (from <= w.start && w.end <= to) || (from < (w.start + w.end) / 2 && (w.start + w.end) / 2 < to));
   });
   for (const next of [at, ...frames]) {
     if (Math.abs(next - at) > snapLimit + 1e-7 || (next !== at && crossesClip(at, next)) || !betweenWords(next)) continue;
@@ -342,14 +490,60 @@ function checkEdge(at: number, direction: 1 | -1, clips: MediaClip[], pages: Joi
       const a = timelineToSource(s.clip, d.at), b = timelineToSource(s.clip, next);
       return s.page.words.some(w => Math.min(a, b) < (w.start + w.end) / 2 && (w.start + w.end) / 2 < Math.max(a, b));
     });
-    if (state === "quiet") return distance > snapLimit + 1e-7 && dip && acrossWord(dip) ? dip : { at: placed, label: words || undefined, note, snapped: distance <= snapLimit + 1e-7 };
+    // A move that gives footage back and passes no word the scan read takes nothing the cut was asked to keep and leaves
+    // nothing it was asked to take: the sound between is the kept word's own start, timed late by the transcript, or a
+    // breath before it. It is placed, not in doubt. Held for the editor instead, a 19 s cut of four false starts waited on
+    // them as a call because its end had gone 0.20 s back into the pause before the take it kept (2026-11-19).
+    if (state === "quiet") return distance > snapLimit + 1e-7 && dip && acrossWord(dip) ? dip
+      : { at: placed, label: words || undefined, note, snapped: distance <= snapLimit + 1e-7 || (narrowing && !words),
+        ...(distance > snapLimit + 1e-7 && narrowing && !words && { gaveBack: true }) };
     fallback ??={ at: next, label: words || undefined, note, problem: "Voice activity continues through the low-level gap"+(words ? " near "+words : "")+". Audition that edge." };
   }
   if (dip) return dip;
   if (fallback) return fallback;
   const onTrough = trough();
   if (onTrough) return onTrough;
-  return fail("The recording has speech at this edge and no quiet point within "+reach+" s.");
+  return { ...fail(inSoundEvidence(sources, at, direction) ?? "The recording has speech at this edge and no quiet point within "+reach+" s."), inSound: true,
+    ...(clippedLabel && { inWord: true }) };
+}
+
+/**
+ * Where the sound an edge is in parts, either way, and what moving the edge there does to the words: the nearest quiet
+ * or low point within reach on each side, at its timeline second, with the transcript words between. An edge given in
+ * seconds a word off sat 0.27 s from silence and was reported as having no quiet point, since reaching it meant keeping
+ * a word the range removed; the model then sent the cut to the editor to listen for the word (2026-11-16).
+ */
+function inSoundEvidence(sources: SourceEdge[], at: number, direction: 1 | -1) {
+  const sounding = sources.filter(s => soundAt(s.page, s.at) !== "quiet");
+  if (sounding.length !== 1) return;
+  const s = sounding[0]!, levels = s.page.levels;
+  if (!levels || !pageReaches(s.page, s.at)) return;
+  const side = direction === 1 ? "start" : "end";
+  const here = Math.floor((s.at - levels.from) / levels.step);
+  if (here < 0 || here >= levels.db.length) return;
+  const speed = s.clip.speed ?? 1, k = Math.round(reach / levels.step);
+  const centre = (i: number) => levels.from + (i + .5) * levels.step;
+  const point = (way: 1 | -1) => {
+    for (let d = 1; d <= k; d++) {
+      let i = here + way * d;
+      const t = centre(i);
+      if (i < 0 || i >= levels.db.length || t < s.clip.sourceIn || t > s.clip.sourceOut) return;
+      const quiet = soundAt(s.page, t) === "quiet" || levels.db[i]! <= DIP_DBFS;
+      if (!quiet && !isDip(levels, i, LOW_POINT_DBFS)) continue;
+      // A trough's floor, where the sound either side is furthest. Room tone's near side, where the sound stops.
+      if (!quiet) while (i + way >= 0 && i + way < levels.db.length && levels.db[i + way]! < levels.db[i]!) i += way;
+      const found = centre(i);
+      const between = s.page.words.filter(w => { const middle = (w.start + w.end) / 2; return Math.min(s.at, found) < middle && middle < Math.max(s.at, found); }).map(plain);
+      // Moving a start later, or an end earlier, plays the words between. The other way removes them.
+      const keeps = (way === 1) === (direction === 1);
+      const what = between.length ? (keeps ? "keeps " : "also removes ") + quote(between) : "with no word between";
+      return `${Math.abs(found - s.at).toFixed(2)} s ${way === 1 ? "later" : "earlier"} at ${round3(at + (found - s.at) / speed)} s (${Math.round(levels.db[i]!)} dBFS), ${what}`;
+    }
+  };
+  const points = [point(-1), point(1)].filter(Boolean);
+  return `The ${side} is in sound at ${Math.round(levels.db[here]!)} dBFS` + (points.length
+    ? `. The nearest quiet or low point is ${points.join("; or ")}. Give the edge there, or name the words to remove.`
+    : ` with no quiet or low point within ${reach} s.`);
 }
 
 export function dialogueClips(tl: Timeline, project: Pick<Project, "media">) {
@@ -581,26 +775,164 @@ export function checkResumeQuote(tl: Timeline, project: Project, end: number, pa
 /**
  * Only narrow a retake by more than a fragment. The caller still owns its meaning, visual review and approval.
  */
-export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange): JoinCheck {
+/** `air`: the room tone a range in seconds asked its join to leave (`leave`, `voiceIn`); its edges in quiet go there. */
+/** Two deliveries of one word match on their sound when their levels follow each other at least this closely (Pearson r). */
+const SAME_WORD_MATCH = .6;
+/** How far the recording's offset between the two deliveries may sit from the transcript's. */
+const SAME_WORD_SEARCH = .12;
+/** Levels under this are room tone to the match, so the depth of a silence doesn't decide it. */
+const SAME_WORD_FLOOR = -60;
+
+export interface SameWordJoin extends TimeRange {
+  word: string;
+  /** The two deliveries of the word, in timeline seconds. */
+  first: TimeRange;
+  second: TimeRange;
+  /** Seconds from a sound in the first delivery to the same sound in the second, and how closely their levels match. */
+  lag: number;
+  match: number;
+  /** The range as given kept the first delivery, which would have played twice: this start takes it out. */
+  takesFirst?: true;
+}
+
+/**
+ * Where a removal can switch takes inside a word said on either side of it. A restart often begins on the word the
+ * first take broke off after: "there was a time where would … where you would occasionally see". When the word before
+ * runs into the first "where" with no pause, the cut has no quiet to start in. The trough between them is the "m" of
+ * "time", and an edge placed there played "time" clipped; a pass then cut the retake instead, kept both takes, or
+ * dropped the sentence (2026-11-17). An editor cuts as the first "where" begins and lets the second follow: auditioned
+ * on that recording, an edge 0.05 s past the trough played clean. The second delivery starts out of a pause, so its
+ * first sound is measurable, and matching the two deliveries on their levels says where the first one's is: word
+ * timings at a restart are tens of milliseconds off.
+ *
+ * The range keeps its end, in the quiet before the second delivery, and gets this start. Undefined when the removal's
+ * first word isn't the next kept word, when there is quiet to start in, or when the two deliveries don't match.
+ */
+export function sameWordJoin(tl: Timeline, project: Pick<Project, "media" | "settings">, range: TimeRange, pages: JoinPage[]): SameWordJoin | undefined {
   const { clips, streams } = dialogueClips(tl, project);
-  const fps = project.settings.fps;
-  const left: Edge = range.start > 1e-6 ? checkEdge(range.start, 1, clips, pages, fps, streams, namedWords?.start) : { at: range.start };
-  const right: Edge = range.end < timelineDuration(tl) - 1e-6 ? checkEdge(range.end, -1, clips, pages, fps, streams, namedWords?.end) : { at: range.end };
-  const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
-  if (!left.note && !right.note && problems) return { ...range, status: "review", reason: problems,
-    ...([left, right].every(e => !e.problem || e.unmeasured) && { unmeasured: true }) };
-  if (!left.note && !right.note) return { start: left.at, end: right.at, status: "unchanged", reason: "The recording is quiet at both boundaries." };
-  if (right.at-left.at < Math.max(.10, 2/fps))
-    return { ...range, status: "review", reason: "Preserving the neighboring words leaves too little of this retake to trim." };
-  const notes = [left.note, right.note].filter(Boolean);
-  // One edge between words that run together leaves the other in silence, where the ear resets. With both there, a
-  // short removal comes out of the middle of running speech, as with word references (wordCutRange).
-  if (left.dip && right.dip) return { start: left.at, end: right.at, status: "review",
-    reason: `No pause on either side: ${notes.join(", ")}. Audition the join.` };
-  const snapped = !problems && [left, right].every(e => !e.note || e.snapped);
-  return { start: left.at, end: right.at, status: problems ? "partial" : snapped ? "snapped" : "adjusted",
-    reason: [(snapped ? (left.dip || right.dip ? "Placed on the recording: " : "Snapped to the recording's silence: ") : "Adjusted retake boundaries: ")+notes.join(", ")+".", problems,
-      snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
+  const clipAt = (at: number) => {
+    const found = clips.filter(c => c.timelineIn + 1e-6 < at && at < c.timelineIn + clipDuration(c) - 1e-6);
+    // One recording at one source second: several mics would each need their own match.
+    const [clip] = found;
+    return clip && found.every(c => c.mediaId === clip.mediaId && Math.abs(timelineToSource(c, at) - timelineToSource(clip, at)) < 1e-3) ? clip : undefined;
+  };
+  const out = clipAt(range.start), back = clipAt(range.end);
+  if (!out || !back || out.mediaId !== back.mediaId || Math.abs((out.speed ?? 1) - 1) > 1e-6 || Math.abs((back.speed ?? 1) - 1) > 1e-6) return;
+  const stream = dialogueAudioStream(out) ?? streams.get(out.mediaId);
+  if ((dialogueAudioStream(back) ?? streams.get(back.mediaId)) !== stream) return;
+  const tS = timelineToSource(out, range.start), tE = timelineToSource(back, range.end);
+  const page = [tS, tE].map(t => pageAt(pages, out.mediaId, stream, t)).find(p => p?.levels && pageReaches(p, tS - .3) && pageReaches(p, tE + .5));
+  const levels = page?.levels;
+  if (!page || !levels) return;
+  const words = [...page.words].sort((a, b) => a.start - b.start), middle = (w: Word) => (w.start + w.end) / 2;
+  // The word the take resumes on, and its first delivery: the first word the range removes, or, when the range starts
+  // right after them, the words it keeps that the take then says again. Those would play twice, "a time where you ‖
+  // where you would", as a repeat found by its last word alone is given; the cut then takes them too.
+  const after = words.filter(w => middle(w) > tE), second = after[0], removed = words.find(w => middle(w) > tS), before = words.filter(w => middle(w) <= tS);
+  const token = (w?: Word) => w && !isTag(w.text) ? normalizeTranscriptToken(w.text) : "";
+  if (!second || !token(second)) return;
+  const same = (w?: Word) => !!w && w !== second && token(w) === token(second) && w.end <= second.start + wordMargin;
+  // The longest run of words kept before the cut that the take says again right after it, up to three.
+  let repeated = 0;
+  if (!same(removed) && before.length && tS - before.at(-1)!.end < 3 * wordMargin)
+    for (let k = Math.min(3, before.length, after.length); k > 0 && !repeated; k--)
+      if (before.slice(-k).every((w, i) => token(w) && token(w) === token(after[i])) && before.at(-1)!.end <= second.start + wordMargin) repeated = k;
+  const takesFirst = repeated > 0, first = same(removed) ? removed! : takesFirst ? before.at(-repeated)! : undefined;
+  if (!first || (!takesFirst && first.start > tS + .1)) return;
+  if (first.start < out.sourceIn || second.end > back.sourceOut) return;
+  // A pause before the first delivery is a clean place to start, and the usual placement finds it.
+  if (gaps(page).some(q => q.start < first.start + wordMargin && q.end > first.start - 3 * wordMargin)) return;
+  const { from, step, db } = levels;
+  const index = (t: number) => Math.floor((t - from) / step), centre = (i: number) => from + (i + .5) * step;
+  const level = (i: number) => i >= 0 && i < db.length ? Math.max(SAME_WORD_FLOOR, db[i]!) : undefined;
+  // The second delivery starts out of a pause: its first sound is where the level rises from quiet.
+  let onset = index(second.start - .1);
+  if (onset < 0 || db[onset]! > SPEECH_DBFS) return;
+  while (onset < db.length && centre(onset) < second.end && db[onset]! <= SPEECH_DBFS) onset++;
+  // The range ends in that pause, before the second delivery sounds.
+  if (onset >= db.length || centre(onset) >= second.end || tE > from + onset * step + 1e-6) return;
+  const length = Math.min(15, Math.max(5, Math.round((second.end - centre(onset)) / step) + 2));
+  const heard = Array.from({ length }, (_, k) => level(onset + k));
+  if (heard.some(v => v === undefined)) return;
+  const correlation = (shift: number) => {
+    const before = heard.map((_, k) => level(onset + k - shift));
+    if (before.some(v => v === undefined)) return -1;
+    const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+    const x = before as number[], y = heard as number[], mx = mean(x), my = mean(y);
+    const spread = Math.sqrt(x.reduce((a, v) => a + (v - mx) ** 2, 0) * y.reduce((a, v) => a + (v - my) ** 2, 0));
+    return spread > 1e-9 ? x.reduce((a, v, k) => a + (v - mx) * (y[k]! - my), 0) / spread : -1;
+  };
+  const timed = Math.round((second.start - first.start) / step), search = Math.round(SAME_WORD_SEARCH / step);
+  let shift = timed, match = -1;
+  for (let k = -search; k <= search; k++) {
+    const r = correlation(timed + k);
+    if (r > match + 1e-9) { match = r; shift = timed + k; }
+  }
+  if (match < SAME_WORD_MATCH) return;
+  const lag = shift * step;
+  // Where the first delivery begins in the recording: the second's first sound, the matched distance earlier. The word
+  // before has ended there, which no trough or word timing says when the two run together. The cut starts on the
+  // frame nearest that point, with nothing added. It first went to the first frame 15 ms or more past it, a margin
+  // taken from one line ("time where", where an edge 0.03 s early played "time" clipped and 0.02 s late played clean).
+  // On "which is nice you can see the rough, you can see the shadows" that put the cut 0.04 s into the first "you":
+  // the editor heard himself start a word before the cut, and picked the frame nearest the matched start by ear. That
+  // frame is within the range he called clean on the first line too (2026-11-17). Scarlet still can't hear either.
+  const begins = from + onset * step - lag, fps = project.settings.fps;
+  const start = Math.round(sourceToTimeline(out, begins) * fps) / fps, source = timelineToSource(out, start), end = range.end;
+  if (source >= middle(first) || source <= out.sourceIn || end - start < 2 / fps) return;
+  const span = (clip: MediaClip, w: Word) => ({ start: round3(sourceToTimeline(clip, w.start)), end: round3(sourceToTimeline(clip, w.end)) });
+  return { start, end, word: plain(second), first: span(out, first), second: span(back, second), lag: round3(lag), match: Math.round(match * 100) / 100, ...(takesFirst && { takesFirst }) };
+}
+
+export function checkDialogueJoin(tl: Timeline, project: Project, range: TimeRange, pages: JoinPage[], namedWords?: TimeRange, pace: JoinPace = DEFAULT_PACE, air?: JoinPace): JoinCheck {
+  return dialogueJoinChecker(tl, project, pages, pace)(range, namedWords, air);
+}
+
+/** Reuse the audible clip and stream indexes while checking a batch on one version. */
+export function dialogueJoinChecker(tl: Timeline, project: Project, pages: JoinPage[], pace: JoinPace = DEFAULT_PACE) {
+  const { clips, streams } = dialogueClips(tl, project);
+  const near = intervalCandidates(clips, c => c.timelineIn, clipEnd);
+  const fps = project.settings.fps, duration = timelineDuration(tl);
+  const edge = (at: number, direction: 1 | -1, named?: number, air?: JoinPace) =>
+    checkEdge(at, direction, near(at - reach, at + reach), pages, fps, streams, named, air ?? pace, !!air);
+  // `near` counts only a snap as placed: a same-word join asks whether both edges sit in quiet as given.
+  const judge = (range: TimeRange, namedWords?: TimeRange, air?: JoinPace, near = false): JoinCheck => {
+    const left: Edge = range.start > 1e-6 ? edge(range.start, 1, namedWords?.start, air) : { at: range.start };
+    const right: Edge = range.end < duration - 1e-6 ? edge(range.end, -1, namedWords?.end, air) : { at: range.end };
+    const problems = [...new Set([left.problem, right.problem].filter(Boolean))].join(" ");
+    const inSound = ([["start", left], ["end", right]] as const).filter(([, e]) => e.inSound).map(([side]) => side);
+    const inWord = ([["start", left], ["end", right]] as const).filter(([, e]) => e.inWord).map(([side]) => side);
+    if (!left.note && !right.note && problems) return { ...range, status: "review", reason: problems,
+      ...([left, right].every(e => !e.problem || e.unmeasured) && { unmeasured: true }), ...(inSound.length && { inSound }), ...(inWord.length && { inWord }) };
+    if (!left.note && !right.note) return { start: left.at, end: right.at, status: "unchanged", reason: "The recording is quiet at both boundaries." };
+    if (right.at-left.at < Math.max(.10, 2/fps))
+      return { ...range, status: "review", reason: "Preserving the neighboring words leaves too little of this retake to trim." };
+    const notes = [left.note, right.note].filter(Boolean);
+    // One edge between words that run together leaves the other in silence, where the ear resets. With both there, a
+    // short removal comes out of the middle of running speech, as with word references (wordCutRange).
+    if (left.dip && right.dip) return { start: left.at, end: right.at, status: "review",
+      reason: `No pause on either side: ${notes.join(", ")}. Audition the join.` };
+    const snapped = !problems && [left, right].every(e => !e.note || (e.snapped && !(near && e.gaveBack)));
+    return { start: left.at, end: right.at, status: problems ? "partial" : snapped ? "snapped" : "adjusted", ...(inSound.length && { inSound }), ...(inWord.length && { inWord }),
+      reason: [(snapped ? (left.dip || right.dip ? "Placed on the recording: " : "Snapped to the recording's silence: ") : "Adjusted retake boundaries: ")+notes.join(", ")+".", problems,
+        snapped ? "" : "Preview the join in context."].filter(Boolean).join(" ") };
+  };
+  return (range: TimeRange, namedWords?: TimeRange, air?: JoinPace): JoinCheck => {
+    const same = sameWordJoin(tl, project, range, pages);
+    if (!same) return judge(range, namedWords, air);
+    const said = "“" + same.word + "”";
+    // Saved where Scarlet put it, the join is what it is: neither edge moves, and no kept word is cut.
+    if (Math.abs(same.start - range.start) < 2e-3) return { start: same.start, end: same.end, status: "review", sameWord: same.word,
+      reason: `The cut starts as the first ${said} begins and the second ${said} follows it. The word before runs into the first with no pause, so its start was found by matching the two ` +
+        `${said}s on their sound. No kept word is cut as measured. Scarlet can't hear the join, and neither can you: the editor hears it.` };
+    const checked = judge(range, namedWords, air, true);
+    // A removal with quiet at both edges needs no other way in.
+    if (checked.status === "unchanged" || checked.status === "snapped") return checked;
+    return { ...checked, sameWordJoin: { start: same.start, end: same.end, word: same.word, ...(same.takesFirst && { takesFirst: true as const }),
+      reason: `${said} is said again right after this removal, and the word before runs into the first one with no pause. Matched on their sound, the first ${said} begins at ` +
+        `${same.start.toFixed(3)} s: removing ${same.start.toFixed(3)}–${same.end.toFixed(3)} s ${same.takesFirst ? `also takes out the first ${said}, which this range leaves playing twice,` : "takes out the same words"} ` +
+        "and plays the word before whole. Scarlet can't hear the result, so a cut saved on those seconds is the editor's to hear, as a call." } };
+  };
 }
 
 
@@ -734,6 +1066,8 @@ export function clipEdgeSound(pages: JoinPage[], mediaId: string, stream: number
 function soundUnderEdge(pages: JoinPage[], mediaId: string, stream: number, t: number, side: "in" | "out") {
   const page = pageAt(pages, mediaId, stream, t);
   if (!page || soundAt(page, t) !== "sound") return;
+  // A clip that starts on the first sound after a silence plays that sound whole.
+  if (side === "in" && onWordOnset(page, t)) return;
   // Room tone under the edge, too brief to be a run of silence: the instant between two words said in one breath.
   const levels = page.levels, here = levels && levels.db[Math.floor((t - levels.from) / levels.step)];
   if (here !== undefined && here <= DIP_DBFS) return;
@@ -863,6 +1197,14 @@ export const DIP_DBFS = -55;
  * them was on it (2026-11-16). The level stays under the -47 dBFS where an editor once heard a leftover “s” (DIP_DBFS).
  */
 export const TROUGH_DBFS = -48, TROUGH_DEPTH_DB = 10;
+/**
+ * A shallower low point, as deep under the sound either side, is where an edge within 50 ms of it goes, an edge given
+ * in seconds or the place a word reference's words part, and what an edge left in sound is told of. Scarlet does not go looking for one further off: the
+ * stop before a final “s” reads the same, and moving a pause's edge 0.1 s onto it in “21 cents” would have cut the “s”.
+ * Edges two and three frames inside “you” and “that” sat beside low points at -45 dBFS, 13 dB under the words either
+ * side, and the editor asked for the cut on them (2026-11-16).
+ */
+export const LOW_POINT_DBFS = -44, LOW_POINT_REACH = .05;
 /** How far either side of a trough the sound it lies under is looked for. */
 const TROUGH_REACH = .08;
 /** How far an edge in sound looks for the trough that bounds the sound it is in. */
@@ -878,9 +1220,9 @@ function troughDepth(levels: AudioLevels, i: number) {
 }
 
 /** A level an edge can sit at between words: room tone, or a trough deep under the sound either side. */
-function isDip(levels: AudioLevels, i: number) {
+function isDip(levels: AudioLevels, i: number, bar = TROUGH_DBFS) {
   const db = levels.db[i]!;
-  return db <= DIP_DBFS || db <= TROUGH_DBFS && troughDepth(levels, i) >= TROUGH_DEPTH_DB;
+  return db <= DIP_DBFS || db <= bar && troughDepth(levels, i) >= TROUGH_DEPTH_DB;
 }
 
 /** A level and its frame centre, read from the same buckets that locate silence. */
@@ -902,7 +1244,7 @@ function extremeLevel(page: NonNullable<JoinPage["edges"]>, from: number, to: nu
  * starts, and an edge there has that word's first sound inside the join's crossfade: of seven such edges on one
  * pass, six had speech within 20 ms.
  */
-function dipBetween(page: NonNullable<JoinPage["edges"]>, from: number, to: number) {
+function dipBetween(page: NonNullable<JoinPage["edges"]>, from: number, to: number, boundary?: number) {
   const levels = page.levels, low = extremeLevel(page, from, to, "lowest");
   const at = levels && low ? Math.floor((low.at - levels.from) / levels.step) : -1;
   if (!levels || !low) return low && { ...low, room: undefined, dip: false };
@@ -912,7 +1254,8 @@ function dipBetween(page: NonNullable<JoinPage["edges"]>, from: number, to: numb
   // stretch's end is the wall of a trough beyond it, still in sound. On one pass that edge was saved 70 ms past the
   // trough between “game” and “let”, in “let” (2026-11-16).
   const inside = centre(at - 1) >= from && centre(at + 1) <= to && levels.db[at - 1]! >= low.db && levels.db[at + 1]! >= low.db;
-  if (!roomTone && !(inside && isDip(levels, at))) return { ...low, room: undefined, dip: false };
+  const bar = boundary !== undefined && Math.abs(low.at - boundary) <= LOW_POINT_REACH ? LOW_POINT_DBFS : TROUGH_DBFS;
+  if (!roomTone && !(inside && isDip(levels, at, bar))) return { ...low, room: undefined, dip: false };
   // The stretch around the lowest level that is still down in it: at room tone, or within a few dB of a trough's floor.
   const floor = roomTone ? DIP_DBFS : low.db + 6;
   let first = at, last = at;
@@ -949,6 +1292,17 @@ export function quietFrameNote(asked: TimeRange, placed: TimeRange): string | un
   return `${moved.map(side => `Moved the ${side} from ${s3(asked[side])} to ${s3(placed[side])}`).join(" and ")}, onto a quiet frame: the recording is quiet at the edge, and the whole frame it would be saved on has sound.`;
 }
 
+/** Where the page places a transcript word that it moved onto its sound (onTheirSound), if it did. */
+function onSound(word: Word, page: JoinPage["edges"] | undefined): Word | undefined {
+  const moved = page?.words.find(w => w.timed && w.text === word.text && Math.abs(w.timed.start - word.start) < 1e-6 && Math.abs(w.timed.end - word.end) < 1e-6);
+  return moved && { text: moved.text, start: moved.start, end: moved.end };
+}
+
+function movedNote(word: Word, moved: Word, role: "kept" | "removed") {
+  return `The transcript times the ${role} “${plain(word)}” at ${round3(word.start)}–${round3(word.end)} s, too short to say it and on another word's sound; the recording has speech no word explains at ${
+    round3(moved.start)}–${round3(moved.end)} s beside it, and the edge is placed with “${plain(word)}” there.`;
+}
+
 /** A short word's far side can fall inside ASR's slack. Keep its strongest sound on the side the agent named. */
 function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed: Word, side: "start" | "end"): TimeRange {
   // A stretched timing can contain several attempts at the same word. The first and last resolved utterances
@@ -963,7 +1317,12 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
     // Below the level that counts as quiet, the recording cannot locate the word inside its timing.
     return peak && peak.db > dbfs(QUIET_RMS) ? peak.at : fallback;
   };
-  return { start: anchor(left, left.start), end: anchor(right, right.end) };
+  const bounds = { start: anchor(left, left.start), end: anchor(right, right.end) };
+  // A named word comes out when its middle does: that is how the cut's words, what it plays and the check for a word
+  // played twice all read it. A word too quiet to locate left its far end as the bound, and the edge went to the quiet
+  // after it: “nice you ‖ you can see” was placed past the “you” the model named, then refused for playing it twice (2026-11-17).
+  const named = (outer.start + outer.end) / 2;
+  return side === "start" ? { start: bounds.start, end: Math.min(bounds.end, named) } : { start: Math.max(bounds.start, named), end: bounds.end };
 }
 
 /**
@@ -972,14 +1331,22 @@ function betweenWords(page: NonNullable<JoinPage["edges"]>, kept: Word, removed:
  * the default edge padding. `pageAt` returns measured evidence covering a source time. Without a kept
  * neighbor the edge runs to the start or end of the material.
  */
-export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number): WordCut {
+/** Two words the transcript times this close are said as one: their edge goes where it parts them. */
+const RUN_ON_GAP = .06;
+
+export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t: number) => JoinPage["edges"] | undefined, leave?: number, pace: JoinPace = DEFAULT_PACE, voiceIn?: number): WordCut {
   const first = words[from]!, last = words[to]!;
-  // The pause the join should play, word to word, in the recording's seconds: split as the default padding is.
-  const air = leave === undefined ? undefined : { after: leave * AIR_AFTER_SPEECH / (AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH), before: leave * AIR_BEFORE_SPEECH / (AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH) };
+  // The pause the join should play, word to word, and how much of it follows the cut, in the recording's seconds.
+  const air = leave === undefined ? { after: pace.after, before: voiceIn ?? pace.before } : splitLeave(leave, pace, voiceIn);
   const problems: string[] = [], dips: string[] = [], retimed: string[] = [];
   // The kept word beside each edge, where the recording says it is.
   const heard = (kept: Word | undefined, neighbour: Word | undefined, side: "start" | "end") => {
     if (!kept) return kept;
+    const moved = onSound(kept, pageAt(side === "end" ? kept.start : kept.end));
+    if (moved) {
+      retimed.push(movedNote(kept, moved, "kept"));
+      return moved;
+    }
     const found = soundingWord(pageAt(side === "end" ? kept.start : kept.end), kept, neighbour, side);
     if (!found) return kept;
     retimed.push(`The recording is quiet where the transcript times the kept “${plain(kept)}” (${round3(kept.start)}–${round3(kept.end)} s); its sound ${
@@ -1015,28 +1382,53 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
     const run = (page && !pageReaches(page, beside) ? nearest(inGap(pageAt(beside))) : undefined) ?? seen;
     if (run) {
       used[side] = seen ?? run;
+      // Asked for less than the margin before the voice, the edge goes to the end of the quiet, where the word starts.
+      if (side === "end" && air && air.before < quietMargin) {
+        room[side] = { start: run.start + quietMargin, end: onsetLimit(pageAt(run.end) ?? page, run.end) };
+        return Math.max(run.start + quietMargin, run.end - air.before);
+      }
       room[side] = { start: run.start + quietMargin, end: run.end - quietMargin };
       return padEdge(run, side, air);
     }
     // No run of silence: the two words run together. The lowest level between them, reaching a little way into each
     // word's timing and no further into the kept one than a quiet run may.
     const bounds = page && betweenWords(page, kept, removed, side);
-    const low = page && bounds && dipBetween(page, Math.max(bounds.start, Math.min(lo, hi) - keptSlack), Math.min(bounds.end, Math.max(lo, hi) + keptSlack));
+    // Near where the transcript parts the words first. A word stretched over the pause after it hides the pause from
+    // that window: of 31 word edges one pass had handed back in sound, 9 had a trough at -48 dBFS or lower between the
+    // two words' sounds, some of them silence, outside it (2026-11-16). So the whole span between their loudest points
+    // is searched too, at the deep bar only, since the stop before a final “s” is a shallower trough in the same span.
+    const near = page && bounds && dipBetween(page, Math.max(bounds.start, Math.min(lo, hi) - keptSlack), Math.min(bounds.end, Math.max(lo, hi) + keptSlack), (lo + hi) / 2);
+    const low = near?.dip ? near : (page && bounds && bounds.end > bounds.start && dipBetween(page, bounds.start, bounds.end)) || near;
     if (low?.dip) {
       dips.push(`No pause between “${plain(side === "start" ? kept : removed)}” and “${plain(side === "start" ? removed : kept)}”: the ${side} is at the lowest level between them (${Math.round(low.db)} dBFS).`);
       room[side] = low.room;
       return low.at;
     }
+    const at = lo <= hi ? (lo + hi) / 2 : side === "start" ? removed.start : removed.end;
+    // Spoken straight through, the words part where the transcript parts them: the published editor's cuts in running
+    // speech on Muse were 13–35 ms from it, all five, and the editor's own pick on another recording 12 ms, where the
+    // lowest level and the sharpest change in the sound were up to 96 ms off (2026-11-18). Held there instead, a pass
+    // cut other words to get round the join and nobody heard it. An edge whose words share one gap, or with no level
+    // reading, isn't placed from the recording, and stays the agent's to settle. So does a gap the transcript leaves
+    // between them that the recording fills with sound: that is not two words said as one.
+    if (page?.levels && !timed && hi - lo <= RUN_ON_GAP) {
+      dips.push(`No pause or low point between “${plain(side === "start" ? kept : removed)}” and “${plain(side === "start" ? removed : kept)}”: they run together, and the ${side} is where the transcript parts them.`);
+      return at;
+    }
     problems.push(`No measured silence between “${plain(side === "start" ? kept : removed)}” and “${plain(side === "start" ? removed : kept)}”${
       page ? "" : " (no level reading)"}. The ${side} uses the word timing.`);
-    return lo <= hi ? (lo + hi) / 2 : side === "start" ? removed.start : removed.end;
+    return at;
   };
   // A removed word the recording has no sound for takes no time, right after the word before it (the aligner puts a
   // word Whisper invented over a silence there). The removal's sound starts at its first word that has some: measured
   // from the soundless one, "period." and a "Thank" nobody said had no pause between them, and the edge went to a dip
   // in the kept word's tail with half a second of silence just after it (2026-11-15).
   const sounds = (w: Word) => w.end > w.start;
-  const removed = words.slice(from, to + 1);
+  const removed = words.slice(from, to + 1).map(w => {
+    const moved = onSound(w, pageAt((w.start + w.end) / 2));
+    if (moved) retimed.push(movedNote(w, moved, "removed"));
+    return moved ?? w;
+  });
   const firstHeard = removed.find(sounds) ?? (after ? { ...first, start: after.start, end: after.start } : first);
   const lastHeard = removed.findLast(sounds) ?? (before ? { ...last, start: before.end, end: before.end } : last);
   let start = edge(before, firstHeard, "start"), end = edge(after, lastHeard, "end");
@@ -1058,12 +1450,12 @@ export function wordCutRange(words: Word[], from: number, to: number, pageAt: (t
 export const PAUSE_BEAT = AIR_AFTER_SPEECH + AIR_BEFORE_SPEECH;
 /**
  * The source range that trims the pause between two neighboring words down to `leave` seconds, word to word. The
- * beat is split as edge padding is, more after the outgoing word than before the incoming one, and each edge stays
+ * beat plays after the outgoing word but for `voiceIn` before the incoming one (splitLeave), and each edge stays
  * inside the measured quiet beside its word: where a word's sound runs past its timing, the pause plays that much
  * longer rather than clip it. Sound in the middle of the pause, such as typing or a breath, goes with it.
  */
-export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => JoinPage["edges"] | undefined, leave = PAUSE_BEAT): TimeRange & { problems: string[]; plays: number; room: WordCut["room"] } {
-  const share = AIR_AFTER_SPEECH / PAUSE_BEAT;
+export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => JoinPage["edges"] | undefined, leave = PAUSE_BEAT, pace: JoinPace = DEFAULT_PACE, voiceIn?: number): TimeRange & { problems: string[]; plays: number; room: WordCut["room"] } {
+  const air = splitLeave(leave, pace, voiceIn);
   const problems: string[] = [];
   const long = (q: TimeRange) => q.end - q.start >= 2 * quietMargin;
   const between = (page: JoinPage["edges"] | undefined) => (page ? gaps(page) : []).filter(q => long(q) && q.end > before.end - keptSlack && q.start < after.start + keptSlack);
@@ -1071,14 +1463,18 @@ export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => 
   const first = besideWord(between(pageAt(Math.min(before.end + .1, (before.end + after.start) / 2))), "start");
   const last = besideWord(between(pageAt(Math.max(after.start - .1, (before.end + after.start) / 2))), "end");
   const inside = (run: TimeRange, t: number) => Math.min(Math.max(t, run.start + quietMargin), run.end - quietMargin);
-  let start = before.end + leave * share, end = after.start - leave * (1 - share);
+  let start = before.end + air.after, end = after.start - air.before;
   // Asked to play its whole length or more, the pause has nothing to trim. With a breath or a click in the middle the
   // quiet runs either side would each pull an edge in, and the pause lost the sound between them.
   if (start >= end - 1e-6) return { start, end: start, problems, plays: Math.max(0, after.start - before.end), room: {} };
   if (first) start = inside(first, start);
   else problems.push(`No measured silence after “${plain(before)}”. The pause's start uses the word timing.`);
-  if (last) end = inside(last, end);
+  // Asked for less than the margin before the voice, the end goes to the end of the quiet, where the word starts.
+  const onWord = !!last && air.before < quietMargin;
+  if (onWord) end = Math.max(last.start + quietMargin, last.end - air.before);
+  else if (last) end = inside(last, end);
   else problems.push(`No measured silence before “${plain(after)}”. The pause's end uses the word timing.`);
   const within = (run: TimeRange | undefined) => run && { start: run.start + quietMargin, end: run.end - quietMargin };
-  return { start, end, problems, plays: Math.max(0, after.start - before.end), room: { start: within(first), end: within(last) } };
+  return { start, end, problems, plays: Math.max(0, after.start - before.end),
+    room: { start: within(first), end: onWord ? { start: last.start + quietMargin, end: onsetLimit(pageAt(last.end), last.end) } : within(last) } };
 }

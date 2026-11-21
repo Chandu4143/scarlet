@@ -57,9 +57,10 @@ export function mediaRoutes(ctx: Ctx) {
     if (to <= from || to - from > 60 || to > (source.duration ?? 0)) throw badRequest("voice_reference", "Choose a reference of up to one minute with both voices.");
     const file = await fileInDirectoryAsync(ctx.paths.media(source.projectId), source.path);
     if (!file) throw notFound("source file");
-    const labels = await ctx.track(sourceEnergyReader(ctx).labels(file, ctx.mediaSignal(source.projectId)), source.projectId);
+    const signal = AbortSignal.any([ctx.projectSignal(source.projectId), c.req.raw.signal]);
+    const labels = await ctx.track(sourceEnergyReader(ctx).labels(file, signal), source.projectId);
     if (!labels.length) throw badRequest("voice_inputs", "Choose a synchronized recording with a mix and two isolated inputs.");
-    const { mix } = await ctx.track(sourceEnergyReader(ctx).energy(file, from, to, ctx.mediaSignal(source.projectId)), source.projectId);
+    const { mix } = await ctx.track(sourceEnergyReader(ctx).energy(file, from, to, signal), source.projectId);
     if (mix === undefined || mix === roles.me - 1 || mix === roles.other - 1) throw badRequest("voice_inputs", "Could not verify two isolated inputs and their mix in this reference.");
     const media = ctx.db.transaction(() => {
       requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, source.projectId));
@@ -290,6 +291,12 @@ export function mediaRoutes(ctx: Ctx) {
       const spans = await speech.get(key, () => ctx.track(recordingSpeechActivity(ctx, file, from, to, ctx.projectSignal(media.projectId)), media.projectId));
       return c.json({ mediaId: media.id, from, to, ...wf, speechActivity: spans });
     }
+    if (c.req.query("format") === "peaks-f64le") {
+      // Legacy JSON caches may contain more precision than the current float32 cache.
+      const data = new DataView(new ArrayBuffer(wf.peaks.length * 8));
+      for (let i = 0; i < wf.peaks.length; i++) data.setFloat64(i * 8, wf.peaks[i]!, true);
+      return c.body(data.buffer, 200, { "Content-Type": "application/octet-stream" });
+    }
     return c.json({ mediaId: media.id, from, to, peaks: wf.peaks, rms: wf.rms });
   });
 
@@ -307,7 +314,7 @@ export function mediaRoutes(ctx: Ctx) {
     const search = c.req.query("search");
     if (search !== undefined) {
       const contextWords = z.coerce.number().int().min(0).max(30).parse(c.req.query("contextWords") ?? 6);
-      return c.json(transcripts.search(transcript, search, contextWords));
+      return c.json(transcripts.search(transcript, search, contextWords, c.req.query("wordSnapshot")));
     }
     return c.json(c.req.query("audioSources") === "1" && from !== null && to !== null && !omitWords
       ? await ctx.track(readSources(media.projectId, media, transcript, from, to), media.projectId) : transcript);

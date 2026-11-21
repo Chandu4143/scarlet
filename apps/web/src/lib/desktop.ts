@@ -56,6 +56,7 @@ export interface DesktopInfo {
   updates?: UpdateSource | null;
   customOpenaiModels?: string[];
   customClaudeModels?: string[];
+  customGeminiModels?: string[];
   editorModel?: AgentPick | null;
   version: string;
   platform: string;
@@ -72,7 +73,7 @@ export interface AgentLoginStatus {
   state: "waiting" | "done" | "failed" | "cancelled";
   /** Sign-in page, in case the browser didn't open on its own. */
   url?: string;
-  /** The CLI accepts a pasted authorization code (Claude's manual fallback). */
+  /** The CLI accepts a pasted authorization code (Claude's manual fallback or Gemini's OAuth code). */
   acceptsCode: boolean;
   message?: string;
 }
@@ -144,7 +145,7 @@ export const desktop = {
   engineStatus: () => invoke<EngineStatus>("engine_status"),
   hostStatus: () => invoke<HostStatus>("host_status"),
   hostRefreshAgents: () => invoke<HostStatus>("host_refresh_agents"),
-  agentInstall: (agent: "claude" | "codex") => invoke<"installed" | "needsNode">("agent_install", { agent }),
+  agentInstall: (agent: "claude" | "codex" | "gemini") => invoke<"installed" | "needsNode">("agent_install", { agent }),
   agentLoginStart: (agent: string) => invoke<AgentLoginStatus>("agent_login_start", { agent }),
   agentLoginCode: (agent: string, code: string) => invoke<void>("agent_login_code", { agent, code }),
   agentLoginCancel: (agent: string) => invoke<void>("agent_login_cancel", { agent }),

@@ -11,7 +11,7 @@ import { useUiStore } from "../../stores/ui";
 import type { MediaAsset } from "@scarlet/timeline";
 import { TranscriptLine } from "../media/TranscriptionAction";
 import { UsageSettings } from "../shell/UsageSettings";
-import { RequestMetrics, RunBundle, runEnded, Said } from "./RunBundle";
+import { RequestMetrics, RunBundle, runEnded } from "./RunBundle";
 
 const task: Task = {
   id: "tsk_1", projectId: "prj_1", kind: "edit", agent: "claude", model: "opus", instruction: "Tighten the intro",
@@ -107,14 +107,19 @@ it("adds the request's tokens to its finished run line, and updates live", () =>
   expect(view.host.querySelector(".req-time, .req-steps, .run-chevron")).toBeNull();
   expect(view.host.textContent).not.toContain("tokens");
 
-  act(() => useProjectStore.getState().applyEvent({ type: "task.usage", projectId: "prj_1", taskId: task.id, usage: totals({ reasoningTokens: 100 }) }));
+  act(() => useProjectStore.getState().applyEvent({
+    type: "task.usage", projectId: "prj_1", taskId: task.id, usage: totals({ runs: 2, reasoningTokens: 100, estimatedApiCostUsd: 0.009 }),
+  }));
   const tokens = view.host.querySelector(".run-tokens");
+  const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
   expect(tokens?.textContent).toBe("48.2K tokens");
   expect(tokens?.getAttribute("aria-label")).toContain("cache read");
+  expect(tokens?.getAttribute("aria-label")).not.toContain("2 runs");
   // Hovering or focusing the count opens every part of it under the count; it closes again when the pointer leaves.
   act(() => (tokens as HTMLElement).focus());
   expect([...document.querySelectorAll(".tokens-tip > span")].map(row => row.textContent)).toEqual([
-    `Input${(1200).toLocaleString()}`, `Output${(3000).toLocaleString()}`, `Cache read${(44_000).toLocaleString()}`, `Total${(48_200).toLocaleString()}`]);
+    `Input${(1200).toLocaleString()}`, `Output${(3000).toLocaleString()}`, `Cache read${(44_000).toLocaleString()}`,
+    `Total${(48_200).toLocaleString()}`, `Est Cost<${usd.format(0.01)}`]);
   act(() => (tokens as HTMLElement).blur());
   expect(document.querySelector(".tokens-tip")).toBeNull();
   expect(view.host.textContent).not.toMatch(/\$|cost/i);
@@ -244,6 +249,16 @@ it("says what Scarlet is doing this moment on one line under its opening sentenc
   // A run not yet started says so; done, the sentence and the line go.
   bare.rerender(<RunBundle task={{ ...running, state: "claimed" }} events={[]} changes={[]} onStop={() => {}} />);
   expect(now(bare.host)).toBe("Getting started");
+  // A run that carries on after Scarlet closed or restarted says so until its first call, which then takes the line.
+  const again: Task = { ...running, id: "tsk_again", resumeRootId: running.id };
+  for (const state of ["claimed", "running"] as const) {
+    bare.rerender(<RunBundle task={{ ...again, state }} events={[]} changes={[]} onStop={() => {}} />);
+    expect(now(bare.host)).toBe("Picking up where it left off");
+  }
+  bare.rerender(<RunBundle task={again} events={[{ type: "log", at: at(1), text: "Claude Code session started", data: { kind: "init" } }]} changes={[]} onStop={() => {}} />);
+  expect(now(bare.host)).toBe("Picking up where it left off");
+  bare.rerender(<RunBundle task={again} events={reading} changes={[]} onStop={() => {}} />);
+  expect(now(bare.host)).toBe("Reading the dialogue at 12:34");
   bare.rerender(<RunBundle task={{ ...task, summary: "Cut the dialogue." }} events={spoken} changes={[]} banded />);
   expect(bare.host.querySelector(".req-lead, .req-now")).toBeNull();
   bare.unmount();
@@ -463,9 +478,10 @@ it("ticks active time, updates reported tokens, and carries both metrics across 
   report(task.id, totals());
   expect(tokens()?.textContent).toBe("6s · 48.2K tokens");
   expect(tokens()?.getAttribute("aria-label")).toContain("Model: opus, Thinking effort: High");
-  const more = totals({ totalTokens: 1_310_000, cacheReadTokens: 1_305_800, models: ["claude-opus-5-5"] });
+  expect(tokens()?.getAttribute("aria-label")).toContain("Estimated API cost: Unavailable");
+  const more = totals({ totalTokens: 1_310_000, cacheReadTokens: 1_305_800, models: ["claude-opus-5-5"], estimatedApiCostUsd: 0.33 });
   report(task.id, more);
-  expect([tokens()?.textContent, tokens()?.dataset.breakdown]).toEqual(["6s · 1.3M tokens", tokenBreakdown(more)]);
+  expect([tokens()?.textContent, tokens()?.dataset.breakdown]).toEqual(["6s · 1.3M tokens", tokenBreakdown({ ...more, runs: undefined })]);
   act(() => tokens()!.click());
   expect([...document.querySelectorAll(".tokens-tip > span")].slice(0, 3).map(row => row.textContent))
     .toEqual(["Active time6s", "ModelClaude Opus 5.5", "Thinking effortHigh"]);
@@ -483,11 +499,18 @@ it("ticks active time, updates reported tokens, and carries both metrics across 
   expect(time()).toBe("9s");
   const previous = { ...claimed, state: "cancelled" as const, workedMs: 9000, finishedAt: new Date().toISOString() };
   const resumed = { ...working, id: "tsk_2", effort: undefined, startedAt: new Date().toISOString() };
-  report(resumed.id, totals({ totalTokens: 112_000, cacheReadTokens: 107_800, models: ["claude-opus-5-6"] }));
+  const resumedUsage = totals({ totalTokens: 112_000, cacheReadTokens: 107_800, models: ["claude-fable-5-2"], estimatedApiCostUsd: 0.15 });
+  report(resumed.id, resumedUsage);
   view.rerender(<RequestMetrics attempts={[previous, resumed]} events={{}} />);
   act(() => vi.advanceTimersByTime(3000));
   expect(tokens()?.textContent).toBe("12s · 1.4M tokens");
-  expect(tokens()?.getAttribute("aria-label")).toContain("Models: Claude Opus 5.5, Claude Opus 5.6, Thinking effort: High, Provider default");
+  const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+  expect(tokens()?.getAttribute("aria-label")).toContain(`Models: Claude Opus 5.5, Claude Fable 5.2, Thinking effort: High, Provider default, Estimated API cost: ${usd.format(0.48)}`);
+  report(resumed.id, { ...resumedUsage, models: ["unpriced-model"], estimatedApiCostUsd: null });
+  expect(tokens()?.getAttribute("aria-label")).toContain("Estimated API cost: Unavailable");
+  expect(tokens()?.getAttribute("aria-description")).toBe("API pricing is unavailable for some or all of the reported usage.");
+  report(resumed.id, { ...resumedUsage, models: ["gpt-9-sol"], estimatedApiCostUsd: null, unpricedModels: ["gpt-9-sol at Fast speed"] });
+  expect(tokens()?.getAttribute("aria-description")).toBe("No price for gpt-9-sol at Fast speed yet.");
   view.rerender(<RequestMetrics attempts={[previous, { ...resumed, state: "done", workedMs: 3000, finishedAt: new Date().toISOString() }]} events={{}} />);
   act(() => vi.advanceTimersByTime(10_000));
   expect(tokens()?.textContent).toBe("12s · 1.4M tokens");

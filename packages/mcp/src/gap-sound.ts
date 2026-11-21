@@ -49,6 +49,79 @@ export function quietRms(rms: ArrayLike<number>, step = FLOOR_BUCKET): number {
   return Math.min(QUIET_RMS, floor * 10 ** (QUIET_ABOVE_FLOOR_DB / 20));
 }
 
+/** A sound this quiet and this brief, with room tone either side, is a lip tick, not a word: it does not end a silence. */
+const TICK_RMS = .0056, TICK_SECONDS = .02;
+/** The furthest a detector's early start is followed while the level stays quiet. */
+const DETECTOR_LEAD = .75;
+/** Through a detector's early start the level stays within this of the room just before it: 8 dB. A breath or a soft consonant rises past it. */
+const LEAD_ABOVE_ROOM = 2.5;
+/**
+ * Which buckets of a reading are quiet: at room level (`quietBelow`, QUIET_PEAK) with no voice detected.
+ * Two things a silence holds do not end it (2026-11-16, a 90-cut pass whose cuts waited up to 0.6 s before the voice):
+ * - A tick. After a breath the quiet before a word was split by three ticks into pieces too short to trust, and the
+ *   cut went before the breath instead, half a second early.
+ * - The start of a detected voice, for as long as the level has not left the room it was in. A speech detector hears a
+ *   word coming and began up to half a second before any sound. The level says where the word starts.
+ * Given the transcript's `words`, the quiet after a word starts where the word's sound is back down at room level: what
+ * sounds after that, under speaking level and in no word, up to the quiet, is a breath, and part of the pause. After
+ * “yeah, it's okay” the level was at the room 0.1 s after the word, then a breath 30 dB under the voice ran 0.2 s more
+ * with the detector still on. The quiet began after it, every way of asking for the cut put its edge there, and the
+ * editor was already looking away from the camera (2026-11-18).
+ */
+export function quietBuckets(rms: ArrayLike<number>, peaks: ArrayLike<number>, from: number, step: number, voice: ReadonlyArray<{ start: number; end: number }>, quietBelow = quietRms(rms, step), words?: ReadonlyArray<TimeRange>): boolean[] {
+  const n = rms.length;
+  const level = Array.from({ length: n }, (_, i) => rms[i]! <= quietBelow && peaks[i]! <= QUIET_PEAK);
+  // Ticks: a short run above the room, still far under speech, between two buckets at room level.
+  const most = Math.max(1, Math.round(TICK_SECONDS / step));
+  for (let i = 1; i < n; i++) {
+    if (level[i] || !level[i - 1]) continue;
+    let k = i;
+    while (k < n && k - i < most && !level[k] && rms[k]! <= TICK_RMS && peaks[k]! <= QUIET_PEAK) k++;
+    if (k < n && k > i && level[k]) for (let t = i; t < k; t++) level[t] = true;
+  }
+  const quiet: boolean[] = [], recent: number[] = [];
+  let v = 0, leading = -1, led = 0, ceiling = 0;
+  for (let i = 0; i < n; i++) {
+    const start = from + i * step, end = start + step;
+    // A span that only touches a bucket boundary (within float error) does not voice it.
+    while (v < voice.length && voice[v]!.end <= start + 1e-6) v++;
+    if (!(v < voice.length && voice[v]!.start < end - 1e-6)) {
+      quiet.push(level[i]!);
+      if (quiet[i] && rms[i]! <= quietBelow) { recent.push(rms[i]!); if (recent.length > 10) recent.shift(); } else if (!quiet[i]) recent.length = 0;
+      continue;
+    }
+    // The detector is on. The quiet before it carries on while the level stays in that room.
+    if (leading !== v) {
+      leading = quiet[i - 1] && recent.length ? v : -2 - v;
+      led = 0;
+      ceiling = Math.min(quietBelow, LEAD_ABOVE_ROOM * recent.reduce((a, b) => a + b, 0) / Math.max(1, recent.length));
+    }
+    // Above that room only as a tick is: briefly, with the room after it.
+    const brief = () => {
+      let k = i;
+      while (k < n && k - i < most && level[k] && rms[k]! > ceiling) k++;
+      return k < n && level[k]! && rms[k]! <= ceiling;
+    };
+    const still = leading === v && led < DETECTOR_LEAD - 1e-9 && level[i]! && (rms[i]! <= ceiling || brief());
+    if (!still) leading = -2 - v;
+    led += step;
+    quiet.push(still);
+  }
+  if (words?.length) {
+    const spoken = (k: number) => words.some(w => w.start < from + (k + 1) * step - 1e-6 && w.end > from + k * step + 1e-6);
+    for (let i = 1; i < n; i++) {
+      if (!quiet[i] || quiet[i - 1]) continue;
+      // Back from the quiet over sound under speaking level, to the earliest bucket at room level: where the word ended.
+      // A soft sound between two silences, with no word or speech before it, stays sound: it may be a word nobody timed.
+      let room = i, k = i - 1;
+      for (; k >= 0 && !quiet[k] && rms[k]! <= QUIET_RMS && !spoken(k); k--) if (rms[k]! <= quietBelow && peaks[k]! <= QUIET_PEAK) room = k;
+      if (k < 0 || quiet[k]) continue;
+      for (let j = room; j < i; j++) quiet[j] = true;
+    }
+  }
+  return quiet;
+}
+
 /** A gap between two words is described from this length. */
 export const GAP_SECONDS = 0.4;
 /** Sound counts when it is within this of the level speech sits at. A sibilant's hiss and room tone fall well under it. */
@@ -149,7 +222,12 @@ export function gapSound(levels: GapLevels, gap: TimeRange, speechDb = speakingL
   };
   for (let i = Math.max(0, Math.floor((start - levels.from) / step)); i < levels.rms.length; i++) {
     const from = Math.max(start, levels.from + i * step), to = Math.min(end, levels.from + (i + 1) * step);
-    if (to <= from) break;
+    // A start on a bucket's edge can round into the bucket before it, which then has no width here: read on. Stopping
+    // there read the “five point five” after “Opus” as quiet, and a pause trim took it out (2026-11-16).
+    if (to <= from) {
+      if (levels.from + i * step >= end) break;
+      continue;
+    }
     if (dbfs(levels.rms[i]!) >= floor) open ??= from;
     else close(from);
   }

@@ -1,7 +1,10 @@
 import { JoinChecks } from "./join-checks.js";
 import { PictureBatches, type PictureRequest, type PreparedPictures } from "./picture-batches.js";
-import { BACKGROUND_NEXT, UNFRAMED_NEXT, backgroundShows, unframedBeside } from "./clip-framing.js";
-import { CORNERS, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
+import { BRIEF_PICTURES_NEXT, edgesOntoRecordingCuts, flashesOntoCuts, MET_CUT_NEXT, MET_RECORDING_CUT_NEXT, newBriefPictures, type MetCut, type MetRecordingCut } from "./brief-pictures.js";
+import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
+import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
+import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
+import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
 import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
 /**
@@ -9,17 +12,17 @@ import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
  * propose changes. Everything goes through a `ScarletClient`; the server can
  * be run over stdio (see cli.ts) or embedded in-process.
  */
-import { audibleSourcePoints, cutsReach, dialogueGate, dialogueScanPage, planDialogueCuts, resolveCutRange, SPEECH_BESIDE_EDGE, type DialoguePlanSources } from "./dialogue-plan.js";
+import { audibleSourcePoints, cutReading, cutsReach, dialogueGate, dialogueScanPage, joinPlays, NOTE_QUOTE_REACH, planDialogueBatch, quotesAwayFromCut, resolveCutRange, SPEECH_BESIDE_EDGE, timelineWordsNear, type DialoguePlanSources } from "./dialogue-plan.js";
 import { inspectDialogueSuggestion, MAX_WHOLE_PICTURE_SHEETS, type DialogueInspection } from "./dialogue-review.js";
 import { Lanes, ReviewInspections, urgencyRank, type InspectionRequest } from "./review-prep.js";
-import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, DIP_DBFS, PAUSE_BEAT, checkKeptWords, checkDialogueJoin, NoCachedSpeech, checkResumeQuote, clipEdgeSound, dialogueAudioStream, dialogueClips, dialogueCutPreview, dialogueJoinWords, joinAudio, joinEvidence, quietFrameNote, type JoinPage } from "./dialogue-join.js";
+import { AIR_AFTER_SPEECH, AIR_BEFORE_SPEECH, DIP_DBFS, LEAST_VOICE_IN, PAUSE_BEAT, checkKeptWords, checkDialogueJoin, dialogueJoinChecker, NoCachedSpeech, checkResumeQuote, clipEdgeSound, dialogueAudioStream, dialogueClips, dialogueCutPreview, dialogueJoinWords, joinAudio, joinEvidence, quietFrameNote, type JoinPage } from "./dialogue-join.js";
 import { DialogueScanBatch, FIRST_CUT_BATCH_SIZE } from "./dialogue-scan-batch.js";
 import { resolveOutgoingPause } from "./outgoing-pause.js";
 import { DialogueEvidence, matchFillers } from "./dialogue-decisions.js";
 import { acousticRetakeContinuations, acousticRetakeJoin, type AcousticRetakePage } from "./dialogue-retake-join.js";
 import { acousticRepeatedTakes, findRepeatedTakes } from "./dialogue-retakes.js";
 import { firstCutRanges } from "./first-cut-ranges.js";
-import { InsetFraming, insetFraming, syncPictureOps } from "./sync-layout.js";
+import { InsetFraming, InsetPresenter, insetFraming, insetStretches, presetInset, syncPictureOps, type FaceReading, type PresetInset } from "./sync-layout.js";
 import { createHash } from "node:crypto";
 import { wordDigest } from "./transcript-digest.js";
 import { mkdtemp } from "node:fs/promises";
@@ -29,13 +32,15 @@ import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, searchTranscript, taskDialogueOperation, agentCapabilities, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
-  CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, RESTART_WITHIN_SECONDS, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
+import { listToolsBriefly } from "./brief-tools.js";
+import { boundedRippleOps, rippleDrift, cutAnchorOn, cutScope, selectedRange, flattenWords, indexTranscriptWords, taskDialogueOperation, agentCapabilities, toolWait, DEFAULT_RESULT_CHARS, DEFAULT_TOOL_WAIT_SECONDS, type AgentCapabilities, JOIN_WORD_SECONDS, fuzzySearchTranscript, apiPathId, type ScarletToolName,
+  CrossfadeFrames, SheetOptions, SheetRequest, CutReviewOptions, SourceAudioOptions, SoundPictureOptions, type InspectionResult, type InspectionWindow, type DialogueDetections, type PictureActivityWindow, ScarletApiError, SuggestLearningRequest, TaskSkillDraft, skillTaskTarget, skillEditTarget, type ScarletClient, SILENCE_LEFT_SECONDS } from "@scarlet/shared";
 import type { RepeatEvidence, AgentId, DialogueScanPage, ProjectDetail, ProposeChangeRequest, Skill, Task, TaskEvent, WaveformResponse } from "@scarlet/shared";
-import type { Author, Change, MediaAsset, TimeRange, Transcript } from "@scarlet/timeline";
+import type { Author, Change, MediaAsset, Project, TimeRange, Transcript } from "@scarlet/timeline";
 import {
   applyOps,
   audioCrossfadeOps,
+  pictureSyncOps,
   CutAssessment,
   CaptionStyle,
   captionsFromWords,
@@ -46,6 +51,8 @@ import {
   diffTimelines,
   emptyTimeline,
   frameAligned,
+  introducedDoubledSound,
+  type LouderDoubledSound,
   newId,
   makeTimeMap,
   mergeRanges,
@@ -103,13 +110,22 @@ const IMAGE_TOOLS: ReadonlySet<string> = new Set(["frame_contact_sheet", "frame_
 const SKILL_EDIT_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "skills_list", "skill_save_edit"]);
 /** A learning check reads one request for a standing rule. It can read the editor's skills and offer a rule, and nothing else. */
 const LEARNING_CHECK_TOOLS: ReadonlySet<string> = new Set(["skills_list", "learning_suggest"]);
-const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
+/** An area check looks at one frame and says what of it viewers may see, and nothing else. */
+const AREA_CHECK_TOOLS: ReadonlySet<string> = new Set(["media_frame", "screen_area"]);
+/** Times one timeline_at call maps; the rest of a longer list come back to ask for. */
+const TIMES_AT_ONCE = 50;
+const PASS_WIDE_TOOLS: ReadonlySet<string> = new Set(["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync", "captions_generate", "dialogue_apply_cuts", "dialogue_review_save"]);
 
 /** What to do about an edit another request's change kept off the video. Its own result says what met and where. */
 const NOT_APPLIED_NEXT = "Nothing was applied. Another request changed this footage after fromVersion. Read that passage on currentVersion and make the edit again there.";
 
 /** Source seconds read without saving a part before dialogue_scan reminds the agent that the editor is waiting. */
 const SAVE_REMINDER_SECONDS = 300;
+/**
+ * Seconds a save waits for the cuts of a recording it shows that aren't read yet. A recording is read once and kept:
+ * 60 s of a 4K screen recording takes about 1.5 s, all 25 minutes of one about 40 s (M-series, 2026-11-18).
+ */
+const CUTS_WAIT_SECONDS = 45;
 /** The latest staged pass of a run, and how many of its cuts still have no recommendation. */
 interface StagedReview { changeId: string; total: number; unchecked: number }
 /** How many of a pass's cuts have a recommendation that isn't provisional. */
@@ -147,7 +163,8 @@ export { SCARLET_TOOL_NAMES, type ScarletToolName } from "@scarlet/shared";
 /**
  * The audible clip edges a saved timeline cuts at that the version it replaces did not: each start (`in`) and end
  * (`out`) of a clip, in its own recording's seconds. An edge the old version already had is no new cut and is left
- * out. So are the first and last instants of a recording, and the two halves of a split that plays straight on.
+ * out. So are the first and last instants of a recording, and an edge where another clip of the recording plays straight
+ * on from that second, on its track or another: the halves of a split, or a copy that takes over where one is silenced.
  * Whatever made the edge counts: a ripple, a trimmed or added clip, a whole new timeline. A pass that built its
  * video from added clips skipped every edge check there was, and a revision that trimmed one clip by a frame did too.
  */
@@ -156,23 +173,55 @@ function newClipEdges(before: Timeline | null, next: Timeline, media: ReadonlyAr
   const old = before ? audibleMediaClips(before) : [];
   const seen = new Set<string>();
   const edges: ReturnType<typeof newClipEdges> = [];
-  for (const clips of audibleClipsByTrack(next)) {
-    for (const clip of clips) {
-      const length = media.find(m => m.id === clip.mediaId)?.duration, stream = dialogueAudioStream(clip), ends = clip.timelineIn + clipDuration(clip);
-      for (const [side, source] of [["in", clip.sourceIn], ["out", clip.sourceOut]] as const) {
-        const key = `${clip.mediaId}/${stream ?? ""}/${side}/${source.toFixed(3)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (source < .05 || (length !== undefined && source > length - .05)) continue;
-        if (old.some(c => c.mediaId === clip.mediaId && Math.abs((side === "in" ? c.sourceIn : c.sourceOut) - source) < 1e-3)) continue;
-        if (clips.some(c => c !== clip && c.mediaId === clip.mediaId && (side === "out"
-          ? Math.abs(c.sourceIn - source) < 1e-3 && Math.abs(c.timelineIn - ends) < 1e-3
-          : Math.abs(c.sourceOut - source) < 1e-3 && Math.abs(c.timelineIn + clipDuration(c) - clip.timelineIn) < 1e-3))) continue;
-        edges.push({ clipId: clip.id, mediaId: clip.mediaId, ...(stream !== undefined && { stream }), side, source });
-      }
+  const clips = audibleClipsByTrack(next).flat();
+  for (const clip of clips) {
+    const length = media.find(m => m.id === clip.mediaId)?.duration, stream = dialogueAudioStream(clip), ends = clip.timelineIn + clipDuration(clip);
+    for (const [side, source] of [["in", clip.sourceIn], ["out", clip.sourceOut]] as const) {
+      const key = `${clip.mediaId}/${stream ?? ""}/${side}/${source.toFixed(3)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (source < .05 || (length !== undefined && source > length - .05)) continue;
+      if (old.some(c => c.mediaId === clip.mediaId && Math.abs((side === "in" ? c.sourceIn : c.sourceOut) - source) < 1e-3)) continue;
+      if (clips.some(c => c !== clip && c.mediaId === clip.mediaId && dialogueAudioStream(c) === stream && (side === "out"
+        ? Math.abs(c.sourceIn - source) < 1e-3 && Math.abs(c.timelineIn - ends) < 1e-3
+        : Math.abs(c.sourceOut - source) < 1e-3 && Math.abs(c.timelineIn + clipDuration(c) - clip.timelineIn) < 1e-3))) continue;
+      edges.push({ clipId: clip.id, mediaId: clip.mediaId, ...(stream !== undefined && { stream }), side, source });
     }
   }
   return edges;
+}
+
+const DOUBLED_SOUND = "Nothing was saved. Copies of one moment in sync add up in the mix, so that stretch would play louder than the edit started. Make the change named for it, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone and leaves the mix the edit started from everywhere else, and propose the edit again with that change. Pass layeredSound: true instead only if the editor asked to hear it layered.";
+
+/**
+ * A louder stretch as the refusal names it, with the change that turns down each copy it names there alone: split off
+ * just that stretch of it, so what it plays before and after stays as it was.
+ */
+export function doubledSoundText(d: LouderDoubledSound, next: Timeline): string {
+  const clips = new Map(next.tracks.flatMap(t => t.clips.map(c => [c.id, c] as const)));
+  const t = (n: number) => String(+n.toFixed(6));
+  const { start: from, end: to } = d.overlap;
+  const copies = d.copies.length > 2 ? `${d.copies.slice(0, -1).join(", ")} and ${d.copies.at(-1)} all` : `${d.clipIds[0]} and ${d.clipIds[1]} both`;
+  const pair = `clips ${copies} play ${d.mediaId} from ${t(d.source.start)} to ${t(d.source.end)} s, at ${t(from)}–${t(to)} s on the timeline, where their volumes add up to ${t(d.level.after)} and the edit started at ${t(d.level.before)}`;
+  const turnDown = ({ clipId, volume: v }: LouderDoubledSound["turnDown"][number]) => {
+    const quiet = clips.get(clipId) as MediaClip;
+    const volume = t(v);
+    // An id for a piece split off it that no clip has yet.
+    const fresh = (name: string) => { let id = `${quiet.id}-${name}`; for (let n = 2; clips.has(id); n++) id = `${quiet.id}-${name}-${n}`; return id; };
+    const before = quiet.timelineIn < from - 1e-6, after = clipEnd(quiet) > to + 1e-6;
+    if (!before && !after) return `${quiet.id} plays only there, so set its volume to ${volume}`;
+    if (!before) {
+      const rest = fresh("after");
+      return `${quiet.id} plays on after that, so splitClip ${quiet.id} at ${t(to)} with newClipId ${rest}, which keeps the part after it as ${rest} with its sound, and set ${quiet.id}'s volume to ${volume}`;
+    }
+    const louder = fresh("louder");
+    if (!after) return `${quiet.id} plays before that as the edit started, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, which keeps the part before it as it was, and set ${louder}'s volume to ${volume}`;
+    const rest = fresh("after");
+    return `${quiet.id} plays on either side of that, so splitClip ${quiet.id} at ${t(from)} with newClipId ${louder}, then splitClip ${louder} at ${t(to)} with newClipId ${rest}, which keeps the parts either side as they were, and set ${louder}'s volume to ${volume}`;
+  };
+  // Turned down to 0, the first copy can still leave the stretch louder, as three copies where the base played one:
+  // the next is named too, so the fix done as it says is the whole fix.
+  return `${pair}: ${d.turnDown.map(turnDown).join("; and ")}`;
 }
 
 const OPS_DOC = `Op types (all times are seconds; timeline times are positions in the edit, source times are positions in the media file):
@@ -281,7 +330,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       });
       if (record?.change.intent !== "suggestion" || (!["ready", "revising"].includes(record.change.state) && !record.change.replacedBy)) return;
     }
-    return new Error(`This revises staged cut ${stagedCut.index} of ${stagedCut.changeId}. Save its new range with dialogue_revise_cut.`);
+    return new Error(`This revises staged cut ${stagedCut.index} of ${stagedCut.changeId}. Save its new range with dialogue_revise_cut. The revised cut goes back to the editor as a call with its reason as the note: what they should listen for belongs there, and nothing else needs saving.`);
   }
   // An explicit retry uses the footage the agent has actually read on this immutable version. A join
   // measures its two edges; a transcript read covers the returned passage between them.
@@ -313,6 +362,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         ? "Scarlet exposes the tools for revising one of the editor’s skills; an empty MCP resource list is normal."
         : ctx.task?.kind === "learning_check"
         ? "Scarlet exposes the tools for reading the editor’s skills and offering a rule for one; an empty MCP resource list is normal."
+        : ctx.task?.kind === "area_check"
+        ? "Scarlet exposes the tools for looking at one frame of a recording and saving what of it viewers may see; an empty MCP resource list is normal."
         : "Scarlet exposes project context and editing operations as tools; an empty MCP resource list is normal. project_get returns the current edit and the editor’s selection. Transcript and waveform tools prepare missing data on demand.",
     },
   );
@@ -323,7 +374,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- helpers --------------------------------------------------------------
 
-  const getProject = () => client.project(ctx.projectId);
+  const getProject = () => client.projectInfo(ctx.projectId);
+  const getHeader = () => client.projectHeader(ctx.projectId);
 
   /** For a `.catch`: note the failure on stderr and in the call's result, and answer with `fallback`. */
   const without = <T>(what: string, fallback: T) => (err: unknown) => { unavailable(what, err); noteUnmeasured(what, err); return fallback; };
@@ -348,6 +400,20 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     if (err instanceof MediaPreparing) throw err;
     return without(what, fallback)(err);
   };
+  /**
+   * Reads that don't depend on each other, run at once. What each went without is noted in the order they are given,
+   * as if they ran one after another, so the line a result ends with doesn't depend on which finished first.
+   */
+  async function together<T extends unknown[]>(...reads: { [K in keyof T]: () => Promise<T[K]> }): Promise<T> {
+    const notes = reads.map(() => new Map<string, string>());
+    const settled = await Promise.allSettled(reads.map((read, i) => unmeasured.run(notes[i]!, read)));
+    const missed = unmeasured.getStore();
+    settled.forEach((outcome, i) => {
+      for (const [what, why] of notes[i]!) missed?.set(what, why);
+      if (outcome.status === "rejected") throw outcome.reason;
+    });
+    return settled.map(outcome => (outcome as PromiseFulfilledResult<unknown>).value) as T;
+  }
 
   /**
    * The version this agent last looked at. Edits are proposed against it, so
@@ -438,7 +504,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     try {
       const prepared = await client.prepareMedia(ctx.projectId, mediaId, "transcript");
       if (prepared.state === "ready") return { ready: true };
-      const { task } = await client.task(prepared.taskId);
+      const { task } = await client.task(prepared.taskId, "none");
       return { ready: false, note: transcriptionNote(task.progress) };
     } catch (err) {
       unavailableOnce(`failed to read how far the transcript of ${mediaId} is`, err);
@@ -507,6 +573,22 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const recordedTranscripts = new Map<string, string>();
   /** Which save of a transcript this is. The engine saves it again at every turn of alignment, with a new time. */
   const transcriptSave = (t: Pick<Transcript, "id" | "createdAt" | "aligning">) => JSON.stringify([t.id, t.createdAt, t.aligning?.through]);
+  async function cacheTranscriptWords(mediaId: string, t: Transcript | null) {
+    const words = t?.segments.length ? flattenWords(t) : null;
+    if (ctx.task?.context.recordTranscriptDigests && words) {
+      const sha256 = wordDigest(words);
+      if (recordedTranscripts.get(mediaId) !== sha256) {
+        const result = await postEvent({ type: "log", text: "", data: { kind: "eval_transcript", mediaId, count: words.length, sha256 } });
+        if (result.posted) recordedTranscripts.set(mediaId, sha256);
+      }
+    }
+    if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now(), saved: transcriptSave(t!) });
+    else if (words) {
+      aligningWords.delete(mediaId);
+      wordLists.set(mediaId, words);
+    }
+    return words;
+  }
   function readWords(mediaId: string, prepareMissing: boolean): Promise<TranscriptWord[] | null> {
     const ready = wordLists.get(mediaId);
     if (ready) return Promise.resolve(ready);
@@ -524,22 +606,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         if (!same) return undefined;
         partial!.at = Date.now();
         return partial!.words;
-      }).then(kept => kept ?? getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(async t => {
-        const words = t?.segments.length ? flattenWords(t) : null;
-        if (ctx.task?.context.recordTranscriptDigests && words) {
-          const sha256 = wordDigest(words);
-          if (recordedTranscripts.get(mediaId) !== sha256) {
-            const result = await postEvent({ type: "log", text: "", data: { kind: "eval_transcript", mediaId, count: words.length, sha256 } });
-            if (result.posted) recordedTranscripts.set(mediaId, sha256);
-          }
-        }
-        if (words && t!.aligning) aligningWords.set(mediaId, { words, through: t!.aligning.through, at: Date.now(), saved: transcriptSave(t!) });
-        else if (words) {
-          aligningWords.delete(mediaId);
-          wordLists.set(mediaId, words);
-        }
-        return words;
-      }));
+      }).then(kept => kept ?? getTranscript(mediaId, { granularity: "word" }, prepareMissing).then(t => cacheTranscriptWords(mediaId, t)));
       readingWords.set(key, job);
       void job.catch(() => {}).finally(() => readingWords.delete(key));
     }
@@ -567,37 +634,41 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    * The model can hold indices from any list it was shown, so each is kept until it is told its indices moved and reads
    * again (`staleWords`), and a reference whose words differ between them is refused.
    */
-  const wordsShown = new Map<string, Array<{ print: string; words: readonly TranscriptWord[] }>>();
+  type WordSnapshot = { print: string; texts: readonly string[]; searchId?: string };
+  const wordsShown = new Map<string, WordSnapshot[]>();
   const staleWords = new Set<string>();
-  const wordPrints = new WeakMap<readonly TranscriptWord[], string>();
-  const wordsPrint = (words: readonly TranscriptWord[]) => {
-    let print = wordPrints.get(words);
-    if (!print) wordPrints.set(words, print = `${words.length}:${createHash("sha1").update(words.map(w => w.text).join("\u0000")).digest("hex")}`);
-    return print;
-  };
-  /** Note the list a tool showed the model word indices from. */
-  const showWords = (mediaId: string, words: readonly TranscriptWord[] | null | undefined) => {
-    if (!words) return;
-    const print = wordsPrint(words);
+  const snapshots = new WeakMap<readonly TranscriptWord[], WordSnapshot>();
+  const snapshotOf = (texts: readonly string[], searchId?: string): WordSnapshot =>
+    ({ texts, searchId, print: `${texts.length}:${createHash("sha1").update(texts.join("\u0000")).digest("hex")}` });
+  function wordSnapshot(words: readonly TranscriptWord[]) {
+    let snapshot = snapshots.get(words);
+    if (!snapshot) snapshots.set(words, snapshot = snapshotOf(words.map(w => w.text)));
+    return snapshot;
+  }
+  function showSnapshot(mediaId: string, snapshot: WordSnapshot) {
     const shown = wordsShown.get(mediaId) ?? [];
     // Words found since moved the indices on: which input each index was heard on is read again.
-    if (shown.at(-1)?.print !== print) inputLabels.delete(mediaId);
+    if (shown.at(-1)?.print !== snapshot.print) inputLabels.delete(mediaId);
     // Told its indices moved, the model has read again: the lists before this one are behind it.
-    const kept = staleWords.delete(mediaId) ? [] : shown.filter(s => s.print !== print).slice(-4);
-    wordsShown.set(mediaId, [...kept, { print, words }]);
+    const kept = staleWords.delete(mediaId) ? [] : shown.filter(s => s.print !== snapshot.print).slice(-4);
+    wordsShown.set(mediaId, [...kept, snapshot]);
+  }
+  /** Note the list a tool showed the model word indices from. */
+  const showWords = (mediaId: string, words: readonly TranscriptWord[] | null | undefined) => {
+    if (words) showSnapshot(mediaId, wordSnapshot(words));
   };
   function sameWordsAsRead(mediaId: string, words: readonly TranscriptWord[], from?: number, to?: number) {
     const shown = wordsShown.get(mediaId);
     if (!shown?.length) return;
-    const print = wordsPrint(words), latest = shown.at(-1)!;
+    const current = wordSnapshot(words), latest = shown.at(-1)!;
     // The words a reference names, as each list shown reads them: one that reads them otherwise could be the one it came from.
-    const named = (list: readonly TranscriptWord[]) => from === undefined ? "" : list.slice(from, (to ?? from) + 1).map(w => w.text).join("\u0000");
-    const other = latest.print !== print ? latest : from === undefined ? undefined
-      : shown.find(s => s.print !== print && named(s.words) !== named(words));
+    const named = (list: readonly string[]) => from === undefined ? "" : list.slice(from, (to ?? from) + 1).join("\u0000");
+    const other = latest.print !== current.print ? latest : from === undefined ? undefined
+      : shown.find(s => s.print !== current.print && named(s.texts) !== named(current.texts));
     if (!other) return;
     staleWords.add(mediaId);
     throw new Error(`The transcript of ${mediaId} changed since you read it: Scarlet placed its words on the audio and found words it had missed ` +
-      `(${other.words.length} words then, ${words.length} now), so word indices from that read name other words now. Nothing was placed or saved. ` +
+      `(${other.texts.length} words then, ${words.length} now), so word indices from that read name other words now. Nothing was placed or saved. ` +
       "Read the passage again (transcript_get, timeline_transcript or dialogue_scan) and give the indices it shows.");
   }
 
@@ -720,10 +791,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     return found;
   }
 
-  async function measureAround(points: Array<{ mediaId: string; t: number }>, knownMedia?: ProjectDetail["project"]["media"]) {
-    const media = knownMedia ?? (await client.media(ctx.projectId)).media;
+  // Parallel edge checks can share a current inventory until the read completes.
+  type Inventory = ProjectDetail["project"]["media"];
+  let measuringMedia: Promise<Map<string, Inventory[number]>> | undefined;
+  const indexMedia = (assets: Inventory) => new Map(assets.map(asset => [asset.id, asset]));
+  async function measureAround(points: Array<{ mediaId: string; t: number }>, knownMedia?: Inventory) {
+    if (!points.length) return;
+    const media = knownMedia ? indexMedia(knownMedia) : await (measuringMedia ??= client.media(ctx.projectId)
+      .then(({ media }) => indexMedia(media)).finally(() => { measuringMedia = undefined; }));
     await Promise.all(points.map(({ mediaId, t }) => {
-      const asset = media.find(m => m.id === mediaId);
+      const asset = media.get(mediaId);
       // A source with no sound has no levels to read: the engine refuses it, and the join check leaves it out anyway.
       if (!asset?.duration || asset.hasAudio === false || asset.kind === "image" || (dialogueAudioStream(asset) ?? 0) !== 0) return;
       // A second either side, as far as the recording goes: a window can't reach before its start or past its end.
@@ -812,9 +889,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       : e.withoutAt !== undefined ? ` (clean at ${e.withoutAt.toFixed(2)} s without “${e.word}”)` : "") +
     (e.fragment ? `: ${Math.round(e.fragment.seconds * 1000)} ms of it would play at ${e.fragment.db} dBFS, and the recording is quiet at ${e.fragment.quietAt.toFixed(2)} s (${e.fragment.quietDb} dBFS)` : "") +
     (e.levels ? ` [dBFS in 20 ms steps: ${e.levels}]` : "");
-  const refusalNext = (disputed: Array<{ quietKeptWord?: unknown }>) => disputed.some(d => d.quietKeptWord)
+  const refusalNext = (disputed: Array<{ quietKeptWord?: unknown; takenWords?: unknown }>) => disputed.some(d => d.quietKeptWord)
     ? "Inspect the reported source interval, then resubmit adjusted cuts. To retain the short piece deliberately, include its timeline range as a keep."
-    : "Check the measured words at each disputed edge with dialogue_check_join. If a quote conflicts, compare the deliveries in dialogue_scan and resubmit the verified edge and words.";
+    : disputed.every(d => d.takenWords)
+      ? "Read each join as it would play, then resubmit the cut with its edge off the words it names, or with them in dropWords."
+      : "Check the measured words at each disputed edge with dialogue_check_join. If a quote conflicts, compare the deliveries in dialogue_scan and resubmit the verified edge and words.";
   const EDGES_IN_SOUND = "Nothing was saved. Move each edge to a clean second given (source seconds), or onto quiet dialogue_check_join measures, or remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence.";
   // Checking a hundred joins can request hundreds of speech windows. Share the available connections across joins.
   const keptSpeechReads = new Lanes(8);
@@ -829,7 +908,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         throw new NoCachedSpeech("Cached speech measurements are unavailable at this edge.");
       return result.segments.flatMap(s => s.words);
     }),
-    sound: async (mediaId, range) => (await gapSounds(mediaId, [range], 0))[0],
+    sound: async (mediaId, range, betweenWords) => (await gapSounds(mediaId, [range], betweenWords ? undefined : 0))[0],
   };
 
   /** Posts an event to this session's task. `error` is why one didn't arrive; a session without a task has nowhere to post. */
@@ -846,11 +925,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   type ToolOutcome = "ok" | "failed" | "refused" | "preparing" | "degraded";
-  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number) {
+  function logToolResult(tool: ScarletToolName, outcome: ToolOutcome, elapsedMs: number, evidenceMisses: number, result?: ToolResult) {
     if (!ctx.taskId || !startedAt || diagnosticSessionClosed) return;
     const path = `/projects/${apiPathId(ctx.projectId)}/tasks/${apiPathId(ctx.taskId)}/tool-diagnostic`;
     const signal = AbortSignal.timeout(2000);
-    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses }, { signal })
+    // How much went back to the model, as sizes: what fills a run's context is the results it reads.
+    const resultChars = result?.content.reduce((sum, item) => sum + (item.type === "text" ? item.text.length : 0), 0);
+    const resultMedia = result?.content.filter(item => item.type !== "text").length;
+    void client.request("POST", path, { tool, outcome, elapsedMs, evidenceMisses, ...(result && { resultChars }), ...(resultMedia && { resultMedia }) }, { signal })
       .catch((err: unknown) => {
         // Let outstanding reports finish when the tool session closes, but quiet failures during teardown.
         if (!diagnosticSessionClosed && !(err instanceof ScarletApiError && err.status === 404))
@@ -890,7 +972,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
    */
   async function ripplesOnFrames(ops: TimelineOp[], before: Timeline | null, onWholeFrames: FrameAdjustment[]): Promise<TimelineOp[]> {
     if (!ops.some(op => op.op === "rippleDelete")) return ops;
-    const fps = (await getProject()).project.settings.fps;
+    const fps = (await getHeader()).project.settings.fps;
     const base = before ? timelineDuration(before) : Infinity;
     // Each removal across every track brings the end of the edit earlier for the ones after it. Once any other op has
     // run, where the edit ends is not known here, and the base's end stands. It stands for a task's edit throughout:
@@ -917,6 +999,123 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return { ...op, ...aligned };
     });
   }
+  /** A recording's areas viewers may see and where each holds. A first ask reads the recording's edges, within one tool call where it can. */
+  const recordingAreas = (mediaId: string, waitSeconds = toolWait(caps, 20)) =>
+    client.get<RecordingAreas & { error?: string }>(`/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${waitSeconds}`);
+  /**
+   * Every save an agent makes goes through here: one that frames footage past the area viewers may see, or on part of a
+   * picture no area was given for, is refused with each place named. A pass framed 399 screen clips in one save and
+   * showed another app beside the demo for a third of their time (2026-11-16); asked for the window on a frame, the
+   * same model boxed it to a fifth of a percent.
+   */
+  async function insideShowAreas(before: Timeline | null, laid: Timeline) {
+    const { project } = await getProject();
+    const ids = new Set<string>();
+    showAreaFindings(before, laid, project.media, project.settings, id => { ids.add(id); return undefined; });
+    if (!ids.size) return;
+    const known = new Map<string, RecordingAreas>();
+    await Promise.all([...ids].map(async id => { const areas = await recordingAreas(id).catch(() => undefined); if (areas) known.set(id, areas); }));
+    let found = showAreaFindings(before, laid, project.media, project.settings, id => known.get(id));
+    // Footage with no area on record is looked at now, a frame for each stretch, by short runs beside this one. An
+    // area can end inside a stretch where the window moves, so what is still unset is asked about again, within the
+    // time one tool call has.
+    const deadline = Date.now() + toolWait(caps, 30) * 1000;
+    // A frame is asked about once per save: its answer doesn't change, and asking again cost a run each time (2026-11-18).
+    const looked = new Set<string>();
+    for (let round = 0; ctx.taskId && ctx.task?.kind !== "area_check" && found.noArea.length && round < 4 && Date.now() < deadline - 20_000; round++) {
+      const bySource = new Map<string, number[]>();
+      for (const n of found.noArea) {
+        if (looked.has(`${n.mediaId}@${n.look}`)) continue;
+        looked.add(`${n.mediaId}@${n.look}`);
+        bySource.set(n.mediaId, [...(bySource.get(n.mediaId) ?? []), n.look]);
+      }
+      if (!bySource.size) break;
+      const wait = Math.round((deadline - Date.now()) / 1000);
+      const answers = await Promise.all([...bySource].map(async ([id, seconds]) => {
+        const state = await client.post<RecordingAreas & { asked: number; answered: number }>(
+          `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(id)}/show-area/ask?wait=${wait}`, { seconds, taskId: ctx.taskId }).catch(() => undefined);
+        if (state) known.set(id, state);
+        return state?.answered ?? 0;
+      }));
+      if (!answers.some(Boolean)) break;
+      found = showAreaFindings(before, laid, project.media, project.settings, id => known.get(id));
+    }
+    const refusal = showAreaRefusal(found);
+    if (refusal) throw new Error(refusal);
+  }
+  /**
+   * What an edit's framing shows, stretch by stretch, with the passages read aloud there that it leaves out or covers.
+   * Text not read yet doesn't hold the save up: the report says how far it has got.
+   */
+  async function framedOn(before: Timeline | null, made: Timeline) {
+    const { project } = await getProject();
+    const framed = framingReport(before, made, project.media, project.settings);
+    if (!framed.length) return { framed, unread: [] as string[] };
+    const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
+    const besideReach = besideSources(made, framed);
+    const [found, moving, beside] = await Promise.all([
+      perception.readingsOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("the passages read aloud from the screen", error); return undefined; }),
+      perception.motionOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("where the picture changes", error); return undefined; }),
+      besideReach.length ? perception.besideOn(made, project, besideReach, { start: range.start - BESIDE_MAX, end: range.end + BESIDE_MAX }, 0)
+        .catch(error => { noteUnmeasured("what the screen shows beside the framed stretches", error); return undefined; }) : undefined,
+    ]);
+    const evidence = !!found?.readings.length || !!moving?.spans.length || !!beside;
+    return { framed: evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed,
+      unread: [...new Set([...found?.unread ?? [], ...moving?.unread ?? [], ...beside?.unread ?? []])] };
+  }
+  /** Recordings whose cuts weren't read through when this run last saved: brief pictures at their cuts weren't reported then. */
+  const cutsUnread = new Set<string>();
+  /**
+   * The pictures an edit leaves on screen briefly, with those that a cut in the recording itself brings about. A
+   * recording's cuts are read once and kept, so only the first save that shows a recording waits for them.
+   */
+  async function cutsRead(made: Timeline) {
+    const { project } = await getProject();
+    const read = await perception.cutsOn(made, project, { wait: CUTS_WAIT_SECONDS })
+      .catch(error => { noteUnmeasured("where the recordings cut", error); return undefined; });
+    const fresh = new Set([...cutsUnread].filter(id => read?.cuts.has(id) && !read.unreadIds.includes(id)));
+    for (const id of fresh) cutsUnread.delete(id);
+    for (const id of read?.unreadIds ?? []) cutsUnread.add(id);
+    return { read, fresh };
+  }
+  /** `early` is the read of the recordings' cuts taken before the save, when there was one. */
+  async function briefOn(before: Timeline | null, made: Timeline, early?: Awaited<ReturnType<typeof cutsRead>>) {
+    const { project } = await getProject();
+    const { read, fresh } = early?.read && !early.read.unreadIds.length ? early : await cutsRead(made);
+    const freshToo = new Set([...fresh, ...early?.fresh ?? []]);
+    return { brief: newBriefPictures(before, made, project.media, project.settings, read?.cuts, freshToo), unread: read?.unread ?? [] };
+  }
+  /** One frame of a source recording, or of `area` of it in percent, `width` pixels wide. */
+  async function sourceFrame(mediaId: string, t: number, width: number, area?: readonly number[], grid?: boolean) {
+    const res = await client.withResource("media", mediaId, async path => {
+      const url = client.url(`${path}/frame?t=${t}&w=${width}${area ? `&area=${area.join(",")}` : ""}${grid ? "&grid=1" : ""}`);
+      const headers: Record<string, string> = {};
+      if (client.token) headers.Authorization = `Bearer ${client.token}`;
+      const response = await fetchImpl(url, { headers });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+        throw new ScarletApiError(response.status, body?.error?.code ?? "frame_failed", body?.error?.message ?? response.statusText);
+      }
+      return response;
+    });
+    return { data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: res.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
+  }
+  /** Close pictures of what each inset an edit set shows of its recording, labelled. */
+  async function insetLooks(before: Timeline | null, made: Timeline): Promise<{ insets: InsetToLook[]; content: ToolResult["content"] }> {
+    const { project } = await getProject();
+    const insets = insetsToLook(before, made, project.media, project.settings);
+    const content: ToolResult["content"] = [];
+    const percent = (n: number) => Math.round(n * 1000) / 10;
+    const looks = await Promise.all(insets.flatMap((inset, i) => inset.at.map(t =>
+      sourceFrame(inset.mediaId, t, INSET_LOOK_WIDTH, inset.crop.map(percent)).then(frame => ({ i, t, frame }))
+        .catch(error => { noteUnmeasured("pictures of the inset", error); return undefined; }))));
+    for (const look of looks) {
+      if (!look) continue;
+      content.push({ type: "text", text: `insetLook[${look.i}] at ${look.t.toFixed(2)} s of ${insets[look.i]!.mediaId}, all the inset shows:` },
+        { type: "image", data: look.frame.data, mimeType: look.frame.mimeType });
+    }
+    return { insets, content };
+  }
   async function propose(body: ProposeChangeRequest, before: Timeline | null, onWholeFrames: FrameAdjustment[] = []): Promise<ToolResult> {
     if (ctx.author.type === "agent") {
       const edits = body.timelineEdits ?? [];
@@ -927,6 +1126,37 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         throw new Error("Give reason for the change so the editor can see why you made it.");
       }
     }
+    // A picture the edit leaves on screen for a flash between two others goes onto the cut beside it, reported as metCut.
+    let metCut: MetCut[] = [];
+    let metRecordingCut: MetRecordingCut[] = [];
+    let early: Awaited<ReturnType<typeof cutsRead>> | undefined;
+    if (ctx.author.type === "agent" && before && (body.timeline || body.ops)) {
+      const asked = body.timeline ?? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })();
+      if (asked) {
+        const had = new Set(before.tracks.flatMap(t => t.clips.map(c => c.id)));
+        const named = new Set((body.ops ?? []).flatMap(op => op.op === "addClip" && op.clip.id ? [op.clip.id] : []));
+        const { project } = await getProject();
+        const stable = (id: string) => !!body.timeline || had.has(id) || named.has(id);
+        const closed = flashesOntoCuts(before, asked, project.media, project.settings, stable);
+        if (closed.ops.length) {
+          body = body.timeline ? { ...body, timeline: applyOps(body.timeline, closed.ops) } : { ...body, ops: [...body.ops!, ...closed.ops] };
+          metCut = closed.met;
+        }
+        // An insert's edge that runs under a second past a cut in its recording goes onto that cut, reported as metRecordingCut.
+        const laid = closed.ops.length ? applyOps(asked, closed.ops) : asked;
+        early = await cutsRead(laid).catch(() => undefined);
+        if (early?.read?.cuts.size) {
+          const onCuts = edgesOntoRecordingCuts(before, laid, project.media, project.settings, early.read.cuts, stable, early.fresh);
+          if (onCuts.ops.length) {
+            body = body.timeline ? { ...body, timeline: applyOps(body.timeline, onCuts.ops) } : { ...body, ops: [...body.ops!, ...onCuts.ops] };
+            metRecordingCut = onCuts.met;
+          }
+        }
+      }
+    }
+    // The summary leaves the saved timeline out, so the edit is laid on its base here, once, for the checks before and after saving.
+    const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
+    if (ctx.author.type === "agent" && made) await insideShowAreas(before, made);
     const req: ProposeChangeRequest = {
       ...body,
       fromVersion: before && before.version !== "draft" ? before.version : undefined,
@@ -939,10 +1169,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     if (change.state === "approved" || notApplied) lastTimeline = undefined;
     const action = change.state === "approved" ? "Applied" : "Proposed";
     const lines = diffDescription ?? (before && timeline ? describeDiff(diffTimelines(before, timeline), undefined, clipById) : []);
-    // The summary leaves the saved timeline out, so the edit is laid on its base here, as it was checked before saving.
-    const made = body.timeline ?? (body.ops && before ? (() => { try { return applyOps(before, body.ops!); } catch { return undefined; } })() : undefined);
     const unframed = made && !notApplied ? unframedBeside(before, made) : [];
     const bare = made && !notApplied ? await getProject().then(({ project }) => backgroundShows(before, made, project.media, project.settings)).catch(() => []) : [];
+    const briefNow = made && !notApplied ? await briefOn(before, made, early).catch(error => { noteUnmeasured("the pictures this edit shows briefly", error); return undefined; }) : undefined;
+    const brief = briefNow?.brief ?? [];
+    const framedNow = made && !notApplied ? await framedOn(before, made).catch(error => { noteUnmeasured("the framing this edit made", error); return undefined; }) : undefined;
+    const insetNow = caps.images && made && !notApplied ? await insetLooks(before, made).catch(error => { noteUnmeasured("pictures of the inset", error); return undefined; }) : undefined;
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -962,8 +1194,16 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(notApplied && { notApplied: { ...notApplied, next: NOT_APPLIED_NEXT } }),
       ...(unframed.length && { unframedBeside: unframed, next: UNFRAMED_NEXT }),
       ...(bare.length && { backgroundShows: bare, backgroundNext: BACKGROUND_NEXT }),
+      ...(brief.length && { briefPictures: brief.slice(0, 20), briefNext: BRIEF_PICTURES_NEXT }),
+      ...(briefNow?.unread.length && { recordingCutsUnread: briefNow.unread }),
+      ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
+      ...(metRecordingCut.length && { metRecordingCut: metRecordingCut.slice(0, 20), metRecordingCutNext: MET_RECORDING_CUT_NEXT }),
+      ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
+      ...(insetNow?.content.length && { insetLook: insetNow.insets.map(i => ({ mediaId: i.mediaId, trackId: i.trackId, clips: i.clips,
+        crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
     };
-    return json(result);
+    const saved = json(result);
+    return insetNow?.content.length ? { ...saved, content: [...saved.content, ...insetNow.content] } : saved;
   }
 
   // The editor's Keeps of edits this request flagged, which the run hears of on its next tool call, a few seconds apart at most.
@@ -1001,6 +1241,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     // Every request is read for a standing rule by a learning check, which has that tool and the skills. The run that
     // edits doesn't offer rules as well, so the editor never gets the same rule twice in two wordings.
     if (ctx.task?.kind === "learning_check" ? !LEARNING_CHECK_TOOLS.has(name) : name === "learning_suggest") return;
+    if (ctx.task?.kind === "area_check" && !AREA_CHECK_TOOLS.has(name)) return;
     server.registerTool(name, { description, inputSchema: shape, annotations: toolAnnotations(name) }, (async (args: z.infer<z.ZodObject<Shape>>) => {
       const calls = running.get(name) ?? new Set<Promise<unknown>>();
       running.set(name, calls);
@@ -1014,7 +1255,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         let outcome: ToolOutcome;
         let result: ToolResult;
         try {
-          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_framing", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
+          if (["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_framing", "timeline_picture_sync", "captions_generate", "asset_add", "dialogue_check_repeats"].includes(name) && await localPausesMode())
             throw new Error("This request only tightens local pauses. Save classified pauses with dialogue_apply_cuts.");
           if (PASS_WIDE_TOOLS.has(name)) {
             const selected = await useStagedCut();
@@ -1036,7 +1277,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         // Preserve the project's existing refusal receipt separately from the operational log.
         const refusal = toolRefusal(result);
         if (refusal && !result.isError) outcome = "refused";
-        logToolResult(name, outcome, Math.round(performance.now() - began), misses);
+        logToolResult(name, outcome, Math.round(performance.now() - began), misses, result);
         if (refusal) await postEvent({ type: "log", text: refusal.text, data: { kind: "tool_refused", tool: `scarlet.${name}`, ...refusal.data } });
         return result;
       } finally {
@@ -1062,7 +1303,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     "Get the project: settings (fps, width x height, aspect), every media asset (id, name, kind, duration s, fps, size, hasAudio, hasTranscript, provenance of generated assets, and for a graphic Scarlet drew the page it was drawn from, relative to the project's folder), the head version, the edit's duration, and a per-track summary. For an assigned task, editContext contains the editor’s recorded selection, change or cut index, and note IDs when supplied. Media ids are what transcript, waveform and clip tools take as mediaId. For clip-level detail use timeline_get.",
     {},
     async () => {
-      const detail: ProjectDetail = await getProject();
+      const detail = await client.workspace(ctx.projectId);
       const media = detail.project.media.map((m) => ({
         id: m.id, name: m.name, kind: m.kind, duration: m.duration, fps: m.fps, width: m.width, height: m.height,
         hasAudio: m.hasAudio, hasTranscript: Boolean(m.transcriptId), ...(m.provenance && { provenance: m.provenance }), ...(m.graphic && { graphic: m.graphic }),
@@ -1127,7 +1368,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   const reviewPassages = new Set<string>();
   async function pinPictures(requests: PictureRequest[]) {
     if (!requests.some(r => !r.mediaId && (!r.version || r.version === "head"))) return requests;
-    const { project } = await getProject();
+    const { project } = await getHeader();
     if (!project.head) throw new Error("The timeline has no footage yet.");
     return requests.map(r => !r.mediaId && (!r.version || r.version === "head") ? { ...r, version: project.head! } : r);
   }
@@ -1136,7 +1377,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const result = await inspect(() => client.contactSheet(ctx.projectId, request, signal), ready => { windows = ready; }, signal);
     return { request, result, windows };
   }
-  async function deliverPictures({ request, result, windows }: PreparedPictures) {
+  async function deliverPictures({ result, windows }: PreparedPictures) {
     for (const w of windows) {
       if (!w.jpeg || !w.timestamps.length) continue;
       if (w.clock === "timeline" && caps.images) readPassage(w.id, w.range);
@@ -1158,7 +1399,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return deliverPictures(await preparePictures(request!));
     });
 
-  const batches = new PictureBatches(preparePictures);
+  // One call waits for the whole batch, a margin under the harness's tool deadline (toolWaitSeconds): 25 s for a
+  // client Scarlet didn't launch, as before.
+  const batches = new PictureBatches(preparePictures, { waitMs: toolWait(caps, 20) * 1000 });
   // The only close handler: a second assignment would replace this one.
   server.server.onclose = () => { diagnosticSessionClosed = true; batches.close(); reviews.close(); };
   tool("frame_contact_sheet_batch",
@@ -1240,6 +1483,74 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     { ...cutReviewShape, ...audioOption("Attach a short WAV of each side") },
     args => inspect(() => client.reviewCut(ctx.projectId, { ...args, includeAudio: hearing && args.includeAudio === true })));
 
+  // Only the run that looks at one frame gives an area. A pass given the same power answered for a whole recording at
+  // once, from scripts and small frames: 230 areas in ten calls, one inside the editor's box of eleven (2026-11-16).
+  const givesAreas = !ctx.taskId || ctx.task?.kind === "area_check";
+  tool(
+    "screen_area",
+    "What of a recording's picture viewers may see. A screen recording usually holds more than the window being presented: the desktop, a taskbar, a recording app, a call beside it. An area is a box given on the frame at a SOURCE second, as [left, top, right, bottom] in percent of the picture: everything outside it stays out of the video. Scarlet finds the straight edges under the box on that frame and holds the area for every stretch of the recording where those edges are still in place, so one area serves a window for as long as it stays where it is, and comes back when the window does. The result lists each area with the source seconds it holds for (`holds`) and any side with no line under it on its frame (`noLine`: that side is not needed for the area to hold), and `unset`: the stretches no area holds for, with the seconds of each the current edit plays (`onPicture`) and a second to look at (`look`)." +
+      (givesAreas
+        ? " `set` gives an area for the frame at `at`; one given again at the same second replaces the one there, and `remove` takes areas out by their `at`. A side given within a percent of a line in the picture is put on that line. The whole picture, [0, 0, 100, 100], is an area like any other, for a recording where all of it may show."
+        : " Areas come from a look at one full-size frame at a time, which Scarlet starts itself: where an edit frames part of a picture that has no area yet, it has that frame looked at before it checks the save, so a save can take longer the first time a recording is framed. `ask` has the frames at those source seconds looked at now, for a stretch you are about to frame or an area that is wrong for its footage (a frame is given to the area looked at nearest to it in time); it waits for the answers. A recording whose area is the whole picture, as a camera's is, needs no ask: all of it may show.") +
+      (caps.images && givesAreas ? " With the result come pictures of the first few unset stretches the edit plays, at `look`, with percent lines drawn over them. `pictures` sets how many (default 4, 0 for none)." : "") +
+      " Every save is checked against these: an edit that frames footage past its area is not saved, and its refusal names each place. timeline_framing keeps its frames inside the area on record when no `within` is given. A recording is read once for its edges; until that is done the result says so and `holds` are empty: call again.",
+    {
+      mediaId: z.string().describe("Media asset id"),
+      ...(givesAreas ? {
+        set: z.array(z.object({ at: z.number().min(0).describe("Source second of the frame the area was read on"), area: percentBox })).max(60).optional(),
+        remove: z.array(z.number().min(0)).max(60).optional().describe("The `at` of each area to take out"),
+        ...(caps.images && { pictures: z.number().int().min(0).max(6).optional() }),
+      } : {
+        ask: z.array(z.number().min(0)).max(12).optional().describe("Source seconds of frames to have looked at"),
+      }),
+    },
+    async ({ mediaId, ...rest }) => {
+      const { set, remove, ask } = rest as { set?: Array<{ at: number; area: number[] }>; remove?: number[]; ask?: number[] };
+      const pictures = caps.images && givesAreas ? (rest as { pictures?: number }).pictures ?? 4 : 0;
+      const { project } = await getProject();
+      const asset = project.media.find(m => m.id === mediaId);
+      if (!asset) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
+      if (asset.kind !== "video") throw new Error(`Media ${mediaId} is ${asset.kind}: only a video has a picture to show.`);
+      const bad = set?.findIndex(a => !(a.area[2]! - a.area[0]! >= 5 && a.area[3]! - a.area[1]! >= 5));
+      if (bad !== undefined && bad >= 0) throw new Error(`set[${bad}].area is [left, top, right, bottom] in percent, at least 5 percent each way.`);
+      const wait = toolWait(caps, 20);
+      const path = `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(mediaId)}/show-area?wait=${wait}`;
+      const state = set?.length || remove?.length
+        ? await client.post<RecordingAreas & { error?: string }>(path, { set: set?.map(a => ({ at: a.at, area: a.area.map(n => n / 100) })), remove })
+        : ask?.length && ctx.taskId
+        ? await client.post<RecordingAreas & { error?: string; asked: number; waiting: number }>(path.replace("/show-area?", "/show-area/ask?"), { seconds: ask, taskId: ctx.taskId, again: true })
+        : await client.get<RecordingAreas & { error?: string }>(path);
+      const stillLooking = (state as { waiting?: number }).waiting;
+      const r1 = (n: number) => Math.round(n * 10) / 10;
+      const areas = state.areas.map(a => ({ at: a.at, area: a.area.map(n => Math.round(n * 1000) / 10), holds: a.holds.map(([from, to]) => [r1(from), r1(to)]),
+        heldSeconds: Math.round(a.holds.reduce((n, [from, to]) => n + to - from, 0)), ...(a.noLine.length && { noLine: a.noLine }) }));
+      if (!state.done) {
+        return json({ mediaId, reading: state.error ? `The recording's edges could not be read: ${state.error}` : "The recording's edges are still being read: call again for where each area holds and what is unset.", areas });
+      }
+      // What the edit as it stands plays of each unset stretch: those are the ones a save will ask about.
+      const timeline = await getTimeline(lastTimeline?.version).catch(() => null);
+      const plays = (timeline?.tracks ?? []).filter(t => t.kind === "video" && !t.hidden).flatMap(t => t.clips)
+        .filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false && c.mediaId === mediaId);
+      const unset = state.unset.map(([from, to]) => {
+        const parts = plays.map(c => [Math.max(from, c.sourceIn), Math.min(to, c.sourceOut), c.speed ?? 1] as const).filter(([a, b]) => b > a);
+        const onPicture = parts.reduce((n, [a, b, speed]) => n + (b - a) / speed, 0);
+        const first = parts.sort((x, y) => (y[1] - y[0]) - (x[1] - x[0]))[0];
+        return { from: r1(from), to: r1(to), onPicture: r1(onPicture), look: r1(first ? (first[0] + first[1]) / 2 : (from + to) / 2) };
+      });
+      const shown = [...unset].sort((a, b) => b.onPicture - a.onPicture || (b.to - b.from) - (a.to - a.from)).slice(0, pictures);
+      const images = await Promise.all(shown.map(async u => {
+        try {
+          return { look: u.look, ...await sourceFrame(mediaId, u.look, 1280, undefined, true) };
+        } catch { return undefined; }
+      }));
+      const seen = images.filter((i): i is NonNullable<typeof i> => !!i);
+      const body = { mediaId, ...(stillLooking && { stillLooking: `${stillLooking} frame${stillLooking === 1 ? " is" : "s are"} still being looked at: call again for their areas` }), areas, unset: unset.slice(0, 60), ...(unset.length > 60 && { moreUnset: unset.length - 60 }),
+        ...(seen.length && { pictures: seen.map(i => `source ${i.look} s`) }) };
+      if (!seen.length) return json(body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(body) }, ...seen.map(i => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))] };
+    },
+  );
+
   tool(
     "media_frame",
     "Look at a single video frame. `t` is seconds into the SOURCE media (not the timeline; use timeline_at to map a timeline time to a source time). `width` is the picture's width in pixels: 640 by default, which shows what is in the frame; a screen recording's panes, controls and text take 1280 to 1920 to make out. `area` looks closer at one part of the picture, drawn `width` wide. `grid` draws lines at round percents of the source picture, each labelled at the top and left edges, so an area can be named as [left, top, right, bottom] in percent: the units of screen_text's boxes and of timeline_framing.",
@@ -1254,23 +1565,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     async ({ mediaId, t, width, area, grid }) => {
       const w = width ?? 640;
       if (area && !(area[2]! - area[0]! >= 1 && area[3]! - area[1]! >= 1)) throw new Error("area is [left, top, right, bottom] in percent, at least 1 percent each way.");
-      const res = await client.withResource("media", mediaId, async path => {
-        const url = client.url(`${path}/frame?t=${t}&w=${w}${area ? `&area=${area.join(",")}` : ""}${grid ? "&grid=1" : ""}`);
-        const headers: Record<string, string> = {};
-        if (client.token) headers.Authorization = `Bearer ${client.token}`;
-        const response = await fetchImpl(url, { headers });
-        if (!response.ok) {
-          const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
-          throw new ScarletApiError(response.status, body?.error?.code ?? "frame_failed", body?.error?.message ?? response.statusText);
-        }
-        return response;
-      });
-      const buf = Buffer.from(await res.arrayBuffer());
-      const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+      const { data, mimeType } = await sourceFrame(mediaId, t, w, area, grid);
       return {
         content: [
           { type: "text", text: `Frame of ${mediaId} at ${t.toFixed(3)} s (${w}px wide${area ? `, ${area[0]}–${area[2]}% across and ${area[1]}–${area[3]}% down` : ""}${grid ? ", lines in percent of the whole picture" : ""}).` },
-          { type: "image", data: buf.toString("base64"), mimeType: mime },
+          { type: "image", data, mimeType },
         ],
       };
     },
@@ -1403,6 +1702,48 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     },
   );
 
+  const phraseIndexes = new WeakMap<TranscriptWord[], ReturnType<typeof indexTranscriptWords>>();
+  // An engine that answers a search without the order of its words never will: later searches read the list at once.
+  let searchHasWordOrder = true;
+  async function exactMatches(mediaId: string, query: string, contextWords: number) {
+    let words: TranscriptWord[] | null;
+    const hasRead = () => wordLists.has(mediaId) || aligningWords.has(mediaId) || readingWords.has(JSON.stringify([mediaId, true]));
+    if (ctx.task?.context.recordTranscriptDigests || hasRead() || !searchHasWordOrder) {
+      // A cached read tracks alignment; evaluation runs also record the complete timed list they used.
+      words = await transcriptWords(mediaId);
+    } else {
+      const known = wordsShown.get(mediaId)?.at(-1);
+      const result = await readPrepared(mediaId, "transcript", () => client.searchTranscript(mediaId, query, contextWords, known?.searchId ?? ""))
+        .catch(err => {
+          if (err instanceof ScarletApiError && err.code === "no_audio") return null;
+          throw err;
+        });
+      if (!result) return null;
+      if ("matches" in result) {
+        if (!result.segmentCount) return null;
+        const found = result.wordSnapshot;
+        if (found) {
+          const snapshot = found.texts ? snapshotOf(found.texts, found.id) : known;
+          if (snapshot?.searchId === found.id && snapshot.texts.length === result.wordCount) {
+            showSnapshot(mediaId, snapshot);
+            return result;
+          }
+        }
+        // Older search results lack the order of the words they refer to. Search the full list we can remember.
+        if (!found) searchHasWordOrder = false;
+        words = await transcriptWords(mediaId);
+      } else {
+        // Older engines and very long queries return the original transcript.
+        words = await (hasRead() ? transcriptWords(mediaId) : cacheTranscriptWords(mediaId, result));
+      }
+    }
+    if (!words) return null;
+    showWords(mediaId, words);
+    let find = phraseIndexes.get(words);
+    if (!find) phraseIndexes.set(words, find = indexTranscriptWords(words));
+    return { wordCount: words.length, matches: find(query, contextWords) };
+  }
+
   tool(
     "transcript_search",
     "Search a media asset's transcript. exact: case- and punctuation-insensitive phrase match. fuzzy: token similarity (0..1) that tolerates paraphrase and ASR spelling, for finding every take of a line. Returns each match with source seconds, its first word index and surrounding words.",
@@ -1414,11 +1755,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       contextWords: z.number().int().min(0).max(30).default(6),
     },
     async ({ mediaId, query, match, minScore, contextWords }) => {
-      const words = await transcriptWords(mediaId);
-      if (!words) return text(`No transcribed speech to search for media ${mediaId}.`);
-      showWords(mediaId, words);
-      const matches = match === "fuzzy" ? fuzzySearchTranscript(words, query, { contextWords, minScore }) : searchTranscript(words, query, contextWords);
-      if (!matches.length) return text(`No ${match} matches for "${query}" in ${mediaId} (${words.length} words searched).`);
+      const words = match === "fuzzy" ? await transcriptWords(mediaId) : null;
+      if (words) showWords(mediaId, words);
+      const result = match === "exact" ? await exactMatches(mediaId, query, contextWords) :
+        words && { wordCount: words.length, matches: fuzzySearchTranscript(words, query, { contextWords, minScore }) };
+      if (!result) return text(`No transcribed speech to search for media ${mediaId}.`);
+      const { matches, wordCount } = result;
+      if (!matches.length) return text(`No ${match} matches for "${query}" in ${mediaId} (${wordCount} words searched).`);
       const lines = matches.map((m) => `#${m.wordIndex} [${m.start.toFixed(2)}-${m.end.toFixed(2)}]${"score" in m ? ` ${m.score}` : ""}${m.speaker ? ` ${m.speaker}:` : ""} ${m.context}`);
       return text(`${matches.length} ${match} match(es) for "${query}" in ${mediaId}:\n${lines.join("\n")}`);
     },
@@ -1426,6 +1769,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
 
   // -- waveform -------------------------------------------------------------
 
+  /** The most buckets one waveform read returns. */
+  const WAVEFORM_MAX_POINTS = 4000;
   /** One recording's levels over a range. The result is drawn at the number of buckets asked of it. */
   async function readWaveform(mediaId: string, from: number, asked: number, opts: { points: number; thresholdDb: number; minSilence: number; suggestCuts: boolean }) {
     const { points, thresholdDb, minSilence, suggestCuts } = opts;
@@ -1467,20 +1812,24 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       mediaIds: RecordingList.optional().describe("Several recordings to read over the same range in one call, instead of mediaId"),
       from: z.number().min(0).describe("Range start, source seconds"),
       to: z.number().min(0).describe("Range end, source seconds"),
-      points: z.number().int().min(10).max(4000).default(400).describe("Number of buckets; 400 over 60 s = 0.15 s resolution"),
+      points: z.number().int().min(10).default(400).describe(`Number of buckets, up to ${WAVEFORM_MAX_POINTS}: a larger request returns ${WAVEFORM_MAX_POINTS} and says so. 400 over 60 s = 0.15 s resolution; the recording is measured every 0.02 s, so more than 50 a second adds nothing`),
       thresholdDb: z.number().max(0).default(-26).describe("Peak level in dBFS below which a bucket counts as silent"),
       suggestCuts: z.boolean().default(false),
       minSilence: z.number().min(0).default(0.25).describe("Minimum silence duration to report, seconds"),
     },
-    async ({ mediaId, mediaIds, from, to, points, ...opts }) => {
+    async ({ mediaId, mediaIds, from, to, points: askedPoints, ...opts }) => {
       const several = recordingsAsked(mediaId, mediaIds);
       if (to <= from) throw new Error("`to` must be greater than `from`.");
-      if (!several) return json((await readWaveform(mediaId!, from, to, { points, ...opts }))(points));
+      // A request past the limit is answered at the limit, and told so. Refused, thirty parallel reads at 6000 points
+      // all failed and were all sent again (2026-11-16).
+      const points = Math.min(askedPoints, WAVEFORM_MAX_POINTS);
+      const capped = askedPoints > points ? { pointsCapped: { asked: askedPoints, returned: points } } : {};
+      if (!several) return json({ ...capped, ...(await readWaveform(mediaId!, from, to, { points, ...opts }))(points) });
       const reads = await eachRecording(several, id => readWaveform(id, from, to, { points, ...opts }));
       const budget = caps.resultChars ?? DEFAULT_RESULT_CHARS;
       // The buckets are what grows with a list: fewer of them on each recording until the whole list fits.
       for (let buckets = points; ; ) {
-        const body = JSON.stringify({ reads: reads.map(r => "read" in r ? r.read(buckets) : r) });
+        const body = JSON.stringify({ ...capped, reads: reads.map(r => "read" in r ? r.read(buckets) : r) });
         if (body.length <= budget || buckets <= 10) return text(body);
         buckets = Math.max(10, Math.floor(buckets * budget / body.length * .9));
       }
@@ -1496,15 +1845,15 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         const media = project.media.find(m => m.id === id);
         if (!media) throw new Error(`Media ${id} is not in this project. Use project_get for media ids.`);
         const count = Math.floor((media.duration ?? 0) * syncRate);
-        const values: number[] = [];
-        if (media.hasAudio === false || !count) return values;
+        if (media.hasAudio === false || !(count > 0)) return new Float64Array();
+        const values = new Float64Array(count);
         for (let start = 0; start < count; start += 10000) {
           const end = Math.min(start + 10000, count);
-          const wave = await readPrepared(id, "waveform", () => client.waveform(id, start / syncRate, end / syncRate, end - start, true));
+          const wave = await readPrepared(id, "waveform", () => client.waveformPeaks(id, start / syncRate, end / syncRate, end - start));
           if (wave.peaks.length !== end - start) {
             throw new Error(`The waveform of ${id} covered ${wave.peaks.length} of ${end - start} samples from ${(start / syncRate).toFixed(1)} s. Retry; a truncated source needs a sync point from the editor.`);
           }
-          values.push(...wave.peaks);
+          values.set(wave.peaks, start);
         }
         return values;
       }
@@ -1659,9 +2008,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       : await getTranscript(mediaId, { from, to, granularity: "word" }, false);
     const observed = firstCutEvidence(transcript, wf);
     // Use measured words only. The saved transcript's synthesized search timings can
-    // differ from this scan. Keep the preceding page's non-overlapping tail on resume.
+    // differ from this scan. Keep the preceding page's non-overlapping tail on resume. A word goes with the side its
+    // middle is on, as a page keeps its words, so one said across the seam is in one of them.
     const timedWords = (segments: DialogueDetections["segments"], start: number, end: number) =>
-      segments.flatMap(s => s.words.filter(w => w.start >= start && w.end <= end && w.end > w.start)
+      segments.flatMap(s => s.words.filter(w => w.end > w.start && (w.start + w.end) / 2 >= start && (w.start + w.end) / 2 < end)
         .map(w => w.speaker || !s.speaker ? w : { ...w, speaker: s.speaker })).sort((a, b) => a.start - b.start);
     const scopeStart = scanScopes.get(JSON.stringify([mediaId, end])) ?? from;
     const previous = evidence.scans.find(s => s.mediaId === mediaId && s.start >= scopeStart && Math.abs(s.start + 58 - from) < 1e-6);
@@ -1842,8 +2192,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   };
   const PauseRef = {
     afterWord: z.number().int().nonnegative().optional().describe("Pause reference, with mediaId: the transcript_get index of the word the pause follows. Scarlet trims the pause between it and the next word, both edges in the measured quiet."),
-    leave: z.number().finite().min(0.05).max(10).optional().describe(`Seconds of pause that should still play, word to word, as the editor hears it. Required with afterWord: how long a pause plays is yours to judge, by the delivery around it and the pace the skill asks for. Optional with fromWord/toWord: the pause the join plays, which is ${PAUSE_BEAT} s when omitted.`),
+    leave: z.number().finite().min(0.05).max(10).optional().describe(`Seconds of pause that should still play, word to word, as the editor hears it. Required with afterWord: how long a pause plays is yours to judge, by the delivery around it and the pace the skill asks for. Optional with fromWord/toWord: the pause the join plays, which is pace's after and before together when omitted (${PAUSE_BEAT} s by default). Optional with start/end: each edge that sits in measured quiet moves within that quiet so the join plays this pause, from the sound before it to the sound after, as on a word reference; an edge on sound is placed as without it. Leave it off where the quiet beside an edge is something to watch, such as a result appearing.`),
+    voiceIn: z.number().finite().min(LEAST_VOICE_IN).max(2).optional().describe(`With a word or pause reference, or start/end: seconds of quiet between the cut and the next word, as the editor hears it, which is how soon the voice comes in once the picture cuts. pace's before when omitted (${AIR_BEFORE_SPEECH} s by default), and 0 puts the cut on the word's first sound, kept whole. A voice takes about 0.04 s more to reach speaking level, so 0.03 plays as about two frames from the cut to the voice. The rest of the pause plays before the cut. Yours to judge at each cut, by the delivery, what the line begins and the pace the skill and the editor ask for.`),
   };
+  const paceInput = z.object({
+    after: z.number().finite().min(0.01).max(2).describe("Seconds of room tone after the last kept word, as the editor hears it"),
+    before: z.number().finite().min(0.01).max(2).describe("Seconds of room tone before speech resumes, as the editor hears it"),
+  }).optional().describe(`The room tone a join leaves either side when Scarlet places its edges in the quiet: the pause a word cut plays when it gives no leave, the quiet a leave keeps between the cut and the next word (the rest of it plays before the cut), and where an edge moved off sound settles. A pace for every join of this call, from the skill and the editor. Omitted: ${AIR_AFTER_SPEECH} s after and ${AIR_BEFORE_SPEECH} s before.`);
+  const unsureJoinsInput = z.enum(["ask", "cut"]).optional().describe("A cut you decided whose join Scarlet can't place cleanly: no measured quiet at an edge, an edge that has to move more than a few frames, both edges inside running speech, or a production aside with no silence at its edges. ask (the default) stages it for the editor with what Scarlet measured; cut applies it where Scarlet placed it and reports the evidence to you. Your skill says which.");
   let checkedVersion: string | undefined;
   const checkedRepeats = new Map<string, RepeatEvidence>();
   const syncChecks = new Map<string, Promise<{ pairs: Array<PairSync & { outOfLineCount?: number }>; summary?: string } | undefined>>();
@@ -1876,9 +2232,13 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }
     return job;
   }
-  async function checkRepeats(version: string, keep?: Array<{ id: string; reason: string }>, offset?: number) {
+  // The silence length the model last asked the check for: the checks Scarlet runs after a save count by it too.
+  let silencesAsked: number | undefined;
+  async function checkRepeats(version: string, keep?: Array<{ id: string; reason: string }>, offset?: number, asked?: number) {
+    if (asked !== undefined) silencesAsked = asked;
+    const silencesFrom = silencesAsked;
     if (!ctx.taskId) throw new Error("Check repeated dialogue from an editing task.");
-    const found = await client.checkDialogueRepeats(ctx.projectId, ctx.taskId, { version, keep, offset, startedAt: ctx.task?.startedAt });
+    const found = await client.checkDialogueRepeats(ctx.projectId, ctx.taskId, { version, keep, offset, silencesFrom, startedAt: ctx.task?.startedAt });
     const sync = offset ? undefined : await checkSync(found.version);
     const result = { ...found, ...(sync && { sync }) };
     if (checkedVersion !== result.version) checkedRepeats.clear();
@@ -1891,29 +2251,30 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }) };
   }
   tool("dialogue_check_repeats",
-    "Check what the audible dialogue plays across the current timeline, including kept takes and joins. Give its version. A check that keeps nothing reads the edit as it is now, and when that is not the version you gave, `readInsteadOf` names yours: use the returned `version` for removeRepeat. A check that keeps repeats needs the version they were heard on. The independent speech reading returns repeated phrases, both occurrences in timeline seconds, and their surrounding words. Use dialogue_apply_cuts with removeRepeat to remove either measured occurrence listed under removable. The save checks playback again. Keep an intentional repeat by passing its measured id and a short editorial reason. Kept decisions belong to this pass. offset pages through the outstanding pairs, 25 at a time. A pair marked \`restart\` is a phrase the transcript plays again after other words, within ${RESTART_WITHIN_SECONDS} s: \`first\` is the whole first attempt, the phrase and what followed it (\`between\`), up to where the phrase starts again, so removing \`first\` takes out the abandoned attempt and keeps the one that replaced it. A restart, a retake left beside its replacement and a deliberate parallel all read this way: which it is takes the sentence, and that call is yours. \`silences\` lists each stretch of ${SILENCE_LEFT_SECONDS} s or more the edit still plays without a word, in timeline seconds, with the words either side and where it starts in the recording. Cut or shorten one as any pause, or keep it by its id with what the viewer sees or hears through it. Restarts and silences count in \`remaining\` with the repeats. The same reading hears each played join, letter by letter from the sound rather than the transcript: `joins` lists one whose edge cuts through a kept word (issue clipped: heard is what plays, expected the transcript's word) or plays a sound outside the kept words (issue fragment: a leftover of a removed take, a sigh, a breath, with keptWord, the first or last kept word, which plays whole, and keptWordAt where it starts or ends), with the side (out = before the join, in = after) and where it starts in the recording. Move that edge before you finish: the editor hears it. A clipped word needs the edge moved out to take it in whole; a fragment needs the edge moved past it, toward keptWordAt. `unheardJoins` counts, per recording, the joins with a side in a language this reading can't hear letter by letter, between from and to in timeline seconds, so it checked nothing there: measure them with timeline_join_audit from/to. \`sync\` checks recordings of the same event that play together (a camera over a screen capture, a separate mic): \`outOfLine\` lists stretches in timeline seconds placed at another offset than the rest, with differsBy in seconds, and \`heard\` compares their sound at a few spots spread through the edit (late = seconds the secondary sounds after the reference; a frame or more is visible on lips and clicks). A stretch out of line on purpose, such as a cutaway to another moment of the screen, stays; put any other back in line before you finish. When a stretch stays out of line or the sound is a frame or more off, tell the editor in your closing reply, with \`summary\` and why.",
-    { version: z.string(), keep: z.array(z.object({ id: z.string(), reason: z.string().trim().min(1).max(300) })).max(100).optional(), offset: z.number().int().nonnegative().optional() },
-    async ({ version, keep, offset }) => json(await checkRepeats(version, keep, offset)));
+    "Check what the audible dialogue plays across the current timeline, including kept takes and joins. Give its version. A check that keeps nothing reads the edit as it is now, and when that is not the version you gave, `readInsteadOf` names yours: use the returned `version` for removeRepeat. A check that keeps repeats needs the version they were heard on. The independent speech reading returns repeated phrases, both occurrences in timeline seconds, and their surrounding words. Use dialogue_apply_cuts with removeRepeat to remove either measured occurrence listed under removable. The save checks playback again. Keep an intentional repeat by passing its measured id and a short editorial reason: it plays on, and the editor is not shown it. To leave one to the editor, stage the occurrence with removeRepeat and decision review, which settles it here. Kept decisions belong to this pass. offset pages through the outstanding pairs and the joins in \`fragments\`, 25 at a time, and nextOffset is set while either has more. A pair marked \`restart\` is a phrase the transcript plays again after other words, within ${RESTART_WITHIN_SECONDS} s: \`first\` is the whole first attempt, the phrase and what followed it (\`between\`), up to where the phrase starts again, so removing \`first\` takes out the abandoned attempt and keeps the one that replaced it. A restart, a retake left beside its replacement and a deliberate parallel all read this way: which it is takes the sentence, and that call is yours. \`silences\` lists each stretch of silencesFrom seconds or more (${SILENCE_LEFT_SECONDS} s when omitted; how long a silence may play is the skill's pace) the edit still plays without a word, in timeline seconds, with the words either side and where it starts in the recording. Cut or shorten one as any pause, or keep it by its id with what the viewer sees or hears through it. \`fragments\` lists each join that took words out of a sentence and that dialogue_apply_cuts did not place: one made by timeline_propose, as a ripple or a saved timeline, or by timeline_first_cut. \`before\` and \`after\` are the words the edit plays either side of it at \`at\` (timeline seconds), \`removedStart\` and \`removedEnd\` the first and last of the \`removed\` words it took out between \`out\` and \`in\` in the recording, and \`split\` the side whose sentence the transcript says was divided (out = the words before began one, in = the words after finish one). Read each as the viewer hears it. A join that reads as a whole thought is kept by its id, with the sentence as it now reads. One that leaves a stray word, a sentence without its end, or a clause without the words it depends on is repaired: remove the leftover words (mediaId with fromWord/toWord, counted from \`lastWord\` or \`firstWord\`, the transcript indices of the last word played before the join and the first after it), or put back the words the sentence needs. Restarts, silences and these joins count in \`remaining\` with the repeats. The same reading hears each played join, letter by letter from the sound rather than the transcript: `joins` lists one whose edge cuts through a kept word (issue clipped: heard is what plays, expected the transcript's word) or plays a sound outside the kept words (issue fragment: a leftover of a removed take, a sigh, a breath, with keptWord, the first or last kept word, which plays whole, and keptWordAt where it starts or ends), with the side (out = before the join, in = after) and where it starts in the recording. A clipped word needs the edge moved out to take it in whole before you finish: the editor hears it. A fragment is moved past, toward keptWordAt, or kept, as the skill says of breaths and sounds at a join; a leftover of a removed take always goes. `unheardJoins` counts, per recording, the joins with a side in a language this reading can't hear letter by letter, between from and to in timeline seconds, so it checked nothing there: measure them with timeline_join_audit from/to. \`sync\` checks recordings of the same event that play together (a camera over a screen capture, a separate mic): \`outOfLine\` lists stretches in timeline seconds placed at another offset than the rest, with differsBy in seconds, and \`heard\` compares their sound at a few spots spread through the edit (late = seconds the secondary sounds after the reference; a frame or more is visible on lips and clicks). A stretch out of line on purpose, such as a cutaway to another moment of the screen, stays; put any other back in line before you finish. When a stretch stays out of line or the sound is a frame or more off, tell the editor in your closing reply, with \`summary\` and why.",
+    { version: z.string(), keep: z.array(z.object({ id: z.string(), reason: z.string().trim().min(1).max(300) })).max(100).optional(), offset: z.number().int().nonnegative().optional(),
+      silencesFrom: z.number().finite().min(0.3).max(30).optional().describe(`List in silences, and count in remaining, each wordless stretch at least this many seconds long. From the pace the skill asks for; ${SILENCE_LEFT_SECONDS} s when omitted.`) },
+    async ({ version, keep, offset, silencesFrom }) => json(await checkRepeats(version, keep, offset, silencesFrom)));
 
-  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with leave: the seconds it should still play). Measured word edges leave up to ${AIR_AFTER_SPEECH} s after kept speech and ${AIR_BEFORE_SPEECH} s before it resumes, or the pause you give as leave, split the same way. For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet.`;
+  const cutCoordinates = `To have Scarlet place the edges, give mediaId and the first and last removed word indices (fromWord/toWord), or mediaId and the word before a pause (afterWord, with leave: the seconds it should still play). Measured word edges leave the room tone of pace after kept speech and before it resumes, and a pause you give as leave plays before the cut but for pace's before (or the voiceIn you give). For edges you place yourself, give start/end in TIMELINE seconds. The edge check preserves that padding where those times are already quiet, unless you give leave: then an edge in quiet goes where that pause puts it.`;
   const crossfadeFrames = CrossfadeFrames.optional()
     .describe("Total audio-only overlap at the new dialogue joins, in project frames. Zero or omitted makes a straight cut.");
   const repeatedPhrase = z.string().trim().min(1);
   const resumeWith = z.string().trim().min(1).max(240).optional().describe("For a retake, quote the first consecutive words to keep immediately after the removal. Include the continuation that distinguishes this delivery.");
   tool("dialogue_check_join",
-    `Check proposed dialogue removals on a timeline version before submitting them. Give one range, or list up to 100 as \`cuts\` to check them in one call; each is given the same way. ${cutCoordinates} Where two words run together with no pause, the edge goes at the lowest level between them if that is down at room tone (${DIP_DBFS} dBFS or lower) or a trough well under the sound either side, and the removal's other edge has a pause; an edge in sound with no quiet nearby moves to the nearest such trough, as the recording places it, and the result says what was measured. A word reference keeps its exact performance. alternativeWordRanges lists other indices that leave the same transcript text, with measured edge problems and dips. Submit the indices of the performance you choose. Slow checks return status "measuring", the completed readings and the zero-based pendingCuts. Repeat the same arguments on the returned version after retryAfterSeconds to collect the full readings. This changes nothing. Returns status (unchanged = both edges quiet; snapped = an edge moved a few frames onto silence and applies as given; adjusted/partial = a larger move that narrows the removal and goes to review; review = no safe edge), the resulting range, per edge the source second, sound (quiet | valley | sound), RMS dBFS in 20 ms steps from 0.3 s before to 0.3 s after the edge (\`|\` marks it) and the nearest quiet points either side, and nearbyWords as [timeline start, timeline end, text] from the scan. The kept audio is independently read for up to ${JOIN_WORD_SECONDS} source seconds on each side of the proposed removal. unreadJoinAudio names a reading that was unavailable. repeatAtJoin identifies a word or phrase that the proposed join would play twice, with both occurrences in timeline seconds. partialWordRepeat identifies a fragment of a word beside another complete delivery, including sound inside the audio crossfade. Its side and ranges locate the fragment on the input timeline. pickupRepeats lists a doubled word or phrase opening or ending the kept take, with each occurrence and the side of the removal. When a prior scan measured an immediate restart, acousticRetakeContinuity reports which delivery the original range removes and whether the word following the second delivery stays connected to the retained take. Its source word times are approximate. An optional resumeWith quote is checked at the original end. With \`cuts\`, the result has \`joins\` in the same order, and a range that cannot be checked carries its own \`error\`. A list too long to return whole leaves out nearbyWords, per-edge readings (\`audio\`) and alternativeWordRanges, on unchanged joins first and then on the others from the end of the list. If needed, it then omits acousticRetakeContinuity and partialWordRepeat details. Every join keeps its status and range, and \`evidenceLeftOut\` lists the indices of the joins that came back without some of it: check the ones you need again in a shorter list.`,
-    { version: z.string(), crossfadeFrames, ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith,
+    `Check proposed dialogue removals on a timeline version before submitting them. Give one range, or list up to 100 as \`cuts\` to check them in one call; each is given the same way. ${cutCoordinates} Where two words run together with no pause, the edge goes at the lowest level between them if that is down at room tone (${DIP_DBFS} dBFS or lower) or a trough well under the sound either side, and the removal's other edge has a pause; an edge in sound with no quiet nearby moves to the nearest such trough, as the recording places it, and the result says what was measured. A word reference keeps its exact performance. alternativeWordRanges lists other indices that leave the same transcript text, with measured edge problems and dips. Submit the indices of the performance you choose. Slow checks return status "measuring", the completed readings and the zero-based pendingCuts. Repeat the same arguments on the returned version after retryAfterSeconds to collect the full readings. This changes nothing. Returns status (unchanged = both edges quiet; snapped = an edge moved a few frames onto silence and applies as given; adjusted/partial = a larger move that narrows the removal and goes to review; review = no safe edge), the resulting range, per edge the source second, sound (quiet | valley | sound), RMS dBFS in 20 ms steps from 0.3 s before to 0.3 s after the edge (\`|\` marks it) and the nearest quiet points either side, and nearbyWords as [timeline start, timeline end, text] from the scan. removes and plays give the words the removal takes out and its join as the viewer hears it: read them before choosing which delivery goes. sameWordJoin gives the seconds for a restart that begins on the word the first take broke off after, where no pause lets the cut start: saved on those seconds the cut is the editor's to hear, recorded as ask. The kept audio is independently read for up to ${JOIN_WORD_SECONDS} source seconds on each side of the proposed removal. unreadJoinAudio names a reading that was unavailable. repeatAtJoin identifies a word or phrase that the proposed join would play twice, with both occurrences in timeline seconds. partialWordRepeat identifies a fragment of a word beside another complete delivery, including sound inside the audio crossfade. Its side and ranges locate the fragment on the input timeline. pickupRepeats lists a doubled word or phrase opening or ending the kept take, with each occurrence and the side of the removal. When a prior scan measured an immediate restart, acousticRetakeContinuity reports which delivery the original range removes and whether the word following the second delivery stays connected to the retained take. Its source word times are approximate. An optional resumeWith quote is checked at the original end. With \`cuts\`, the result has \`joins\` in the same order, and a range that cannot be checked carries its own \`error\`. A list too long to return whole leaves out nearbyWords, per-edge readings (\`audio\`) and alternativeWordRanges, on unchanged joins first and then on the others from the end of the list. If needed, it then omits acousticRetakeContinuity and partialWordRepeat details. Every join keeps its status and range, and \`evidenceLeftOut\` lists the indices of the joins that came back without some of it: check the ones you need again in a shorter list.`,
+    { version: z.string(), crossfadeFrames, pace: paceInput, ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith,
       cuts: z.array(z.object({ ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(), resumeWith }))
         .min(1).max(100).optional().describe("Several removals to check in one call, instead of start/end or a word reference"),
       ...audioOption("Attach about two seconds of the original recording around each edge as WAV, for a single range") },
-    async ({ version, includeAudio, resumeWith, cuts, crossfadeFrames = 0, ...cut }) => {
+    async ({ version, includeAudio, resumeWith, cuts, crossfadeFrames = 0, pace, ...cut }) => {
       const tl = await getTimeline(version);
       const snapshot = tl.version === "draft" ? createHash("sha256").update(JSON.stringify(tl)).digest("hex") : tl.version;
-      const key = JSON.stringify([snapshot, cuts, cut, resumeWith, crossfadeFrames, !!includeAudio]);
+      const key = JSON.stringify([snapshot, cuts, cut, resumeWith, crossfadeFrames, pace, !!includeAudio]);
       return joinChecks.collect(key, tl.version, cuts?.length ?? 1, async publish => {
         const { project } = await getProject();
         const resolve = async (c: typeof cut, label: string) => {
-          const resolved = await resolveCutRange(tl, c, label, planSources, true);
+          const resolved = await resolveCutRange(tl, c, label, { ...planSources, pace }, true);
           if (resolved.start >= resolved.end || resolved.end > timelineDuration(tl)) {
             throw new Error(`${label} ${resolved.start}–${resolved.end} s is not a nonempty range inside version ${tl.version} (0–${timelineDuration(tl).toFixed(2)} s).`);
           }
@@ -1925,9 +2286,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
           const pages = joinPages();
           const checked = "dips" in resolved && !resolved.problems.length
             ? { ...range, status: "unchanged" as const, reason: resolved.dips.length ? resolved.dips.join(" ") : "Scarlet placed both edges in the measured silence beside the words." }
-            : checkDialogueJoin(tl, project, range, pages, "spoken" in resolved ? resolved.spoken : undefined);
+            : checkDialogueJoin(tl, project, range, pages, "spoken" in resolved ? resolved.spoken : undefined, pace, "air" in resolved ? resolved.air : undefined);
           const played = frameAligned(checked, project.settings.fps);
           const nearbyWords = dialogueJoinWords(tl, project, played, pages);
+          const heard = await cutReading(tl, project, played, mediaId => transcriptWords(mediaId, false).catch(() => null));
           const continuity = acousticRetakeJoin(tl, project, range, acousticRetakePages.values());
           const { repeatAtJoin, partialWordRepeat, pickupRepeats, unread } = await checkKeptWords(tl, project, played, nearbyWords, planSources.readKeptWords,
             undefined, undefined, { at: played.start, preview: () => dialogueCutPreview(tl, project.media, [played], crossfadeFrames / project.settings.fps) });
@@ -1940,7 +2302,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
             ...("wordRef" in resolved && { words: resolved.words, sourceRange: resolved.source, ...(resolved.problems.length && { wordEdgeProblems: resolved.problems }) }),
             ...("notes" in resolved && resolved.notes.length && { notes: resolved.notes }),
             ...("alternativeWordRanges" in resolved && { alternativeWordRanges: resolved.alternativeWordRanges }),
-            ...checked, audio, nearbyWords, ...(partialWordRepeat && { partialWordRepeat }), ...(continuity.length && { acousticRetakeContinuity: continuity }), ...(unread.length && { unreadJoinAudio: unread }), ...(repeatAtJoin && { repeatAtJoin }), ...(pickupRepeats.length && { pickupRepeats }),
+            ...checked, ...heard, audio, nearbyWords, ...(partialWordRepeat && { partialWordRepeat }), ...(continuity.length && { acousticRetakeContinuity: continuity }), ...(unread.length && { unreadJoinAudio: unread }), ...(repeatAtJoin && { repeatAtJoin }), ...(pickupRepeats.length && { pickupRepeats }),
             ...(quote && { resumeAtOriginalEnd: checkResumeQuote(tl, project, range.end, evidence.scans, quote) }) } };
         };
         if (cuts) {
@@ -2023,7 +2385,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (words) transcripts.set(id, words);
     }
     // A range staged for review still plays until the editor approves it.
-    return partLeftovers(timelineWords(tl, transcripts, scope), decisions.filter(d => !d.review), kept, transcripts, Math.max(PAUSE_FLOOR_SECONDS, pausesFrom ?? 0));
+    return partLeftovers(timelineWords(tl, transcripts, scope), decisions.filter(d => !d.review), kept, transcripts, pausesFrom ?? PAUSE_FLOOR_SECONDS);
   }
   /** The version a part continues on, read once however many lists are placed on it. */
   const continued = new Map<string, Promise<Timeline>>();
@@ -2083,23 +2445,26 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   tool("dialogue_apply_cuts",
-    `Save your decisions on an assembled version: cut, review or keep ranges, sorted and nonoverlapping. ${cutCoordinates} Cut ranges apply together; review stages a range for the editor; keep or omission retains it. Scarlet measures each retake, filler, pause and quoted production edge. An edge on sound moves a few frames onto silence, or onto the lowest level between two words said in one breath, and applies; a larger move narrows the cut and stages it. A pause's edge moves onto the quiet beside it. A short piece between cuts with a transcript word at room-tone level returns quietKeptWord with nearby measured sound in source seconds. Footage between separate removals stays in the timeline. \`gate\` lists changes to the measured plan with their evidence. Its ranges describe placement before the engine rounds to project frames. The returned timelineEdits describe the saved edits. A cut whose optional quote doesn't verify, or whose join would play words twice or a kept word too quietly, is left out with its evidence in \`notSaved\`, and the rest of the part saves. Save a long pass in parts and continue on \`continueFrom\`. For a first dialogue pass, send at most ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions as soon as they are ready, with any keep or protected ranges they depend on. The gate reports an applied cut whose edge sits within ${SPEECH_BESIDE_EDGE} s of the sound it removes, since the picture can show a word starting that the sound has not reached; whether that needs the editor is yours to judge. What Scarlet changed on its own comes back with why: \`stagedForEditor\` (confident cuts that wait for the editor), \`onFrames\` (edges put on whole frames) and \`droppedFromReview\` (an earlier part's staged cuts whose footage a later edit broke up). For a requested crossfade, \`joinCrossfades\` reports how many joins were faded and why any stayed straight. The result also lists what this part still plays, each thing once per pass, at \`at\` on continueFrom: keptSilences (2 s or more without words that no decision covers), keptPauses (the longest thirty of ${PAUSE_FLOOR_SECONDS} s or more, or from the length you give as pausesFrom, with the afterWord that trims an untouched one), repeatedWords (said twice in a row, atJoin when a cut made it; fromWord/toWord name the first) and unexplainedSound (speaking-level sound the transcript has no word for, often what is left of a take beside a cut). These are evidence, not decisions: a pause can be a beat, a repeat emphasis, a sound a breath. Ranges your previous part staged on that version join this part's review (carriedForward). Cuts already handed to the editor keep their passage and note (heldForReview). \`description\` is your one-sentence summary for the editor.`,
-    { version: z.string(), description: z.string().min(1), crossfadeFrames, noteIds: z.array(z.string()).optional(),
+    `Save your decisions on an assembled version: cut, review or keep ranges, sorted and nonoverlapping. ${cutCoordinates} Cut ranges apply together; review stages a range for the editor; keep or omission retains it. Scarlet measures each retake, filler, pause and quoted production edge. An edge on sound moves a few frames onto silence, or onto the low point between two words said in one breath, and applies; an edge between named words said straight through, with no low point, goes where the transcript parts them and applies; a larger move narrows the cut and stages it, unless unsureJoins is cut. An edge Scarlet can't move out of sound stays held, and its held reason says what the join plays, what the passage plays if the cut is kept and, for a range given in seconds, the nearest quiet or low point either side and the words moving there keeps or removes. A pause's edge moves onto the quiet beside it. A short piece between cuts with a transcript word at room-tone level returns quietKeptWord with nearby measured sound in source seconds. Footage between separate removals stays in the timeline. \`gate\` lists changes to the measured plan with their evidence. Its ranges describe placement before the engine rounds to project frames. The returned timelineEdits describe the saved edits. A cut whose optional quote doesn't verify, whose join would play words twice or a kept word too quietly, or that removes a restart and runs on past it, taking words at its edge that nothing either side of the join says again, or a pause trim whose range holds sound at speaking level that no word explains or whose pause holds words the transcript doesn't have, is left out with its evidence in \`notSaved\`, and the rest of the part saves. Save a long pass in parts and continue on \`continueFrom\`. For a first dialogue pass, send at most ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions as soon as they are ready, with any keep or protected ranges they depend on. The gate reports an applied cut whose edge sits within ${SPEECH_BESIDE_EDGE} s of the sound it removes, since the picture can show a word starting that the sound has not reached; whether that needs the editor is yours to judge. A retake placed by seconds is listed with removes and plays: the words it takes out and its join as the viewer hears it. What Scarlet changed on its own comes back with why: \`stagedForEditor\` (confident cuts that wait for the editor), \`onFrames\` (edges put on whole frames), \`droppedFromReview\` (an earlier part's staged cuts whose footage a later edit broke up) and \`heldCutsStay\` (cuts not saved because, sent with unsureJoins cut, they would have replaced a staged cut held for its join with other edges Scarlet couldn't place either). For a requested crossfade, \`joinCrossfades\` reports how many joins were faded and why any stayed straight. The result also lists what this part still plays, each thing once per pass, at \`at\` on continueFrom: keptSilences (2 s or more without words that no decision covers), keptPauses (the longest thirty of ${PAUSE_FLOOR_SECONDS} s or more, or from the length you give as pausesFrom, with the afterWord that trims an untouched one), repeatedWords (said twice in a row, with the pause the edit plays between them, atJoin when a cut made it; fromWord/toWord name the first) unexplainedSound (speaking-level sound the transcript has no word for, often what is left of a take beside a cut) and heardNotInTranscript (words the scan read in what this part still plays that the transcript has no word for, such as a false start or a repeat it tidied away: where and how long they play on the version the part continues on, the words, and the words round them as the scan read them; they have no word index, so a cut of them is given in timeline seconds). These are evidence, not decisions: a pause can be a beat, a repeat emphasis, a sound a breath. Ranges your previous part staged on that version join this part's review (carriedForward). Cuts already handed to the editor keep their passage and note (heldForReview). \`description\` is your one-sentence summary for the editor.`,
+    { version: z.string(), description: z.string().min(1), crossfadeFrames, pace: paceInput, unsureJoins: unsureJoinsInput, noteIds: z.array(z.string()).optional(),
       range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive() }).optional().describe("Requested TIMELINE range if only part of the edit is in scope"),
       only: z.enum(["pause", "filler", "retake", "coaching"]).optional().describe("For a request limited to one type of removal. Omit for a full dialogue pass."),
-      pausesFrom: z.number().finite().min(PAUSE_FLOOR_SECONDS).max(10).optional().describe("List in keptPauses the pauses this part still plays from this length in seconds, word to word. Yours to set from the pace the skill and the editor ask for; omit to see the longest ones"),
+      pausesFrom: z.number().finite().min(0.1).max(10).optional().describe(`List in keptPauses the pauses this part still plays from this length in seconds, word to word (${PAUSE_FLOOR_SECONDS} s when omitted). Yours to set from the pace the skill and the editor ask for; omit to see the longest ones`),
       cuts: z.array(z.object({ ...WordRef, ...PauseRef, start: z.number().finite().nonnegative().optional(), end: z.number().finite().positive().optional(),
         removeRepeat: z.object({ id: z.string(), occurrence: z.enum(["first", "second"]) }).optional().describe("For a retake, identify the occurrence heard by dialogue_check_repeats on this version. Scarlet places both edges using its measured words and waveform."),
         kind: z.enum(["pause", "filler", "retake", "coaching"]), decision: z.enum(["cut", "review", "keep"]),
         resumeWith,
-        keepRepeat: z.union([repeatedPhrase, z.array(repeatedPhrase).min(1)]).optional().describe("For speech cuts, quote a word or phrase that deliberately repeats across the join or at the beginning or end of the kept take. Pass a list to keep several. An unacknowledged repeat comes back to you before the plan is saved."),
+        keepRepeat: z.union([repeatedPhrase, z.array(repeatedPhrase).min(1)]).optional().describe("For speech cuts and pause trims, quote a word or phrase that deliberately repeats across the join or at the beginning or end of the kept take. Pass a list to keep several. An unacknowledged repeat comes back to you before the plan is saved."),
+        dropWords: z.union([repeatedPhrase, z.array(repeatedPhrase).min(1)]).optional().describe("For speech cuts, quote the words at an edge of the removal that you mean to take out though nothing either side of the join says them again, as a returned dispute names them. Pass a list for several."),
         productionQuote: z.string().trim().min(1).optional().describe("Optional check for a coaching cut: verify all the words in the removed production aside against the scan."),
         picture: z.enum(["safe", "uncertain", "protect"]).optional().describe("Protect preserves this range. For all other picture verdicts, decision controls whether the range is cut or staged for review."),
         reason: z.string().trim().min(1).describe("One short sentence on why you chose to cut, stage or keep this passage, shown on its card"),
-        summary: CutAssessment.shape.summary.describe("Short summary of what this decision changes or keeps, shown in the chat."),
+        summary: CutAssessment.shape.summary.describe("Required for a cut or review: its row in the chat's list of edits. Say what came out and where, by the words beside it (\"Shortened the pause after ‘okay’\", \"Cut the false start ‘so the’\"), never why: the reason says why. Rows read in a list, so no two alike."),
         check: z.string().trim().min(1).max(120).optional().describe("For a cut that applies: a few words naming a doubt the editor must settle by listening or looking. Marks the cut as needing them until they keep it; omit when nothing is in doubt") }))
         .describe("For a faint line that still plays, keptQuietPhrases returns mediaId and fromWord/toWord for use here, its position on continueFrom (at), and the phrase and neighboring speech levels in dBFS.") },
-    async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames, pausesFrom }) => {
+    async ({ version, description, cuts: requested, noteIds, range, only, crossfadeFrames, pausesFrom, pace, unsureJoins }) => {
+      const unnamed = requested.flatMap((c, i) => c.decision !== "keep" && c.picture !== "protect" && !c.summary ? [i] : []);
+      if (unnamed.length) throw new Error(`Give a summary for each cut and review: what it takes out and where, by the words beside it. Missing at cuts ${unnamed.join(", ")} (zero-based). Nothing was saved.`);
       const operation = await dialogueOperation();
       if (ctx.taskId && operation === "first-cut" && requested.filter(c => c.decision !== "keep" && c.picture !== "protect").length > FIRST_CUT_BATCH_SIZE)
         throw new Error(`Save up to ${FIRST_CUT_BATCH_SIZE} nearby cut or review decisions in each first-pass batch, with their keep and protected ranges. Send the first settled group now. For the next group use source word references or map its positions on continueFrom with timeline_at.`);
@@ -2114,22 +2479,14 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       });
       const anchor = await cutAnchor(tl);
       const scope = range || localPauses || selectedRange(anchor) ? cutScope(tl, anchor, range, localPauses) : undefined;
-      const request = { tl, cuts, range: scope, only, localPauses, anchor };
-      let plan = await planDialogueCuts(request, { ...planSources, crossfadeFrames });
-      // A dispute names the cuts whose edges make it. The rest of the batch is saved without them, so a pass resubmits
-      // only what was disputed instead of the whole batch: a refused batch cost a pass a turn and every cut again, five to
-      // seven times a pass (2026-11-16).
-      let setAside: { cuts: number[]; disputedEdges: unknown[]; next: string } | undefined;
-      if (plan.outcome === "needsRevision") {
-        const disputed = new Set(plan.disputedEdges.flatMap(d => d.cuts));
-        const rest = disputed.size && cuts.some((c, i) => !disputed.has(i) && c.decision !== "keep" && c.picture !== "protect")
-          ? await planDialogueCuts({ ...request, setAside: disputed }, { ...planSources, crossfadeFrames }).catch(() => undefined) : undefined;
-        if (rest?.outcome === "ready") {
-          setAside = { cuts: [...disputed].sort((a, b) => a - b), disputedEdges: plan.disputedEdges.map(({ cuts: _cuts, ...edge }) => edge),
-            next: `These cuts were not saved; the rest of the batch was. ${refusalNext(plan.disputedEdges)} Resubmit only these on continueFrom.` };
-          plan = rest;
-        }
-      }
+      const request = { tl, cuts, range: scope, only, localPauses, anchor, unsureJoins };
+      // A dispute sets aside only the cuts it names; the rest of the batch is saved (planDialogueBatch).
+      const batch = await planDialogueBatch(request, { ...planSources, crossfadeFrames, pace });
+      const plan = batch.plan;
+      const setAside = batch.setAside && {
+        cuts: batch.setAside.cuts, disputedEdges: batch.setAside.disputedEdges.map(({ cuts: _cuts, ...edge }) => edge),
+        next: `These cuts were not saved; the rest of the batch was. ${refusalNext(batch.setAside.disputedEdges)} Resubmit only these on continueFrom.`,
+      };
       const recordKept = (ranges: TimeRange[]) => ranges.length && ctx.taskId
         ? postEvent({ type: "log", text: "", data: { kind: "dialogue_preserved", version: tl.version, ranges } }) : undefined;
       if (plan.outcome === "preserved") {
@@ -2142,7 +2499,9 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       // A ripple affects every track. Check the whole batch, including any edge adjustment, against the sayings it must retain.
       const retainedRepeats = requested.flatMap(c => {
         if (!c.removeRepeat || c.decision === "keep" || c.picture === "protect") return [];
-        const pair = checkedRepeats.get(c.removeRepeat.id)!;
+        // A check of the repeats that ran meanwhile may have dropped the pair this cut named.
+        const pair = checkedRepeats.get(c.removeRepeat.id);
+        if (!pair) throw new Error("Read dialogue_check_repeats on this version and select a removable occurrence for a retake.");
         const kept = c.removeRepeat.occurrence === "first" ? pair.second : pair.first;
         return [{ start: kept.start, end: kept.end, reason: `The planned cuts also reach the delivery of “${pair.phrase}” you chose to keep.` }];
       });
@@ -2153,14 +2512,18 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       if (clipped.length) return json({ needsRevision: true, disputedEdges: clipped, next: "Both deliveries would be affected. Choose boundaries that preserve one complete occurrence." });
       plan.kept.push(...retainedRepeats.map(({ start, end }) => ({ start, end })));
       const all = plan.decisions;
-      // Stretches without words this part still plays and leaves undecided, found before the edit moves.
-      const undecided = only && only !== "pause" ? [] : await passedSilences(tl, plan.kept, all, range)
-        .catch(without("failed to find the silences this part keeps", []));
-      const left = await passedLeftovers(tl, plan.kept, all, range, pausesFrom)
-        .catch(without("failed to read what this part still plays", { pauses: [], repeats: [], gaps: [] }));
       await postEvent({ type: "log", text: "I’m applying the dialogue decisions to the timeline.", data: { kind: "editor_progress" } });
+      // Stretches without words, pauses and doubled words this part still plays and leaves undecided, read on the version
+      // it was planned on while the engine saves it: the save changes neither that version nor the transcripts.
+      const leftBehind = together(
+        async () => only && only !== "pause" ? [] : await passedSilences(tl, plan.kept, all, range)
+          .catch(without("failed to find the silences this part keeps", [])),
+        () => passedLeftovers(tl, plan.kept, all, range, pausesFrom)
+          .catch(without("failed to read what this part still plays", { pauses: [], repeats: [], gaps: [] })));
+      // A save that fails still waits for them, so its result says what they went without.
       const result = await client.submitDialogueCuts(ctx.projectId, { fromVersion: tl.version, description, cuts: all, range: scope, kept: plan.kept, crossfadeFrames,
-        taskId: ctx.taskId, author: ctx.author, noteIds });
+        taskId: ctx.taskId, author: ctx.author, noteIds }).finally(() => leftBehind);
+      const [undecided, left] = await leftBehind;
       const suggestion = result.changes.find(c => c.intent === "suggestion");
       if (result.changes.length) {
         stageWithoutAppliedCuts = suggestion && !result.changes.some(c => c.state === "approved") ? suggestion.id : undefined;
@@ -2189,46 +2552,72 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const { head, ...reported } = result;
       const continueFrom = head ?? result.changes.find(c => c.intent !== "suggestion")?.toVersion ?? tl.version;
       const decided = [...all, ...plan.kept, ...(result.editorDecided ?? [])];
-      const quiet = localPauses || only === "pause" || only === "filler" ? [] : await keptQuietPhrases(tl, continueFrom, decided,
-        scope ?? { start: Math.min(...decided.map(d => d.start)), end: Math.max(...decided.map(d => d.end)) })
-        .catch(without("failed to place the quiet phrases the part still plays", []));
       // A stretch already listed as a kept silence is not listed again as a pause.
       const pauses = (only && only !== "pause" ? [] : left.pauses.filter(p => !undecided.some(u => u.mediaId === p.mediaId && u.source.start < p.source.end && u.source.end > p.source.start)))
         .filter(p => fresh("pause", p.mediaId, p.source.start, p.seconds));
       const repeats = (only && only !== "retake" && only !== "filler" ? [] : left.repeats).filter(r => fresh("repeat", r.mediaId, r.source));
-      // One read of the version the pass continues on places all three lists.
-      // Sound the part still plays between two words it keeps, beside its own cuts first: what is left of a take that came out.
-      const sounding = only && only !== "retake" && only !== "filler" ? [] : (await Promise.all([...new Set(left.gaps.map(g => g.mediaId))].map(async mediaId => {
-        const mine = left.gaps.filter(g => g.mediaId === mediaId);
-        const read = await gapSounds(mediaId, mine.map(g => g.source)).catch(withoutOnce(`failed to read the levels between the words ${mediaId} still plays`, [] as Array<GapSound | undefined>));
-        return mine.flatMap((g, i) => read[i]?.runs.length ? [{ mediaId, source: read[i]!.runs[0]!, seconds: read[i]!.seconds, after: g.after, before: g.before }] : []);
-      }))).flat().filter(s => fresh("sound", s.mediaId, s.source.start));
-      const { kept, keptPauses, repeatedWords, unexplainedSound } = await (async () => {
-        const kept = await placeSilences(undecided, continueFrom, tl);
-        const after = pauses.length || repeats.length || sounding.length ? await timelineAt(continueFrom, tl) : tl;
-        const placed = <T extends { mediaId: string }>(items: T[], source: (item: T) => number) => items.flatMap(item => {
-          const at = sourceToTimeline(after, item.mediaId, source(item)).find(p => p.audible)?.time;
-          return at === undefined ? [] : [{ at, item }];
+      // The lists read at once: each lists its own kind of thing once per pass (`listed`), and they share one read of the
+      // version the pass continues on (`timelineAt`).
+      const [quiet, { kept, keptPauses, repeatedWords, unexplainedSound }, [heardNotInTranscript, audioRecheck]] = await together(
+        async () => localPauses || only === "pause" || only === "filler" ? [] : await keptQuietPhrases(tl, continueFrom, decided,
+          scope ?? { start: Math.min(...decided.map(d => d.start)), end: Math.max(...decided.map(d => d.end)) })
+          .catch(without("failed to place the quiet phrases the part still plays", [])),
+        async () => {
+          // One read of the version the pass continues on places all three lists.
+          // Sound the part still plays between two words it keeps, beside its own cuts first: what is left of a take that came out.
+          const sounding = only && only !== "retake" && only !== "filler" ? [] : (await Promise.all([...new Set(left.gaps.map(g => g.mediaId))].map(async mediaId => {
+            const mine = left.gaps.filter(g => g.mediaId === mediaId);
+            const read = await gapSounds(mediaId, mine.map(g => g.source)).catch(withoutOnce(`failed to read the levels between the words ${mediaId} still plays`, [] as Array<GapSound | undefined>));
+            return mine.flatMap((g, i) => read[i]?.runs.length ? [{ mediaId, source: read[i]!.runs[0]!, seconds: read[i]!.seconds, after: g.after, before: g.before }] : []);
+          }))).flat().filter(s => fresh("sound", s.mediaId, s.source.start));
+          return await (async () => {
+            const kept = await placeSilences(undecided, continueFrom, tl);
+            const after = pauses.length || repeats.length || sounding.length ? await timelineAt(continueFrom, tl) : tl;
+            const placed = <T extends { mediaId: string }>(items: T[], source: (item: T) => number) => items.flatMap(item => {
+              const at = sourceToTimeline(after, item.mediaId, source(item)).find(p => p.audible)?.time;
+              return at === undefined ? [] : [{ at, item }];
+            });
+            return { kept,
+              // The longest thirty, in playback order.
+              keptPauses: placed(pauses, p => p.source.start).sort((a, b) => b.item.seconds - a.item.seconds).slice(0, 30).sort((a, b) => a.at - b.at)
+                .map(({ at, item: { source, ...p } }) => shown({ at, ...p }, "pause", p.mediaId, source.start, p.seconds)),
+              repeatedWords: placed(repeats, r => r.source).slice(0, 30).map(({ at, item: { source, atJoin, ...r } }) => shown({ at, ...r, ...(atJoin && { atJoin }) }, "repeat", r.mediaId, source)),
+              unexplainedSound: placed(sounding, s => s.source.start).sort((a, b) => b.item.seconds - a.item.seconds).slice(0, 30).sort((a, b) => a.at - b.at)
+                .map(({ at, item: { source, ...s } }) => shown({ at, ...s, sourceSeconds: [source.start, source.end] }, "sound", s.mediaId, source.start)),
+            };
+          })().catch(without(`failed to place the kept silences on ${continueFrom}`, { kept: [], keptPauses: [], repeatedWords: [], unexplainedSound: [] }));
+        },
+        async () => {
+          // Words the scan read in what this part still plays that the transcript has no word for. A false start the
+          // transcript tidied away has no index to cut it by and is in none of the lists above: a pass left “And it just
+          // feel, uh” playing before “It just feels like”, and “a conscious conscientious objector”, having cut by a
+          // transcript that read “And it just feels like” and “a conscientious objector” (2026-11-19).
+          const heard = only && only !== "retake" && only !== "filler" ? [] : await (async () => {
+            const after = await timelineAt(continueFrom, tl);
+            const part = scope ?? { start: Math.min(...decided.map(d => d.start)), end: Math.max(...decided.map(d => d.end)) };
+            // The part's stretch on the version it continues on: its applied cuts closed up that much of it.
+            const removed = result.changes.some(c => c.intent !== "suggestion" && c.state === "approved")
+              ? all.reduce((n, d) => d.review ? n : n + Math.max(0, Math.min(d.end, part.end) - Math.max(d.start, part.start)), 0) : 0;
+            const found = await perception.heardOnlyOn(after, { start: part.start, end: Math.max(part.start, part.end - removed) });
+            return found.filter(h => fresh("heard", h.mediaId, h.source.start)).slice(0, 30)
+              .map(h => shown({ at: h.start, seconds: Math.round((h.end - h.start) * 100) / 100, text: h.text, context: h.context,
+                mediaId: h.mediaId, sourceSeconds: [h.source.start, h.source.end] }, "heard", h.mediaId, h.source.start));
+          // An extra reading: a version or an engine that can't give it leaves the receipt as it was.
+          })().catch(() => []);
+          // The repeat check comes after those words: where it reads a language from the scan, it saves pages they'd read.
+          const recheck = checkedVersion === tl.version || ctx.task?.repeatAudit?.version === tl.version
+            ? await checkRepeats(continueFrom).catch((error: Error) => {
+              noteEvidenceMiss("repeat audit");
+              return { version: continueFrom, error: error.message, next: "The edit was saved. Retry dialogue_check_repeats on this version." };
+            })
+            : undefined;
+          return [heard, recheck] as const;
         });
-        return { kept,
-          // The longest thirty, in playback order.
-          keptPauses: placed(pauses, p => p.source.start).sort((a, b) => b.item.seconds - a.item.seconds).slice(0, 30).sort((a, b) => a.at - b.at)
-            .map(({ at, item: { source, ...p } }) => shown({ at, ...p }, "pause", p.mediaId, source.start, p.seconds)),
-          repeatedWords: placed(repeats, r => r.source).slice(0, 30).map(({ at, item: { source, atJoin, ...r } }) => shown({ at, ...r, ...(atJoin && { atJoin }) }, "repeat", r.mediaId, source)),
-          unexplainedSound: placed(sounding, s => s.source.start).sort((a, b) => b.item.seconds - a.item.seconds).slice(0, 30).sort((a, b) => a.at - b.at)
-            .map(({ at, item: { source, ...s } }) => shown({ at, ...s, sourceSeconds: [source.start, source.end] }, "sound", s.mediaId, source.start)),
-        };
-      })().catch(without(`failed to place the kept silences on ${continueFrom}`, { kept: [], keptPauses: [], repeatedWords: [], unexplainedSound: [] }));
-      const audioRecheck = checkedVersion === tl.version || ctx.task?.repeatAudit?.version === tl.version
-        ? await checkRepeats(continueFrom).catch((error: Error) => {
-          noteEvidenceMiss("repeat audit");
-          return { version: continueFrom, error: error.message, next: "The edit was saved. Retry dialogue_check_repeats on this version." };
-        })
-        : undefined;
       return json({ ...reported, continueFrom, ...(audioRecheck && { audioRecheck }), gate: dialogueGate(plan),
         ...(plan.unreadJoinAudio && { unreadJoinAudio: plan.unreadJoinAudio }),
         ...(kept.length && { keptSilences: kept }), ...(keptPauses.length && { keptPauses }), ...(repeatedWords.length && { repeatedWords }),
         ...(unexplainedSound.length && { unexplainedSound }),
+        ...(heardNotInTranscript.length && { heardNotInTranscript }),
         ...(quiet.length && { keptQuietPhrases: quiet }),
         ...(setAside && { notSaved: setAside }),
         next: result.changes.some(c => c.intent === "suggestion")
@@ -2335,7 +2724,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   }
 
   tool("dialogue_review_inspect",
-    "Inspect a staged dialogue cut in its original passage and preview. For each cut returns the words around it as [start, end, text, speaker or isolated input], original microphone levels (dBFS), voice activity, and timeline_join_audit's reading of the join or why the cut has none. The surviving speech is checked for a doubled word across the join or at the start or end of its kept take. partialWordRepeat identifies a cut-off word beside a whole occurrence in the saved audio, including faded handles. One call returns up to four consecutive cuts (count). Scarlet prepares the next ones while you read." +
+    "Inspect a staged dialogue cut in its original passage and preview. For each cut returns its first-pass reason, and held: what Scarlet measured when it held the cut, what its join plays and what keeping it plays. It also returns the words around it as [start, end, text, speaker or isolated input], original microphone levels (dBFS), voice activity, and timeline_join_audit's reading of the join or why the cut has none. The surviving speech is checked for a doubled word across the join or at the start or end of its kept take. partialWordRepeat identifies a cut-off word beside a whole occurrence in the saved audio, including faded handles. One call returns up to four consecutive cuts (count). Scarlet prepares the next ones while you read." +
     (reviewPictures ? " Includes synchronized screen and camera sheets and before/after frames for narrowed cuts. A longer removal shows an overview and windows for closer inspection. wholePicture returns activity sheets across all of them." : "") +
     " nearbyWords gives the words at both edges in TIMELINE seconds on the inspected original. Use those times in dialogue_revise_cut to move a splice, or save a recommendation for the current range with dialogue_review_save. If later edits conflict with the cut being revised, inspecting it returns its current passage and words for dialogue_revise_cut.",
     { changeId: z.string(), index: z.number().int().nonnegative(),
@@ -2399,7 +2788,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return { content };
     });
 
-  tool("dialogue_review_save", "Record your cut, keep or ask recommendation on a pending suggestion. An ask's reason appears on its card, where it explains why you recommend it and what to listen or look for. Cuts that would wait under the same reason are refused. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A cut goes into the video when the request finishes, or with the editor's last call when some wait for them, so it is not removed again with another tool. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). To tell the editor something new about a call still waiting on them, such as a join that clips a word, save it as an ask with amend:true and the new reason: its card shows that note, and its number, footage and verdict stay. The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
+  tool("dialogue_review_save", "Record your cut, keep or ask recommendation on a pending suggestion. An ask's reason appears on its card, where it explains why you recommend it and what to listen or look for. Cuts that would wait under the same reason are refused, and so is an ask whose reason quotes words its cut neither removes nor plays within 3 s of it: the refusal says what the cut removes and what its join plays. An ask or cut on a staged cut whose edge is inside a word that sounds there is refused with what was measured: move it with dialogue_revise_cut and record it as moved, or keep it. Use the exact change versions, chronological cut index and original timeline range. Saving an ask gives the passage and its note to the editor. A cut goes into the video when the request finishes, or with the editor's last call when some wait for them, so it is not removed again with another tool. A keep leaves the footage in the video and the editor is never shown that cut; a cut whose range is wrong can be moved with dialogue_revise_cut before it is recorded. Later recommendations preserve that call (heldCalls, or heldRevised after a requested revision). To tell the editor something new about a call still waiting on them, such as a join that clips a word, save it as an ask with amend:true and the new reason: its card shows that note, and its number, footage and verdict stay. The inspected flag reports whether this session completed an inspection of that exact cut, including its measured join (or a cut with no join).",
     { changeId: z.string(), fromVersion: z.string(), toVersion: z.string(), assessments: z.array(CutAssessment.omit({ inspected: true, revised: true, askOrder: true, provisional: true }).extend({
       summary: CutAssessment.shape.summary.describe("Short summary of the proposed cut for the chat. Supply it alongside the reason shown on the card."),
       amend: z.boolean().optional().describe("Replace the note of a call that already waits on the editor."),
@@ -2408,11 +2797,41 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       const { change } = await client.changeRecord(changeId);
       if (await localPausesMode() && ![ctx.taskId, ctx.task?.resumeRootId].some(id => id && id === change.taskId) &&
           !ctx.task?.changeIds.includes(changeId)) {
-        const prior = change.taskId && (await client.task(change.taskId)).task;
+        const prior = change.taskId && (await client.task(change.taskId, "none")).task;
         if (!prior || (prior.resumeRootId ?? prior.id) !== (ctx.task?.resumeRootId ?? ctx.taskId))
           throw new Error("Choose a staged pause from this request.");
       }
       if (change.projectId !== ctx.projectId) throw new Error(`Change ${changeId} belongs to another project.`);
+      // A call's note is the editor's only account of it, so it is about that cut: a note that quotes words the cut
+      // neither removes nor plays beside goes back with what the cut does (quotesAwayFromCut).
+      const asks = assessments.filter(a => a.verdict === "ask" && a.reason && quotesAwayFromCut(a.reason, [], a).length);
+      if (asks.length) {
+        const [tl, { project }] = await Promise.all([getTimeline(fromVersion), getProject()]);
+        const words = (mediaId: string) => transcriptWords(mediaId, false).catch(() => null);
+        const away = (await Promise.all(asks.map(async a => {
+          const near = await timelineWordsNear(tl, project, a, words, NOTE_QUOTE_REACH + 15);
+          const quotes = quotesAwayFromCut(a.reason, near, a);
+          if (!quotes.length) return undefined;
+          const removed = near.filter(h => h.at > a.start && h.at < a.end).map(h => h.text).join(" ");
+          return `Cut ${a.index}: the note quotes ${quotes.map(q => `“${q}”`).join(" and ")}, which this cut neither removes nor plays within ${NOTE_QUOTE_REACH} s of it. ` +
+            `It removes “${removed}” and plays “${await joinPlays(tl, project, a, words)}”.`;
+        }))).filter(line => line !== undefined);
+        if (away.length) throw new Error(`${away.join(" ")} Nothing was saved. Write each note about its own cut, or check that the cut is the one you meant.`);
+      }
+      // A clipped word is not a creative call, and cutting there plays it clipped: a staged cut whose edge is inside a word
+      // that sounds there is moved or kept, never asked about or cut as placed (his rule, 2026-11-16).
+      const toCheck = assessments.filter(a => a.verdict === "ask" || a.verdict === "cut");
+      if (toCheck.length) {
+        const [tl, { project }] = await Promise.all([getTimeline(fromVersion), getProject()]);
+        await measureTimeline(tl, toCheck.flatMap(a => [a.start, a.end])).catch(() => undefined);
+        const check = dialogueJoinChecker(tl, project, joinPages());
+        const joins = toCheck.map(a => ({ a, join: check({ start: a.start, end: a.end }) }));
+        // A join nothing here can hear is not cut on a guess: the editor hears it (his rule, 2026-11-17).
+        const unheard = joins.flatMap(({ a, join }) => join.sameWord && a.verdict === "cut" ? [`Cut ${a.index}: ${join.reason}`] : []);
+        if (unheard.length) throw new Error(`${unheard.join(" ")} Nothing was saved. Record ask on it, with what to listen for, so the editor hears the join; or keep, if the passage belongs in the video as it was said.`);
+        const clipped = joins.flatMap(({ a, join }) => join.inWord?.length ? [`Cut ${a.index} (${a.verdict}): ${join.reason}`] : []);
+        if (clipped.length) throw new Error(`${clipped.join(" ")} Nothing was saved. A cut with an edge inside a word that sounds there can't be asked about or made as placed. Move it with dialogue_revise_cut, onto the quiet or low point named or to the boundary of the words, then record cut or ask on it as moved; or record keep, which leaves its words playing without the editor hearing this passage.`);
+      }
       const recorded = assessments.map(a => ({ ...a,
         inspected: inspections.has(JSON.stringify([changeId, fromVersion, toVersion, a.index])) }));
       const result = await client.assessCuts(changeId, fromVersion, toVersion, recorded);
@@ -2445,7 +2864,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     }
   }
 
-  tool("dialogue_revise_cut", "Move a staged dialogue cut. Once a call is with the editor, its range can change only on their request about that cut. To trim the pause before a cut, give pauseAfterWord in seconds (0 for the end of the last kept word) instead of start and end. Scarlet locates that word, preserves the incoming edge and measures the word-to-join distance on the saved preview (outgoingPause.remainingSeconds): give the editor that measured time. For other moves give the full new range in TIMELINE seconds on the pass's fromVersion. It may extend past the old edges but must stay clear of neighboring staged cuts. If newer edits affect this passage, Scarlet returns the current version and its location when known. Inspect the current words with timeline_transcript or measure the new edges with dialogue_check_join, then pass that exact version and range to save on the current footage. If the requested result is clear, finish the revision. If it depends on which take the editor wants, task_question can ask that choice. To keep the current footage for the selected call, pass keep:true; when the passage has no current location, use its original range without version. The other cuts and decisions carry over. Measured nearby silence can adjust an edge. Write the reason for the editor in one short sentence. To move several cuts of one pass, list them as cuts in one call. Each moved cut's result has nearbyWords: the words either side of its saved edges as [timeline start, timeline end, text] on the version its times are on, the same reading dialogue_check_join returns, so the result itself shows what the join now plays.",
+  tool("dialogue_revise_cut", "Move a staged dialogue cut. Once a call is with the editor, its range can change only on their request about that cut, and the revised cut goes back to them as a call with `reason` as its note: a doubt for them to listen for goes there, and needs no flag or review save. To trim the pause before a cut, give pauseAfterWord in seconds (0 for the end of the last kept word) instead of start and end. Scarlet locates that word, preserves the incoming edge and measures the word-to-join distance on the saved preview (outgoingPause.remainingSeconds): give the editor that measured time. For other moves give the full new range in TIMELINE seconds on the pass's fromVersion. It may extend past the old edges but must stay clear of neighboring staged cuts. If newer edits affect this passage, Scarlet returns the current version and its location when known. Inspect the current words with timeline_transcript or measure the new edges with dialogue_check_join, then pass that exact version and range to save on the current footage. If the requested result is clear, finish the revision. If it depends on which take the editor wants, task_question can ask that choice. To keep the current footage for the selected call, pass keep:true; when the passage has no current location, use its original range without version. The other cuts and decisions carry over. Measured nearby silence can adjust an edge. Write the reason for the editor in one short sentence. To move several cuts of one pass, list them as cuts in one call. Each moved cut's result has nearbyWords: the words either side of its saved edges as [timeline start, timeline end, text] on the version its times are on, the same reading dialogue_check_join returns, and removes and plays: the words it takes out and the join as the viewer hears it.",
     { changeId: z.string(), version: z.string().min(1).optional().describe("Exact version of an inspected current passage; omit for times on the pass's fromVersion"),
       index: z.number().int().nonnegative().optional(), start: z.number().finite().nonnegative().optional(), end: z.number().finite().nonnegative().optional(),
       crossfadeFrames: crossfadeFrames.describe("Total audio-only overlap in project frames for these revised cuts. Omit to keep the existing transition."),
@@ -2566,10 +2985,12 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         }
         current = carried ? changeId : revised.id;
         if (conflictAt(changeId, move.index)) cutConflict = undefined;
-        const settled = !join || join.status === "unchanged" || join.status === "snapped";
+        const settled = !join || join.status === "unchanged" || join.status === "snapped" || !!join.sameWord;
         // The words either side of the new join, so the move can be judged from its result without reading the passage again.
         const nearbyWords = move.keep ? undefined : dialogueJoinWords(tl, project, range, joinPages());
-        results.push({ index: savedIndex, ...(savedIndex !== move.index && { requestedIndex: move.index }), ...range, ...(move.keep && { choice: "keep" }), audio: join?.status === "unchanged" ? onQuietFrame : join?.reason,
+        const heard = move.keep ? undefined : await cutReading(tl, project, range, mediaId => transcriptWords(mediaId, false).catch(() => null));
+        results.push({ index: savedIndex, ...(savedIndex !== move.index && { requestedIndex: move.index }), ...range, ...(move.keep && { choice: "keep" }), ...heard, audio: join?.status === "unchanged" ? onQuietFrame : join?.reason,
+          ...(join?.sameWordJoin && { sameWordJoin: join.sameWordJoin }),
           ...(nearbyWords && (nearbyWords.start.length || nearbyWords.end.length) && { nearbyWords }),
           next: settled ? undefined : "An edge isn't on measured silence. Check it with dialogue_check_join and call again with a quiet edge if one exists. The latest call replaces this one." });
       }
@@ -2630,40 +3051,75 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       }
       const tl = await getTimeline(authoring?.version ?? version);
       if (format === "full") return json(tl);
-      const project = await getProject();
+      const project = await getHeader();
       return text(summarizeTimeline(tl, project.project.settings.fps));
     },
   );
 
   tool(
     "timeline_at",
-    "Map between timeline and source time so you never compute it by hand. With time (TIMELINE seconds): every clip under that instant with its track and, for media clips, the SOURCE second playing there. With mediaId and sourceTime: every timeline position where that source second plays (none if it was cut). With mediaId and sourceRange: the timeline ranges that play it, split by clip, and the source portions no longer in the edit.",
-    { time: z.number().min(0).optional().describe("Timeline time, seconds"), mediaId: z.string().optional(),
+    "Map between timeline and source time so you never compute it by hand. With time (TIMELINE seconds): every clip under that instant with its track and, for media clips, the SOURCE second playing there. With mediaId and sourceTime: every timeline position where that source second plays (none if it was cut). With mediaId and sourceRange: the timeline ranges that play it, split by clip, and the source portions no longer in the edit. times or sourceTimes map a list in one call on one version, each answer in `at`.",
+    { time: z.number().min(0).optional().describe("Timeline time, seconds"),
+      times: z.array(z.number().min(0)).min(1).optional().describe(`Timeline times, seconds; up to ${TIMES_AT_ONCE} are answered, the rest listed for another call`), mediaId: z.string().optional(),
       sourceTime: z.number().min(0).optional().describe("Source seconds in mediaId"),
+      sourceTimes: z.array(z.number().min(0)).min(1).optional().describe(`Source seconds in mediaId; up to ${TIMES_AT_ONCE} are answered, the rest listed for another call`),
       sourceRange: z.object({ start: z.number().min(0), end: z.number().min(0) }).optional().describe("Source seconds in mediaId"),
       version: z.string().optional() },
-    async ({ time, mediaId, sourceTime, sourceRange, version }) => {
-      const modes = [time !== undefined, sourceTime !== undefined, sourceRange !== undefined].filter(Boolean).length;
-      if (modes !== 1) throw new Error("Give exactly one of time, sourceTime or sourceRange.");
-      if ((sourceTime !== undefined || sourceRange) && !mediaId) throw new Error("sourceTime and sourceRange need the mediaId they belong to.");
+    async ({ time, times, mediaId, sourceTime, sourceTimes, sourceRange, version }) => {
+      const modes = [time, times, sourceTime, sourceTimes, sourceRange].filter(mode => mode !== undefined).length;
+      if (modes !== 1) throw new Error("Give exactly one of time, times, sourceTime, sourceTimes or sourceRange.");
+      if ((sourceTime !== undefined || sourceTimes || sourceRange) && !mediaId) throw new Error("sourceTime, sourceTimes and sourceRange need the mediaId they belong to.");
+      // One read answers a whole list, so every answer is on the same version.
       const tl = await getTimeline(version);
       if (sourceTime !== undefined) return json({ version: tl.version, mediaId, sourceTime, placements: sourceToTimeline(tl, mediaId!, sourceTime) });
+      // A long list is answered in part, with the rest to ask for, rather than refused.
+      const rest = (list: number[]) => list.length > TIMES_AT_ONCE ? { notAnswered: list.slice(TIMES_AT_ONCE), next: `Ask for notAnswered on version ${tl.version}.` } : {};
+      if (sourceTimes) return json({ version: tl.version, mediaId,
+        at: sourceTimes.slice(0, TIMES_AT_ONCE).map(s => ({ sourceTime: s, placements: sourceToTimeline(tl, mediaId!, s) })), ...rest(sourceTimes) });
       if (sourceRange) {
         if (sourceRange.end <= sourceRange.start) throw new Error("sourceRange.end must be greater than sourceRange.start.");
         return json({ version: tl.version, mediaId, sourceRange, ...sourceRangeToTimeline(tl, mediaId!, sourceRange.start, sourceRange.end) });
       }
-      const clips = clipsAt(tl, time!).map(({ track, clip }) => ({
-        trackId: track.id, trackKind: track.kind, clipId: clip.id, kind: clip.kind, ...(clip.label && { label: clip.label }), timelineIn: clip.timelineIn,
-        ...(clip.kind === "media" ? { mediaId: clip.mediaId, sourceIn: clip.sourceIn, sourceOut: clip.sourceOut, sourceTime: round3(timelineToSource(clip, time!)) } : {}),
-        ...(clip.kind === "caption" ? { text: clip.text } : {}),
-      }));
-      return json({ time, version: tl.version, clips, ...(!clips.length && { note: "Nothing plays at that time (a gap)." }) });
+      const under = (t: number) => {
+        const clips = clipsAt(tl, t).map(({ track, clip }) => ({
+          trackId: track.id, trackKind: track.kind, clipId: clip.id, kind: clip.kind, ...(clip.label && { label: clip.label }), timelineIn: clip.timelineIn,
+          ...(clip.kind === "media" ? { mediaId: clip.mediaId, sourceIn: clip.sourceIn, sourceOut: clip.sourceOut, sourceTime: round3(timelineToSource(clip, t)) } : {}),
+          ...(clip.kind === "caption" ? { text: clip.text } : {}),
+        }));
+        return { clips, ...(!clips.length && { note: "Nothing plays at that time (a gap)." }) };
+      };
+      if (times) return json({ version: tl.version, at: times.slice(0, TIMES_AT_ONCE).map(t => ({ time: t, ...under(t) })), ...rest(times) });
+      return json({ time, version: tl.version, ...under(time!) });
     },
   );
 
+  /**
+   * The preset inset over the source seconds a camera plays, from where `faces` finds the presenter in a few stretches
+   * spread across them. Faces not read in time leave the whole picture, said so: the save doesn't wait on a reading.
+   */
+  const presetInsetOver = async (project: Project, camera: MediaAsset, from: number, to: number, want?: InsetPresenter): Promise<PresetInset> => {
+    if (!(to > from)) return presetInset(project, camera, [], want);
+    const wait = Math.min(20, toolWait(caps, 25));
+    const readings = await Promise.all(insetStretches(from, to).map(s => client.get<FaceReading>(
+      `/projects/${encodeURIComponent(ctx.projectId)}/media/${encodeURIComponent(camera.id)}/faces?from=${s.from.toFixed(3)}&to=${s.to.toFixed(3)}&wait=${wait}`)
+      .catch(withoutOnce(`failed to find the presenter's face in ${camera.id} for the inset`, null))));
+    const read = readings.filter((r): r is FaceReading => r !== null);
+    const preset = presetInset(project, camera, read, want);
+    return read.length || !preset.whole ? preset : { ...preset, whole: "the faces in the camera's picture couldn't be read" };
+  };
+  /** What a preset inset shows, for the save's result. */
+  const presetInsetText = (camera: string, preset: PresetInset, want?: InsetPresenter) => {
+    const f = preset.framing;
+    const area = `[${[f.cropLeft ?? 0, f.cropTop ?? 0, 1 - (f.cropRight ?? 0), 1 - (f.cropBottom ?? 0)].map(n => Math.round(n * 1000) / 10).join(", ")}] percent of its picture`;
+    const shown = `${area}, at scale ${f.scale}${f.cornerRadius ? ` with corners rounded ${f.cornerRadius}` : ""}`;
+    return preset.whole
+      ? `The inset isn't placed on the presenter: ${preset.whole}. It shows ${camera}'s ${shown}. Give framing to set it yourself.`
+      : `The inset holds the presenter (${want?.show ?? "shoulders"}): ${camera} shows ${shown}, around the face found in ${preset.presenter!.seconds} s of it. Change presenter, or give framing, to set it otherwise.`;
+  };
+
   tool(
     "timeline_propose",
-    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Returns the change id, state, affected timeline ranges, the new version id and a diff.
+    `Propose an edit to the timeline. Provide EITHER \`ops\` (a list of operations on the named base version) OR \`timeline\` (a full replacement timeline). Scarlet validates it, stores a new version, makes short before/after previews available when the editor opens the change. Directly requested edits apply automatically, onto the current video when it moved since the base version. An edit that meets footage changed since then is not applied: the result's \`notApplied\` says where, and the current version to make it on. Suggestions and alternatives wait for review. Write \`description\` for the editor in one short, plain sentence about what changed (e.g. "Cut the false start at 1:17 and the 1.4 s pause after it"). Pass \`noteIds\` when the change answers review notes. Every audible clip edge the edit makes is measured on its recording, whichever op makes it: one inside a sounding word, or through a sound it would leave a piece of, refuses the edit and gives the quiet second beside it. Audible clips that play the same moment of one recording in sync add up in the mix: an edit that plays a moment louder that way than its base version played it is refused with the clips, the stretch that got louder and both levels. Make the change it names, which turns down the copy the edit added or changed, and another when that one alone can't, over that stretch alone, or pass \`layeredSound\` when the editor asked to hear it layered. Returns the change id, state, affected timeline ranges, the new version id and a diff.
 
 ${OPS_DOC}`,
     {
@@ -2675,20 +3131,34 @@ ${OPS_DOC}`,
       fromVersion: z.string().optional().describe("Version the ops apply to. Defaults to the version you last read with timeline_get or timeline_at; leave it out unless you mean another version."),
       range: z.object({ start: z.number().finite().nonnegative(), end: z.number().finite().positive() }).optional().describe("Timeline range on the base version for synchronized ripple removals across all tracks, including local pauses."),
       pictureLayout: z.union([z.object({ screenClipId: z.string(), cameraClipId: z.string(),
+        presenter: InsetPresenter.optional(),
         framing: InsetFraming.optional(),
       }), z.literal("asPlaced")]).optional()
-        .describe("Optional camera inset during the specified clips’ overlap. Supply framing (scale, center-relative x/y, optional crop and cornerRadius), or use the preset quarter-size bottom-right inset. Omit pictureLayout to use the submitted clip transforms."),
+        .describe("Optional camera inset during the specified clips’ overlap, in the bottom-right corner, placed on the presenter where `faces` finds one face: `presenter` sets how much of them it shows, its shape, size and corners as the editor's skill asks (head and shoulders at a quarter size when omitted). `framing` (scale, center-relative x/y, optional crop and cornerRadius) sets the transform outright instead. Omit pictureLayout to use the submitted clip transforms."),
       intent: intentInput,
       timelineEdits: timelineEditsInput,
       ...(!ctx.taskId && { autoApprove: z.boolean().optional().describe("Apply a standalone edit authored directly by the editor") }),
       skipRender: z.boolean().optional().describe("Skip before/after renders (metadata-only changes like markers)"),
       withdraws: z.array(z.string()).max(20).optional().describe("Change IDs of this request's own suggestions or alternatives, still waiting for the editor, that this one replaces, such as a draft or a test. They leave the editor's review when this one is saved."),
+      layeredSound: z.boolean().optional().describe("The editor asked to hear the same moment of a recording on two clips at once. Leave it out otherwise"),
     },
-    async ({ ops, timeline, description, reason, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws }) => {
+    async ({ ops, timeline, description, reason, noteIds, fromVersion, intent, autoApprove, timelineEdits, skipRender, range, pictureLayout, withdraws, layeredSound }) => {
       // Every clip edge the edit makes is measured on its recording, however the edit makes it: a ripple, a clip added
       // or trimmed, a whole new timeline. One pass built its video from added clips, which nothing measured, and began
       // a clip inside the end of an “uh”; the revision the editor then asked for trimmed that join by one frame, into
       // the first sound of the next word, and said the word now played in full (2026-11-12).
+      // A second audible copy of the same moment of a recording doubles that sound in the mix. One edit asked to keep the
+      // original audio and played it twice as loud, on the video clip and again on A1 (#18). A directly requested edit
+      // applies as it's saved, so the model hears of it first, and an editor who asked for the layering still gets it.
+      // It reads no audio, so it runs before any of the edit's edges are measured and refuses sooner.
+      const refuseDoubledSound = async (next: Timeline) => {
+        if (layeredSound) return;
+        const doubled = await getProject()
+          .then(({ project }) => introducedDoubledSound(before, next, project.media))
+          .catch(without("failed to check the edit for sound it plays louder", [] as LouderDoubledSound[]));
+        if (doubled.length) throw new Error(doubled.slice(0, 6).map(d => doubledSoundText(d, next)).join("; ") +
+          `${doubled.length > 6 ? `; and ${doubled.length - 6} more` : ""}. ${DOUBLED_SOUND}`);
+      };
       const refuseEdgesInSound = async (base: Timeline | null, next: Timeline) => {
         const inside = await edgesInSound(base, next).catch(withoutUnlessPreparing("failed to measure the edit's new clip edges", [] as SoundingEdge[]));
         if (inside.length) throw new Error(inside.slice(0, 12).map(e => edgeInSoundText(e)).join("; ") +
@@ -2704,13 +3174,27 @@ ${OPS_DOC}`,
         ...(withdraws?.length && { withdraws }) };
       const frameChanges: FrameAdjustment[] = [];
       const inset = typeof pictureLayout === "object" ? pictureLayout : undefined;
+      let insetNote: string | undefined;
+      /** The inset as given, or the preset on the presenter where no framing was. Roles are checked before faces are read. */
+      const insetLayout = async (placed: Timeline): Promise<NonNullable<typeof inset>> => {
+        if (inset?.presenter && inset.framing) throw new Error("Give pictureLayout presenter or framing, not both.");
+        if (!inset || inset.framing) return inset!;
+        const { project } = await getProject();
+        syncPictureOps(project, placed, inset);
+        const clip = placed.tracks.flatMap(t => t.clips).find(c => c.id === inset.cameraClipId);
+        const camera = clip?.kind === "media" ? project.media.find(m => m.id === clip.mediaId) : undefined;
+        if (clip?.kind !== "media" || !camera) return inset;
+        const preset = await presetInsetOver(project, camera, clip.sourceIn, clip.sourceOut, inset.presenter);
+        insetNote = presetInsetText(camera.id, preset, inset.presenter);
+        return { ...inset, framing: preset.framing };
+      };
       if (ops) {
         const v = validateOps(ops);
         if (!v.ok) return errorText(v.error);
         if (!v.ops.length) throw new Error("ops is empty");
         if (before && (range || (selectedRange(ctx.task?.context) && v.ops.every(o => o.op === "rippleDelete" && !o.trackIds)))) {
           body.range = cutScope(before, await cutAnchor(before), range);
-          const aligned = boundedRippleOps(v.ops, body.range, (await getProject()).project.settings.fps, timelineDuration(before));
+          const aligned = boundedRippleOps(v.ops, body.range, (await getHeader()).project.settings.fps, timelineDuration(before));
           const drift = rippleDrift();
           for (const [i, op] of aligned.entries()) {
             const asked = v.ops[i]!;
@@ -2723,6 +3207,9 @@ ${OPS_DOC}`,
           v.ops = aligned;
         } else v.ops = await ripplesOnFrames(v.ops, before, frameChanges);
         body.ops = v.ops;
+        // Dry-run against the pinned base before deriving the picture from the synchronized clips.
+        const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);
+        await refuseDoubledSound(placed);
         // Dialogue removed here skips the edge placement and checks of dialogue_apply_cuts. Three removals on one pass
         // came this way, and an edge inside a sounding word is the clipped word the editor sends back. Each all-track
         // ripple is measured on the timeline it applies to, in order.
@@ -2745,20 +3232,20 @@ ${OPS_DOC}`,
           if (split.length) throw new Error(split.join("; ") +
             ". Nothing was saved. Remove dialogue with dialogue_apply_cuts, where a word reference puts each edge in the recording's silence, or move the edge onto quiet (dialogue_check_join measures it).");
         }
-        // Dry-run against the pinned base before deriving the picture from the synchronized clips.
-        const placed = applyOps(before ?? emptyTimeline(ctx.projectId), v.ops);
         await refuseEdgesInSound(before, placed);
-        if (inset) body.ops = [...v.ops, ...syncPictureOps((await getProject()).project, placed, inset)];
+        if (inset) body.ops = [...v.ops, ...syncPictureOps((await getProject()).project, placed, await insetLayout(placed))];
       } else {
         const parsed = WritableTimeline.safeParse({ ...timeline, projectId: ctx.projectId, version: (timeline as { version?: string })?.version ?? "draft" });
         if (!parsed.success) {
           return errorText(`Invalid timeline:\n${formatZodError(parsed.error)}`);
         }
         body.timeline = parsed.data;
+        await refuseDoubledSound(parsed.data);
         await refuseEdgesInSound(before, parsed.data);
-        if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, inset));
+        if (inset) body.timeline = applyOps(parsed.data, syncPictureOps((await getProject()).project, parsed.data, await insetLayout(parsed.data)));
       }
-      return propose(body, before, frameChanges);
+      const result = await propose(body, before, frameChanges);
+      return insetNote ? { ...result, content: [...result.content, { type: "text" as const, text: insetNote }] } : result;
     },
   );
 
@@ -2784,7 +3271,7 @@ ${OPS_DOC}`,
 
   tool(
     "timeline_crossfade_audio",
-    "Propose centered audio-only crossfades between touching dialogue clips on the same audible track. Pass the clip ids on either side of each join. The total overlap defaults to two project frames. Uses real source handles and preserves picture timing and manual fades. All joins form one proposal.",
+    "Propose centered audio-only crossfades between touching dialogue clips on the same audible track. Pass the clip ids on either side of each join. The total overlap is `duration`, from the skill; two project frames when omitted. Uses real source handles and preserves picture timing and manual fades. All joins form one proposal.",
     {
       intent: intentInput,
       joins: z.array(z.object({ leftClipId: z.string(), rightClipId: z.string() })).min(1),
@@ -2804,11 +3291,10 @@ ${OPS_DOC}`,
 
   tool(
     "timeline_transition",
-    "Put a transition on joins between clips on a video track, or take it off (none). A transition is how the picture moves from one clip to the next, centred on the join: dissolve, dip (through a colour), push, slide or whip (a push with a sideways blur). The sound at the join is not changed. Name a saved transition template with template (what the editor typed after $, such as swipe), or give type and duration; either way type, duration, direction and color you pass win over the template's. Find a join by the clip it leads into (clipId) or by its time on the track (at, timeline seconds; the bottom video track unless trackId). A transition shows a little more footage either side of the join, from each clip's own source; with less footage than half its length on a side it runs shorter, and with none it stays a straight cut: the result says what each join got. All joins form one proposal.",
+    "Put a transition on joins between clips on a video track, or take it off (none). A transition is how the picture moves from one clip to the next, centred on the join: dissolve, dip (through a colour), push, slide or whip (a push with a sideways blur). The sound at the join is not changed. Give its type and duration. By their usual names, unless the editor or a skill gives another length: a swipe is a push of 0.4 s, a whip pan a whip of 0.3 s, a slide 0.4 s, a dissolve 0.5 s, and a dip to black a dip of 0.6 s. Find a join by the clip it leads into (clipId) or by its time on the track (at, timeline seconds; the bottom video track unless trackId). A transition shows a little more footage either side of the join, from each clip's own source; with less footage than half its length on a side it runs shorter, and with none it stays a straight cut: the result says what each join got. All joins form one proposal.",
     {
       intent: intentInput,
       joins: z.array(z.object({ clipId: z.string().optional(), at: z.number().finite().nonnegative().optional(), trackId: z.string().optional() })).min(1),
-      template: z.string().min(1).optional().describe("A saved transition template, by name or id"),
       type: z.enum(["dissolve", "dip", "push", "slide", "whip"]).optional(),
       duration: z.number().finite().positive().max(10).optional().describe("Seconds, centred on the join"),
       direction: z.enum(["left", "right", "up", "down"]).optional().describe("push, slide and whip: the way the picture travels; left brings the next picture in from the right"),
@@ -2818,24 +3304,46 @@ ${OPS_DOC}`,
       reason: editReasonInput,
       noteIds: z.array(z.string()).optional(),
     },
-    async ({ intent, joins, template, type, duration, direction, color, none, description, reason, noteIds }) => {
+    async ({ intent, joins, type, duration, direction, color, none, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
       const { project } = await getProject();
       const before = await getTimeline(base);
-      if (!before) throw new Error("There is no timeline to put a transition on yet.");
       let style: Transition | null = null;
       if (!none) {
-        const saved = template ? (await client.template(template)).template : undefined;
-        if (saved && saved.kind !== "transition") throw new Error(`$${saved.name} is a graphic template, not a transition. graphic_render draws it.`);
-        const from = saved?.transition;
-        const kind = type ?? from?.type;
-        if (!kind) throw new Error("Name a transition template, or give its type and duration.");
-        style = Transition.parse({ ...from, type: kind, duration: duration ?? from?.duration ?? 0.5, ...(direction && { direction }), ...(color && { color }),
-          ...(saved && { template: saved.name }) });
+        if (!type) throw new Error("Give the transition's type and duration.");
+        style = Transition.parse({ type, duration: duration ?? 0.5, ...(direction && { direction }), ...(color && { color }) });
       }
       const { ops, report } = transitionOps(before, project.media, project.settings.fps, joins, style);
       const result = await propose({ intent, ops, description, reason, noteIds }, before);
       return { ...result, content: [...result.content, { type: "text" as const, text: `Joins:\n${report.join("\n")}` }] };
+    },
+  );
+
+  tool(
+    "timeline_picture_sync",
+    "Put a video's picture in time with its own sound, all through the edit: lip_sync measures how far off they are. Its sound stays where it is, so cuts placed by ear and recordings synced to it by sound stay as they are; its picture plays from `soundLeads` seconds later in the recording (earlier when negative), so a mouth moves with the words. `soundLeads` is set, not added: every clip of the video that plays beside its own sound is put that far from it whatever it was before, so a second call replaces the first and 0 puts the picture back as recorded. A clip that played its own sound hands it to the dialogue track below its own and goes silent, so its picture can move. A clip with none of its own sound beside it moves by the whole amount. Where the recording's picture runs out, a clip is shortened: the result lists each clip moved and any picture lost. One proposal.",
+    {
+      intent: intentInput,
+      mediaId: z.string().describe("The video whose picture to move"),
+      soundLeads: z.number().finite().min(-5).max(5).describe("Seconds the recording's sound comes before its picture, as lip_sync gives it: positive moves the picture later in the recording"),
+      description: z.string().min(1).default("Put the picture in time with its sound").describe("One short sentence for the chat about what the editor will see"),
+      reason: editReasonInput,
+      noteIds: z.array(z.string()).optional(),
+    },
+    async ({ intent, mediaId, soundLeads, description, reason, noteIds }) => {
+      const base = lastTimeline?.version;
+      const { project } = await getProject();
+      const before = await getTimeline(base);
+      const { ops, report } = pictureSyncOps(before, project.media, mediaId, soundLeads);
+      if (!ops.length) return text(`Nothing to change: every clip of ${mediaId} already plays its picture ${soundLeads} s after its sound.`);
+      const result = await propose({ intent, ops, description, reason, noteIds }, before);
+      const lines = [
+        `Moved the picture of ${report.moved.length} clip${report.moved.length === 1 ? "" : "s"}${report.unchanged ? ` (${report.unchanged} already there)` : ""}.`,
+        ...(report.soundMoved.length ? [`${report.soundMoved.length} clip${report.soundMoved.length === 1 ? "" : "s"} handed their sound to a dialogue track: ${report.soundMoved.join(", ")}.`] : []),
+        ...(report.pictureOnly.length ? [`No sound of the recording plays beside ${report.pictureOnly.join(", ")}: moved by the whole ${soundLeads} s.`] : []),
+        ...report.shortened.map(s => `${s.clipId} lost ${s.seconds.toFixed(3)} s of picture at ${s.at.toFixed(3)} s: the recording's picture runs out there.`),
+      ];
+      return { ...result, content: [...result.content, { type: "text" as const, text: lines.join("\n") }] };
     },
   );
 
@@ -2845,7 +3353,7 @@ ${OPS_DOC}`,
   let framed: Array<{ changeId: string; mediaId: string; trackId?: string; from: number; to: number }> = [];
   tool(
     "timeline_framing",
-    "Frame a recording's picture on an area of it over a stretch of the edit: a zoom in on a pane, a move from one subject to the next, a pull back out. Each framing names the area that must be seen (`show`) from a timeline second (`at`), as [left, top, right, bottom] in percent of the SOURCE picture: the units of screen_text's boxes" + (caps.images ? " and media_frame's grid" : "") + ". Scarlet places the tightest frame of the video's shape around it, so the picture always fills the video with no background beside it, and keeps the area clear of any picture laid over the recording, such as a camera inset. `within` is the area the frame may show, one window for example: the frame grows into it and goes past it only when it has to. The same `show`, `within` and inset place the same frame again, so a framing you resend unchanged stays as it was while you change others. `inset` moves the picture laid over the recording to another corner of the video from that framing on, at the size and margins it has, travelling with the frame's move; it stays there through `to` unless a later framing moves it again. `inset` as `clear` leaves the choice of corner to what is on screen: the picture's own corner when it sits on none of the frame's text there, else a corner where it sits on none, and the result says which (`inset`) or that no corner is clear (`noCornerClearOfText`). The picture moves to each frame over `over` seconds (default 1; 0 is a straight cut), easing in and out, and holds until the next framing or `to`; a move runs on across the cuts that split the footage into clips. The first framing moves from the frame already there when the footage plays on from before it, and otherwise starts on its frame. Clips of the recording outside the stretch keep their framing. The result gives each frame as placed: `frame` in percent of the source, `zoom`, `sourcePixels` (source pixels per pixel of the video; under 1 the picture is enlarged past its own detail), `holds` seconds, `hidden` (percent of `show` that a cover or the frame's edge hides), `beyondWithin` (percent of the frame past `within`, by side) with `insideWithin` (the largest frame that stays inside it, and the percent of `show` that one hides), `covers` (other pictures over the video there, in percent of the video), `notOnPicture` when another picture fills the video there, and `text` where the recording's text has been read (screen_text reads it): the lines in `show`, their smallest and usual height in pixels of the video, any a cover sits on (`underCover`), and the corners where the cover would sit on none (`cornersClearOfText`); `textUnderCover` lists the framings that have such lines." + (caps.images ? ` With a picture of the video at each frame's settled moment, ${FRAMING_PICTURES} a call starting at \`picturesFrom\`.` : "") + " `preview` works all of this out and shows it without saving. A framing saved over a stretch this request already framed takes that edit's place in the editor's list, unless you give `timelineEdits`. For a crop with the background showing, an inset or a rotation, use timeline_propose's updateClip.",
+    "Frame a recording's picture on an area of it over a stretch of the edit: a zoom in on a pane, a move from one subject to the next, a pull back out. Each framing names the area that must be seen (`show`) from a timeline second (`at`), as [left, top, right, bottom] in percent of the SOURCE picture: the units of screen_text's boxes" + (caps.images ? " and media_frame's grid" : "") + ". Scarlet places the tightest frame of the video's shape around it, so the picture always fills the video with no background beside it, and keeps the area clear of any picture laid over the recording, such as a camera inset. `within` is the area the frame may show, one window for example: the frame grows into it and goes past it only when it has to. The same `show`, `within` and inset place the same frame again, so a framing you resend unchanged stays as it was while you change others. `inset` moves the picture laid over the recording to another corner of the video from that framing on, at the size and margins it has, travelling with the frame's move; it stays there through `to` unless a later framing moves it again. `inset` as `clear` leaves the choice of corner to what is on screen: the picture's own corner when it sits on none of the frame's text there, else a corner where it sits on none, and the result says which (`inset`) or that no corner is clear (`noCornerClearOfText`). The picture moves to each frame over `over` seconds (default 1; 0 is a straight cut), eased as `ease` says (in and out by default), and holds until the next framing or `to`; a move runs on across the cuts that split the footage into clips. The first framing moves from the frame already there when the footage plays on from before it, and otherwise starts on its frame. Clips of the recording outside the stretch keep their framing. The result gives each frame as placed: `frame` in percent of the source, `zoom`, `sourcePixels` (source pixels per pixel of the video; under 1 the picture is enlarged past its own detail), `holds` seconds, `hidden` (percent of `show` that a cover or the frame's edge hides), `beyondWithin` (percent of the frame past `within`, by side) with `insideWithin` (the largest frame that stays inside it, and the percent of `show` that one hides), `covers` (other pictures over the video there, in percent of the video), `notOnPicture` when another picture fills the video there, and `text` where the recording's text has been read (screen_text reads it): the lines in `show`, their smallest and usual height in pixels of the video, any a cover sits on (`underCover`), and the corners where the cover would sit on none (`cornersClearOfText`); `textUnderCover` lists the framings that have such lines." + (caps.images ? ` With a picture of the video at each frame's settled moment, ${FRAMING_PICTURES} a call starting at \`picturesFrom\`.` : "") + " `preview` works all of this out and shows it without saving. A framing saved over a stretch this request already framed takes that edit's place in the editor's list, unless you give `timelineEdits`. For a crop with the background showing, an inset or a rotation, use timeline_propose's updateClip.",
     {
       intent: intentInput,
       mediaId: z.string().describe("The recording whose picture to frame"),
@@ -2855,6 +3363,7 @@ ${OPS_DOC}`,
         show: percentBox.describe("The area that must be seen: [left, top, right, bottom] in percent of the source picture"),
         within: percentBox.optional().describe("The area the frame may show, in the same units"),
         over: z.number().finite().min(0).max(30).default(1).describe("Seconds the move takes; 0 cuts straight to the frame"),
+        ease: z.enum(MOVE_EASES).optional().describe("How the move speeds up and settles: easeInOut (the default) starts and settles gently, easeOut starts quickly and settles, easeIn starts gently and arrives quickly, linear moves at one speed"),
         inset: z.enum([...CORNERS, "clear"]).optional().describe("Move the picture laid over the recording to this corner of the video from here on, or `clear` for a corner where it sits on none of the frame's text"),
       })).min(1).max(300).describe("In time order"),
       to: z.number().finite().positive().optional().describe("Timeline seconds where the last frame stops holding. Defaults to the end of the recording's last clip."),
@@ -2870,14 +3379,24 @@ ${OPS_DOC}`,
       const picturesFrom = (rest as { picturesFrom?: number }).picturesFrom ?? 0;
       const { project } = await getProject();
       const before = await getTimeline(fromVersion ?? lastTimeline?.version);
-      if (!before || before.version === "draft") throw new Error("There is no saved timeline to frame yet.");
+      if (before.version === "draft") throw new Error("There is no saved timeline to frame yet.");
       const fraction = (box: readonly number[]) => box.map(n => n / 100) as Box;
       const percent = (box: readonly number[]) => box.map(n => Math.round(n * 1000) / 10);
       // Where each framing puts the inset: the corner it names, or for `clear` the one worked out below.
       const corners: Array<Corner | undefined> = framings.map(f => f.inset === "clear" ? undefined : f.inset);
+      // A framing with no `within` takes the area viewers may see at its footage, where one is on record (screen_area).
+      let withinOnRecord: Array<Box | undefined> = [];
       const place = () => framingOps(before, project.media, project.settings,
-        framings.map((f, i) => ({ at: f.at, show: fraction(f.show), within: f.within && fraction(f.within), over: f.over, inset: corners[i] })), { mediaId, trackId, to });
+        framings.map((f, i) => ({ at: f.at, show: fraction(f.show), within: f.within ? fraction(f.within) : withinOnRecord[i], over: f.over, ...(f.ease && { ease: f.ease }), inset: corners[i] })), { mediaId, trackId, to });
       let plan = place();
+      const areasOnRecord = await recordingAreas(mediaId, 5).catch(() => undefined);
+      if (areasOnRecord?.done && areasOnRecord.areas.length) {
+        withinOnRecord = framings.map((f, i) => {
+          const at = plan.frames[i]?.sourceTime;
+          return f.within || at === undefined ? undefined : areasOnRecord.areas.find(a => a.holds.some(([from, to]) => at >= from - 1e-6 && at < to + 1e-6))?.area;
+        });
+        if (withinOnRecord.some(Boolean)) plan = place();
+      }
 
       // What the recording's text says about each frame, where it has been read. A frame whose inset is to sit clear of
       // text waits a little for a reading; nothing else here waits for one.
@@ -2919,7 +3438,7 @@ ${OPS_DOC}`,
       }
       const report = plan.frames.map((f, i) => {
         const show = fraction(framings[i]!.show);
-        const [fl, ft, fr, fb] = f.frame, fw = fr - fl, fh = fb - ft;
+        const [, ft, , fb] = f.frame, fh = fb - ft;
         const inside = (box: readonly number[], x: number, y: number) => x >= box[0]! && x <= box[2]! && y >= box[1]! && y <= box[3]!;
         const spans = lines[i]?.map(s => ({ ...s, x: (s.box[0] + s.box[2]) / 2, y: (s.box[1] + s.box[3]) / 2 }));
         const shown = spans?.filter(s => inside(show, s.x, s.y));
@@ -2992,7 +3511,7 @@ ${OPS_DOC}`,
 
   tool(
     "timeline_first_cut",
-    "Replace the whole timeline with SOURCE keeps in the supplied playback order. For dialogue, {fromWord,toWord} keeps those inclusive transcript_get word indices and places their edges in measured quiet. Split adjacent words into separate keeps to tighten their pause. For picture, reordered jumps, or a boundary that needs review, supply exact source seconds as start/end on the affected keeps. {start,end} alone keeps an exact passage. The first and last source words keep the recording head and tail unless you give those handles. With synced A1 audio or audible layer sound, word indices belong to the recording that is heard. `layer` adds a second recording of the same event (a camera beside a screen capture) on a video track above V1, in sync at the offset audio_sync measured with mediaId as the reference: each keep range plays the same moment of both, wherever the layer has footage, as an inset (the preset quarter-size bottom-right, or `framing`). One recording is heard: mediaId's, or the layer's with `sound`. `audioMediaId` places a separate audio recording on A1 with the same ranges and mutes the video clips; use it only when it shares mediaId's timebase. `crossfade` adds that many seconds of audio fade in/out on each clip (about 2 frames, 0.066 s at 30 fps). For centered audio joins, leave crossfade unset. After the assembly is applied, timeline_get returns its clip IDs for timeline_crossfade_audio, which uses a two-frame overlap by default and keeps this assembly separately reviewable. Each keep edge is measured on the recording that is heard: one that would leave a piece of a sound playing moves onto the quiet that ends it, 0.12 s away at most, and comes back in `movedEdges`; one inside a sounding word saves nothing and is named with what was measured.",
+    "Replace the whole timeline with SOURCE keeps in the supplied playback order. For dialogue, {fromWord,toWord} keeps those inclusive transcript_get word indices and places their edges in measured quiet. Split adjacent words into separate keeps to tighten their pause to `leave`. For picture, reordered jumps, or a boundary that needs review, supply exact source seconds as start/end on the affected keeps. {start,end} alone keeps an exact passage. The first and last source words keep the recording head and tail unless you give those handles. With synced A1 audio or audible layer sound, word indices belong to the recording that is heard. `layer` adds a second recording of the same event (a camera beside a screen capture) on a video track above V1, in sync at the offset audio_sync measured with mediaId as the reference: each keep range plays the same moment of both, wherever the layer has footage, as an inset in the bottom-right corner, placed on the presenter where `faces` finds one face: `presenter` sets how much of them it shows, its shape, size and corners as the editor's skill asks (head and shoulders at a quarter size when omitted), or `framing` sets its transform outright. One recording is heard: mediaId's, or the layer's with `sound`. `audioMediaId` places a separate audio recording on A1 with the same ranges and mutes the video clips; use it only when it shares mediaId's timebase. `crossfade` adds that many seconds of audio fade in/out on each clip. For centered audio joins, leave crossfade unset. After the assembly is applied, timeline_get returns its clip IDs for timeline_crossfade_audio, which keeps this assembly separately reviewable. Each keep edge is measured on the recording that is heard: one that would leave a piece of a sound playing moves onto the quiet that ends it, 0.12 s away at most, and comes back in `movedEdges`; one inside a sounding word saves nothing and is named with what was measured.",
     {
       intent: intentInput,
       mediaId: z.string().describe("Video (or audio-only) media to cut from"),
@@ -3008,18 +3527,21 @@ ${OPS_DOC}`,
         mediaId: z.string().describe("The second video recording"),
         offset: z.number().finite().describe("Seconds it starts after mediaId (negative = earlier): audio_sync's offset with mediaId as referenceId"),
         sound: z.boolean().optional().describe("Hear this recording instead of mediaId's"),
-        framing: InsetFraming.optional().describe("Scale and center-relative x/y of its picture, with optional crop and cornerRadius, in place of the preset inset"),
+        presenter: InsetPresenter.optional().describe("How the inset holds the presenter, from the editor's skill"),
+        framing: InsetFraming.optional().describe("Scale and center-relative x/y of its picture, with optional crop and cornerRadius, in place of the inset placed on the presenter"),
       }).optional().describe("A second simultaneous recording, inset above the first"),
       audioMediaId: z.string().optional().describe("Separate audio recording synced to the video (same source timebase)"),
       crossfade: z.number().min(0).max(2).optional().describe("Audio fade in/out per clip, seconds"),
+      pace: paceInput,
+      leave: z.number().finite().min(0.05).max(10).optional().describe("Seconds the pause between two adjacent keeps still plays, word to word, as the editor hears it. Omitted: pace's after and before together."),
       description: z.string().min(1).describe("Description for the reviewer"),
       reason: editReasonInput,
       noteIds: z.array(z.string()).optional(),
     },
-    async ({ intent, mediaId, keep, layer, audioMediaId, crossfade, description, reason, noteIds }) => {
+    async ({ intent, mediaId, keep, layer, audioMediaId, crossfade, pace, leave, description, reason, noteIds }) => {
       const base = lastTimeline?.version;
-      const detail = await getProject();
-      const before = base ? await getTimeline(base) : detail.timeline ?? await headTimelineOrNull();
+      const detail = base ? { ...await getProject(), timeline: await getTimeline(base) } : await client.workspace(ctx.projectId);
+      const before = detail.timeline ?? await headTimelineOrNull();
       const media = detail.project.media.find((m) => m.id === mediaId);
       if (!media) throw new Error(`Media ${mediaId} is not in this project. Use project_get for media ids.`);
       const audio = audioMediaId ? detail.project.media.find(m => m.id === audioMediaId) : media;
@@ -3032,6 +3554,7 @@ ${OPS_DOC}`,
         if (second.kind !== "video" || second.id === mediaId) throw new Error("The layer is a second video recording, not mediaId itself or a sound recording. A separate sound recording goes in audioMediaId.");
         if (!second.duration) throw new Error(`The length of ${layer.mediaId} isn't known yet, so it can't be placed in sync. Try again once it has been read.`);
         if (layer.sound && audioMediaId) throw new Error("Choose one sound: the layer's (sound) or the separate recording (audioMediaId).");
+        if (layer.presenter && layer.framing) throw new Error("Give the layer presenter or framing, not both.");
       }
       const anchor = ctx.task?.context;
       if (before?.tracks.some(t => t.clips.length) && selectedRange(anchor))
@@ -3044,7 +3567,7 @@ ${OPS_DOC}`,
         ...r, start: r.start === undefined ? undefined : r.start - offset,
         end: r.end === undefined ? undefined : r.end - offset,
       })) : keep;
-      const placed = await firstCutRanges(handles, ctx.projectId, indexedLayer ? second! : audio, planSources);
+      const placed = await firstCutRanges(handles, ctx.projectId, indexedLayer ? second! : audio, { ...planSources, pace }, leave);
       const ranges = offset ? placed.ranges.map(r => ({ ...r, start: r.start + offset, end: r.end + offset })) : placed.ranges;
       const placement = placed.evidence;
       if (anchor?.mediaId && anchor.time !== undefined && anchor.end !== undefined &&
@@ -3058,9 +3581,12 @@ ${OPS_DOC}`,
         }
       });
       if (problems.length) return errorText(`Invalid keep ranges:\n${problems.map((p) => `- ${p}`).join("\n")}`);
+      // The layer plays the source seconds of the keeps, `offset` later in its own recording.
+      const preset = layer && second && !layer.framing ? await presetInsetOver(detail.project, second,
+        Math.max(0, Math.min(...ranges.map(r => r.start)) - layer.offset), Math.min(second.duration!, Math.max(...ranges.map(r => r.end)) - layer.offset), layer.presenter) : undefined;
       const build = () => timelineFromKeepRanges(ctx.projectId, mediaId, ranges, { audioMediaId, crossfade,
         layer: layer && second ? { mediaId: second.id, offset: layer.offset, duration: second.duration!, sound: layer.sound,
-          transform: Transform.parse(layer.framing ?? insetFraming(detail.project, second)) } : undefined });
+          transform: Transform.parse(layer.framing ?? preset!.framing) } : undefined });
       // Check the audible picture and audio edges of the assembled timeline, including the edges supplied in seconds. One that
       // leaves a piece of a sound playing goes onto the quiet that ends the piece, a fragment's length away at most,
       // and is reported. One inside a sounding word is the model's to move: which side of the word it meant is its call.
@@ -3104,6 +3630,7 @@ ${OPS_DOC}`,
         content: [
           { type: "text", text: `First edit: ${ranges.length} clip(s), ${total.toFixed(2)} s total${media.duration ? ` from ${media.duration.toFixed(2)} s of source` : ""}.` +
             (layer ? ` Layer ${layer.mediaId}: ${covered.toFixed(2)} s of the ${total.toFixed(2)} s inset on V2 in ${inset.length} clip(s)${total - covered > 0.01 ? `; it has no footage for the other ${(total - covered).toFixed(2)} s, where ${mediaId} plays alone` : ""}.` : "") },
+          ...(preset ? [{ type: "text" as const, text: presetInsetText(second!.id, preset, layer?.presenter) }] : []),
           ...(movedEdges.length ? [{ type: "text" as const, text: JSON.stringify({ movedEdges }) }] : []),
           ...(placement.length ? [{ type: "text" as const, text: placement.join("\n") }] : []),
           ...result.content,
@@ -3118,8 +3645,10 @@ ${OPS_DOC}`,
     {
       mediaId: z.string().optional(),
       intent: intentInput,
-      maxWords: z.number().int().positive().default(5),
-      maxChars: z.number().int().positive().default(32),
+      maxWords: z.number().int().positive().default(5).describe("Most words in one caption (5 when omitted). The skill's caption size sets it."),
+      maxChars: z.number().int().positive().default(32).describe("Most characters in one caption, all its lines together (32 when omitted, about one short line); the style's maxWidth wraps it into lines. The skill's caption size sets it."),
+      readingRate: z.number().finite().min(5).max(40).optional().describe("Characters a second a viewer reads: each caption stays up until it can be read at this rate, past its last word if need be, and never into the next caption. Omitted, a caption ends with its last word."),
+      sentences: z.boolean().optional().describe("End each caption with its sentence, so none carries the end of one into the start of the next."),
       style: CaptionStyle.partial().optional(),
       maxGap: z.number().finite().nonnegative().optional().describe("Longest inter-word gap within a cue, in seconds (default 0.8)."),
       destination: z.union([z.literal("new"), z.object({ replaceTrackId: z.string().min(1) })]).optional().describe("Create a new caption track or replace the cues of one named caption track."),
@@ -3127,7 +3656,7 @@ ${OPS_DOC}`,
       description: z.string().min(1).default("Generate captions from the transcript"),
       reason: editReasonInput,
     },
-    async ({ intent, mediaId, maxWords, maxChars, maxGap, style, destination, trackName, description, reason }) => {
+    async ({ intent, mediaId, maxWords, maxChars, maxGap, readingRate, sentences, style, destination, trackName, description, reason }) => {
       const detail = await client.workspace(ctx.projectId);
       const head = detail.timeline;
       if (!head) throw new Error("The project has no timeline yet; assemble an edit before generating captions.");
@@ -3166,7 +3695,7 @@ ${OPS_DOC}`,
       for (const id of mediaIds) if (!mappers.has(id)) skipped.push(id);
       const words = dedupeWords(mapped);
       if (!words.length) throw new Error(`No transcript words land on the current edit${skipped.length ? ` (no transcript for: ${skipped.join(", ")})` : ""}.`);
-      const groups = captionsFromWords(words, { maxWords, maxChars, maxGap, minDuration: 0.1 });
+      const groups = captionsFromWords(words, { maxWords, maxChars, maxGap, minDuration: 0.1, readingRate, sentences });
       const captionClips: CaptionClip[] = groups.map((g) => ({
         id: newId("cap"),
         kind: "caption",
@@ -3337,7 +3866,7 @@ ${OPS_DOC}`,
   // -- motion graphics -----------------------------------------------------
 
   registerGraphics({ tool, client, projectId: ctx.projectId, task: ctx.task, author: ctx.author, caps,
-    readArtifact: async path => readArtifact(await artifactDir(), path), getProject });
+    readArtifact: async path => readArtifact(await artifactDir(), path), getProject: getHeader });
 
   tool(
     "export_otio",
@@ -3346,7 +3875,7 @@ ${OPS_DOC}`,
     async ({ version, path }) => {
       let v = version;
       if (!v || v === "head") {
-        const detail = await getProject();
+        const detail = await getHeader();
         if (!detail.project.head) throw new Error("project has no head version to export");
         v = detail.project.head;
       }
@@ -3469,6 +3998,7 @@ ${OPS_DOC}`,
     );
   }
 
+  if (caps.briefTools) listToolsBriefly(server);
   return server;
 }
 

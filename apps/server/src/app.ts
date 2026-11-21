@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { matchedRoutes } from "hono/route";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ZodError } from "zod/v3";
+import { MissingFilterError } from "@scarlet/render";
 import { OpError, TimelinePlanningError } from "@scarlet/timeline";
 import { authMiddleware, type AppEnv } from "./auth.js";
 import { createContext, noteEngineStart, type Ctx, type ServerOptions } from "./context.js";
@@ -25,6 +26,7 @@ import { graphicRoutes } from "./routes/graphics.js";
 import { historyRoutes } from "./routes/history.js";
 import { evalExportRoutes } from "./routes/evalExport.js";
 import { scheduleTrashPurge } from "./services/trash.js";
+import { scanAheadOfPasses } from "./services/dialoguePrefetch.js";
 import { migrateDialogueOperations } from "./services/tasks.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { continueReadyRuns, recoverTasks, wireContinueWhenReady } from "./services/taskRecovery.js";
@@ -37,7 +39,6 @@ import { foldStrandedPasses, recordLeftOutFootage, retireLeftoverPasses, wireCha
 import { RenderQueue } from "./services/renderQueue.js";
 import { migrateQuickActions } from "./services/migrateQuickActions.js";
 import { retireMergedSkills, migrateGlobalSkills, seedSkillList, seedSkills } from "./services/skills.js";
-import { seedStockTransitions } from "./services/graphics.js";
 import { migrateDialogueSettings } from "./services/migrateDialogueSettings.js";
 import { BUNDLED_SKILLS } from "./bundledSkills.js";
 import { featureForRequest } from "@scarlet/shared";
@@ -83,6 +84,9 @@ export function createApp(options: ServerOptions): ScarletApp {
   } catch (err) {
     ctx.log(`[task] recovering interrupted runs failed and will run again: ${(err as Error).message}`);
   }
+  // The project worked on last reads its dialogue pages ahead of a pass, once startup's own work has had its turn.
+  const latest = projects.find(p => !p.media_paused);
+  if (latest) setTimeout(() => { try { scanAheadOfPasses(ctx, latest.id); } catch (err) { ctx.log(`[dialogue-scan] couldn’t read ahead: ${(err as Error).message}`); } }, 30_000).unref();
   // A repair of earlier builds' leftovers. It must never keep Scarlet from starting.
   try {
     retireLeftoverPasses(ctx);
@@ -186,8 +190,6 @@ export function createApp(options: ServerOptions): ScarletApp {
   retireMergedSkills(ctx);
   migrateDialogueOperations(ctx);
   if (seeded) ctx.log(`[skills] seeded ${seeded} skill(s) from ${options.skillsSeedDir ?? "the bundled set"}`);
-  const transitions = seedStockTransitions(ctx);
-  if (transitions) ctx.log(`[templates] added ${transitions} stock transition(s)`);
   if (ctx.telemetry.active) {
     const { projectCount } = ctx.db.prepare("SELECT count(*) AS projectCount FROM projects WHERE deleted_at IS NULL").get() as { projectCount: number };
     ctx.telemetry.record("server.boot.heartbeat", { projectCount });
@@ -199,6 +201,10 @@ export function createApp(options: ServerOptions): ScarletApp {
   app.onError((err, c) => {
     if (err instanceof HttpError) {
       return c.json({ error: { code: err.code, message: err.message, details: err.details } }, err.status as ContentfulStatusCode);
+    }
+    // The FFmpeg in use can't do what was asked. The message says what to install; no path, no FFmpeg output.
+    if (err instanceof MissingFilterError) {
+      return c.json({ error: { code: "ffmpeg_missing_filter", message: err.message, details: { filter: err.filter } } }, 422);
     }
     if (err instanceof TimelinePlanningError) {
       return c.json({ error: { code: "timeline_limit", message: err.message } }, 422);

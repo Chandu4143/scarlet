@@ -86,6 +86,11 @@ export class AudioLane {
     return this.focused.has(mediaId);
   }
 
+  /** Recordings a pass is reading, across both lanes. */
+  focusedMediaIds(): IterableIterator<string> {
+    return this.focused.keys();
+  }
+
   /** Whether a dialogue pass is reading any recording now. */
   reading(): boolean {
     return this.focused.size > 0;
@@ -157,8 +162,9 @@ export class AudioLane {
     try {
       signal?.throwIfAborted();
       // A recording no pass is reading is nobody's to wait for, unless work a pass needs waits behind it: it yields to
-      // the editor's playback meanwhile. A scan page is always a pass's.
-      return await (work.kind === "page" ? job() : editorFirst.run(() => this.rank(work) === 2 && !this.urgentWaiting(), job));
+      // the editor's playback meanwhile. So does a scan page read ahead of any pass, until a pass reads its recording;
+      // a page a pass reads or asks for is the pass's from the start.
+      return await (work.kind === "page" && this.rank(work) < 2 ? job() : editorFirst.run(() => this.rank(work) === 2 && !this.urgentWaiting(), job));
     } catch (error) {
       failed = true;
       throw error;
@@ -183,6 +189,11 @@ export class AudioLane {
     this.unhold();
     this.begun.delete(workKey(work));
     this.next();
+  }
+
+  /** A late cleanup only releases the reservation made by this attempt’s own step. */
+  finish(...steps: AudioWork[]) {
+    if (this.held && steps.includes(this.held.work)) this.release(this.held.work);
   }
 
   /** A request now waits on `work`. Queued, it stops waiting for a step the lane is kept for that it now goes ahead of. */

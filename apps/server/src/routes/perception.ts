@@ -7,7 +7,11 @@ import type { Ctx } from "../context.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { measuredLoudness } from "../render/loudness.js";
 import { faces } from "../services/faces.js";
+import { lipSync } from "../services/lipSync.js";
+import { pictureCuts } from "../services/pictureCuts.js";
+import { screenMotion } from "../services/screenMotion.js";
 import { screenText } from "../services/screenText.js";
+import { askAreas, editShowAreas, showArea, type ShowAreaEdit } from "../services/showArea.js";
 import { optionalNumberParam, requireMedia } from "./util.js";
 
 function requireSourceRange(from: number | undefined, to: number | undefined) {
@@ -68,8 +72,58 @@ export function perceptionRoutes(ctx: Ctx) {
   r.get("/projects/:projectId/media/:mediaId/screen-text", readPicture("screen text", (media, range, opts, c) =>
     screenText(ctx, media, range, { ...opts, query: c.req.query("q") || undefined })));
 
+  // Where a video's picture changes in a range, second by second, read once and kept as screen text is.
+  r.get("/projects/:projectId/media/:mediaId/screen-motion", readPicture("screen motion", (media, range, opts) => screenMotion(ctx, media, range, opts)));
+
+  // Where a video's picture cuts in a range: much of it changing at once and holding either side. Read once and kept.
+  r.get("/projects/:projectId/media/:mediaId/picture-cuts", readPicture("picture cuts", (media, range, opts) => pictureCuts(ctx, media, range, opts)));
+
   // Where the faces are in a range of a video, found once and kept. A range not read yet is read now, as screen text is.
   r.get("/projects/:projectId/media/:mediaId/faces", readPicture("faces", (media, range, opts) => faces(ctx, media, range, opts)));
+
+  // Whether a video's sound keeps time with its own picture, from a face talking in it: a few stretches across the range,
+  // each measured once and kept. Waits up to `wait` seconds (default 60); stretches not done yet carry on.
+  r.get("/projects/:projectId/media/:mediaId/lip-sync", readPicture("lip sync", (media, range, opts, c) => {
+    const count = optionalNumberParam(c.req.query("count"), "count"), seconds = optionalNumberParam(c.req.query("seconds"), "seconds");
+    if (count !== undefined && !(Number.isInteger(count) && count >= 1 && count <= 20)) throw badRequest("bad_count", "count is 1 to 20 stretches.");
+    if (seconds !== undefined && !(seconds >= 5 && seconds <= 120)) throw badRequest("bad_seconds", "seconds is 5 to 120 a stretch.");
+    if (media.hasAudio === false) throw badRequest("no_audio", "This video has no sound of its own to measure against its picture.");
+    const wait = optionalNumberParam(c.req.query("wait"), "wait");
+    return lipSync(ctx, media, { ...range, count, seconds }, { waitMs: Math.max(0, Math.min(240, wait ?? 60)) * 1000, signal: opts.signal });
+  }));
+
+  // What of a video's picture viewers may see: the areas given for it and where each holds. A first ask reads the
+  // recording's edges and waits up to `wait` seconds (default 30); `done` is false until they are read.
+  const areaWait = (c: Context<AppEnv>) => Math.max(0, Math.min(240, optionalNumberParam(c.req.query("wait"), "wait") ?? 30)) * 1000;
+  const videoFor = (c: Context<AppEnv>) => {
+    const media = requireMedia(ctx, c.req.param("mediaId") ?? "", c.req.param("projectId") ?? "");
+    if (media.kind !== "video") throw badRequest("no_picture", "Only a video has a picture to show.");
+    if (!media.duration) throw conflict("not_ready", "The recording is still being prepared. Ask again in a moment.");
+    return media;
+  };
+  r.get("/projects/:projectId/media/:mediaId/show-area", async c => c.json(await showArea(ctx, videoFor(c), { waitMs: areaWait(c) })));
+  r.post("/projects/:projectId/media/:mediaId/show-area", async c => {
+    const media = videoFor(c);
+    const body = await c.req.json().catch(() => null) as ShowAreaEdit | null;
+    const listOf = (value: unknown, fits: (item: any) => boolean) => value === undefined || (Array.isArray(value) && value.every(fits));
+    if (!body || !listOf(body.set, item => typeof item?.at === "number" && Array.isArray(item.area)) || !listOf(body.remove, at => typeof at === "number")) {
+      throw badRequest("bad_request", "Send set: [{ at, area }] and/or remove: [at].");
+    }
+    await editShowAreas(ctx, media, body);
+    return c.json(await showArea(ctx, media, { waitMs: areaWait(c) }));
+  });
+
+  // Have the frames at these source seconds looked at for what viewers may see, each by a short run of its own, and
+  // wait for the answers. Only a running request asks: its agent and model do the looking.
+  r.post("/projects/:projectId/media/:mediaId/show-area/ask", async c => {
+    const media = videoFor(c);
+    const body = await c.req.json().catch(() => null) as { seconds?: unknown; taskId?: unknown; again?: unknown } | null;
+    if (!body || !Array.isArray(body.seconds) || body.seconds.some(n => typeof n !== "number") || typeof body.taskId !== "string") {
+      throw badRequest("bad_request", "Send seconds: [source second] and taskId.");
+    }
+    const asked = await askAreas(ctx, media, { seconds: body.seconds as number[], taskId: body.taskId, waitMs: areaWait(c), again: body.again === true });
+    return c.json({ ...asked, ...await showArea(ctx, media, { waitMs: 5000 }) });
+  });
 
   return r;
 }

@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { fileInDirectory } from "@scarlet/render";
 import { carriesAudio, clipEnd, mergeRanges, sourceToTimeline, timelineToSource, type MediaClip, type Project, type Timeline, type TimeRange } from "@scarlet/timeline";
-import { adjacentRepeatCandidates, cutAnchorOn, findRestarts, normalizeTranscriptToken, SILENCE_LEFT_SECONDS, type JoinHearing, type SilenceLeft, type Task } from "@scarlet/shared";
+import { adjacentRepeatCandidates, closesSentence, cutAnchorOn, findRestarts, flattenWords, joinFragment, joinsPlacedByCuts, normalizeTranscriptToken, sameJoin,
+  SILENCE_LEFT_SECONDS, versionJoins, type JoinEdges, type JoinFragment, type JoinHearing, type SaidWord, type SilenceLeft, type Task } from "@scarlet/shared";
 import type { Ctx } from "../context.js";
 import { acousticWordReader } from "../transcribe/acousticWords.js";
 import { EmissionFile } from "../transcribe/emissions.js";
 import { readsEnglishSpeech, measureRecordingWords } from "../transcribe/wordAlign.js";
 import { transcriptLanguage } from "./transcriptReader.js";
-import { dialogueDetector } from "./dialogueDetections.js";
+import { dialogueDetector, sharedDialogueDetector } from "./dialogueDetections.js";
 import { emissionStore, recordingWav, type RecordingAudio } from "./recordingAudio.js";
 
 interface Word extends TimeRange { text: string }
@@ -162,13 +163,14 @@ const LONGEST_WORD = 1.5;
 function restarts(spoken: Heard[]) {
   const found = [];
   for (const r of findRestarts(spoken.map(w => w.text), spoken.map(w => w.start), spoken.map(w => w.end))) {
-    const attempt = spoken.slice(r.at, r.next), a = spoken.slice(r.at, r.at + r.length), b = spoken.slice(r.next, r.next + r.length);
-    const before = spoken.slice(Math.max(0, r.at - 5), r.at), after = spoken.slice(r.next + r.length, r.next + r.length + 7);
+    const again = r.again ?? r.length;
+    const attempt = spoken.slice(r.at, r.next), a = spoken.slice(r.at, r.at + r.length), b = spoken.slice(r.next, r.next + again);
+    const before = spoken.slice(Math.max(0, r.at - 5), r.at), after = spoken.slice(r.next + again, r.next + again + 7);
     const anchor = [...a, ...b].map(w => [w.track, w.mediaId, round(w.source), w.text]);
     const id = createHash("sha256").update(JSON.stringify(["restart", anchor])).digest("hex").slice(0, 20);
     const between = attempt.slice(r.length).map(w => w.said).join(" ");
     found.push({ id, phrase: a.map(w => w.said).join(" "), first: span(attempt), second: span(b),
-      occurrences: { first: occurrence(attempt, spoken[r.at - 1], b[0]), second: occurrence(b, attempt.at(-1), spoken[r.next + r.length]) },
+      occurrences: { first: occurrence(attempt, spoken[r.at - 1], b[0]), second: occurrence(b, attempt.at(-1), spoken[r.next + again]) },
       before: before.map(w => w.said).join(" "), after: after.map(w => w.said).join(" "),
       precedingEnd: before.length ? round(before.at(-1)!.end) : undefined, followingStart: after.length ? round(after[0]!.start) : undefined,
       atJoin: attempt.at(-1)!.clip !== b[0]!.clip, restart: true as const, ...(between && { between }) });
@@ -177,11 +179,11 @@ function restarts(spoken: Heard[]) {
 }
 
 /** Stretches of the edit that play no word on any dialogue recording. */
-function silencesLeft(spoken: Heard[]): SilenceLeft[] {
+function silencesLeft(spoken: Heard[], from: number): SilenceLeft[] {
   const found: SilenceLeft[] = [];
   let last: Heard | undefined, lastEnd = -Infinity;
   for (const w of spoken) {
-    if (last && w.start - lastEnd >= SILENCE_LEFT_SECONDS - 1e-6) {
+    if (last && w.start - lastEnd >= from - 1e-6) {
       const id = createHash("sha256").update(JSON.stringify(["silence", last.mediaId, round(last.source), w.mediaId, round(w.source)])).digest("hex").slice(0, 20);
       found.push({ id, start: round(lastEnd), end: round(w.start), seconds: round(w.start - lastEnd), mediaId: last.mediaId,
         source: round(Math.min(last.sourceEnd, last.source + LONGEST_WORD)), after: last.said, before: w.said, atJoin: last.clip !== w.clip });
@@ -192,12 +194,93 @@ function silencesLeft(spoken: Heard[]): SilenceLeft[] {
   return found;
 }
 
+/**
+ * The joins that took words out of a sentence, each with what the edit plays either side of it (joinFragment), but for
+ * the ones the dialogue cut tool placed. Read from the transcript and the pieces alone, so it needs no audio: a
+ * recording whose sound can't be read is still listed.
+ */
+function dividedSentences(ctx: Ctx, project: Project, parts: Placement[], placedByCuts: readonly JoinEdges[]): JoinFragment[] {
+  const transcripts = new Map<string, SaidWord[] | null>();
+  const wordsOf = (mediaId: string) => {
+    if (!transcripts.has(mediaId)) {
+      const media = project.media.find(m => m.id === mediaId);
+      const transcript = media?.transcriptId ? ctx.repos.transcripts.get(media.transcriptId) : undefined;
+      // Indexed as the pass names words (flattenWords), then put in the order they sound: a word the aligner placed
+      // late sits out of the transcript's order, and it plays where it sounds.
+      const lastOfSegment = new Set<number>();
+      let count = 0;
+      for (const segment of transcript?.segments ?? []) {
+        count += segment.words.length || (segment.text.trim() ? segment.text.trim().split(/\s+/).length : 0);
+        if (count) lastOfSegment.add(count - 1);
+      }
+      transcripts.set(mediaId, transcript ? flattenWords(transcript)
+        .map((w, index) => ({ text: w.text, start: w.start, end: w.end, index, endsSentence: closesSentence(w.text) || lastOfSegment.has(index) }))
+        // A word the recording has no sound for takes no time and isn't heard: the join plays the words either side of it.
+        .filter(w => w.end > w.start && w.text.trim() && !names(w.text))
+        .sort((a, b) => (a.start + a.end) - (b.start + b.end) || a.index - b.index) : null);
+    }
+    return transcripts.get(mediaId)!;
+  };
+  const found: JoinFragment[] = [];
+  const byTrack = new Map<string, Placement[]>();
+  for (const p of parts) byTrack.set(p.track, [...(byTrack.get(p.track) ?? []), p]);
+  for (const list of byTrack.values()) {
+    const at = (p: Placement, source: number) => sourceToTimeline(p.clip, source);
+    list.sort((a, b) => at(a, a.source.start) - at(b, b.source.start));
+    for (let i = 1; i < list.length; i++) {
+      const a = list[i - 1]!, b = list[i]!;
+      const aEnd = at(a, a.source.end), bStart = at(b, b.source.start);
+      // The same join the sound is read at (joinSides): touching or crossfaded pieces of one recording, the later
+      // one further on in it. A part the scope cut short ends where the scope does, not at a join.
+      if (a.clip.mediaId !== b.clip.mediaId || Math.abs(bStart - aEnd) > .2 || b.source.start - a.source.end < 1e-3) continue;
+      if (Math.abs(a.source.end - a.clip.sourceOut) >= 1e-3 || Math.abs(b.source.start - b.clip.sourceIn) >= 1e-3) continue;
+      // A join the dialogue cut tool placed took out the words the pass named, and the tool reported what it left.
+      if (placedByCuts.some(j => sameJoin(j, { mediaId: a.clip.mediaId, out: a.source.end, in: b.source.start }))) continue;
+      const words = wordsOf(a.clip.mediaId);
+      const evidence = words && joinFragment(words, a.source.end, b.source.start, a.source.start, b.source.end);
+      if (!evidence) continue;
+      const mediaId = a.clip.mediaId, out = round(a.source.end), inn = round(b.source.start);
+      found.push({ id: createHash("sha256").update(JSON.stringify(["fragment", a.track, mediaId, out, inn])).digest("hex").slice(0, 20),
+        at: round(aEnd > bStart ? (aEnd + bStart) / 2 : bStart), mediaId, out, in: inn, ...evidence });
+    }
+  }
+  return found.sort((a, b) => a.at - b.at);
+}
+
+/** A version's joins don't change. Kept by project and version, so each version is read once however often a pass checks. */
+const joinsOfVersion = new Map<string, JoinEdges[]>();
+
+/**
+ * The joins of `tl` that a dialogue cut placed (joinsPlacedByCuts), read from the versions that led to it and the
+ * change that saved each. A version outside the saved history has none: every join it divides a sentence at is listed.
+ */
+function cutToolJoins(ctx: Ctx, project: Project, tl: Timeline): JoinEdges[] {
+  const links = new Map(ctx.repos.versions.links(project.id).map(link => [link.version, link]));
+  const history: Array<{ joins: JoinEdges[]; byCutTool: boolean }> = [];
+  const seen = new Set<string>();
+  for (let version: string | null = tl.version; version && links.has(version) && !seen.has(version); version = links.get(version)!.parent) {
+    seen.add(version);
+    const key = `${project.id}:${version}`;
+    let joins = joinsOfVersion.get(key);
+    if (!joins) {
+      const saved = version === tl.version ? tl : ctx.repos.versions.get(project.id, version)?.timeline;
+      if (!saved) break;
+      joins = versionJoins(saved);
+      if (joinsOfVersion.size > 4000) joinsOfVersion.clear();
+      joinsOfVersion.set(key, joins);
+    }
+    const changeId = links.get(version)!.changeId;
+    history.unshift({ joins, byCutTool: !!changeId && !!ctx.repos.changes.get(changeId)?.cutReasons?.length });
+  }
+  return joinsPlacedByCuts(history);
+}
+
 function clipById(tl: Timeline, id: string) {
   for (const t of tl.tracks) for (const c of t.clips) if (c.id === id && c.kind === "media") return c;
 }
 
 /** Read each audible source separately so two live microphones never form a spurious repeated word together. */
-export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timeline, task: Task, signal: AbortSignal) {
+export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timeline, task: Task, signal: AbortSignal, silencesFrom = SILENCE_LEFT_SECONDS) {
   const scope = task.context;
   const current = placements(project, tl);
   const base = scope.version && scope.version !== tl.version && scope.time !== undefined && scope.end !== undefined
@@ -263,6 +346,13 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
         if (!store) throw new Error("The recording's speech measurements are unavailable.");
         const transcript = media.transcriptId ? ctx.repos.transcripts.get(media.transcriptId) : undefined;
         const said = transcript?.segments.flatMap(s => s.words).filter(w => w.end > w.start && !/^\s*\[.*\]\s*$/.test(w.text)) ?? [];
+        // What a part plays, in the verbatim words the pass's scan read wherever it read them: the transcript tidies a
+        // restart away ("including 3D, including three, uh, including its ability" reads "including 3D, including its
+        // ability" there), and the restarts it hid played on in finished passes (2026-11-16).
+        const scanned = await sharedDialogueDetector(ctx).savedWords(project.id, media, Math.min(...ranges.map(r => r.start)),
+          Math.max(...ranges.map(r => r.end))).catch(() => undefined);
+        const inScan = (t: number) => !!scanned?.covered.some(r => t >= r.start && t < r.end);
+        const playedWords = [...(scanned?.words ?? []), ...said.filter(w => !inScan((w.start + w.end) / 2))];
         for (const part of selected) {
           const [lo, hi] = store.frameRange(part.source.start, part.source.end);
           const reader = acousticWordReader();
@@ -272,8 +362,8 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
           }
           const read = reader.finish();
           for (const word of read) add(part, word);
-          // What the transcript says this part plays: a word is in the part its middle is in.
-          for (const word of said) {
+          // What the part plays: a word is in the part its middle is in.
+          for (const word of playedWords) {
             const middle = (word.start + word.end) / 2;
             if (middle >= part.source.start && middle < part.source.end && !names(word.text)) add(part, word, spoken);
           }
@@ -307,7 +397,7 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
     if (!repeats.some(known => near(known.first.start, r.first.start) && near(known.second.start, r.second.start))) repeats.push(r);
   }
   repeats.sort((a, b) => a.first.start - b.first.start);
-  const silences = silencesLeft(spokenLanes.flat().sort(byTime));
+  const silences = silencesLeft(spokenLanes.flat().sort(byTime), silencesFrom);
   // Reused footage can play the same pair in two places. A keep applies only to the placement the editor considered.
   const ids = new Set<string>(), reused = new Set<string>();
   for (const r of repeats) {
@@ -330,5 +420,5 @@ export async function auditDialogueAudio(ctx: Ctx, project: Project, tl: Timelin
       entry.at.add(at);
     }
   }
-  return { version: tl.version, repeats, silences, unavailable, joins, unheardJoins: [...unheard.values()] };
+  return { version: tl.version, repeats, silences, fragments: dividedSentences(ctx, project, parts, cutToolJoins(ctx, project, tl)), unavailable, joins, unheardJoins: [...unheard.values()] };
 }

@@ -1,12 +1,12 @@
 import { appliedReviewChange, CutAssessment, isPublishedCall, type Change } from "@scarlet/timeline";
 import { Hono } from "hono";
 import { z } from "zod/v3";
-import { namedTimelineEdits, ApproveRequest, FlagEditRequest, KeepEditsRequest, CutChoicesRequest, ChangeState, DialogueCutsRequest, ProposeChangeRequest, ReviseRequest, sameRun, StagedCutRevision } from "@scarlet/shared";
+import { namedTimelineEdits, ApproveRequest, FlagEditRequest, KeepEditsRequest, UnkeepEditsRequest, CutChoicesRequest, ChangeState, DialogueCutsRequest, ProposeChangeRequest, ReviseRequest, sameRun, StagedCutRevision } from "@scarlet/shared";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { logId } from "../logText.js";
-import { approveChange, changeDiff, flagEdit, keepEdits, keptEdits, saveCutChoices, prepareCutReview, prepareFirstDecision, proposeChange, recordPlayableDecision, requireUnscopedEdit, scheduleSpotCheck, submitDialogueCuts, rejectChange, reopenChange, reviseChange, reviseStagedCut, unapproveChange, withSpotCapability } from "../services/changes.js";
+import { approveChange, changeDiff, flagEdit, keepEdits, keptEdits, unkeepEdits, saveCutChoices, prepareCutReview, prepareFirstDecision, proposeChange, recordPlayableDecision, requireUnscopedEdit, scheduleSpotCheck, submitDialogueCuts, rejectChange, reopenChange, reviseChange, reviseStagedCut, unapproveChange, withSpotCapability } from "../services/changes.js";
 import { jsonBody, requireProjectHeader, TIMELINE_JSON_BYTES } from "./util.js";
 import { requestAttempt, requireProjectEditAttempt } from "../services/taskAttempt.js";
 
@@ -62,6 +62,14 @@ export function changeRoutes(ctx: Ctx) {
     return c.body(null, 204);
   });
 
+  // The editor took a Keep back with ⌘Z: the edits wait on them again, and the runs of their request hear so.
+  r.post("/projects/:id/kept-edits/undo", async c => {
+    const body = await jsonBody(c, UnkeepEditsRequest);
+    const project = requireProjectHeader(ctx, c.req.param("id"));
+    ctx.db.transaction(() => unkeepEdits(ctx, project.id, body), "immediate")();
+    return c.body(null, 204);
+  });
+
   r.get("/projects/:id/kept-edits", c => {
     const project = requireProjectHeader(ctx, c.req.param("id"));
     const thread = c.req.query("thread");
@@ -73,7 +81,7 @@ export function changeRoutes(ctx: Ctx) {
     const body = await jsonBody(c, DialogueCutsRequest);
     const attempt = requestAttempt(c.req.raw), projectId = c.req.param("id");
     body.taskId ??= attempt?.taskId;
-    const { changes, carriedForward, editorDecided, heldForReview, alreadyRemoved, joinCrossfades, stagedForEditor, onFrames, droppedFromReview } = submitDialogueCuts(ctx, c.var.user, projectId, body,
+    const { changes, carriedForward, editorDecided, heldForReview, alreadyRemoved, joinCrossfades, stagedForEditor, onFrames, droppedFromReview, heldCutsStay } = submitDialogueCuts(ctx, c.var.user, projectId, body,
       { checkAttempt: () => requireProjectEditAttempt(ctx, attempt, projectId, body.taskId) });
     return c.json({ changes: changes.map(change => {
       const { id, state, fromVersion, toVersion, description, intent } = change;
@@ -86,8 +94,10 @@ export function changeRoutes(ctx: Ctx) {
       ...(joinCrossfades && { joinCrossfades }),
       // What Scarlet changed on its own: confident cuts it staged, edges it put on frames, earlier staged cuts it let go.
       ...(stagedForEditor && { stagedForEditor }), ...(onFrames && { onFrames }), ...(droppedFromReview && { droppedFromReview }),
+      // Cuts left out because they would have swapped a held staged cut for other edges Scarlet couldn't place either.
+      ...(heldCutsStay && { heldCutsStay }),
       // The version to build on next: where the confident cuts left the edit.
-      head: ctx.repos.projects.get(c.req.param("id"))?.head }, 201);
+      head: ctx.repos.projects.header(c.req.param("id"))?.head }, 201);
   });
 
   r.get("/projects/:id/changes", (c) => {
@@ -143,7 +153,7 @@ export function changeRoutes(ctx: Ctx) {
       // frames, so a range within a frame names this one: an agent that copied 18.9667 for 18.96666… was refused,
       // twice in one pass, and one that gave the range it had asked for, 9.59 to 11.33 s for a cut saved a frame
       // inward as 9.6 to 11.3 s, once more. The cut's own range is what gets saved.
-      const slack = 1 / (ctx.repos.projects.get(change.projectId)?.settings.fps || 30) + 0.001;
+      const slack = 1 / (ctx.repos.projects.header(change.projectId)?.settings.fps || 30) + 0.001;
       for (const { amend, ...given } of body.assessments) {
         const span = review.cuts[given.index]?.removed;
         if (!span) throw badRequest("wrong_cut", `This pass has no cut ${given.index}. Its cuts are numbered 0 to ${review.cuts.length - 1}.`);

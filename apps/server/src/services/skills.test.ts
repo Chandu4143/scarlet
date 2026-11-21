@@ -62,6 +62,24 @@ describe("the skills Scarlet comes with", () => {
   const oldSettings = (dialogue: unknown) => app.ctx.db.prepare("INSERT OR REPLACE INTO settings (id, json) VALUES (1, ?)")
     .run(JSON.stringify({ dialogue, render: { handleSeconds: 4 } }));
 
+  it("follows later releases again once an edited copy is set back to the text this release ships", () => {
+    const shipped = (n: number) => `---\nname: house-style\ndescription: The house style.\n---\n\nRelease ${n}.\n`;
+    const release = (n: number) => seedSkillList(app.ctx, [{ folder: "house-style", content: shipped(n) }]);
+    const style = () => app.ctx.repos.skills.select("name = ?", ["house-style"])[0]!;
+    release(1);
+    // The editor's own wording is theirs: a release leaves it.
+    updateSkill(app.ctx, editor, style(), { content: shipped(1).replace("Release 1.", "Mine.") });
+    release(2);
+    expect(style().content).toContain("Mine.");
+    expect(style().source).toBeUndefined();
+    // Set back to what the release ships, it is the stock skill again, and the next release brings its text.
+    updateSkill(app.ctx, editor, style(), { content: shipped(2) });
+    expect(release(2)).toBe(0);
+    expect(style()).toMatchObject({ source: "bundled", bundledName: "house-style" });
+    expect(release(3)).toBe(1);
+    expect(style().content).toBe(shipped(3));
+  });
+
   it("seeds straight dialogue cuts", async () => {
     await upgrade();
     const guide = publicGuide()!;
@@ -538,7 +556,7 @@ describe("skills that the workflows replaced", () => {
   ].join("\n");
 
   it("ships the stock skills in skills/, and removes unedited copies of the rest on upgrade", async () => {
-    expect(app.ctx.repos.skills.select().map(skill => skill.name).sort()).toEqual(["add-captions", "dialogue-pass", "fit-length", "frame-screen", "make-shorts", "matt-talking-head", "motion-graphics", "punch-in", "speed-through-waits"]);
+    expect(app.ctx.repos.skills.select().map(skill => skill.name).sort()).toEqual(["add-captions", "b-roll", "dialogue-pass", "fit-length", "frame-screen", "make-shorts", "matt-talking-head", "motion-graphics", "punch-in", "speed-through-waits"]);
     const stock = createSkill(app.ctx, null, { name: "smooth-audio-cuts", scope: "team", content: smoothing }, { source: "bundled" });
     const run = uses([stock.id]);
     app.ctx.repos.tasks.put({ ...run, state: "done" });

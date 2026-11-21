@@ -13,6 +13,7 @@ import type { Author, Change, CutAssessment, CutReview, MediaAsset, Note, Projec
 import type {
   ActivityEntry,
   KeepEditsRequest,
+  UnkeepEditsRequest,
   KeptEdit,
   MakeShortsRequest,
   AgentHost,
@@ -35,10 +36,7 @@ import type {
   ServerSettings,
   Skill,
   SkillVersion,
-  GraphicTemplateSummary,
-  GraphicTemplate,
   GraphicRenderResponse,
-  SaveTemplateRequest,
   SaveStyleGuideRequest,
   TaskAttachment,
   RecordTaskUsageRequest,
@@ -134,12 +132,18 @@ export function newRequestId() {
 export const TASK_HEADER = "X-Scarlet-Task";
 export const ATTEMPT_HEADER = "X-Scarlet-Task-Started-At";
 
+type ThreadEdits = { version: string | null; edits: ThreadEdit[] };
+type ThreadEditLists = { version: string | null; lists: Record<string, ThreadEdit[]>; failed?: Record<string, string> };
+type ThreadEditBatch = { ids: Set<string>; read: Promise<ThreadEditLists> };
+
 export class ScarletClient {
   private readonly baseUrl: string;
   private readonly tokenSource?: string | (() => string | undefined);
   private readonly fetchImpl: typeof fetch;
   private readonly readResponse: (response: Response) => Promise<string>;
   private readonly previewFrames: boolean;
+
+  private readonly editBatches = new Map<string, ThreadEditBatch>();
 
   private readonly projectScope?: string;
 
@@ -198,7 +202,8 @@ export class ScarletClient {
     return `${http.origin}/ws${t ? `?token=${encodeURIComponent(t)}` : ""}`;
   }
 
-  async request<T>(method: string, path: string, body?: unknown, init: RequestInit = {}): Promise<T> {
+  async request<T>(method: string, path: string, body?: unknown, init: RequestInit = {},
+    readBinary?: (data: ArrayBuffer) => T): Promise<T> {
     const headers: Record<string, string> = {};
     if (init.headers) new Headers(init.headers).forEach((value, key) => { headers[key] = value; });
     const callerAuthorization = headers.authorization !== undefined;
@@ -222,6 +227,9 @@ export class ScarletClient {
     const res = await this.fetchImpl(this.url(path), { ...init, method, headers, body: payload,
       ...((t || callerAuthorization) && { redirect: "error" }) });
     if (res.status === 204) return undefined as T;
+    if (readBinary && res.ok && res.headers.get("Content-Type") === "application/octet-stream") {
+      return readBinary(await res.arrayBuffer());
+    }
     const text = await this.readResponse(res);
     let json: unknown = undefined;
     try {
@@ -269,11 +277,47 @@ export class ScarletClient {
   project(id: string) {
     return this.get<ProjectDetail>(`/projects/${id}`);
   }
+  projectInfo(id: string) {
+    return this.get<Pick<ProjectDetail, "project">>(`/projects/${apiPathId(id)}?view=project`);
+  }
+  projectHeader(id: string) {
+    return this.get<{ project: Pick<Project, "id" | "head" | "settings"> }>(`/projects/${apiPathId(id)}?view=header`);
+  }
   workspace(id: string) {
     return this.get<Pick<ProjectDetail, "project" | "timeline">>(`/projects/${id}?view=workspace`);
   }
-  threadEdits(projectId: string, threadId: string) {
-    return this.get<{ version: string | null; edits: ThreadEdit[] }>(`/projects/${projectId}/threads/${encodeURIComponent(threadId)}/edits`);
+  /** Opening the workspace asks for many threads in the same turn. Share the engine's project history
+   * read across them. A thread whose list fails to project fails alone. */
+  async threadEdits(projectId: string, threadId: string): Promise<ThreadEdits> {
+    const path = `/projects/${apiPathId(projectId)}`;
+    const single = () => this.get<ThreadEdits>(`${path}/threads/${encodeURIComponent(threadId)}/edits`);
+    let batch = this.editBatches.get(projectId);
+    if (!batch || (batch.ids.size >= 64 && !batch.ids.has(threadId))) {
+      const ids = new Set<string>();
+      const read = Promise.resolve().then(async () => {
+        if (this.editBatches.get(projectId)?.ids === ids) this.editBatches.delete(projectId);
+        if (ids.size === 1) {
+          const { version, edits } = await single();
+          return { version, lists: { [threadId]: edits } };
+        }
+        return this.post<ThreadEditLists>(`${path}/thread-edits`, { threads: [...ids] });
+      });
+      batch = { ids, read };
+      this.editBatches.set(projectId, batch);
+    }
+    batch.ids.add(threadId);
+    try {
+      const { version, lists, failed } = await batch.read;
+      if (failed && Object.hasOwn(failed, threadId)) throw new ScarletApiError(500, "internal_error", failed[threadId]!);
+      if (!Object.hasOwn(lists, threadId)) throw new ScarletApiError(404, "not_found", "thread not found");
+      return { version, edits: lists[threadId]! };
+    } catch (error) {
+      // Clients connected to an older engine can still read each list through its original route. The engine
+      // may name the path decoded or behind a prefix, so only the method and the route's last segment are matched.
+      if (error instanceof ScarletApiError && error.status === 404 && error.code === "not_found" &&
+          error.message.startsWith("no route for POST ") && error.message.endsWith("/thread-edits")) return single();
+      throw error;
+    }
   }
   recordEditReview(projectId: string, body: EditReviewRequest) {
     return this.post<void>(`/projects/${projectId}/edit-reviews`, body);
@@ -325,6 +369,10 @@ export class ScarletClient {
   dialogueCheckpoints(projectId: string, request: z.input<typeof DialogueRangeRequest>) {
     return this.post<Array<{ start: number; end: number }>>(`/projects/${encodeURIComponent(projectId)}/dialogue-checkpoints`, request);
   }
+  /** The verbatim words the saved scan pages read between from and to, in source seconds, and the stretches they cover. */
+  dialogueVerbatimWords(projectId: string, request: z.input<typeof DialogueRangeRequest>) {
+    return this.post<{ words: TranscriptWord[]; covered: Array<{ start: number; end: number }> }>(`/projects/${encodeURIComponent(projectId)}/dialogue-verbatim`, request);
+  }
   soundPicture(projectId: string, request: z.input<typeof SoundPictureRequest>) {
     return this.post<{ jpeg: string; layout: SoundPictureLayout }>(`/projects/${encodeURIComponent(projectId)}/sound-picture`, request);
   }
@@ -356,6 +404,17 @@ export class ScarletClient {
   waveform(mediaId: string, from: number, to: number, points = 1000, cachedOnly = false, speechActivity = false) {
     return this.withResource("media", mediaId, path => this.get<WaveformResponse>(`${path}/waveform?from=${from}&to=${to}&points=${points}${cachedOnly ? "&cachedOnly=1" : ""}${speechActivity ? "&speechActivity=1" : ""}`));
   }
+  /** Prepared peaks for full-recording matching. An older engine returns its usual JSON waveform. */
+  waveformPeaks(mediaId: string, from: number, to: number, points: number) {
+    return this.withResource("media", mediaId, path => this.request<Pick<WaveformResponse, "peaks">>("GET",
+      `${path}/waveform?from=${from}&to=${to}&points=${points}&cachedOnly=1&format=peaks-f64le`, undefined, {}, data => {
+        const view = new DataView(data);
+        if (view.byteLength % 8) throw new Error("Truncated waveform peaks");
+        const peaks = new Array<number>(view.byteLength / 8);
+        for (let i = 0; i < peaks.length; i++) peaks[i] = view.getFloat64(i * 8, true);
+        return { peaks };
+      }));
+  }
   /** Words heard only on the input a recording's dialogue isn't on, and what sounded there alone in each gap. Source seconds. */
   otherInput(projectId: string, mediaId: string, body: { words: Array<[number, number]>; gaps: Array<[number, number]> }) {
     return this.post<{ available: boolean; words: boolean[]; gaps: Array<Array<{ start: number; end: number }>> }>(
@@ -371,8 +430,9 @@ export class ScarletClient {
     const qs = q.toString();
     return this.withResource("media", mediaId, path => this.get<Transcript>(`${path}/transcript${qs ? `?${qs}` : ""}`));
   }
-  searchTranscript(mediaId: string, phrase: string, contextWords: number) {
+  searchTranscript(mediaId: string, phrase: string, contextWords: number, knownWordSnapshot?: string) {
     const query = new URLSearchParams({ search: phrase, contextWords: String(contextWords) });
+    if (knownWordSnapshot !== undefined) query.set("wordSnapshot", knownWordSnapshot);
     // Engines predating search ignore the query and return the original transcript.
     // A very long phrase can also be searched locally without exceeding a URL limit.
     if (query.toString().length > 4096) return this.transcript(mediaId);
@@ -423,11 +483,27 @@ export class ScarletClient {
   historyEdit(projectId: string, version: string, action: "revert" | "restore", expectedHead: string, branch: string) {
     return this.post<{ project: Project; change: Change }>(`/projects/${projectId}/versions/${version}/${action}`, { expectedHead, branch });
   }
+  /** Put back what applied edits the editor rejected changed, with no model. Refused (409) where the engine can't. */
+  rejectEdits(projectId: string, body: { expectedHead: string; branch: string; threadId: string;
+    edits: { changeId: string; spot: number; label: string; range: TimeRange; revised?: boolean; at?: number; before?: { version: string; removed: TimeRange } }[] }) {
+    return this.post<{ project: Project; change: Change }>(`/projects/${projectId}/rejected-edits`, body);
+  }
   checkout(projectId: string, version: string) {
     return this.post<{ project: Project }>(`/projects/${projectId}/versions/${version}/checkout`);
   }
   otioUrl(projectId: string, version: string) {
     return this.fileUrl(`/projects/${projectId}/versions/${version}/export.otio`);
+  }
+  srtUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }) {
+    return this.captionUrl(projectId, version, "srt", opts);
+  }
+  vttUrl(projectId: string, version: string, opts?: { trackId?: string; start?: number; end?: number }) {
+    return this.captionUrl(projectId, version, "vtt", opts);
+  }
+  private captionUrl(projectId: string, version: string, format: "srt" | "vtt", opts?: { trackId?: string; start?: number; end?: number }) {
+    const url = this.fileUrl(`/projects/${projectId}/versions/${version}/export.${format}`);
+    const params = query({ trackId: opts?.trackId, start: opts?.start, end: opts?.end });
+    return params ? `${url}${url.includes("?") ? "&" : "?"}${params}` : url;
   }
 
   // Changes
@@ -449,6 +525,8 @@ export class ScarletClient {
       onFrames?: { cuts: number; largestShift: number; why: string };
       /** Staged cuts of an earlier part that left the review because their footage changed. */
       droppedFromReview?: Array<{ changeId: string; version: string; start: number; end: number; why: string }>;
+      /** Cuts left out because they would have swapped a held staged cut for other edges Scarlet couldn't place either. */
+      heldCutsStay?: Array<{ asked: TimeRange; staged: TimeRange; why: string }>;
       /** The project head after this submission. Older engines omit it. */
       head?: string }>(
       `/projects/${encodeURIComponent(projectId)}/dialogue-cuts`, body);
@@ -461,6 +539,10 @@ export class ScarletClient {
   /** Record that the editor kept these edits, so the runs of their request hear of it. */
   keepEdits(projectId: string, body: KeepEditsRequest) {
     return this.post<void>(`/projects/${encodeURIComponent(projectId)}/kept-edits`, body);
+  }
+  /** Take back the editor's Keep of these edits, so they wait on the editor again. */
+  unkeepEdits(projectId: string, body: UnkeepEditsRequest) {
+    return this.post<void>(`/projects/${encodeURIComponent(projectId)}/kept-edits/undo`, body);
   }
   /** The edits the editor kept in a request (`threadId`), oldest first. */
   keptEdits(projectId: string, threadId: string) {
@@ -615,13 +697,12 @@ export class ScarletClient {
     return this.post<{ task: Task }>(`/projects/${projectId}/tasks`, body);
   }
   tasks(projectId: string, state?: string, events?: "conversation") {
-    const query = new URLSearchParams();
-    if (state) query.set("state", state);
-    if (events) query.set("events", events);
-    return this.get<{ tasks: Task[]; conversation?: Record<string, TaskEvent[]> }>(`/projects/${projectId}/tasks${query.size ? "?" + query : ""}`);
+    // Not URLSearchParams.size: a WebView older than Safari 17 has none, and the whole query was dropped there.
+    const qs = query({ state: state || undefined, events });
+    return this.get<{ tasks: Task[]; conversation?: Record<string, TaskEvent[]> }>(`/projects/${projectId}/tasks${qs ? "?" + qs : ""}`);
   }
-  task(taskId: string, events: "all" | "conversation" = "all") {
-    return this.withResource("tasks", taskId, path => this.get<{ task: Task; events: TaskEvent[]; checksTaskAttempts?: true }>(path + (events === "conversation" ? "?events=conversation" : "")));
+  task(taskId: string, events: "all" | "conversation" | "none" = "all") {
+    return this.withResource("tasks", taskId, path => this.get<{ task: Task; events: TaskEvent[]; checksTaskAttempts?: true }>(path + (events === "all" ? "" : "?events=" + events)));
   }
   waitForTranscription(taskId: string) {
     return this.withResource("tasks", taskId, path => this.get<{ task: Task; waited?: boolean }>(path + "?wait=transcript"));
@@ -693,23 +774,12 @@ export class ScarletClient {
     return this.get<{ hosts: AgentHost[] }>("/hosts");
   }
 
-  // Graphic templates, picked in the message box with $name
-  listTemplates() {
-    return this.get<{ templates: GraphicTemplateSummary[] }>("/templates");
-  }
-  /** A template by id or name; a `$` before the name, as the editor types it, is dropped. */
-  template(idOrName: string) {
-    return this.get<{ template: GraphicTemplate }>(`/templates/${encodeURIComponent(idOrName.replace(/^\$/, ""))}`);
-  }
-  /** Save a template, or replace the one with the same name. A graphic's comes back with its preview and what it couldn't draw. */
-  saveTemplate(body: SaveTemplateRequest) {
-    return this.post<{ template: GraphicTemplate; missingFonts?: Array<{ family: string; sample: string }>; problems?: string[]; preview?: string }>("/templates", body);
-  }
+  // Graphics
   /** Draw a graphic from a page: `options` (GraphicRenderRequest), the page as `html`, and the files it links to as `asset`s. */
   renderGraphic(projectId: string, form: FormData) {
     return this.post<GraphicRenderResponse & { media?: MediaAsset }>(`/projects/${apiPathId(projectId)}/graphics`, form);
   }
-  /** A graphic Scarlet drew: its page, where it is, its files, size and timing, and the template it was filled from. */
+  /** A graphic Scarlet drew: its page, where it is, its files, size and timing. */
   graphic(projectId: string, mediaId: string) {
     return this.get<Record<string, unknown>>(`/projects/${apiPathId(projectId)}/graphics/${apiPathId(mediaId)}`);
   }
@@ -720,11 +790,6 @@ export class ScarletClient {
   readDocument(projectId: string, body: { attachmentId?: string; styleGuide?: boolean; pages?: number[] }) {
     return this.post<{ name: string; path: string; size: number; mime?: string; text?: string; pageCount?: number;
       pages?: Array<{ page: number; jpeg: string }>; image?: { mime: string; data: string } }>(`/projects/${apiPathId(projectId)}/documents/read`, body);
-  }
-  /** The template drawn with its sample fields on a transparent picture. `version` (its previewVersion) keeps a cached image from going stale. */
-  templatePreviewUrl(templateId: string, version?: string) {
-    const preview = this.fileUrl(`/templates/${apiPathId(templateId)}/preview`);
-    return version ? `${preview}${preview.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}` : preview;
   }
 
   // Attachments: files the editor drops on the message box, which ride on the next request

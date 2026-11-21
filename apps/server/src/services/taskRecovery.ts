@@ -1,11 +1,12 @@
-import { beginRevision, DialogueScanPage, planText, taskNeedsTranscripts, taskPlan, taskRecoveryAction, type RunChoice, type Task } from "@scarlet/shared";
+import { toolAnnotations } from "@scarlet/mcp/annotations";
+import { beginRevision, closingCheckFailed, DialogueScanPage, planText, taskNeedsTranscripts, taskPlan, taskRecoveryAction, type RunChoice, type Task } from "@scarlet/shared";
 import os from "node:os";
 import { mergeRanges, type Change, type TimeRange } from "@scarlet/timeline";
 import { processIsAlive, type Ctx } from "../context.js";
 import { now } from "../db.js";
 import { conflict, notFound } from "../errors.js";
 import { logId } from "../logText.js";
-import { appendTaskEvent, cancelTask, createTask, FINISHED_TASK, hasTranscript, PROJECT_EDIT_KINDS, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
+import { appendTaskEvent, cancelTask, createTask, FINISHED_TASK, hasTranscript, isDialoguePass, PROJECT_EDIT_KINDS, queueRepeatCheck, recordWorkThrough, RESUMABLE, returnRulesLeftWithQuestions, saveTask } from "./tasks.js";
 import { recordTaskFinished } from "../telemetry/events.js";
 import { prepareCutReview } from "./changes.js";
 import { skillEditEnded, startLearningCheck } from "./learnings.js";
@@ -39,7 +40,7 @@ function reconcileTask(ctx: Ctx, task: Task, unstarted: boolean, quit: boolean, 
   const again = quit || lost < LOST_WORKER_ATTEMPTS;
   let carriesOn = false;
   // A learning check cut short isn't run again: its request has moved on, and the next message is read anyway.
-  if (again && saved.state === "failed" && saved.interrupted && saved.kind !== "transcribe" && saved.kind !== "learning_check") {
+  if (again && saved.state === "failed" && saved.interrupted && saved.kind !== "transcribe" && saved.kind !== "learning_check" && saved.kind !== "area_check") {
     try {
       // All of the next attempt or none of it: one left half made would run beside a run that still offers Resume.
       ctx.db.savepoint(() => resumeTask(ctx, saved));
@@ -301,6 +302,21 @@ function unchecked(ctx: Ctx, change: Change): string {
   }
 }
 
+/** The edits an attempt tried to save after its last saved change and Scarlet refused, newest last, each said once. */
+function refusedSinceLastSave(ctx: Ctx, attempt: Task): string[] {
+  const events = ctx.repos.taskEvents.list(attempt.id);
+  const lastSave = events.findLastIndex(e => e.type === "change");
+  const said = new Set<string>();
+  for (const ev of events.slice(lastSave + 1)) {
+    const tool = typeof ev.data?.tool === "string" ? ev.data.tool.replace(/^scarlet\./, "") : "";
+    if (ev.type !== "log" || ev.data?.kind !== "tool_refused" || !tool || toolAnnotations(tool).readOnlyHint) continue;
+    const reason = ev.text.replace(/^Error:\s*/, "").replace(/\s+/g, " ").trim();
+    said.delete(`${tool}: ${reason.slice(0, 400)}`);
+    said.add(`${tool}: ${reason.slice(0, 400)}`);
+  }
+  return [...said].slice(-3);
+}
+
 function recoveryInstruction(ctx: Ctx, task: Task, rootId?: string): string {
   const run = rootId && runAttempts(task.projectId, rootId);
   const attempts = run ? ctx.repos.tasks.select(run.where, run.params, "created_at, rowid") : [task];
@@ -331,11 +347,19 @@ function recoveryInstruction(ctx: Ctx, task: Task, rootId?: string): string {
       progress.push(ev.text);
     }
   }
-  for (const text of progress.slice(-8)) lines.push(`Previous progress: ${text}`);
+  // A line said again and again in a row would fill the window and push out what came before it.
+  for (const text of progress.filter((t, i) => t !== progress[i - 1]).slice(-8)) lines.push(`Previous progress: ${text}`);
   const plan = taskPlan(ctx.repos.taskEvents.list(task.id, "lastPlanOrAnswer"));
   if (plan) lines.push("Your plan when it stopped:", planText(plan));
   for (const [mediaId, ranges] of scans) {
     lines.push(`Scanned source seconds on ${mediaId}: ${mergeRanges(ranges).map(r => `${r.start}–${r.end}`).join(", ")}`);
+  }
+  const unsaved = refusedSinceLastSave(ctx, attempts.at(-1)!);
+  if (unsaved.length) {
+    // A restart that lands just after a refused save leaves that work undone, and nothing in the saved changes says so
+    // (2026-11-18: the framing of a demo's last four minutes was refused, then the app restarted to update).
+    lines.push("Not saved when it stopped (Scarlet refused these after its last saved change, so that work is still to do):");
+    for (const text of unsaved) lines.push(`- ${text}`);
   }
   for (const c of savedChanges(ctx, attempts)) {
     // Scarlet closes a proposal when a later part or a revision takes its cuts over. The editor didn't turn it down:
@@ -363,6 +387,18 @@ export function retryTask(ctx: Ctx, id: string, choice: RunChoice = {}): Task {
 function resumeTask(ctx: Ctx, task: Task, choice: RunChoice = {}, afterProjectStop = false): Task {
   const id = task.id;
   if (task.retryTaskId) return ctx.repos.tasks.get(task.retryTaskId)!;
+  // The pass finished; only its closing check couldn't run. Retry runs that check again, as the same request, on the
+  // video as it plays now, with its full allowance of returns. A pass recorded as failed for this before the pass was
+  // kept as finished (2026-11-18) is picked up the same way, rather than starting the pass over.
+  const checkOnly = closingCheckFailed(task) || (task.state === "failed" && !task.interrupted && isDialoguePass(task) && !!task.reply && !!task.repeatAudit);
+  if (!afterProjectStop && checkOnly) {
+    const head = ctx.repos.projects.get(task.projectId)?.head;
+    if (!head) throw conflict("not_retryable", "This request cannot be retried.");
+    const run = choice.agent ? { agent: choice.agent, model: choice.model, effort: choice.effort, fast: choice.fast, serviceTier: choice.serviceTier } : {};
+    const queued = queueRepeatCheck(ctx, { ...task, ...run, repeatAudit: { ...task.repeatAudit!, returns: 0, failed: undefined } }, head);
+    ctx.log(`[task] ${id} closing check retried`);
+    return queued;
+  }
   const action = afterProjectStop ? "resume" : taskRecoveryAction(task, savedChanges(ctx, [task]).length > 0);
   if (!action) throw conflict("not_retryable", "This request cannot be retried.");
   const resumeRootId = action === "resume" ? task.resumeRootId ?? id : undefined;

@@ -13,11 +13,11 @@
  *    (parallel threads), and refuse when the edits overlap,
  *  - apply only some spots of a batch ("keep 5 of these 6 cuts").
  */
-import { CaptionWord } from "./schema.js";
+import { CaptionWord, duplicateClipId } from "./schema.js";
 import type { Clip, Marker, MediaClip, Timeline, TimeRange, Track } from "./schema.js";
 import { OpError, applyOp, applyOpInPlace, replayOnCopy, shiftClip, type TimelineOp } from "./ops.js";
 import { ZodError } from "zod/v3";
-import { clipEnd, JOIN_SLACK, meets, mergeRanges, sourceToTimeline, subtractRanges, timelineDuration } from "./time.js";
+import { clipEnd, JOIN_SLACK, meets, sourceToTimeline, subtractRanges, timelineDuration } from "./time.js";
 import { firstIndex, intervalCandidates } from "./intervals.js";
 import { sameJson, stableStringify } from "./ids.js";
 
@@ -674,12 +674,20 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
   // The last included edit that can bring footage back, which footage cut since must not.
   const lastAddition = onto === base ? -1 : ops.findLastIndex((op, i) => addsFootage(op) && include(i));
   let selectedOnBase = lastFootagePatch >= 0 ? base : undefined;
+  // Marker and canvas edits leave both footage clocks intact across successive operations.
+  type Mapping = { tracksSame: boolean; time?: TimeMap };
+  let workingMap: Mapping | undefined;
   // Map `op` from where the original sequence was to `at`, and apply it there.
-  const replay = (at: Timeline, op: TimelineOp, i: number): [Timeline, TimelineOp] => {
+  const replay = (at: Timeline, op: TimelineOp, i: number, reuse = false): [Timeline, TimelineOp] => {
     // makeTimeMap would compare both track lists again to decide the same thing.
-    const tracksSame = sameJson(orig.tracks, at.tracks);
-    const same = tracksSame && sameJson(orig.markers, at.markers);
-    let translated = same ? op : rebaseOp(op, tracksSame ? (t => t) : sourceTimeMap(orig, at, fps), at, i, fps, orig);
+    const mapping: Mapping = (reuse && workingMap) || { tracksSame: sameTracks(orig, at) };
+    if (reuse) workingMap = mapping;
+    const same = mapping.tracksSame && sameJson(orig.markers, at.markers);
+    let translated = op;
+    if (!same) {
+      mapping.time ??= mapping.tracksSame ? (t => t) : sourceTimeMap(orig, at, fps);
+      translated = rebaseOp(op, mapping.time, at, i, fps, orig);
+    }
     // A translated op can hold parts of `at`, which the next op changes in place.
     if (translated !== op) translated = structuredClone(translated);
     try {
@@ -695,7 +703,7 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
         // A footage patch is written for the footage the clip held. The clip is compared as the edits that go in
         // left it on the version the change was made on and on the current one, since those edits can split or make it.
         if (selectedOnBase && isFootagePatch(op)) assertFootageUnchanged(op.clipId, selectedOnBase, cur, fps, i);
-        [cur, translated] = replay(cur, op, i);
+        [cur, translated] = replay(cur, op, i, true);
         // While every edit so far went in, the replay on `base` is the original sequence, and follows it below.
         if (selectedOnBase && selectedOnBase !== orig) selectedOnBase = replay(selectedOnBase, op, i)[0];
       } catch (e) {
@@ -712,6 +720,7 @@ export function replayOps(base: Timeline, ops: TimelineOp[], onto: Timeline, inc
       orig = selectedOnBase === orig ? applyOp(orig, op) : step(orig, op);
       owned.add(orig);
     }
+    if (op.op !== "addMarker" && op.op !== "updateMarker" && op.op !== "removeMarker" && op.op !== "setTimeline") workingMap = undefined;
   });
   if (lastAddition >= 0) assertCutFootageStaysOut(base, onto, cur, fps, lastAddition);
   if (selectedOnBase) assertOverlapsAllowed(selectedOnBase, onto, cur, fps, lastFootagePatch);
@@ -915,11 +924,19 @@ const roundedTime = (t: number) => Math.round(t / EPS);
 
 /** Compare layers in the target's local time, including the source samples
  * underneath it. Trimming earlier footage can translate the entire window. */
-function clipEditContext(tl: Timeline, target: Clip, groups: Set<string>): string {
+function propertyEditLayers(tl: Timeline, batch: boolean) {
+  // Historical versions can have duplicate IDs. Their context includes every clip bearing the target ID.
+  const indexed = batch && duplicateClipId(tl.tracks) === undefined;
+  return tl.tracks.map(({ clips, name: _name, ...track }) => ({
+    track, clipsIn: indexed ? intervalCandidates(clips, c => c.timelineIn, clipEnd) : () => clips,
+  }));
+}
+
+function clipEditContext(tl: Timeline, layers: ReturnType<typeof propertyEditLayers>, target: Clip, groups: Set<string>): string {
   const start = target.timelineIn;
   const end = clipEnd(target);
-  const layers = tl.tracks.flatMap(({ clips, name: _name, ...track }) => {
-    const context = clips.flatMap((clip) => {
+  const contextLayers = layers.flatMap(({ track, clipsIn }) => {
+    const context = clipsIn(start, end).flatMap((clip) => {
       const left = Math.max(start, clip.timelineIn);
       const right = Math.min(end, clipEnd(clip));
       if (right <= left && clip.id !== target.id) return [];
@@ -937,7 +954,7 @@ function clipEditContext(tl: Timeline, target: Clip, groups: Set<string>): strin
     });
     return context.length ? [{ track, context }] : [];
   });
-  return stableStringify([tl.background, tl.captionStyle, layers]);
+  return stableStringify([tl.background, tl.captionStyle, contextLayers]);
 }
 
 type ClipUpdate = Extract<TimelineOp, { op: "updateClip" }>;
@@ -947,13 +964,16 @@ function isPropertyEdit(op: TimelineOp): op is ClipUpdate {
 }
 
 function mergePropertyEdits(base: Timeline, head: Timeline, edits: ClipUpdate[], fps: number): Timeline {
-  let merged = head;
+  if (!edits.length) return head;
+  const merged = structuredClone(head);
+  const baseLayers = propertyEditLayers(base, edits.length > 1);
+  const headLayers = propertyEditLayers(head, edits.length > 1);
   let map: TimeMap | undefined;
   for (const [i, edit] of edits.entries()) {
     const before = findClip(base, edit.clipId);
     const current = findClip(head, edit.clipId);
     const groups = new Set(Object.keys(edit.patch).map((key) => propertyGroups.get(key)!));
-    if (!before || !current || clipEditContext(base, before, groups) !== clipEditContext(head, current, groups)) {
+    if (!before || !current || clipEditContext(base, baseLayers, before, groups) !== clipEditContext(head, headLayers, current, groups)) {
       throw new RebaseConflict(`the properties or footage for clip ${edit.clipId} changed since`, i, before?.timelineIn);
     }
     const shift = current.timelineIn - before.timelineIn;
@@ -969,7 +989,7 @@ function mergePropertyEdits(base: Timeline, head: Timeline, edits: ClipUpdate[],
       patch.words = CaptionWord.array().parse(patch.words).map((w) => ({ ...w, start: w.start + shift, end: w.end + shift }));
     }
     try {
-      merged = applyOp(merged, { ...edit, patch });
+      applyOpInPlace(merged, { ...edit, patch });
     } catch (error) {
       throw new RebaseConflict(`edit ${i + 1} no longer applies: ${(error as Error).message}`, i);
     }

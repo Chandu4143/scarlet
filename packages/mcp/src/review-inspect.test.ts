@@ -19,6 +19,7 @@ const removed = [{ start: 10, end: 15 }, { start: 100, end: 130 }, { start: 200,
 const review: CutReview = { original, proposed: original, firstCut: false,
   cuts: removed.map((r, i) => ({ removed: r, at: r.start, beforeClip: i })) };
 const sheets: { from: number; to: number; mode: string }[] = [];
+const HELD = "No pause between “nice” and “you”. As placed the join plays “… is nice ‖ you can see the shadows …”. Kept, it plays “… is nice you can see the rough you can see the shadows …”.";
 // The suggestion's version, with a join at each cut's position, so every inspection can audit its join.
 const proposed = emptyTimeline("prj_test");
 proposed.version = "v2";
@@ -33,7 +34,7 @@ beforeAll(async () => {
   mock.state.extra = (req, res) => {
     let result: unknown;
     if (req.path === "/projects/prj_test/changes/pass") result = { change: { id: "pass", projectId: "prj_test", intent: "suggestion", state: "ready",
-      fromVersion: "v1", toVersion: "v2", description: "Review cuts", ranges: removed, renders: [], cutReasons: [] } };
+      fromVersion: "v1", toVersion: "v2", description: "Review cuts", ranges: removed, renders: [], cutReasons: [{ ...removed[3]!, reason: "Restart", held: HELD }] } };
     else if (req.path === "/projects/prj_test/changes/pass/cut-review") result = { review };
     else if (req.path === "/projects/prj_test/changes/pass/cut-assessments") result = { total: 4, assessed: 1, needsDecision: 3 };
     else if (req.path === "/projects/prj_test/media") result = { media: [{ id: "m1", kind: "video", name: "talk.mp4", path: "talk.mp4", duration: 600, fps: 30, hasAudio: true }] };
@@ -112,7 +113,9 @@ it("prepares the following cuts while the agent reads, and hands each over once"
   expect(sheets.some(s => s.from >= 398)).toBe(true);
   const before = sheets.length;
   const result = await inspect({ index: 3 });
-  expect(texts(result).find(t => "firstPass" in t)).toMatchObject({ index: 3, start: 400, end: 405 });
+  // A held cut carries what Scarlet measured, what its join plays and what keeping it plays; a cut that wasn't held has none.
+  expect(texts(result).find(t => "firstPass" in t)).toMatchObject({ index: 3, start: 400, end: 405, firstPass: ["Restart"], held: HELD });
+  expect(texts(await inspect({ index: 0 })).find(t => "firstPass" in t)).not.toHaveProperty("held");
   expect(sheets.slice(before).filter(s => s.from >= 398)).toEqual([]);
   // Asking again inspects afresh.
   await inspect({ index: 3 });

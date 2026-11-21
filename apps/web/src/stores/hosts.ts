@@ -1,15 +1,19 @@
 import { create } from "zustand";
 import { AGENT_LABEL, type AgentAvailability, type AgentHost, type AgentId, type ModelOptions } from "@scarlet/shared";
-import { api, errorMessage } from "../lib/client";
+import { api, errorMessage, IS_MOCK } from "../lib/client";
+import { desktop } from "../lib/desktop";
 import { changedDuringLoad } from "./changedDuringLoad";
 
 interface HostsState {
   hosts: AgentHost[];
   customOpenaiModels: string[];
   customClaudeModels: string[];
+  customGeminiModels: string[];
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;
+  refreshingModels: boolean;
   load(): Promise<void>;
+  refreshModels(): Promise<void>;
   apply(host: AgentHost): void;
 }
 
@@ -22,13 +26,16 @@ let shown = 0;
 const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 let retries = 0;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingRefresh: Promise<void> | undefined;
 
 export const useHostsStore = create<HostsState>((set, get) => ({
   hosts: [],
   customOpenaiModels: [],
   customClaudeModels: [],
+  customGeminiModels: [],
   status: "idle",
   error: null,
+  refreshingModels: false,
   async load() {
     clearTimeout(retryTimer);
     retryTimer = undefined;
@@ -51,6 +58,31 @@ export const useHostsStore = create<HostsState>((set, get) => ({
       read.end();
     }
   },
+  refreshModels() {
+    if (pendingRefresh) return pendingRefresh;
+    set({ refreshingModels: true });
+    pendingRefresh = (async () => {
+      let hostError: string | null = null;
+      if (!IS_MOCK) {
+        const host = await desktop.hostRefreshAgents();
+        hostError = host.error;
+        const { customOpenaiModels, customClaudeModels, customGeminiModels } = await desktop.info();
+        set({
+          customOpenaiModels: customOpenaiModels ?? [],
+          customClaudeModels: customClaudeModels ?? [],
+          customGeminiModels: customGeminiModels ?? [],
+        });
+      }
+      // A provider can fail while other providers publish new models.
+      await get().load();
+      const error = hostError ?? get().error;
+      if (error) throw new Error(error);
+    })().finally(() => {
+      pendingRefresh = undefined;
+      set({ refreshingModels: false });
+    });
+    return pendingRefresh;
+  },
   apply(host) {
     reports.set(host.id, host);
     const hosts = get().hosts.filter((h) => h.id !== host.id);
@@ -70,7 +102,12 @@ export interface OnlineAgent {
 export const isConfiguredAgent = (agent: AgentAvailability) => agent.id !== "api" && agent.installed && agent.loggedIn !== false;
 
 /** Agents that are installed and logged in on at least one online host. */
-export function onlineAgents(hosts: AgentHost[], customOpenaiModels: readonly string[] = [], customClaudeModels: readonly string[] = []): OnlineAgent[] {
+export function onlineAgents(
+  hosts: AgentHost[],
+  customOpenaiModels: readonly string[] = [],
+  customClaudeModels: readonly string[] = [],
+  customGeminiModels: readonly string[] = [],
+): OnlineAgent[] {
   // Every model a CLI offers is listed, including ones its own picker hides.
   const map = new Map<AgentId, OnlineAgent>();
   for (const h of hosts) {
@@ -80,7 +117,10 @@ export function onlineAgents(hosts: AgentHost[], customOpenaiModels: readonly st
       const cur: OnlineAgent = map.get(a.id) ?? { id: a.id, models: [], modelLabels: Object.create(null), modelOptions: Object.create(null), hostNames: [] };
       for (const id of a.models ?? []) {
         const label = a.modelLabels?.[id] ?? id;
-        const custom = (a.id === "codex" && customOpenaiModels.includes(id)) || (a.id === "claude" && customClaudeModels.includes(id));
+        const custom =
+          (a.id === "codex" && customOpenaiModels.includes(id))
+          || (a.id === "claude" && customClaudeModels.includes(id))
+          || (a.id === "gemini" && customGeminiModels.includes(id));
         if (!cur.models.includes(id)) cur.models.push(id);
         cur.modelLabels[id] ??= { name: label, custom };
         (cur.modelOptions[id] ??= []).push(a.modelOptions?.[id]);

@@ -10,7 +10,8 @@ import { UhmDetector } from "../transcribe/uhm.js";
 import { measuredLoudness } from "../render/loudness.js";
 import { cancelTask, createTask } from "./tasks.js";
 import { storeVersion } from "./timeline.js";
-import { passRecordings, prefetchDialoguePass } from "./dialoguePrefetch.js";
+import { passRecordings, prefetchDialoguePass, scanAheadOfPasses } from "./dialoguePrefetch.js";
+import { audioLane } from "./audioWork.js";
 
 vi.mock("@scarlet/render", async original => ({
   ...await original<typeof import("@scarlet/render")>(),
@@ -117,6 +118,60 @@ it("reads a claimed first dialogue pass's recordings ahead of its first scan cal
     await Promise.all([...ctx.pending]);
   } finally {
     release?.();
+    await app.ctx.close();
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it("reads a recording's pages before any pass asks, saves them for the pass, and leaves the rest to a pass that starts reading", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scarlet-dialogue-ahead-"));
+  const app = createApp({ dataDir: dir, skillsSeedDir: dir, env: {}, log: () => {} });
+  try {
+    const { ctx } = app;
+    const project = ctx.repos.projects.insert(createProject("Read ahead of any pass"));
+    ctx.paths.ensureProject(project.id);
+    const media = ctx.repos.projects.putMedia(project.id, { id: "mic", name: "mic", kind: "audio", path: "mic.wav", duration: 180, hasAudio: true }, "ready");
+    ctx.repos.transcripts.put({ id: "trs_mic", projectId: project.id, mediaId: "mic",
+      segments: [{ id: "s", start: 1, end: 2, text: "hello", words: [{ text: "hello", start: 1, end: 2 }] }] });
+    ctx.repos.projects.putMedia(project.id, { ...media, transcriptId: "trs_mic" }, "ready");
+    await writeFile(join(ctx.paths.media(project.id), "mic.wav"), "mic");
+    vi.spyOn(ctx.speakers, "turns").mockResolvedValue([]);
+    vi.spyOn(UhmDetector.prototype, "detect").mockResolvedValue([]);
+    const whisper = vi.spyOn(WhisperCppProvider.prototype, "transcribeWav").mockResolvedValue({ language: "en", segments: [] });
+    const pages = () => ctx.db.prepare("SELECT start, end FROM dialogue_scan_pages ORDER BY start").all();
+
+    // A cloud reading is paid for by the minute, so nothing is read ahead with one.
+    ctx.repos.settings.update({ transcription: { provider: "openai" } });
+    scanAheadOfPasses(ctx, project.id);
+    await Promise.all([...ctx.pending]);
+    expect(whisper).not.toHaveBeenCalled();
+
+    // No edit yet: the recording with speech is read, on the grid a pass reads.
+    ctx.repos.settings.update({ transcription: { provider: "whispercpp", whisperCppPath: process.execPath } });
+    scanAheadOfPasses(ctx, project.id);
+    await Promise.all([...ctx.pending]);
+    expect(pages()).toEqual([{ start: 0, end: 60 }, { start: 58, end: 118 }, { start: 116, end: 176 }, { start: 174, end: 180 }]);
+    expect(whisper).toHaveBeenCalledTimes(4);
+    // Read again, it finds every page saved.
+    scanAheadOfPasses(ctx, project.id);
+    await Promise.all([...ctx.pending]);
+    expect(whisper).toHaveBeenCalledTimes(4);
+
+    // A pass reading the recording takes over: the read-ahead stops before its next page.
+    ctx.db.prepare("DELETE FROM dialogue_scan_pages").run();
+    const release = audioLane(ctx).focus("mic");
+    scanAheadOfPasses(ctx, project.id);
+    await Promise.all([...ctx.pending]);
+    release();
+    expect(pages()).toEqual([]);
+
+    // Nor does it read while the project's media work is paused.
+    ctx.repos.projects.update(project.id, { mediaPaused: true });
+    scanAheadOfPasses(ctx, project.id);
+    await Promise.all([...ctx.pending]);
+    expect(whisper).toHaveBeenCalledTimes(4);
+  } finally {
     await app.ctx.close();
     vi.restoreAllMocks();
     await rm(dir, { recursive: true, force: true });

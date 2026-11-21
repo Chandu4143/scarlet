@@ -274,7 +274,7 @@ pub(crate) fn this_scarlet() -> (u32, String) {
 }
 
 /// When this Scarlet started, as its notes record it. Windows counts a start time the same way for as long as the
-/// process lives, and reading one starts PowerShell, so it is read once there. `ps` prints a start time in the time
+/// process lives, so it is read once there. `ps` prints a start time in the time
 /// zone of the moment, so elsewhere it is read for each note, beside the CLI's.
 fn own_start() -> String {
     static READ: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -298,15 +298,29 @@ fn start_stamp(pid: u32) -> String {
     out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
-/// When the process started, as the file time PowerShell reads for it. Empty when it is gone or can't be read.
-/// Asked of .NET directly, which needs no PowerShell module to load.
+/// When the process started, as a file time: the count PowerShell's `StartTime.ToFileTimeUtc()` printed for older
+/// notes, so those still compare. Empty when it is gone or can't be read.
 #[cfg(windows)]
 fn start_stamp(pid: u32) -> String {
-    use std::os::windows::process::CommandExt;
-    let script = format!("try {{ [System.Diagnostics.Process]::GetProcessById({pid}).StartTime.ToFileTimeUtc() }} catch {{ }}");
-    let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(crate::util::CREATE_NO_WINDOW).output();
-    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: the handle is checked before use and closed before returning; the out-parameters are locals.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return String::new();
+        }
+        let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let mut code = 0u32;
+        // A process that has ended still opens while anyone holds a handle to it, but it is gone.
+        let running = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        let read = running && GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        CloseHandle(process);
+        if !read {
+            return String::new();
+        }
+        ((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)).to_string()
+    }
 }
 
 /// The process id may have been reused since. Only the process noted at spawn, by program and start time, is ours.

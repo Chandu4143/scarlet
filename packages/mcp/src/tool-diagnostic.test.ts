@@ -42,9 +42,11 @@ it("reports tool completion and degraded evidence without awaiting diagnostics o
     const profile = await c.callTool({ name: "media_profile", arguments: { mediaId: "med_fixture", to: 10 } });
     expect(profile.isError).toBeFalsy();
     expect(diagnostics.map(record => record.body)).toEqual([
-      { tool: "project_get", outcome: "ok", elapsedMs: expect.any(Number), evidenceMisses: 0 },
-      { tool: "media_profile", outcome: "degraded", elapsedMs: expect.any(Number), evidenceMisses: 1 },
+      // The size of what went back to the model, never the words.
+      { tool: "project_get", outcome: "ok", elapsedMs: expect.any(Number), evidenceMisses: 0, resultChars: expect.any(Number) },
+      { tool: "media_profile", outcome: "degraded", elapsedMs: expect.any(Number), evidenceMisses: 1, resultChars: expect.any(Number) },
     ]);
+    expect((diagnostics[0]!.body as { resultChars: number }).resultChars).toBe((project.content as Array<{ text: string }>)[0]!.text.length);
     expect(diagnostics[1]?.headers.get("x-scarlet-task-started-at")).toBe(startedAt);
   } finally {
     for (const finish of respond) finish();

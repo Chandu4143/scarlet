@@ -51,14 +51,6 @@ export class Paths {
   get skills() {
     return join(this.root, "skills");
   }
-  /** Graphic templates, library-wide: one folder each, with the page's files and its preview. */
-  get templates() {
-    return join(this.root, "templates");
-  }
-  template(id: string) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("Invalid template directory.");
-    return join(this.templates, id);
-  }
   get tmp() {
     return join(this.root, "tmp");
   }

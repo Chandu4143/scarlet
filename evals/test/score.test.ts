@@ -93,11 +93,61 @@ describe("scoring a synthetic run", () => {
     expect(score.headline).toMatchObject({ gapsLeft: 8, looseJoins: 1, repeatsLeft: 0, heldByScarlet: 0 });
   });
 
-  it("scores each operating point against the reference", () => {
+  it("does not apply a decided proposal a second time", () => {
     const { applied: a, recommended, proposed } = score.reference!.operatingPoints;
     expect(proposed.cut!.words.f1).toBe(1);
-    expect(recommended.cut!.time.f1).toBe(1);
+    expect(recommended).toEqual(a);
     expect(a.cut!.words).toMatchObject({ tp: 2, fn: 2, recall: 0.5 });
     expect(score.headline).toMatchObject({ appliedCuts: 1, reviewCuts: 1, wordF1: 1, edgeF1At20ms: 1, requiredLinesMissing: 0 });
+  });
+});
+
+describe("what a task left, with staged cuts still waiting", () => {
+  // The pass applied line 2's cut (A), then its closing check took out line 7 (F). Cuts it staged on the source version,
+  // before either, still wait for the editor: line 5 recommended cut, line 8 a question.
+  const S = cut("S", MIC, [[0, 20]]);
+  const A = cut("A", MIC, [[0, 4], [6, 20]]);
+  const F = cut("F", MIC, [[0, 4], [6, 14], [16, 20]]);
+  const editor = cut("E", MIC, [[0, 4], [6, 10], [12, 14], [16, 20]]);
+  const applied = change({ id: "chg_a", intent: "requested", state: "approved", fromVersion: "S", toVersion: "A", appliedVersion: "A",
+    cutReasons: [{ start: 4, end: 6, reason: "Earlier take of line 2." }] });
+  const staged: ReviewChangeExport = { id: "chg_w", state: "ready", fromVersion: "S", toVersion: "W", firstCut: false, cuts: [
+    { index: 0, removed: { start: 10, end: 12 }, sources: [{ mediaId: MIC, start: 10, end: 12 }], reasons: [], decision: "pending",
+      assessment: { verdict: "cut", reason: "Earlier take of line 5.", inspected: true } },
+    { index: 1, removed: { start: 16, end: 18 }, sources: [{ mediaId: MIC, start: 16, end: 18 }], reasons: [], decision: "pending",
+      assessment: { verdict: "ask", reason: "Keep line 8?", inspected: true } }] };
+  const score = scoreRun({
+    media: [media(MIC)], timelines: { source: S, applied: A, proposed: A, final: F }, appliedChange: applied, waiting: [staged],
+    evidence: new Map([[MIC, lines(MIC, 10)]]), reference: { label: "editor", timeline: editor },
+  });
+
+  it("measures the edit the task ended on, not the applied version", () => {
+    expect(score.versions.final).toBe("F");
+    expect(score.pacing.final!.gaps).not.toEqual(score.pacing.applied.gaps);
+    expect(score.headline.gapsLeft).toBe(score.pacing.final!.gaps.inside + score.pacing.final!.gaps.atJoins);
+    expect(score.headline.deadAirSeconds).toBe(score.pacing.final!.gaps.excessSeconds);
+  });
+
+  it("counts staged cuts from an earlier version in what the editor gets", () => {
+    expect(score.playable.automatic).toMatchObject({ seconds: 16, edges: { total: 4 } });
+    expect(score.playable.recommended).toMatchObject({ seconds: 14, edges: { total: 6 } });
+    expect(score.headline).toMatchObject({ stagedWaiting: 2, needsYourCall: 1 });
+    // Accepting the picks takes line 5 out of the edit the task left: exactly the editor's cut.
+    expect(score.reference!.operatingPoints.recommended.cut!.words.f1).toBe(1);
+    expect(score.reference!.operatingPoints.proposed.cut!.words.precision).toBeLessThan(1);
+    expect(score.pacing.recommended!.joins).toBe(score.pacing.final!.joins + 1);
+  });
+  it("excludes keep, ask and skipped cuts even when their proposed edges clip speech", () => {
+    const suggestion = { ...staged, cuts: staged.cuts.map(c => ({ ...c, assessment: { ...c.assessment!, verdict: "keep" as const }, sources: [{ mediaId: MIC, start: 2.8, end: 4.8 }] })) };
+    const scored = scoreRun({ media: [media(MIC)], timelines: { source: S, applied: A, proposed: editor },
+      waiting: [suggestion, { ...staged, cuts: staged.cuts.map(c => ({ ...c, decision: "skipped" as const })) }], evidence: new Map([[MIC, lines(MIC, 10)]]) });
+    expect(scored.playable.recommended).toEqual(scored.playable.automatic);
+    expect(scored.headline.clippedWordsOnSound).toBe(0);
+  });
+  it("counts program time once for simultaneous dialogue tracks", () => {
+    const multi = { ...S, tracks: [...S.tracks, { ...S.tracks[1]!, id: "second", clips: cut("x", "other", [[0, 20]]).tracks[1]!.clips }] };
+    const scored = scoreRun({ media: [media(MIC), media("other")], timelines: { source: multi, applied: multi, proposed: multi }, evidence: new Map() });
+    expect(Object.keys(scored.playable.automatic.kept)).toHaveLength(2);
+    expect(scored.playable.automatic.seconds).toBe(20);
   });
 });

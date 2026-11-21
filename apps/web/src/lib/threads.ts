@@ -1,4 +1,4 @@
-import { taskDialogueOperation, matchesEdit, noteThread, DialogueScanPage, requestText, taskRecoveryAction, taskWasStopped, type Task, type TaskEvent, type Thread, type ThreadEdit } from "@scarlet/shared";
+import { closingCheckFailed, taskDialogueOperation, matchesEdit, noteThread, DialogueScanPage, requestText, taskRecoveryAction, taskWasStopped, type Task, type TaskEvent, type Thread, type ThreadEdit } from "@scarlet/shared";
 import { clock } from "./format";
 import { cutSummary, dialogueReceipt, mergeRanges, rangesOverlap, reviewReasons, type TimeRange, type Author, type Change, type Note } from "@scarlet/timeline";
 import { appliedEditSummary } from "../components/review/cutReviewDetails";
@@ -104,6 +104,9 @@ export function revisionTarget(task: Task, changes: readonly Change[], edits?: r
   if (cutIndex !== undefined) return `the cut${at}`;
   if (editIndex !== undefined) {
     const edit = edits?.find(e => matchesEdit(e, { changeId, spot: editIndex }));
+    // A moment of the list is named as its row reads: how many edits, at the moment's time.
+    const moment = task.context.momentEdits?.length;
+    if (moment) return `${moment + 1} edits at ${clock(edit ? edit.at ?? edit.range.start : time ?? 0)}`;
     return edit ? `the ${edit.beforeCut ? "cut" : "edit"} at ${clock(edit.at ?? edit.range.start)}` : `the edit${at}`;
   }
   const change = changes.find(c => c.id === changeId);
@@ -231,6 +234,12 @@ export function threadConversation(thread: Thread, notes: Note[], events: Record
         out.push({ kind: "agent", at: t.finishedAt ?? t.createdAt ?? "", text, fullText: full === text ? undefined : full,
           author: { type: "agent", id: t.agent, name: t.agent, model: t.model } });
       }
+    }
+    // The pass finished and its closing check for repeats couldn't run. The pass stands; the check can be run again.
+    if (closingCheckFailed(t)) {
+      const available = !thread.active && !thread.question && !t.retryTaskId;
+      out.push({ kind: "system", at: t.finishedAt ?? t.createdAt ?? "", text: "The closing check for repeats didn’t run.", tone: "warn",
+        action: available ? { taskId: t.id, label: "Retry edit" } : undefined });
     }
     if (t.state === "failed" || t.state === "cancelled") {
       const stopped = t.state === "cancelled";

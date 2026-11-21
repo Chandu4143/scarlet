@@ -16,12 +16,48 @@ desktop engine publishes its loopback port and a per-launch token together in a 
 For another engine, set its own `SCARLET_ACCESS_TOKEN` and supply its URL with `--engine` or
 `SCARLET_ENGINE_URL`. Remote URLs require HTTPS. A loopback tunnel can use HTTP.
 
+On macOS, reuse prepared transcripts across trials when transcription is held constant. Use the guarded
+CrisperWhisper adapter in every local engine, including copies of an older benchmark library. If a
+standalone transcription script loads its own model, call `wait_for_local_asr_slot()` from the guarded
+adapter before importing the model runtime. Keep the model in a worker process that exits when its
+transcription work finishes so the operating system can reclaim its memory.
+
 ```sh
 TSX=node_modules/.bin/tsx                       # from the repository root
 $TSX evals/src/dataset.ts --help
 node_modules/.bin/vitest run --config evals/vitest.config.ts
 node_modules/.bin/tsc -p evals/tsconfig.json
 ```
+
+## The dialogue ledger
+
+Every mistake the editor reports in a dialogue cut is an entry with a check, and every change to dialogue cutting is
+run against all of them: [DIALOGUE.md](DIALOGUE.md) says how. `ledger.ts check` runs the free checks (unit tests, and
+replays of the model's real requests through today's code) and compares with the last recorded run.
+
+## The picture ledger
+
+The same, for mistakes in what the video shows: which recording is on screen, the screen's framing and what of it may
+be shown, the camera inset, punch-ins, flashes at cuts and sync. Run it with `--ledger picture`; it lives in
+`$SCARLET_EVAL_DATA/picture/` and follows the steps in [DIALOGUE.md](DIALOGUE.md). Its causes add `perception`: a
+reading of the picture (screen text, motion, cuts, faces, show areas) missing or wrong.
+
+A command check that runs vitest with `-t` fails when no test matched the filter, so a renamed or removed test can't
+pass unseen.
+
+## The dialogue scorecard
+
+`scorecard.ts` turns manifest-eligible `dialogue-playable-v5` passes into **Watchability** (the craft mistakes an editor's ears confirmed, scored by
+rate per 10 finished minutes: missed retakes and stutter cuts), **Editorial
+match** (cut decisions, take choice, lines kept, words the editor kept, same cuts, pauses, dead air, cut count, space at a cut, restarts left
+in, known mistakes), a combined **Overall** (geometric mean of Watchability and Editorial match, withheld when required
+evidence is missing), and counts of automated flags, content left in and short tightenings left in, read against the
+published video decision by decision (`cutDetail.ts`). Every figure carries a **±**: how far luck alone moves it, from
+how much passes of the same recording disagree. A comparison says which changes are more than their ± and on how many
+recordings each went that way. Use `--point recommended` (default) or `--point automatic` to grade each playable cut
+separately. Join several runs into one side with commas (one run per recording). `regrade.ts` brings saved runs up to
+the current rules offline, and `rescore.ts` rescores them from their original library; neither spends model tokens. See
+[DIALOGUE.md](DIALOGUE.md).
 
 ## What it measures
 
@@ -49,6 +85,21 @@ coaching, and automatic removals in historical runs. Results are split by tier:
 - **Hand-analysis method.** `--kept-side` reads the loudest 50 ms on the kept side. "Per-cut edges" counts both
   edges of every listed cut, the way the original hand analysis did.
 
+**Showable area** (`showable.ts`, `showableMeasure.ts`). Whether a cut keeps a screen recording inside what the
+editor means viewers to see: the window being presented, without the desktop, other apps or a call beside it.
+
+- **Labels.** The editor confirms a box on a frame of the recording, once for each window layout. The file is
+  `{"schema":1,"recording":"<media id>","labels":[{"at":<second>,"area":{"left":0.08,"top":0.1,"right":0.84,"bottom":0.89}}]}`,
+  edges as fractions of the picture. List an edge under `soft` when the picture has no line there. Keep the
+  file with the case, never in the repository.
+- **Holds.** `--recording <file>` reads one frame every five seconds and records the stretches each box holds for:
+  every edge it needs is still a line where it was. A window that moves or resizes ends the hold, and that
+  time stays unlabelled until a box is confirmed for it.
+- **Score.** `--timeline <json>` looks at a version every half second. Of the labelled screen time on picture,
+  `outsideShare` shows anything more than 1% of the picture past its box and `farOutsideShare` more than 5%.
+  `worst` lists the moments to look at. A box can hold by chance on a different window with edges in the same
+  places, so check `worst` against frames before trusting a change in the score.
+
 **Pacing** (`pacing` in `metrics.ts`). What each version still plays, read from the transcript's words on that
 version's timeline: the source, the applied cut, the proposed cut and the reference.
 
@@ -59,14 +110,21 @@ version's timeline: the source, the applied cut, the proposed cut and the refere
   The second delivery must begin within three seconds of the first ending. For phrases over five words, the two
   starts must be within 25 seconds of each other. The reference count includes deliberate emphasis ("very, very").
 - A typed or silent demonstration is a gap here. The reference's own count is the floor a cut can reach.
+- **What the task left.** The headline gaps, dead air and doubled words are measured on the edit the task ended on:
+  the applied cut plus the task's own later changes (closing-check repairs, staged picks it applied). With an engine,
+  that is the head of the task's branch whenever one of the task's changes made it. `recommended…` and the
+  `restartsLeft`/`silencesLeft` counts take out, too, every staged cut still waiting for the editor that the agent
+  marked `cut`, including cuts staged on earlier versions: they go in with the editor's calls. `stagedWaiting` counts
+  those earlier-version cuts. Scored on the applied version, a pass whose closing check cut a 73-second wait was
+  charged for it (2026-11-17).
 
 **Held by Scarlet.** Staged cuts the agent submitted as `cut`: the measured edit needs review.
 
 **Against a reference** (the editor's final or approved cut). This section is scored at three operating points:
 
 - `applied`: the confident cuts alone.
-- `recommended`: applied plus the review items the AI marked `cut`.
-- `proposed`: applied plus every review item.
+- `recommended`: what the task left, less every staged item the AI marked `cut`.
+- `proposed`: what the task left, less every staged item.
 
 The metrics are:
 
@@ -80,7 +138,9 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 
 **Trace.** This section covers the agent's process:
 
-- Active time, which excludes time spent waiting for the editor's answer.
+- Time to finish: from the request to the task's end on the wall clock, queue and the editor's answers included.
+- Active time, which excludes time spent waiting for the editor's answer. A task claimed again after a restart keeps
+  only its latest start, so active time and the times below count from its first event when that is earlier.
 - Time to the first change.
 - Time to the first call for the editor: when the first staged cut reached Needs your call. This is how soon
   the editor can start deciding. Also the time to the agent's first saved recommendation.
@@ -88,8 +148,58 @@ Labels derived from the editor's approve and skip decisions give a separate agre
 - Listening calls (`source_audio`, or `includeAudio` on a check, inspect, or review), visual inspections,
   and level reads.
 - `task.usage` token counts when the engine records them.
+- Estimated cost: the engine's `estimatedApiCostUsd`, each run priced at its model's API list price and speed. Runs use
+  the editor's subscription, so this compares configurations; it isn't a bill. A model the engine has no price for
+  leaves the run without a cost and is named instead.
 - The submitted plan by kind and decision.
 - The share of edged cuts whose edges were checked with `dialogue_check_join`.
+
+## Known moments, and how far trials agree
+
+Two trials of one configuration never make the same cut, so one rerun can't show whether a change fixed anything.
+`moments.ts` reads finished trials and answers the two questions a change has to pass.
+
+**Known moments.** A place where a cut has gone wrong before: a restart left in, the wrong take kept, a line dropped.
+The case folder's `moments.json` says what the finished edit should play there:
+
+```json
+{ "schema": 1, "moments": [
+  { "id": "broken-first-take", "mediaId": "med_…", "start": 770.7, "end": 775.0,
+    "plays": "I remember there was a time where you would occasionally see",
+    "note": "Broken first take, then the whole one." } ] }
+```
+
+`start` and `end` are the recording's seconds, wide enough to hold every delivery of the line. `plays` is compared as
+words (case and punctuation don't count), so either of two matching words can be the one cut; give a list when
+several readings are right. Each trial comes out `right`, `asked` (a staged cut waits for the editor there, with what
+approving it plays) or `wrong` (with what it played). A trial's `evaluation.json` carries them as `score.moments` and
+counts them in the headline. Moments are the editor's words: keep the file with the case, never in the repository.
+
+**Agreement.** For the trials of one arm: the F1 of each pair's removed words, the words every trial removed, the
+words they split on and how many places those fall in. With a published reference it also says how often the editor
+removed a word every trial removed, and one they split on. A difference between two arms smaller than the
+disagreement inside one arm is not a result.
+
+```sh
+# Arms are labelled sets of runs: folder names under results/runs, or paths.
+$TSX evals/src/moments.ts --case my-case --runs main=2026-…-aaaa,2026-…-bbbb --runs branch=2026-…-cccc
+```
+
+It prints each arm's headline numbers with their spread, a row per moment and the agreement table. Run at least four
+trials an arm. Results saved before a trial stored what it left (`score.left`) are read from their applied cuts.
+
+## Check the flags by ear
+
+The flags are counted from transcripts and levels, never heard. `calibrate.ts sheet` takes one pass per recording,
+picks a few spots of each kind of flag plus some joins nothing flagged (mixed in blind with the mid-word cuts), cuts a
+clip of Scarlet's cut and of the published video at each, and writes one self-contained page, clips inside, that plays wherever it is opened. Answer each spot, press
+Save answers, then `calibrate.ts score answers.json` says how many spots of each kind were real: the share of each count
+worth believing. Clips are rebuilt from the cut's kept ranges with a 10 ms fade, not rendered by Scarlet.
+
+```sh
+$TSX evals/src/calibrate.ts sheet <scored run or config folder,...> --out "$SCARLET_EVAL_DATA/calibration/<date>" [--data <root>]
+$TSX evals/src/calibrate.ts score "$SCARLET_EVAL_DATA/calibration/<date>/answers.json"
+```
 
 ## Build a case
 
@@ -277,6 +387,12 @@ $TSX evals/src/run.ts --cases my-case --configs codex:<model>:medium,claude:<mod
 $TSX evals/src/run.ts --cases my-case --configs … --trials 3 --yes
 ```
 
+`--yes` refuses a case with no published video attached (`reference.published`): its scorecard would fill only 2 of 15
+lines, as 24 passes on 2026-11-19 did. An audio map alone feeds the published-word figures, not the card. Attach the
+published video (`dataset.ts build … --published-media`), or pass `--partial-score` when the other figures are what the
+run is for. A case frozen with its own grading transcript (`gradingEvidence`) is scored on that transcript, whatever
+transcript the trial cut from, so a transcriber comparison keeps one measuring stick.
+
 Each trial follows these steps:
 
 1. Creates a branch from the case's source version. Its name includes the trial number and a unique run ID, even when long case or model names need shortening.
@@ -291,6 +407,8 @@ runs. Results land in `results/runs/<time>/<case>/<config>/trial-<n>/` (`evaluat
 summary with `--summarize <dir>`.
 
 For audio-matched cases, read `recoveredWordRemovingCuts` against `editorWordRemovingCuts`, alongside `missingVerifiedWords`. A recovered cut joins the same two source-word occurrences across a splice. `matchedPauseErrorMs` averages absolute pause differences only on the `matchedAudioJoins` shared by both edits. Unmapped passages contribute no joins. A crossfade with quiet handles uses each word’s actual playback time. The scorer counts a crossfade touching speech as ambiguous and records unsupported mixes as unavailable.
+
+**Edges against the editor's own cuts** (`editorEdges` in `published-words.json`, `editorEdge…` in the headline). The waveform map gives each editor cut an out edge and an in edge in the recording, each with the window over which the cut sounds the same: the plausible boundary shift plus one frame. A candidate edge of the same side within 0.6 s of that window counts as the same cut. Inside the window it matches (`editorEdgesInWindow`, a fraction of `editorEdgesShared`). Outside, the frames at speech level between the candidate edge and the window are sound the candidate plays that the editor removed (`editorEdgePlaysRemovedSpeech`) or sound the editor kept that it drops (`editorEdgeDropsKeptSpeech`). Their sum is `editorEdgeSpeechMisses`, and `editorEdgeSpeechMissesOver100Ms` counts the ones you'd hear. Speech uses the edge classes above (the recording's 85th percentile level minus 18 dB) on the grading evidence's levels. Both sides are where the sound switches. The editor's comes from the published audio, which on Muse switches a frame after the picture cut (41 of 46 clear cuts). The candidate's is where each clip is heard, the middle of its audio fade: Scarlet's dialogue audio runs a frame past each picture edge and crossfades over two frames, and that handle's own edges are silent. Read at the handles, every Muse in-edge looked a frame early and every out-edge a frame late. No word time enters this measure, so it is the one to read when comparing transcripts or aligners. The pause and join metrics above place their targets with the grading words. To use it on a case built with `--published-media`, map the published video with `tools/match_audio.py` and freeze the case with that map as its reference.
 
 For a change to the prompt, model or transcription, run three fresh trials per configuration. Each
 trial requests a digest of the ordered word occurrences and timings actually read by the editing tools.

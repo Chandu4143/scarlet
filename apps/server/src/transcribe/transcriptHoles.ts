@@ -250,9 +250,43 @@ export function heardInHoles(read: TranscriptSegment[], pieces: HolePiece[], seg
   return found;
 }
 
-/** The transcript with the found words in it, in the order said. Words found inside a segment's own span join that segment. */
+/** A found word this close to the word beside its hole can be that word's own sound. */
+const READ_TWICE_GAP = 0.5;
+
+/**
+ * The transcript with the found words in it, in the order said. Words found inside a segment's own span join that segment.
+ * The aligner can't spell a number, so it can end "$7.63" before the "three" is said: the hole after it then reads "3",
+ * and the line reads "$7.63. 3," as if the 3 were said again. A found word that is only the end of the word before its
+ * hole, or the start of the word after it, is that word's sound read twice: the word takes in its time instead.
+ */
 export function withHoleWords(segments: TranscriptSegment[], found: TranscriptSegment[]): TranscriptSegment[] {
-  const out = segments.map(s => ({ ...s, words: [...s.words] }));
+  const out = segments.map(s => ({ ...s, words: s.words.map(w => ({ ...w })) }));
+  const home = new Map(out.flatMap(s => s.words.map(w => [w, s] as const)));
+  const existing = [...home.keys()].filter(spoken).sort((a, b) => a.start - b.start);
+  const part = (piece: TranscriptWord, whole: TranscriptWord, end: boolean) => {
+    const p = normalizeTranscriptToken(piece.text), w = normalizeTranscriptToken(whole.text);
+    return !!p && w.length > p.length && (end ? w.endsWith(p) : w.startsWith(p));
+  };
+  // The aligner can place a found word outside its hole, over words already there: "…beating", read in a hole of
+  // music, landed on "When I woke up". It was heard in the hole, not there.
+  const covered = (w: TranscriptWord) => existing.reduce((sum, e) => sum + Math.max(0, Math.min(e.end, w.end) - Math.max(e.start, w.start)), 0);
+  found = found.flatMap(f => {
+    let words = f.words.filter(w => covered(w) <= (w.end - w.start) / 2);
+    const before = words[0] && existing.filter(w => w.end <= words[0]!.start + 0.05).at(-1);
+    if (before && part(words[0]!, before, true) && words[0]!.start - before.end < READ_TWICE_GAP) {
+      before.end = Math.max(before.end, words[0]!.end);
+      home.get(before)!.end = Math.max(home.get(before)!.end, before.end);
+      words = words.slice(1);
+    }
+    const after = words.length ? existing.find(w => w.start >= words.at(-1)!.end - 0.05) : undefined;
+    if (after && part(words.at(-1)!, after, false) && after.start - words.at(-1)!.end < READ_TWICE_GAP) {
+      after.start = Math.min(after.start, words.at(-1)!.start);
+      home.get(after)!.start = Math.min(home.get(after)!.start, after.start);
+      words = words.slice(0, -1);
+    }
+    if (words.length === f.words.length) return [f];
+    return words.length ? [{ ...f, start: words[0]!.start, end: words.at(-1)!.end, text: words.map(w => w.text).join(" "), words }] : [];
+  });
   for (const f of found) {
     const host = out.find(s => s.words.some(w => w.end <= f.start + 1e-6) && s.words.some(w => w.start >= f.end - 1e-6));
     if (host) {
@@ -293,8 +327,17 @@ export async function fillTranscriptHoles(input: { wav: string; segments: Transc
       input.log(`[transcribe] read ${holes.length} stretches without words again (${seconds.toFixed(0)} s): no speech in them`);
       return segments;
     }
-    const placed = (await input.align(heard)).filter(s => s.words.length);
-    input.log(`[transcribe] read ${holes.length} stretches without words again (${seconds.toFixed(0)} s) and found ${placed.reduce((n, s) => n + s.words.length, 0)} words in ${placed.length} of them`);
+    // The stretches are a cough, a laugh, music or the end of a word the aligner closed early, where Whisper most often
+    // writes a word nobody said. A found word goes in only where the aligner hears it; one it couldn't spell (a number)
+    // has no verdict and stays.
+    let unheard = 0;
+    const placed = (await input.align(heard)).map(s => {
+      const words = s.words.filter(w => alignerHeard.get(w) !== false);
+      unheard += s.words.length - words.length;
+      return words.length === s.words.length ? s
+        : { ...s, words, text: words.map(w => w.text).join(" "), ...(words.length && { start: words[0]!.start, end: words.at(-1)!.end }) };
+    }).filter(s => s.words.length);
+    input.log(`[transcribe] read ${holes.length} stretches without words again (${seconds.toFixed(0)} s) and found ${placed.reduce((n, s) => n + s.words.length, 0)} words in ${placed.length} of them${unheard ? `, leaving out ${unheard} the aligner didn't hear` : ""}`);
     return withHoleWords(segments, placed);
   } finally { await rm(laid, { force: true }); }
 }

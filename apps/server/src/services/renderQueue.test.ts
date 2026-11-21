@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi, onTestFinished } from "vitest";
-import { DELIVERY_AUDIO_REVISION, FfmpegError, runCapture, segmentKey } from "@scarlet/render";
+import { DELIVERY_AUDIO_REVISION, FfmpegError, MissingFilterError, missingTextFilterMessage, runCapture, segmentKey } from "@scarlet/render";
 import { createProject, makeMediaClip, planTransitions, sha256, stableStringify, timelineFromKeepRanges, type Project } from "@scarlet/timeline";
 import { createApp, type ScarletApp } from "../app.js";
 import { scarletRenderAdapter } from "../render/scarletRender.js";
@@ -123,7 +123,7 @@ it.each(["joined", "released"])("keeps the latest export destination when a runn
   } finally { finish(); }
 });
 
-it("loads only overlapping clips and their sources for playback, in compositing order", async () => {
+it.each(["playback", "segment"] as const)("loads only the overlapping sources for a %s render", async kind => {
   const { ctx } = workspace;
   const timeline = timelineFromKeepRanges(project.id, "camera", [{ start: 0, end: 30 }]);
   const clips = timeline.tracks[0]!.clips;
@@ -132,14 +132,14 @@ it("loads only overlapping clips and their sources for playback, in compositing 
   }
   clips.push(makeMediaClip("later", 0, 5, 5), makeMediaClip("overlay", 0, 2, 1));
   const v = storeVersion(ctx, project.id, timeline, { parent: version }).version;
-  const render = vi.spyOn(ctx.render, "renderPlaybackSegment");
+  const render = vi.spyOn(ctx.render, kind === "playback" ? "renderPlaybackSegment" : "renderRange");
   const allMedia = vi.spyOn(ctx.repos.projects, "listMedia");
-  ctx.renders.request({ ...section(), version: v, kind: "playback", quality: "preview", range: { start: 1, end: 5 } });
+  ctx.renders.request({ ...section(), version: v, kind, quality: "preview", range: { start: 1, end: 5 } });
   await settle();
   expect(allMedia).not.toHaveBeenCalled();
   const [inputs, part] = render.mock.calls[0]!;
   expect(inputs.media.map(m => m.id).sort()).toEqual(["camera", "overlay"]);
-  expect(part.tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[2]!.id]);
+  if (kind === "playback") expect(part.tracks[0]!.clips.map(c => c.id)).toEqual([clips[0]!.id, clips[2]!.id]);
 });
 
 it("hands a playback section every clip it renders when its saved endpoints aren't on a frame", async () => {
@@ -524,6 +524,18 @@ it("logs each warning the renderer gives with the render it belongs to", async (
   ]);
 });
 
+it("tells the editor what to install when the FFmpeg in use can't draw the captions, before any encoding", async () => {
+  const { ctx } = workspace;
+  const said = missingTextFilterMessage("draw the video’s captions");
+  vi.spyOn(ctx.render, "renderRange").mockRejectedValue(new MissingFilterError("drawtext", said));
+  const render = ctx.renders.request(section());
+  await settle();
+  const failed = ctx.repos.renders.get(render.id);
+  expect(failed).toMatchObject({ state: "failed", error: said });
+  expect(failed).not.toHaveProperty("errorDetail");
+  expect(said).toMatch(/^This copy of FFmpeg can’t draw text, so Scarlet can’t draw the video’s captions\. .+ Then restart Scarlet and try again\.$/);
+});
+
 it.each([
   ["a source file is gone", (media: string) => [`${media}/camera.mp4: No such file or directory\nError opening input file ${media}/camera.mp4.`, false],
     "Scarlet can’t find “Camera” in this project’s files: export the logs from Settings → Advanced to report it."],
@@ -534,6 +546,8 @@ it.each([
   ["the disk is full", () => ["[out#0/mp4 @ 0x600] Error writing trailer: No space left on device", true],
     "There isn’t enough free disk space to render this: free some space, then try again."],
   ["ffmpeg fails for its own reasons", () => ["[fc#0 @ 0x600] Error reinitializing filters!\nFailed to inject frame into filter network: Invalid argument", true], "Scarlet couldn’t render this part of the video: try once more, or export the logs from Settings → Advanced to report it."],
+  // The renderer checks before it draws captions; this is for anything that asks for drawtext without that check.
+  ["ffmpeg was built without drawtext", () => ["[AVFilterGraph @ 0x600] No such filter: 'drawtext'\nError : Filter not found", true], missingTextFilterMessage("draw the video’s captions")],
 ] as const)("says why a render failed in plain words when %s, and keeps ffmpeg's own output in the log and for an agent", async (_why, wrote, said) => {
   const { ctx } = workspace;
   const media = ctx.paths.media(project.id);

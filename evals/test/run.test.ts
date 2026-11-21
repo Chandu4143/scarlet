@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { runMarkdown, type TrialRow } from "../src/report.ts";
 import { wordDigest } from "../../packages/mcp/src/transcript-digest.ts";
-import { branchName, positiveNumber, selectTrialSkills, trialTranscripts } from "../src/run.ts";
+import { branchName, positiveNumber, scorecardGap, selectTrialSkills, trialTranscripts } from "../src/run.ts";
 
 it("gives repeated trials distinct branches even with long case and model names", () => {
   const caseId = "long-project-name-".repeat(5), stamp = "2026-11-15T10-30-00Z";
@@ -31,9 +31,10 @@ it("averages only the trials that finished, and still lists the ones that didn't
     ({ caseId: "interview", config: "claude:default:high", trial, state, headline: { tokens }, error });
   // A trial cancelled for asking a question is scored from the untouched video: few tokens, no clipped words.
   const md = runMarkdown("Run", [row(1, "done", 1000), row(2, "done", 3000), row(3, "cancelled", 10, "ended cancelled")]);
-  const cells = md.split("\n").find(line => line.startsWith("| interview"))!.split("|").map(cell => cell.trim());
+  const cellsOf = (start: string) => md.split("\n").find(line => line.startsWith(start))!.split("|").map(cell => cell.trim());
+  const cells = cellsOf("| interview");
   expect(cells[3]).toBe("3 (2)");
-  expect(cells.at(-2)).toBe("2000.0 ± 1414.2");
+  expect(cells[cellsOf("| Case").indexOf("tokens")]).toBe("2000.0 ± 1414.2");
   expect(md).toContain("- interview · claude:default:high · trial 3: ended cancelled");
 });
 
@@ -60,4 +61,11 @@ it("keeps the original guide after a rename even if a new guide reuses its old n
   expect(() => selectTrialSkills([{ ...renamed, enabled: false }, replacement], wanted, { add: [] })).toThrow("disabled");
   expect(() => selectTrialSkills([renamed], { ...wanted, skillIds: ["original", "missing"],
     skillNames: ["dialogue-pass", "cutaway"] }, { add: [] })).toThrow("cutaway");
+});
+
+it("refuses to spend tokens on a case whose scorecard would come back mostly empty", () => {
+  expect(scorecardGap({ id: "carbon" })).toMatch(/no published video attached.*2 of 15 lines.*--partial-score/);
+  expect(scorecardGap({ id: "carbon", reference: { label: "editor", version: "v1" } })).toMatch(/no published video/);
+  const published = { rate: 1, finishedWords: 1, matchedWords: 1, addedPassages: 0, addedSeconds: 0, reordered: 0, kept: {}, played: [], pieces: [] };
+  expect(scorecardGap({ id: "carbon", reference: { label: "published", published } })).toBeUndefined();
 });

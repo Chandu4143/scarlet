@@ -16,7 +16,9 @@ export const OPEN_BATCHES = 6;
 
 /** MCP returns images with tool results. One call returns every window that is ready
  * within the wait, so the agent reads them together instead of one per turn. A cursor
- * collects windows that took longer and replays a response after a retry. */
+ * collects windows that took longer and replays a response after a retry. The wait is
+ * the harness's (`waitMs`): every answer before the batch is whole costs the model a turn
+ * to ask for the rest and brings the pictures no sooner. */
 export class PictureBatches {
   private batches = new Map<string, Batch>();
   private lifetime = new AbortController();
@@ -64,7 +66,7 @@ export class PictureBatches {
     if (!batch) throw new Error("Picture batch unavailable. Submit its windows again.");
     if (cursor > batch.delivered) throw new Error("Use the returned picture batch cursor.");
     batch.touched = Date.now();
-    // Stay under the common 60-second tool deadline while the rest of the batch finishes.
+    // Without a wait from the harness, stay under the common 60-second tool deadline while the rest of the batch finishes.
     const deadline = Date.now() + (this.opts.waitMs ?? 25_000);
     while (batch.items.length < batch.total && !this.lifetime.signal.aborted && !batch.stop.signal.aborted && Date.now() < deadline) {
       const timer = new AbortController();

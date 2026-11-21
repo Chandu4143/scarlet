@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Skill } from "@scarlet/shared";
-import { createProject, emptyTimeline, type Change } from "@scarlet/timeline";
+import { createProject, emptyTimeline, makeMediaClip, type Change } from "@scarlet/timeline";
 import { buildSystemPrompt, PLAN_STEPS, SCARLET_INTRO, stripFrontmatter } from "./prompt.js";
 
 const skill = (over: Partial<Skill> = {}): Skill => ({ id: "skl_house", name: "house-style", description: "Our house rules for interviews.",
@@ -122,6 +122,18 @@ describe("an editing prompt", () => {
   const base = { project: { project, timeline: emptyTimeline(project.id) }, skills: [] };
   const task = (context: Record<string, unknown>) => ({ kind: "edit" as const, instruction: "  Tighten this.  ", agent: "claude", context });
 
+  it("has a dialogue pass order its cuts by how likely each is to be wrong and flag as many as the editor's setting asks", () => {
+    const pass = (checkIn?: "less" | "balanced" | "more") => buildSystemPrompt({ ...base, checkIn,
+      task: { kind: "edit" as const, instruction: "/dialogue-pass", agent: "claude", context: { dialogueOperation: "first-cut" as const } } });
+    const asked = (prompt: string) => prompt.match(/- Before the pass is done, .* The editor asked to check (.*) of them: flag that many from the top of your order/)?.[1];
+    // The order is the model's. How far down it the editor is asked to look is theirs, and balanced when they haven't said.
+    expect(pass()).toContain("order those cuts from the most likely to be wrong to the least");
+    expect([pass(), pass("less"), pass("balanced"), pass("more")].map(asked)).toEqual(["about one in four", "about one in ten", "about one in four", "about half"]);
+    // A request about one cut or edit of the pass, a pause tightening and any other edit are not asked.
+    for (const context of [{ dialogueOperation: "first-cut", cutIndex: 0, changeId: "chg_1" }, { dialogueOperation: "first-cut", editIndex: 2 }, { dialogueOperation: "local-pauses" }, {}])
+      expect(buildSystemPrompt({ ...base, checkIn: "more", task: task(context) })).not.toContain("Before the pass is done");
+  });
+
   it("names where the editor was looking: a source passage in the source's own frames, or a place on the timeline", () => {
     const source = buildSystemPrompt({ ...base, task: task({ mediaId: "m1", time: 77, end: 80.5, version: "v4" }) });
     expect(source).toContain("## Instruction\nTighten this.");
@@ -135,10 +147,33 @@ describe("an editing prompt", () => {
     const marked = buildSystemPrompt({ ...base, task: task({ time: 10, end: 12, markedRange: { start: 42, end: 51.5, version: "v5" } }) });
     expect(marked).toContain("- Timeline position referenced: 10.00 s (0:10.00) to 12.00 s (0:12.00)");
     expect(marked).toContain("- Stretch the editor marked on the timeline: 42.00 s (0:42.00) to 51.50 s (0:51.12) on version v5");
+    // A message to an open edit written while the video was paused says the frame it stopped on and its version.
+    const stopped = buildSystemPrompt({ ...base, task: task({ changeId: "chg1", time: 32, end: 37.3, messageTime: { time: 37.5, version: "v5" } }) });
+    expect(stopped).toContain("- Where the editor stopped the video as they wrote this: timeline 37.50 s (0:37.12) on version v5");
     // Marked with nothing open it is the position itself, said once.
     expect(buildSystemPrompt({ ...base, task: task({ time: 42, end: 51.5, markedRange: { start: 42, end: 51.5 } }) })).not.toContain("Stretch the editor marked");
     // With nothing recorded there is no context section.
     expect(buildSystemPrompt({ ...base, task: task({}) })).not.toContain("## Context");
+  });
+
+  it("lists a long timeline's clips only near where the request points, and a pass's diff not for one of its cuts", () => {
+    const timeline = emptyTimeline(project.id);
+    timeline.tracks[0]!.clips = Array.from({ length: 60 }, (_, i) => makeMediaClip("m1", i * 2, i * 2 + 2, i * 2, { id: `c${i}` }));
+    const near = buildSystemPrompt({ ...base, project: { project, timeline }, task: task({ time: 60, end: 62 }) });
+    expect(near).toContain("c30 ");
+    expect(near).not.toContain("c0 ");
+    expect(near).toContain("Listed: the clips within 15 s of 1:00.00–1:02.00, of 60. `timeline_get` lists every clip");
+    const whole = buildSystemPrompt({ ...base, project: { project, timeline }, task: task({}) });
+    expect(whole).not.toContain("c30 ");
+    expect(whole).toContain("The 60 clips aren't listed here");
+    // A short timeline is listed whole.
+    timeline.tracks[0]!.clips = timeline.tracks[0]!.clips.slice(0, 10);
+    expect(buildSystemPrompt({ ...base, project: { project, timeline }, task: task({ time: 60 }) })).toContain("c0 ");
+    const change = { id: "chg_3", projectId: project.id, fromVersion: "v1", toVersion: "v2", description: "Review 7 optional dialogue cuts", author: { type: "agent", name: "codex" },
+      noteIds: [], ranges: [{ start: 10, end: 11 }], state: "revising", renders: [] } as unknown as Change;
+    const pass = { change, description: ["Moved 200 clips along the timeline with nothing else changed (now 1.00–600.00)"] };
+    expect(buildSystemPrompt({ ...base, change: pass, task: task({ changeId: "chg_3", cutIndex: 0 }) })).not.toContain("Diff:");
+    expect(buildSystemPrompt({ ...base, change: pass, task: task({ changeId: "chg_3", editIndex: 0 }) })).toContain("Diff:\n- Moved 200 clips");
   });
 
   it("asks for a reason for every edit and puts the summary in the chat", () => {
@@ -178,6 +213,13 @@ describe("an editing prompt", () => {
     expect(buildSystemPrompt({ ...base, change: { change }, task: task({ changeId: "chg_other", editIndex: 1 }) })).toContain("- Selected edit index: 1\n");
     // An index means nothing without the change it belongs to.
     expect(buildSystemPrompt({ ...base, task: task({ editIndex: 2, cutIndex: 1 }) })).not.toMatch(/Selected edit index|Staged cut being revised/);
+  });
+
+  it("tells a revision of a moment every edit in it", () => {
+    const told = buildSystemPrompt({ ...base, task: task({ changeId: "chg_3", editIndex: 0, time: 29.2, end: 33.5,
+      momentEdits: [{ changeId: "chg_3", spot: 1, label: "Rubik's Cube inset" }, { changeId: "chg_4", spot: 0 }] }) });
+    expect(told).toContain(`- The editor's words are about the whole moment this edit is in, which plays as one change and also has: edit index 1 of chg_3 ("Rubik's Cube inset"); edit index 0 of chg_4. Which of them the words mean is for you to work out.`);
+    expect(buildSystemPrompt({ ...base, task: task({ changeId: "chg_3", editIndex: 0 }) })).not.toContain("whole moment");
   });
 
   it("gives the model the tool names its harness exposes", () => {

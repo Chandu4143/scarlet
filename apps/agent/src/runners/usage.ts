@@ -68,9 +68,35 @@ export function codexUsage(raw: unknown, model?: string): AgentUsage | undefined
   };
 }
 
-/** Gemini `result.stats`: `input_tokens` includes `cached`; `input` (newer CLIs) is the uncached part. */
+/**
+ * Gemini usage: ACP `PromptResponse.usage` (camelCase) or legacy `result.stats` (snake_case).
+ * In `agy acp`, `inputTokens` already excludes cached reads and writes (`inputTokens + cachedReadTokens +
+ * cachedWriteTokens + outputTokens == totalTokens`). When `totalTokens` instead matches `inputTokens + outputTokens`,
+ * subtract cache counts so `inputTokens` stays uncached.
+ */
 export function geminiUsage(raw: unknown, model?: string): AgentUsage | undefined {
   const s = record(raw);
+  if (has(s, "inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens")) {
+    const rawInput = tokenCount(s!.inputTokens);
+    const output = tokenCount(s!.outputTokens);
+    const cached = tokenCount(s!.cachedReadTokens);
+    const written = tokenCount(s!.cachedWriteTokens);
+    const cache = cached + written;
+    const total = tokenCount(s!.totalTokens);
+    const inputIncludesCache =
+      total > 0 &&
+      cache > 0 &&
+      rawInput >= cache &&
+      Math.abs(rawInput + output - total) < Math.abs(rawInput + cache + output - total);
+    return {
+      ...emptyUsage(model),
+      inputTokens: inputIncludesCache ? Math.max(0, rawInput - cache) : rawInput,
+      outputTokens: output,
+      cacheReadTokens: cached,
+      cacheWriteTokens: written,
+      reasoningTokens: tokenCount(s!.thoughtTokens),
+    };
+  }
   if (!has(s, "input_tokens", "output_tokens", "input", "cached")) return undefined;
   const cached = tokenCount(s!.cached);
   return {
@@ -79,4 +105,29 @@ export function geminiUsage(raw: unknown, model?: string): AgentUsage | undefine
     outputTokens: tokenCount(s!.output_tokens),
     cacheReadTokens: cached,
   };
+}
+
+/** One `PLANNER_RESPONSE` step from `agy`'s `transcript.jsonl`: `input_tokens` already excludes cache reads. */
+export function geminiTranscriptStepUsage(raw: unknown, model?: string): AgentUsage | undefined {
+  const s = record(raw);
+  if (s?.type !== "PLANNER_RESPONSE") return undefined;
+  if (!has(s, "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "thought_tokens", "reasoning_tokens")) return undefined;
+  const usage: AgentUsage = {
+    ...emptyUsage(model),
+    inputTokens: tokenCount(s.input_tokens),
+    outputTokens: tokenCount(s.output_tokens),
+    cacheReadTokens: tokenCount(s.cache_read_tokens),
+    cacheWriteTokens: tokenCount(s.cache_write_tokens),
+    reasoningTokens: tokenCount(s.thought_tokens ?? s.reasoning_tokens),
+  };
+  if (
+    usage.inputTokens === 0 &&
+    usage.outputTokens === 0 &&
+    usage.cacheReadTokens === 0 &&
+    usage.cacheWriteTokens === 0 &&
+    usage.reasoningTokens === 0
+  ) {
+    return undefined;
+  }
+  return usage;
 }

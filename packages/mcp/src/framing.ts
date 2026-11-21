@@ -21,10 +21,14 @@ export interface Framing {
   within?: Box;
   /** Seconds the move takes. Zero is a straight cut to the frame. */
   over: number;
+  /** How the move eases: the skill's feel for a zoom. easeInOut when absent. */
+  ease?: MoveEase;
   /** The corner of the video the picture laid over the recording sits in from this framing on, at the size and margins it has. */
   inset?: Corner;
 }
 
+export const MOVE_EASES = ["easeInOut", "easeIn", "easeOut", "linear"] as const;
+export type MoveEase = typeof MOVE_EASES[number];
 export const CORNERS = ["bottom-right", "bottom-left", "top-right", "top-left"] as const;
 export type Corner = typeof CORNERS[number];
 
@@ -58,11 +62,27 @@ const COVERS_ALL = 0.9;
 /** The frame is drawn this much larger than the canvas, so rounding to whole pixels never leaves a line of background at an edge. */
 const OVERSCAN = 1.003;
 
-/** The parts of the canvas beside each cover that no cover touches, as canvas fractions. */
+const insideBox = (a: Box, b: Box) => a[0] >= b[0] - 1e-9 && a[1] >= b[1] - 1e-9 && a[2] <= b[2] + 1e-9 && a[3] <= b[3] + 1e-9;
+
+/** The maximal parts of the canvas that no cover touches, as canvas fractions. Falls back to the whole canvas if none is wide enough. */
 function freeAreas(covers: readonly Box[]): Box[] {
-  if (!covers.length) return [WHOLE];
-  const beside = covers.flatMap(([l, t, r, b]): Box[] => [[0, 0, l, 1], [r, 0, 1, 1], [0, 0, 1, t], [0, b, 1, 1]]);
-  return beside.filter(k => w(k) > 0.05 && h(k) > 0.05 && covers.every(c => area(meet(c, k)) < 1e-9));
+  let areas: Box[] = [WHOLE];
+  for (const c of covers) {
+    const next: Box[] = [];
+    for (const b of areas) {
+      if (area(meet(b, c)) < 1e-9) { next.push(b); continue; }
+      const splits: Box[] = [
+        [b[0], b[1], c[0], b[3]],
+        [c[2], b[1], b[2], b[3]],
+        [b[0], b[1], b[2], c[1]],
+        [b[0], c[3], b[2], b[3]],
+      ];
+      for (const s of splits) if (w(s) > 0.05 && h(s) > 0.05) next.push(s);
+    }
+    areas = next.filter((a, i) => !next.some((b, j) => i !== j && insideBox(a, b) && (j < i || !insideBox(b, a))));
+    if (!areas.length) return [WHOLE];
+  }
+  return areas;
 }
 
 /** Where on one axis the frame starts: the shown area centred in the free span, inside `within` when both can hold, inside the picture always. */
@@ -321,7 +341,7 @@ export function framingOps(timeline: Timeline, media: readonly MediaAsset[], can
     const under = playing(made, Math.min(settles, to - 1e-3)) ?? playing(made, f.at)!;
     if (f.inset && f.inset !== corner) {
       // The inset goes with the frame: over the same move, or on the same cut.
-      if (over > 0) insetPath.push({ time: f.at, corner: corner ?? null, ease: "easeInOut" }, { time: settles, corner: f.inset, ease: "linear" });
+      if (over > 0) insetPath.push({ time: f.at, corner: corner ?? null, ease: f.ease ?? "easeInOut" }, { time: settles, corner: f.inset, ease: "linear" });
       else { insetPath.at(-1)!.ease = "hold"; insetPath.push({ time: f.at, corner: f.inset, ease: "linear" }); }
       corner = f.inset;
     }
@@ -329,7 +349,7 @@ export function framingOps(timeline: Timeline, media: readonly MediaAsset[], can
     const whole = over_.some(c => c.atStart && area(c.box) >= COVERS_ALL);
     const covers = over_.filter(c => area(c.box) < COVERS_ALL).map(c => c.box);
     const placed = placeFrame(f.show, f.within, covers, shape);
-    if (over > 0 && previous) path.push({ time: f.at, frame: previous, ease: "easeInOut" }, { time: settles, frame: placed.frame, ease: "linear" });
+    if (over > 0 && previous) path.push({ time: f.at, frame: previous, ease: f.ease ?? "easeInOut" }, { time: settles, frame: placed.frame, ease: "linear" });
     else {
       if (path.length) path[path.length - 1]!.ease = "hold";
       path.push({ time: f.at, frame: placed.frame, ease: "linear" });

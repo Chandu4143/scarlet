@@ -1,5 +1,4 @@
 import { useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
 import type { SourceCacheStatus } from "@scarlet/shared";
 import type { MediaAsset } from "@scarlet/timeline";
 import { api, errorMessage, IS_DESKTOP } from "../lib/client";
@@ -15,7 +14,6 @@ import { MediaStatusLine } from "../components/media/MediaStatusLine";
 import { cacheLabel, cachePercent, useSourceCaches } from "../components/media/sourceCaches";
 import { useMediaProcessing } from "../components/media/useMediaProcessing";
 import { ConfirmDialog, EmptyState, Icon, InlineError } from "../components/ui/primitives";
-import { ImportUrlModal } from "./ProjectsPage";
 
 function Thumb({ m }: { m: MediaAsset }) {
   const [failed, setFailed] = useState(false);
@@ -68,13 +66,10 @@ export function MediaPage({ uploads, onPlay }: {
   const importTranscription = useImportTranscription();
   const { available: transcriptionAvailable, notice: importNotice, local } = importTranscription;
   const notice = local ? "" : importNotice;
-  const importErrors: string[] = useLocation().state?.importErrors ?? [];
   const [pickerError, setPickerError] = useState("");
   // The unreadable file the editor is asked about before it is taken out.
   const [removal, setRemoval] = useState<MediaAsset | null>(null);
-  const projectId = current?.id ?? "";
   const { items, start, startPaths, localImport, dismiss } = uploads;
-  const [importOpen, setImportOpen] = useState(false);
   const [picking, setPicking] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   // A file being copied in holds the picker until it is in. A link can download for minutes, and more files can wait behind it.
@@ -107,13 +102,10 @@ export function MediaPage({ uploads, onPlay }: {
   return (
     <>
       <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
-        <button type="button" className="btn-quiet mr-auto aria-disabled:opacity-60" aria-disabled={processing.busy}
+        {processing.available && <button type="button" className="btn-quiet mr-auto aria-disabled:opacity-60" aria-disabled={processing.busy}
           title={processing.description} onClick={() => void processing.toggle()}>
           <Icon name={processing.icon} size={12} />{processing.label}
-        </button>
-        <button className="btn-ghost" onClick={() => setImportOpen(true)}>
-          <Icon name="link" size={12} /> Add from a link
-        </button>
+        </button>}
         {media.length > 0 && <button className="btn-ghost" aria-describedby="media-file-types" disabled={adding} onClick={addFiles}>
           <Icon name="upload" size={12} /> Add files
         </button>}
@@ -129,7 +121,6 @@ export function MediaPage({ uploads, onPlay }: {
           <ImportProgress localImport={localImport} />
         </div>
       )}
-      {importErrors.length > 0 && <InlineError><ul>{importErrors.map((message, i) => <li key={i}>{message}</li>)}</ul></InlineError>}
       <InlineError>{processing.error || pickerError || cacheError}</InlineError>
       <UploadList items={items} onDismiss={dismiss} />
       {media.length === 0 ? (
@@ -172,7 +163,6 @@ export function MediaPage({ uploads, onPlay }: {
           ))}
         </ul>
       )}
-      <ImportUrlModal projectId={projectId} open={importOpen} notice={notice} onClose={() => setImportOpen(false)} />
       {/* The project's copy is deleted with it, so it asks first, as every press that deletes does. The dialog says why the engine wouldn't. */}
       {removal && <ConfirmDialog open danger onClose={() => setRemoval(null)} title={`Remove “${removal.name}”?`} confirmLabel="Remove"
         body="Scarlet deletes the project's copy of this file. This cannot be undone."

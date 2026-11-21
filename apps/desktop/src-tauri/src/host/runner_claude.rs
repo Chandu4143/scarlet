@@ -163,6 +163,16 @@ fn prune(mut m: Map<String, Value>) -> Value {
     Value::Object(m)
 }
 
+/// A compaction Claude Code reports once it has happened: what set it off and the context's size before and after.
+fn compaction_event(meta: Option<&Value>) -> RunnerEvent {
+    let mut data = Map::new();
+    data.insert("kind".into(), json!("compaction"));
+    for (from, to) in [("trigger", "trigger"), ("pre_tokens", "preTokens"), ("post_tokens", "postTokens")] {
+        data.insert(to.into(), meta.and_then(|m| m.get(from)).cloned().unwrap_or(Value::Null));
+    }
+    RunnerEvent::with("log", "Context compacted", prune(data))
+}
+
 /// Parse one stream-json line from `claude -p --output-format stream-json --verbose`.
 pub fn parse_claude_line(line: &str, st: &mut ClaudeState) -> Vec<RunnerEvent> {
     let msg: Value = match serde_json::from_str(line) {
@@ -211,6 +221,9 @@ pub fn parse_claude_line(line: &str, st: &mut ClaudeState) -> Vec<RunnerEvent> {
                     events.push(RunnerEvent::new("error", format!("Scarlet MCP server status: {s}")));
                 }
             }
+        } else if msg.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+            // Claude Code compacted the session's context. The engine logs it and keeps it out of the chat.
+            events.push(compaction_event(msg.get("compact_metadata")));
         }
         return events;
     }
@@ -341,8 +354,6 @@ pub fn mcp_config_json(mcp: &McpSpec) -> String {
     serde_json::to_string_pretty(&v).unwrap()
 }
 
-/// `--bare` keeps the user's hooks, plugins and CLAUDE.md out of Scarlet runs, but
-/// it reads only ANTHROPIC_API_KEY or a cloud provider, never a subscription login.
 /// Scarlet's tools wait up to `toolWaitSeconds` (capabilities.ts) for evidence still being measured, past Claude Code's
 /// default MCP deadline. Respect a value the user set.
 fn with_tool_timeout(env: &std::collections::HashMap<String, String>) -> std::collections::HashMap<String, String> {
@@ -351,6 +362,8 @@ fn with_tool_timeout(env: &std::collections::HashMap<String, String>) -> std::co
     env
 }
 
+/// `--bare` keeps the user's hooks, plugins and CLAUDE.md out of Scarlet runs, but
+/// it reads only ANTHROPIC_API_KEY or a cloud provider, never a subscription login.
 pub fn can_run_bare(env: &std::collections::HashMap<String, String>) -> bool {
     ["ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].iter().any(|k| env.get(*k).is_some_and(|v| !v.is_empty()))
 }
@@ -507,6 +520,16 @@ mod tests {
         "not json at all",
         r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"num_turns":3,"result":"Proposed one change: chg_1.","total_cost_usd":0.05,"usage":{"input_tokens":4,"cache_creation_input_tokens":20,"cache_read_input_tokens":300,"output_tokens":12}}"#,
     ];
+
+    #[test]
+    fn reports_a_compaction_once_it_happens() {
+        let mut st = ClaudeState::default();
+        let evs = feed(&[r#"{"type":"system","subtype":"compact_boundary","session_id":"s1","compact_metadata":{"trigger":"auto","pre_tokens":161204,"post_tokens":18210}}"#], &mut st);
+        assert_eq!(evs.len(), 1);
+        assert_eq!((evs[0].kind.as_str(), evs[0].text.as_str()), ("log", "Context compacted"));
+        assert_eq!(evs[0].data, Some(json!({"kind":"compaction","trigger":"auto","preTokens":161204,"postTokens":18210})));
+        assert!(!st.started);
+    }
 
     #[test]
     fn maps_text_tools_errors_and_the_result() {

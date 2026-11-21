@@ -1,5 +1,6 @@
 /** Map timelines onto the source clock of the audible dialogue recordings. */
 import type { MediaClip, Timeline } from "../../packages/timeline/src/index.ts";
+import { closesSentence, joinFragment, type FragmentEvidence } from "../../packages/shared/src/joinFragments.ts";
 import { merge, type Range } from "./intervals.ts";
 import type { MediaEvidence, PlayedWord } from "./metrics.ts";
 
@@ -91,6 +92,35 @@ export function wordsWithout(words: readonly TimelineWord[], removals: readonly 
   return out;
 }
 
+/** A join that took words out of a sentence, with what the version plays either side of it. `at` is in timeline seconds. */
+export interface DividedJoin extends FragmentEvidence { at: number; mediaId: string }
+
+/**
+ * The joins of a version that divide a sentence, as the pass's closing check lists them (joinFragment): where a stray
+ * word or a sentence without its start or end can be, and where a join may read whole. Which it is takes reading, so
+ * this is a list to read and a count to compare, not a count of mistakes. A sentence's end is read from the words'
+ * punctuation here; the engine also has the transcript's segments.
+ */
+export function dividedJoins(tl: Timeline, media: readonly MediaInfo[], evidence: ReadonlyMap<string, MediaEvidence>): DividedJoin[] {
+  const out: DividedJoin[] = [];
+  const last = new Map<string, MediaClip>();
+  const said = new Map<string, Array<{ text: string; start: number; end: number; index: number; endsSentence: boolean }>>();
+  for (const clip of audibleClips(tl, media).sort((a, b) => a.timelineIn - b.timelineIn)) {
+    const before = last.get(clip.mediaId);
+    last.set(clip.mediaId, clip);
+    // Touching or crossfaded pieces of one recording, the later one further on in it.
+    if (!before || Math.abs(before.timelineIn + clipLength(before) - clip.timelineIn) > .2 || clip.sourceIn - before.sourceOut < 1e-3) continue;
+    let words = said.get(clip.mediaId);
+    if (!words) said.set(clip.mediaId, words = (evidence.get(clip.mediaId)?.words ?? [])
+      .map((w, index) => ({ text: w.text, start: w.start, end: w.end, index, endsSentence: closesSentence(w.text) }))
+      .filter(w => w.end > w.start && w.text.trim() && !/^\s*[[(*♪].*[\])*♪]\s*$/u.test(w.text))
+      .sort((a, b) => (a.start + a.end) - (b.start + b.end) || a.index - b.index));
+    const found = joinFragment(words, before.sourceOut, clip.sourceIn, before.sourceIn, clip.sourceOut);
+    if (found) out.push({ at: Math.round(clip.timelineIn * 1000) / 1000, mediaId: clip.mediaId, ...found });
+  }
+  return out;
+}
+
 /** A timeline range on each audible recording it plays. */
 export function timelineRangeToSource(tl: Timeline, media: readonly MediaInfo[], range: Range): SourceRange[] {
   const out: SourceRange[] = [];
@@ -102,6 +132,20 @@ export function timelineRangeToSource(tl: Timeline, media: readonly MediaInfo[],
     out.push({ mediaId: c.mediaId, start: c.sourceIn + (start - lo) * speed, end: c.sourceIn + (end - lo) * speed });
   }
   return out;
+}
+
+/** Where source ranges play on a timeline: the timeline ranges of every audible clip that plays them, merged. */
+export function sourceToTimeline(tl: Timeline, media: readonly MediaInfo[], ranges: readonly SourceRange[]): Range[] {
+  const out: Range[] = [];
+  for (const c of audibleClips(tl, media)) {
+    const speed = c.speed ?? 1;
+    for (const r of ranges) {
+      if (r.mediaId !== c.mediaId) continue;
+      const start = Math.max(r.start, c.sourceIn), end = Math.min(r.end, c.sourceOut);
+      if (end - start > 1e-6) out.push({ start: c.timelineIn + (start - c.sourceIn) / speed, end: c.timelineIn + (end - c.sourceIn) / speed });
+    }
+  }
+  return merge(out);
 }
 
 /** Group source ranges by recording and merge them. */

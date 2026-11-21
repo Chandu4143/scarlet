@@ -1,4 +1,5 @@
 import { AboutSettings } from "../components/shell/AboutSettings";
+import { CheckInSettings } from "../components/shell/CheckInSettings";
 import { LocalModelNotice, TranscriptionGuide, useLocalModelStatus } from "../components/shell/LocalModelNotice";
 import { PreferenceSelect } from "../components/ui/PreferenceSelect";
 import { StorageSettings } from "../components/shell/StorageSettings";
@@ -13,7 +14,7 @@ import { ModelSettings } from "../components/shell/ModelSettings";
 import { DesktopAgents, DesktopDiagnostics, ExportLogs } from "../components/shell/DesktopSettings";
 import { EditingToolsSettings } from "../components/shell/EditingToolsSettings";
 import { useUiStore } from "../stores/ui";
-import { ErrorState, Field, InlineError, Loading, Modal, PageHeading, SectionTitle, Spinner, Toggle } from "../components/ui/primitives";
+import { ErrorState, Field, Icon, InlineError, Loading, Modal, PageHeading, SectionTitle, Spinner, Toggle } from "../components/ui/primitives";
 
 /**
  * A group of settings as it goes to the engine. A field the editor emptied is undefined here, which JSON leaves out,
@@ -134,34 +135,47 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
   return (
     <>
     <form
-      className="card p-5"
+      className={section === "general" ? "card transcription-preferences" : "card p-5"}
       data-unsaved={dirty || undefined}
       onSubmit={(e) => {
         e.preventDefault();
         if (dirty && !busy) void save();
       }}
     >
-      <fieldset disabled={busy} className={section === "general" ? "max-w-md min-w-0" : "min-w-0 grid sm:grid-cols-2 gap-x-8 gap-y-4"}>
-        <div>
-          {section === "general" && (
-          <>
-          <SectionTitle>Preferences</SectionTitle>
-          <Field label="Transcribe speech with" htmlFor="tr-provider" hint={tr.provider === "whispercpp"
-            ? undefined
-            : "Used for dialogue edits, captions and voice notes."}>
-            <PreferenceSelect id="tr-provider" value={modelChoice} valueLabel={tr.provider === "none" ? "Transcription unavailable" : undefined} disabled={busy} options={transcriptionModels}
-              onChange={value => void choose({ transcription: value === "openai" || value === "none"
-                ? { ...tr, provider: value } : { ...tr, provider: "whispercpp", localModel: value } })} />
-            {tr.provider === "whispercpp" && <>
-              <LocalModelNotice model={localModel} status={localStatus} />
-              {localModel === "custom" && <Link className="text-xs underline" to="/settings#advanced">Configure model file and adapter</Link>}
-              {localModel === "crisperwhisper" && <TranscriptionGuide crisper />}
-            </>}
-          </Field>
-          </>
+      {section === "general" ? (
+        <fieldset disabled={busy} className="min-w-0" aria-labelledby="transcription-heading">
+          <div className="transcription-header">
+            <div className="transcription-heading">
+              <span className="transcription-glyph"><Icon name="audio" size={22} /></span>
+              <div>
+                <h2 id="transcription-heading">Speech transcription</h2>
+                <p>For dialogue edits, captions and voice notes.</p>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <label className="label" htmlFor="tr-provider">Preferred model</label>
+              <PreferenceSelect id="tr-provider" value={modelChoice} valueLabel={tr.provider === "none" ? "Transcription unavailable" : undefined} disabled={busy} options={transcriptionModels}
+                onChange={value => void choose({ transcription: value === "openai" || value === "none"
+                  ? { ...tr, provider: value } : { ...tr, provider: "whispercpp", localModel: value } })} />
+            </div>
+          </div>
+          {tr.provider === "whispercpp" ? <>
+            <LocalModelNotice model={localModel} status={localStatus} />
+            {localModel === "crisperwhisper" && <TranscriptionGuide crisper />}
+            {localModel === "custom" && (
+              <Link className="transcription-setup-row" to="/settings#advanced">
+                Configure model file and adapter <Icon name="chevron" size={14} />
+              </Link>
+            )}
+          </> : (
+            <p className="transcription-status text-muted">
+              {tr.provider === "openai" ? <><Icon name="link" /> Audio is sent to OpenAI for transcription.</> : "Choose a model to turn transcription on."}
+            </p>
           )}
-          {section === "advanced" && (
-          <>
+        </fieldset>
+      ) : (
+      <fieldset disabled={busy} className="min-w-0 grid sm:grid-cols-2 gap-x-8 gap-y-4">
+        <div>
           <SectionTitle>Transcription</SectionTitle>
           {tr.provider === "openai" && (
             <Field label="OpenAI model" htmlFor="tr-model">
@@ -201,20 +215,16 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
             <div className="grid grid-cols-2 gap-3 mb-2">
               <Field label="Provider" htmlFor="nc-provider">
                 <PreferenceSelect id="nc-provider" value={nc.provider}
-                  options={[{ value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" }, { value: "none", label: "None" }] as const}
+                  options={[{ value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" }, { value: "gemini", label: "Gemini" }, { value: "none", label: "None" }] as const}
                   onChange={value => set("noteCleanup", { ...nc, provider: value })} />
               </Field>
               <Field label="Model" htmlFor="nc-model">
-                <input id="nc-model" className="field font-mono" value={nc.model ?? ""} onChange={(e) => set("noteCleanup", { ...nc, model: e.target.value || undefined })} placeholder="claude-haiku-4-5" />
+                <input id="nc-model" className="field font-mono" value={nc.model ?? ""} onChange={(e) => set("noteCleanup", { ...nc, model: e.target.value || undefined })} placeholder={nc.provider === "gemini" ? "gemini-2.5-flash" : nc.provider === "openai" ? "gpt-4o-mini" : "claude-haiku-4-5"} />
               </Field>
             </div>
           )}
-          </>
-          )}
         </div>
         <div>
-          {section === "advanced" && (
-          <>
           <SectionTitle>Render</SectionTitle>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Handle seconds" htmlFor="rd-handle" hint="Context on each side of an edit’s preview">
@@ -234,10 +244,9 @@ function ServerSettingsForm({ section }: { section: "general" | "advanced" }) {
                 onChange={value => set("render", { ...rd, hwaccel: value })} />
             </Field>
           </div>
-          </>
-          )}
         </div>
       </fieldset>
+      )}
       {section === "advanced" && <div className="flex justify-end gap-2 mt-2">
         <button type="submit" className="btn-primary" disabled={!dirty || busy}>
           {busy && <Spinner className="size-3" />} Save
@@ -319,6 +328,7 @@ export function SettingsPage() {
           <>
             <DesktopAgents />
             <ServerSettingsForm section="general" />
+            <CheckInSettings />
           </>
         )}
         {tab === "models" && <ModelSettings />}

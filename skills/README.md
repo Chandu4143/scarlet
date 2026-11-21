@@ -13,6 +13,7 @@ Every project uses the same library. A skill command pins its guide to the task.
 | Picture and graphics | [Punch-ins on a talking head](punch-in/SKILL.md) | Cut between the wide framing and a tighter one across jump cuts and on lines that deserve weight, with the face placed from where it actually is. |
 | Picture and graphics | [Add captions](add-captions/SKILL.md) | Caption retained speech in short, readable lines. |
 | Picture and graphics | [Motion graphics](motion-graphics/SKILL.md) | Lower thirds, titles and callouts that read well on the footage, in the project's style guide or the look the editor has approved. |
+| Picture and graphics | [B-roll and graphics](b-roll/SKILL.md) | Describe what should be on screen at each spot first, as To dos, then find footage or make a graphic only for the ones you ask for. |
 
 The built-in `/tighten-pauses-here` command limits the request to local pauses. The dialogue guide sets the defaults for what to cut, what to review and how much space to leave around speech. It uses straight cuts. Editors can request audio smoothing separately. Project context, permissions and scope belong to Scarlet. [Skill and tool ownership](../docs/skills-and-tools.md)
 

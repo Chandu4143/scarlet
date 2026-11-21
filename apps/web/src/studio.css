@@ -283,11 +283,22 @@
   background: rgb(16 16 16 / 86%);
 }
 .monitor-controls button:enabled { color: #f4f0e8; }
-.monitor-controls .preference-select.compact {
-  min-height: 28px; padding: 0 4px 0 8px; gap: 3px; border: 0; background: none;
-  font: 11px var(--font-mono); font-variant-numeric: tabular-nums;
+.playback-speed-trigger {
+  width: auto; height: 28px; padding: 0 7px; gap: 4px; font: 12px/1 var(--font-mono);
 }
-.monitor-controls .preference-select:enabled:hover, .monitor-controls .preference-select[aria-expanded="true"] { background: rgb(255 255 255 / 10%); }
+.playback-speed-trigger[aria-expanded="true"] { background: var(--color-raised); }
+.playback-speed button:focus-visible { outline-offset: -2px; }
+.playback-speed-panel {
+  position: absolute; bottom: calc(100% + 4px); right: 0; display: flex; align-items: center;
+  width: max-content; max-width: calc(100cqw - 12px); padding: 3px; border: 1px solid #4b4a48; border-radius: 7px;
+  background: #1c1c1b; box-shadow: 0 3px 12px #0005;
+}
+.playback-speed-panel .btn-icon { width: 28px; min-width: 0; height: 28px; font-size: 16px; }
+.playback-speed-panel .btn-icon:disabled { color: #969693; opacity: 1; }
+.playback-speed-panel output { flex: none; width: 5ch; text-align: center; color: #f4f0e8; font: 12px/1 var(--font-mono); }
+@container (max-width: 280px) {
+  .playback-speed-panel { top: calc(100% + 4px); bottom: auto; }
+}
 .mic-ready {
   background: var(--color-raised);
   color: var(--color-accent-soft);
@@ -338,6 +349,75 @@
 .media-thumb { flex: none; width: 68px; height: 40px; border-radius: 5px; }
 .media-glyph { display: grid; place-items: center; background: var(--color-raised); color: var(--color-muted); }
 .settings-page { max-width: 930px; }
+.transcription-preferences { container-type: inline-size; }
+.transcription-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 32%);
+  align-items: center;
+  gap: 20px;
+  padding: 18px 20px 16px;
+}
+.transcription-heading { display: flex; align-items: center; gap: 12px; }
+.transcription-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-raised);
+}
+.transcription-heading h2 { font-size: 18px; line-height: 1.25; font-weight: 600; letter-spacing: -.025em; }
+.transcription-heading p { margin-top: 3px; font-size: 12px; color: var(--color-muted); }
+.transcription-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 18px;
+  padding: 11px 13px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-raised) 57%, var(--color-panel));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.transcription-status > [role="status"] { flex: 1 1 225px; }
+.transcription-privacy { display: flex; align-items: center; gap: 7px; color: var(--color-muted); }
+.transcription-privacy svg, .transcription-setup-row > svg { flex: none; color: var(--color-dim); }
+.transcription-setup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-line);
+  border-radius: 0 0 12px 12px;
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.transcription-setup-row::-webkit-details-marker { display: none; }
+.transcription-setup-row:hover { background: var(--color-raised); }
+.transcription-setup[open] > summary { border-radius: 0; }
+.transcription-setup[open] > summary > svg { transform: rotate(90deg); }
+.transcription-instructions {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  max-width: 75ch;
+  padding: 0 20px 18px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.transcription-instructions .underline { color: var(--color-fg); text-underline-offset: 3px; }
+.transcription-preferences > [role="status"], .transcription-preferences > [role="alert"] { margin: 0 20px 12px; }
+@container (max-width: 570px) {
+  .transcription-header { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .transcription-status { flex-direction: column; align-items: flex-start; }
+  .transcription-status > [role="status"] { flex: none; }
+}
 .about-settings { display: grid; gap: 20px; }
 .about-build {
   display: flex;
@@ -373,11 +453,62 @@
 }
 .about-changelog, .about-telemetry { min-width: 0; padding: 20px; }
 .about-changelog h2, .about-telemetry h2 { font-size: 17px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
-.about-release-day h3 { margin: 14px 0 4px; font-size: 12px; font-weight: 500; color: var(--color-dim); }
-.about-release-day ul { list-style: disc; padding-inline-start: 15px; }
-.about-release-day li { padding-block: 9px; color: var(--color-muted); line-height: 1.55; }
-.about-release-day li::marker { color: var(--color-dim); }
-.about-release-day li + li { border-top: 1px solid var(--color-line); }
+.about-changelog-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 12px;
+}
+.about-changelog-date { font-size: 12px; font-weight: 500; color: var(--color-dim); }
+.about-change-list { display: grid; gap: 10px; list-style: disc; padding-inline-start: 16px; }
+.about-change-list li { color: var(--color-muted); line-height: 1.5; }
+.about-change-list li::marker { color: var(--color-dim); }
+.about-changelog-more {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--color-line);
+  text-underline-offset: 3px;
+}
+.about-changelog-more:hover { color: var(--color-fg); text-decoration-color: var(--color-dim); }
+.about-changelog .about-disclosure { margin-top: 14px; }
+.about-earlier-days { display: grid; margin: 10px 0 -6px; }
+.about-release-day + .about-release-day { border-top: 1px solid var(--color-line); }
+.about-release-day > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  margin-inline: -6px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  color: var(--color-muted);
+  list-style: none;
+  cursor: pointer;
+}
+.about-release-day > summary::-webkit-details-marker { display: none; }
+.about-release-day > summary:hover { color: var(--color-fg); background: var(--color-raised); }
+.about-release-date { font-weight: 500; }
+.about-release-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--color-dim);
+  font-variant-numeric: tabular-nums;
+}
+.about-release-day > summary svg { flex: none; }
+.about-release-day[open] > summary { color: var(--color-fg); }
+.about-release-day[open] > summary svg { transform: rotate(90deg); }
+.about-release-day .about-change-list { margin: 6px 0 12px; }
 .about-telemetry { color: var(--color-muted); line-height: 1.55; overflow-wrap: anywhere; }
 .about-telemetry h2 { color: var(--color-fg); margin-bottom: 12px; }
 .about-telemetry-toggle {
@@ -491,23 +622,20 @@
   font-size: 12px; color: var(--color-muted); border-top: 1px solid var(--color-line); }
 .skill-find-match { color: inherit; background: #ffffff29; }
 .skill-find-match[data-active] { background: #edc28555; box-shadow: inset 0 -1px var(--color-warn); }
-/* A skill's instructions: the field's own text is clear over the same words drawn under it, where each $template and
-   /skill of the editor's has a faint fill that doesn't move the text. */
+/* A skill's instructions: the field's own text is clear over the same words drawn under it, where each /skill of the
+   editor's has a faint fill that doesn't move the text. */
 .skill-instructions { position: relative; display: flex; flex: 1; min-height: 0; }
 .skill-instructions > .skill-instructions-text, .skill-instructions > .skill-instructions-field { position: absolute; inset: 0; margin: 0; overflow-y: auto;
   white-space: pre-wrap; overflow-wrap: break-word; border: 0; scrollbar-gutter: stable; }
 .skill-instructions > .skill-instructions-text { color: var(--color-fg); pointer-events: none; scrollbar-color: transparent transparent; }
 .skill-instructions > .skill-instructions-field { background: transparent; color: transparent; caret-color: var(--color-fg); outline: none; }
 .skill-instructions > .skill-instructions-field::selection { background: rgba(255, 255, 255, .22); color: transparent; }
-.skill-instructions-caret { display: inline-block; width: 0; }
-.skill-instructions > .composer-skills { position: absolute; z-index: 10; }
 .skill-keyword { border-radius: 3px; background: rgba(255, 255, 255, .09); box-shadow: 0 0 0 2px rgba(255, 255, 255, .09); color: var(--color-fg); white-space: nowrap; }
 .skill-keyword.is-hover { background: rgba(255, 255, 255, .16); box-shadow: 0 0 0 2px rgba(255, 255, 255, .16); }
-/* Over a keyword, what it is: its picture, its name and its kind. */
-.skill-keyword-note { position: absolute; z-index: 10; display: flex; align-items: center; gap: 10px; max-width: 420px; padding: 6px 12px 6px 6px; transform: translateY(-100%);
+/* Over a keyword, what it is: its name and its kind. */
+.skill-keyword-note { position: absolute; z-index: 10; display: flex; align-items: center; gap: 10px; max-width: 420px; padding: 6px 12px; transform: translateY(-100%);
   border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-panel); box-shadow: 0 6px 20px #0005; font-size: 13px; line-height: 1.35;
   color: var(--color-fg); pointer-events: none; }
-.skill-keyword-note:not(:has(.composer-template-thumb)) { padding-left: 12px; }
 .skill-keyword-words { display: grid; min-width: 0; }
 .skill-keyword-words small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--color-dim); }
 .skill-kept { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: 12.5px; line-height: 15px; color: var(--color-muted); white-space: nowrap; }
@@ -590,3 +718,15 @@
 .import-transcription-notice .simple-link { font-size: inherit; color: var(--color-fg); }
 /* A short sits under the video it was made from, set in from it. */
 .list .project-card.is-short { margin-left: 44px; }
+
+/* The files a new project will import, one row each, each with its own ×. */
+/* Names start on the label's and button's edge, and each × ends on the name field's: the hover fill reaches past both. */
+.new-project-files { margin: 8px -8px 0; max-height: 168px; overflow-y: auto; font-size: 12px; }
+.new-project-files li { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 2px 0 8px; border-radius: 6px; }
+.new-project-files li:hover { background: var(--color-raised); }
+.new-project-files li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.new-project-file-remove { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: none;
+  color: var(--color-dim); cursor: pointer; }
+.new-project-files li:hover .new-project-file-remove, .new-project-file-remove:focus-visible { color: var(--color-muted); }
+.new-project-file-remove:hover { background: var(--color-line); color: var(--color-fg); }
+.new-project-file-remove:disabled { visibility: hidden; }

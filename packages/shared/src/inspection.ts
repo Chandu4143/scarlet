@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import type { TimeRange, TranscriptSegment } from "@scarlet/timeline";
+import type { FragmentEvidence } from "./joinFragments.js";
 
 type HeardWord = TimeRange & { text: string };
 export interface RepeatOccurrence {
@@ -32,7 +33,10 @@ export interface RepeatEvidence {
 export interface SilenceLeft { id: string; start: number; end: number; seconds: number; mediaId: string;
   /** Where it starts in the recording. */
   source: number; after: string; before: string; atJoin: boolean }
-/** A wordless stretch this long that a pass leaves playing is accounted for: cut, or kept for what the viewer sees or hears in it. */
+/**
+ * A wordless stretch this long that a pass leaves playing is accounted for: cut, or kept for what the viewer sees or
+ * hears in it. The default when the check isn't given one; how long a silence may play unremarked is the skill's pace.
+ */
 export const SILENCE_LEFT_SECONDS = 2;
 /** A join whose sound, read letter by letter, doesn't match the words the transcript says it plays. */
 export interface JoinHearing { at: number; mediaId: string; side: "out" | "in"; issue: "clipped" | "fragment"; heard: string;
@@ -41,6 +45,12 @@ export interface JoinHearing { at: number; mediaId: string; side: "out" | "in"; 
   /** A fragment: the kept word beside it, which plays whole, and where it starts (in) or ends (out) in the recording. */
   keptWord?: string; keptWordAt?: number;
   source: number }
+/**
+ * A join that took words out of a sentence, with what the edit plays either side of it (`FragmentEvidence`). `at` is the
+ * join in timeline seconds, `out` and `in` where the removed stretch starts and ends in the recording, and `lastWord`
+ * and `firstWord` the transcript's indices of the last word played before it and the first after it.
+ */
+export interface JoinFragment extends FragmentEvidence { id: string; at: number; mediaId: string; out: number; in: number }
 /** How many played joins have a side in a recording whose language can't be read letter by letter, and the timeline seconds they span. */
 export interface UnheardJoins { mediaId: string; reason: string; joins: number; from: number; to: number }
 export interface RepeatAuditResult {
@@ -52,6 +62,11 @@ export interface RepeatAuditResult {
   repeats: RepeatEvidence[];
   /** Wordless stretches still playing that the pass has neither cut nor kept. They count in `remaining`. */
   silences?: SilenceLeft[];
+  /**
+   * Joins that divide a sentence and that the pass has neither repaired nor kept, 25 from `offset`: a stray word, a
+   * sentence cut off, or a join that reads whole. They count in `remaining`.
+   */
+  fragments?: JoinFragment[];
   staged: number;
   nextOffset?: number;
   unavailable?: { mediaId: string; reason: string }[];
@@ -68,6 +83,7 @@ export const RepeatAuditRequest = z.object({
   version: z.string().min(1), startedAt: z.string().optional(),
   keep: z.array(z.object({ id: z.string().min(1), reason: z.string().trim().min(1).max(300) })).max(100).default([]),
   offset: z.number().int().nonnegative().default(0),
+  silencesFrom: z.number().finite().min(0.3).max(30).default(SILENCE_LEFT_SECONDS),
 });
 
 export const SheetOptions = {
@@ -180,6 +196,8 @@ export interface InspectionWindow {
   jpeg: string;
   events?: CutEvent[];
   wav?: string;
+  /** Something about the picture its reader should know, such as labels Scarlet couldn't draw. */
+  note?: string;
 }
 export type InspectionResult =
   | { state: "preparing"; renderIds: string[] }

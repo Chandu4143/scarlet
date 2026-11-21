@@ -7,8 +7,9 @@ import { ATTEMPT_HEADER, TASK_HEADER, queueOrder, queueWait, taskPlan, type Task
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { PLAN_STEPS } from "@scarlet/mcp/prompt";
-import { appendTaskEvent, createTask, pairQuestionsAndAnswers, queueRepeatCheck } from "./tasks.js";
+import { appendTaskEvent, createTask, pairQuestionsAndAnswers, queueRepeatCheck, saveTask } from "./tasks.js";
 import { recoverTasks } from "./taskRecovery.js";
+import { runAttemptIds } from "./runAttempts.js";
 import { learningCheckContext } from "./learnings.js";
 
 let dataDir: string;
@@ -146,13 +147,17 @@ it("resumes the Claude session that asked, with just the answer", async () => {
   expect(app.ctx.repos.tasks.get(task.id)?.session).toBeUndefined();
 });
 
-it("never resumes Codex, whose sessions would show in the user's Codex app", async () => {
+it("resumes a Codex run's thread after an answer, which its host keeps in a Codex home of the run's own", async () => {
   const task = await claimed("codex");
   await api("POST", `/tasks/${task.id}/question`, { startedAt: task.startedAt, text: "Which take?", sessionId: "thread-1" });
   await api("POST", `/tasks/${task.id}/answer`, { text: "The second take" });
   const prompt = (await api<TaskPrompt>("GET", `/tasks/${task.id}/prompt`)).body;
-  expect(prompt.resumeSession).toBeUndefined();
-  expect(prompt.systemPrompt).toContain("The second take");
+  expect(prompt.resumeSession).toBe("thread-1");
+  expect(prompt.instruction).toContain("The second take");
+  // A thread the host no longer has starts afresh, with the answer in the prompt.
+  const fresh = (await api<TaskPrompt>("GET", `/tasks/${task.id}/prompt?fresh=1`)).body;
+  expect(fresh.resumeSession).toBeUndefined();
+  expect(fresh.systemPrompt).toContain("The second take");
 });
 
 it("rejects editing requests for the api agent, which no host runs", async () => {
@@ -510,6 +515,20 @@ it("counts a skill Scarlet writes or revises as under way, and not the learning 
   expect(await underWay()).toEqual({ edits: 2, queued: 0, exports: 0 });
 });
 
+it("stops the rule check of a request taken back before it started, and keeps the check of one stopped while it ran", async () => {
+  const send = async (instruction: string) => (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { kind: "edit", agent: "claude", instruction })).body.task;
+  const checkOf = (id: string) => app.ctx.repos.tasks.select("kind = 'learning_check' AND json_extract(json, '$.context.checksTaskId') = ?", [id])[0]!;
+  // Taken back while it waits its turn: the editor withdrew the words, so nothing is learned from them.
+  const withdrawn = await send("Always cut the ums");
+  expect((await api("POST", `/tasks/${withdrawn.id}/cancel?queuedOnly=1`)).status).toBe(200);
+  expect(checkOf(withdrawn.id).state).toBe("cancelled");
+  // Stopped once it ran: the words still stand, and the check reading them carries on.
+  const stopped = await send("Keep my pauses under a second");
+  saveTask(app.ctx, { ...app.ctx.repos.tasks.get(stopped.id)!, state: "running", startedAt: new Date().toISOString() });
+  expect((await api("POST", `/tasks/${stopped.id}/cancel`)).status).toBe(200);
+  expect(checkOf(stopped.id).state).toBe("queued");
+});
+
 it("reads a message for a rule again when a quit cut the read short, and keeps a resumed request ahead of the calls it was started before", async () => {
   const { body: { host } } = await api<{ host: { id: string } }>("POST", "/hosts/register", { name: "test", platform: "test", agents: [{ id: "claude", installed: true }] });
   const asked = (await api<{ task: Task }>("POST", `/projects/${project.id}/tasks`, { kind: "edit", agent: "claude", instruction: "Always cut the ums" })).body.task;
@@ -581,7 +600,8 @@ it("finds a run's attempts among its own project's tasks, not by reading every p
   await save(resumed, "again");
   expect((await api<{ task: Task }>("POST", `/tasks/${resumed.id}/complete`, { state: "done", ifStartedAt: resumed.startedAt })).body.task.state).toBe("done");
   // The staged-call check on each save, putting away a stale save, and the resumed run's earlier passes on finishing.
-  const lookups = [...new Set(prepare.mock.calls.map(([sql]) => sql))].filter(sql => sql.includes("SELECT id FROM tasks WHERE"));
+  const attempts = runAttemptIds(project.id, run.id).sql;
+  const lookups = [...new Set(prepare.mock.calls.map(([sql]) => sql))].filter(sql => sql.includes(attempts));
   expect(lookups).toHaveLength(3);
   const scans = lookups.filter(sql => (app.ctx.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
     .some(({ detail }) => /^SCAN tasks\b/.test(detail)));

@@ -56,7 +56,34 @@ it("logs a tool result for its claim after it ended, without writing a task even
   expect(lines.filter(line => line.startsWith("[mcp]"))).toEqual([
     `[mcp] tool-finished task=${task.id} attempt=${startedAt} tool=task_question outcome=ok elapsedMs=18 evidenceMisses=0`,
   ]);
+  // A tool that says how much it gave back has that logged too, as sizes.
+  await scoped.post(path, { ...diagnostic, tool: "transcript_get", resultChars: 48210, resultMedia: 2 });
+  expect(lines.filter(line => line.startsWith("[mcp]")).at(-1)).toBe(
+    `[mcp] tool-finished task=${task.id} attempt=${startedAt} tool=transcript_get outcome=ok elapsedMs=18 evidenceMisses=0 resultChars=48210 resultMedia=2`);
   await expect(scoped.post(path, { ...diagnostic, tool: "Private result" })).rejects.toMatchObject({ status: 400 });
+  expect(lines.join("\n")).not.toContain("Private");
+});
+
+it("logs a compaction a host reports, with the task, and keeps it out of the run's events", async () => {
+  const { project } = await api.createProject({ name: "Compaction" });
+  const { host } = await api.registerHost({ name: "test desktop", platform: "test", agents: [{ id: "claude", installed: true }] });
+  const { task } = await api.createTask(project.id, { kind: "edit", agent: "claude", instruction: "Private request" });
+  const { task: claimed } = await api.post<{ task: { startedAt: string } }>(`/hosts/${host.id}/claim`, { taskId: task.id, agents: ["claude"] });
+  await api.postTaskEvent(task.id, { type: "log", text: "Context compacted", data: { kind: "compaction", trigger: "auto", preTokens: 161204, postTokens: 18210 } }, claimed.startedAt);
+  await api.postTaskEvent(task.id, { type: "log", text: "Context compacted", data: { kind: "compaction" } }, claimed.startedAt);
+  expect(lines.filter(line => line.startsWith("[task] compacted"))).toEqual([
+    `[task] compacted task=${task.id} agent=claude trigger=auto tokensBefore=161204 tokensAfter=18210`,
+    `[task] compacted task=${task.id} agent=claude`]);
+  expect(workspace.ctx.repos.taskEvents.list(task.id).some(e => e.data?.kind === "compaction")).toBe(false);
+  expect(lines.join("\n")).not.toContain("Private");
+});
+
+it("logs each usage report a run makes, so the log shows its context growing between tool results", async () => {
+  const { project } = await api.createProject({ name: "Usage" });
+  const { task } = await api.createTask(project.id, { kind: "edit", agent: "codex", instruction: "Private request" });
+  await api.recordTaskUsage(task.id, { model: "halo-alpha", inputTokens: 1200, cacheReadTokens: 480000, outputTokens: 90 });
+  expect(lines.filter(line => line.startsWith("[task] usage"))).toEqual([
+    `[task] usage task=${task.id} model=halo-alpha input=1200 cacheRead=480000 cacheWrite=0 output=90 reasoning=0`]);
   expect(lines.join("\n")).not.toContain("Private");
 });
 
@@ -136,7 +163,9 @@ it("answers work its caller cancelled with 499, and doesn't log it as an engine 
   });
   const res = await request("POST", `/projects/${project.id}/media/import-frame`, JSON.stringify({ path: import.meta.filename }), { signal: caller.signal });
   expect(res.status).toBe(499);
-  expect(lines.map(withoutCorrelation)).toEqual([expect.stringMatching(/^\[http\] POST \/api\/projects\/prj_\w+\/media\/import-frame → 499 in \d+ms; the caller had already disconnected$/)]);
+  // Only what the request itself logged: a slow runner also notes that the engine was held up meanwhile ([stall]).
+  expect(http()).toEqual([expect.stringMatching(/^\[http\] POST \/api\/projects\/prj_\w+\/media\/import-frame → 499 in \d+ms; the caller had already disconnected$/)]);
+  expect(lines.filter(line => line.startsWith("[error]"))).toEqual([]);
   // A fault that only happens to follow a disconnect is still a fault.
   vi.spyOn(workspace.ctx.render, "extractFrame").mockImplementationOnce(async function brokenDecode() { throw new Error("no decoder"); });
   expect((await request("POST", `/projects/${project.id}/media/import-frame`, JSON.stringify({ path: import.meta.filename }), { signal: AbortSignal.abort() })).status).toBe(500);

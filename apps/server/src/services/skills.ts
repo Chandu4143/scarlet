@@ -555,6 +555,13 @@ export function seedSkillList(ctx: Ctx, list: Array<{ folder: string; content: s
             return 1;
           }
         }
+        // An editor's copy set back to the text this release ships is the stock skill again, and follows later releases.
+        // Edited once, a copy kept its old text for good: the editor's own talking-head skill missed four releases of
+        // its shipped revisions, the camera inset among them, with no way back short of deleting it (2026-11-20).
+        if (!outOfBox(existing) && existing.content === content && existing.name === name) {
+          ctx.repos.skills.put({ ...existing, source, bundledName: name });
+          return 0;
+        }
         if (!outOfBox(existing) || (existing.content === content && existing.name === name)) return 0;
         // A directory seed may have given this command its own instructions before Scarlet used the name.
         if (publicDialogue && existing.name === name && existing.source === "seed" &&
@@ -588,12 +595,11 @@ export function assistantSkills(skills: Skill[], selected: string[] | undefined,
     const chosen = skills.filter(s => selected.includes(s.id));
     return [...new Map([...bases, ...chosen].map(s => [s.id, s])).values()].filter(skill => skill.enabled);
   }
-  const available = forPrompt && selected?.length ? skills.filter(s => selected.includes(s.id)) :
-    forPrompt ? skills.filter(s => !s.source?.startsWith("quick-action:")) : skills;
+  const available = forPrompt ? skills.filter(s => !s.source?.startsWith("quick-action:")) : skills;
   return available.filter(skill => skill.enabled).map(skill => {
     // House rules and explicitly selected skills belong in the initial prompt.
     // Workflows, customized or not, are read one pass at a time.
-    if (!forPrompt || selected?.length) return skill;
+    if (!forPrompt) return skill;
     const workflow = BUNDLED_SKILLS.some(s => s.folder === skill.name || s.folder === skill.bundledName) ||
       skill.bundledName === "first-cut-dialogue" ||
       RETIRED_WORKFLOWS.includes(skill.name);

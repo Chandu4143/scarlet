@@ -36,9 +36,12 @@ const REFUSAL_LIMIT = 8000;
 export function toolRefusal(result: ToolResult): { text: string; data: Record<string, unknown> } | undefined {
   const body = result.content?.flatMap(c => c.type === "text" ? [c.text] : []).join("\n") ?? "";
   if (result.isError) return { text: body.slice(0, REFUSAL_LIMIT), data: { error: true } };
-  if (!body.startsWith("{")) return undefined;
+  // The save's own answer is the first item. Lines added after it (what wasn't measured, what the editor kept) aren't JSON.
+  const first = result.content?.find(c => c.type === "text");
+  const answer = first?.type === "text" ? first.text : "";
+  if (!answer.startsWith("{")) return undefined;
   let parsed: unknown;
-  try { parsed = JSON.parse(body); } catch { return undefined; }
+  try { parsed = JSON.parse(answer); } catch { return undefined; }
   if (!parsed || typeof parsed !== "object" || !(parsed as { needsRevision?: unknown }).needsRevision) return undefined;
   const { next, ...rest } = parsed as { next?: unknown };
   const detail = JSON.stringify(rest);

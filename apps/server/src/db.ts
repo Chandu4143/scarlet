@@ -485,6 +485,10 @@ export function openDb(path: string): Db {
   ensureReadIndexes(db);
   ensureLookupIndexes(db);
   ensureGraphics(db);
+  db.exec(`CREATE TABLE IF NOT EXISTS show_areas (
+    media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE, at REAL NOT NULL, json TEXT NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY (media_id, at)
+  );`);
   ensureProjectSource(db);
   ensureProjectRowRevision(db);
   ensureColumn(db, "projects", "editing_paused", "ALTER TABLE projects ADD COLUMN editing_paused INTEGER NOT NULL DEFAULT 0;");
@@ -566,15 +570,12 @@ export function ensureProjectSource(db: Db): void {
 }
 
 /**
- * Graphic templates and a project's style guide. Like the read indexes, they are installed by name rather than by a
- * migration number, so a checkout and a release sharing a library don't take each other's numbers.
+ * A project's style guide. Like the read indexes, it is installed by name rather than by a migration number, so a
+ * checkout and a release sharing a library don't take each other's numbers. A library from a build that had saved
+ * templates keeps its `graphic_templates` table, which nothing reads now.
  */
 export function ensureGraphics(db: Db): void {
   ensureColumn(db, "projects", "style_guide", "ALTER TABLE projects ADD COLUMN style_guide TEXT;");
-  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'graphic_templates'").get()) return;
-  db.exec(`CREATE TABLE IF NOT EXISTS graphic_templates (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-  );`);
 }
 
 /** These derived lookups can coexist with any library that has task events and transcripts.
@@ -612,6 +613,9 @@ function ensureReadIndexes(db: Db): void {
  * that run as Scarlet starts find nothing to do without reading the edits and requests that were done with long ago.
  */
 const LOOKUP_INDEXES = {
+  changes_by_task: "ON changes(project_id, json_extract(json, '$.taskId'))",
+  tasks_by_revised_cut: "ON tasks(project_id, json_extract(json, '$.context.changeId')) WHERE json_extract(json, '$.context.cutIndex') IS NOT NULL",
+  tasks_by_resume_root: "ON tasks(json_extract(json, '$.resumeRootId')) WHERE json_extract(json, '$.resumeRootId') IS NOT NULL",
   changes_state: "ON changes(state)",
   renders_export: "ON renders(created_at) WHERE json_extract(json, '$.export.owner') IS NOT NULL",
   changes_left_out_unread: `ON changes(created_at) WHERE state = 'approved' AND json_extract(json, '$.leftOut') IS NULL

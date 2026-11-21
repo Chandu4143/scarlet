@@ -6,14 +6,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createScarletMcpServer } from "@scarlet/mcp";
-import { contactSheet, extractFrame, makeProxy, PREVIEW_COPY_ACTIVITY_THRESHOLD, renderTimelineFrame, resolveFfmpeg, runCapture, spawnStats } from "@scarlet/render";
+import { contactSheet, extractFrame, makeProxy, PREVIEW_COPY_ACTIVITY_THRESHOLD, renderTimelineFrame, resolveFfmpeg, runCapture, spawnStats, UNLABELLED_SHEET } from "@scarlet/render";
 import { ScarletClient, type InspectionResult } from "@scarlet/shared";
 import { createProject, emptyTimeline, makeMediaClip, timelineFromKeepRanges } from "@scarlet/timeline";
 import { createApp, type ScarletApp } from "./app.js";
 import { accessToken, localUser } from "./auth.js";
 import { proposeChange } from "./services/changes.js";
 import { storeVersion } from "./services/timeline.js";
-import { pictureDecoder } from "./services/pictureWork.js";
+import { pictureDecoder, pictureLane } from "./services/pictureWork.js";
 import { previewPictures, previewIdentity } from "./services/previewPictures.js";
 import * as pictureCopies from "./services/previewPictures.js";
 import { createTask } from "./services/tasks.js";
@@ -93,8 +93,8 @@ it("keeps the synchronized presenter in the bottom right of the full dialogue dr
     expect(setup.state).toBe("approved");
     expect(setup.reason).toBe(assembly.reason);
     const edit = await call("dialogue_apply_cuts", { version: setup.toVersion, description: "Review two pauses", cuts: [
-      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action." },
-      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?" },
+      { start: 1.2, end: 1.6, kind: "pause", decision: "review", reason: "Check the screen action.", summary: "Shortened the pause before the click." },
+      { start: 1.76, end: 1.96, kind: "pause", decision: "review", reason: "Keep the presenter reaction?", summary: "Shortened the pause after the reaction." },
     ] });
     // While the editor auditions the first cut, the second undecided passage stays in the draft.
     const { draft } = await client.cutReview(edit.changes[0].id, [1]);
@@ -221,6 +221,31 @@ it("shares full-rate composite activity pictures while preserving a two-frame sc
     "-c:v", "libx264", "-threads", "1", file]);
   expect((await inspect(1.6, 2.4, "uniform")).jpeg).not.toBe(cached.jpeg);
   expect((await inspect(1.8, 2.6, "activity")).changedFrames).toBe(0);
+});
+
+it("decodes a sheet's stills side by side, as many at a time as the picture lane has room for", async () => {
+  const { ctx } = workspace;
+  const p = ctx.repos.projects.insert(createProject("Stills together", { width: 320, height: 180, fps: 25 }));
+  ctx.paths.ensureProject(p.id);
+  await copyFile(join(ctx.paths.media(projectId), "sample.mp4"), join(ctx.paths.media(p.id), "sample.mp4"));
+  ctx.repos.projects.putMedia(p.id, { id: "stills", kind: "video", name: "sample", path: "sample.mp4",
+    hasAudio: true, duration: 4, fps: 25, width: 320, height: 180 }, "ready");
+  const tl = emptyTimeline(p.id);
+  tl.tracks[0]!.clips = [makeMediaClip("stills", 0, 4, 0)];
+  const { version } = storeVersion(ctx, p.id, tl, { parent: null });
+  const lane = pictureLane(ctx), run = lane.run.bind(lane);
+  let active = 0, peak = 0;
+  const watched = vi.spyOn(lane, "run").mockImplementation((job, options) => run(async () => {
+    peak = Math.max(peak, ++active);
+    try { return await job(); } finally { active--; }
+  }, options));
+  try {
+    const sheet = await client.contactSheet(p.id, { from: 0, to: 4, version, mode: "uniform", count: 6 });
+    if (sheet.state !== "ready") throw new Error("Picture inspection queued a playable video.");
+    expect(sheet.windows[0]!.timestamps).toHaveLength(6);
+    // One after another, six stills waited for six decodes while the lane's other slots stood empty.
+    expect(peak).toBe(lane.slots);
+  } finally { watched.mockRestore(); }
 });
 
 it("classifies and caches source voice activity only on an explicit speech analysis request", async () => {
@@ -684,4 +709,42 @@ it("frames a recording on an area so the renderer fills the video with it, and s
     expect(clip.kind === "media" && clip.keyframes?.map(k => [k.time, k.transform.scale, k.ease])).toEqual([[1, 2.006, "easeInOut"], [2, 1.003, "linear"]]);
     expect(change.backgroundShows).toBeUndefined();
   } finally { await editor.close(); }
+});
+
+// A shell script stands in for an FFmpeg built without libfreetype: real FFmpeg on PATH, refusing drawtext.
+it.skipIf(process.platform === "win32")("says plainly, with no path, which pictures need text an FFmpeg without drawtext can't draw", async () => {
+  const bin = join(directory, "ffmpeg-no-text");
+  await writeFile(bin, [
+    "#!/bin/sh",
+    "for a; do",
+    "  if [ \"$a\" = -filters ]; then ffmpeg \"$@\" | grep -v ' drawtext '; exit 0; fi",
+    "  case \"$a\" in *drawtext*) refuse=1;; *.txt) [ -f \"$a\" ] && grep -q drawtext \"$a\" && refuse=1;; esac",
+    "done",
+    "if [ -n \"$refuse\" ]; then echo \"[AVFilterGraph @ 0x1] No such filter: 'drawtext'\" >&2; echo 'Error : Filter not found' >&2; exit 8; fi",
+    "exec ffmpeg \"$@\"",
+  ].join("\n") + "\n", { mode: 0o755 });
+  const { ctx } = workspace;
+  const captioned = proposeChange(ctx, localUser(ctx), projectId, { fromVersion: base, description: "Caption",
+    ops: [{ op: "addTrack", track: { id: "words", kind: "caption", name: "Captions", clips: [
+      { id: "line", kind: "caption", text: "Hello", timelineIn: 0, timelineOut: 4 }] } }] }).change.toVersion;
+  vi.stubEnv("SCARLET_FFMPEG", bin);
+  try {
+    const refusal = { code: "ffmpeg_missing_filter", message: expect.stringMatching(/^This copy of FFmpeg can’t draw text, so Scarlet can’t /) };
+    const sound = await client.soundPicture(projectId, { mediaId: "m", from: 0.5, to: 2 }).catch(error => error);
+    expect(sound).toMatchObject({ status: 422, ...refusal });
+    expect(sound.message).not.toContain(directory);
+    const grid = await workspace.app.request(client.fileUrl(`/projects/${projectId}/media/m/frame`) + "&t=1&w=320&grid=1");
+    expect(grid.status).toBe(422);
+    expect((await grid.json()).error).toMatchObject({ ...refusal, message: expect.stringContaining("label the grid’s lines") });
+    // A picture of the video where a caption shows.
+    const frame = await workspace.app.request(client.fileUrl(`/projects/${projectId}/versions/${captioned}/frame`) + "&frame=12");
+    expect(frame.status).toBe(422);
+    const { error } = await frame.json();
+    expect(error).toMatchObject({ ...refusal, message: expect.stringContaining("draw the video’s captions") });
+    expect(error.message).not.toContain(directory);
+    // A contact sheet still comes, with each picture's time in its timestamps and a word on its missing labels.
+    const { windows: [sheet] } = await ready(() => client.contactSheet(projectId, { mediaId: "m", from: 0.3, to: 3.3, count: 5, mode: "uniform" }));
+    expect(sheet).toMatchObject({ note: UNLABELLED_SHEET });
+    expect(sheet!.timestamps).toHaveLength(5);
+  } finally { vi.unstubAllEnvs(); }
 });

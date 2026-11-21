@@ -37,7 +37,7 @@ import type {
   TransformKeyframe,
   TransitionPlan,
 } from "@scarlet/timeline";
-import { INDEXED_MP4_INPUT, LOCAL_MEDIA_INPUT, SOURCE_AUDIO_CLOCK, ffmpegMajor, fnum } from "./exec.js";
+import { INDEXED_MP4_INPUT, LOCAL_MEDIA_INPUT, SOURCE_AUDIO_CLOCK, ffmpegMajor, fnum, requireDrawtext } from "./exec.js";
 import { effectFilters, effectKind, escapeFilterPath } from "./effects.js";
 import { resolveFontFile, type FontOptions } from "./fonts.js";
 import { hasIndexedAvc, isImagePath, matchesCanvasFormat, probeMedia, storedAsShown, type ProbeResult } from "./probe.js";
@@ -745,7 +745,7 @@ async function writeFilterGraph(
           hardware && accelerate && opts.decoder !== "cuda" ? ["-hwaccel", "videotoolbox"] : []),
         ...(start > 0 ? ["-ss", fnum(start)] : []), "-t", fnum(duration),
       ], input);
-      const pictureDelay = Math.max(0, firstPicture - srcStart) / speed;
+      const pictureDelay = still ? 0 : Math.max(0, firstPicture - srcStart) / speed;
       if (wantVideo && pictureDelay < p.vis) {
         const visible = pictureDelay > 0 ? { ...p, local0: p.local0 + pictureDelay, pos: p.pos + pictureDelay, vis: p.vis - pictureDelay } : p;
         const pictureSeek = Math.max(seek, firstPicture);
@@ -836,6 +836,8 @@ async function writeFilterGraph(
     }
   }
   if (drawtexts.length) {
+    // Before any work: a build without drawtext fails the whole render, and FFmpeg's words don't say what to do.
+    await requireDrawtext("draw the video’s captions", opts.ffmpegPath);
     const out = label("s");
     lines.push(`${stack}${drawtexts.join(",")}${out}`);
     stack = out;

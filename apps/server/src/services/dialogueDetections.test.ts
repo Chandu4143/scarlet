@@ -8,6 +8,7 @@ import { fileInDirectory } from "@scarlet/render";
 import { createProject } from "@scarlet/timeline";
 import { createApp } from "../app.js";
 import { createTask, cancelTask } from "./tasks.js";
+import { wordsFromPages } from "./dialogueDetections.js";
 import { accessToken } from "../auth.js";
 import { WhisperCppProvider } from "../transcribe/whispercpp.js";
 import { UhmDetector } from "../transcribe/uhm.js";
@@ -173,16 +174,18 @@ it("sends only extracted dialogue windows to the selected cloud provider and get
     const audio = fields.get("file") as File;
     expect(audio.type).toBe("audio/wav");
     sizes.push(audio.size);
-    return Response.json({ text: "hello", words: [{ word: "hello", start: 0.1, end: 0.5 }] });
+    // The page is heard from 8 s before it (SEAM_CONTEXT); the other voice's window starts on the page.
+    const at = sizes.length === 1 ? 8 : 0;
+    return Response.json({ text: "hello", words: [{ word: "hello", start: at + 0.1, end: at + 0.5 }] });
   });
   const result = await request("detections", 60);
   expect(result.status).toBe(200);
   expect(await result.json()).toMatchObject({ segments: [{ words: [{ start: 60.1, end: 60.5, detectedSpeaker: 1 }] }],
     otherVoiceTurns: [{ text: "hello" }], speakerTurns: [{ speaker: 1 }] });
-  // The recording is decoded once, whole, and stays on this machine. The window cut from it is uploaded (a WAV
-  // header here, since the fixture's decode is empty), then the other voice's window.
-  expect(extract.mock.calls.map(call => call[2])).toEqual([{ audioStream: undefined }, expect.objectContaining({ start: 60, duration: 60, audioStream: 1 })]);
-  expect(sizes).toEqual([44, 20]);
+  // The recording is decoded once, whole, and stays on this machine, and so is the other voice's track. The window
+  // cut from each is uploaded (a WAV header here, since the fixture's decodes are empty).
+  expect(extract.mock.calls.map(call => call[2])).toEqual([{ audioStream: undefined }, { audioStream: 1 }]);
+  expect(sizes).toEqual([44, 44]);
   expect((upload.mock.calls[0]![1]!.body as FormData).get("prompt")).toContain("Um");
   expect((upload.mock.calls[1]![1]!.body as FormData).has("prompt")).toBe(false);
   expect((await request("detections", 60)).ok).toBe(true);
@@ -587,4 +590,23 @@ it("scans for a request sent about a point and for a revision as it does for a w
     vi.restoreAllMocks();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+it("reads the words of overlapping saved pages once each, handing over at a word both pages read", () => {
+  const w = (text: string, start: number) => ({ text, start, end: start + .3 });
+  // Two pages that overlap from 58 s to 60 s read the words there twice, and a short re-read of 70-80 s sits less far
+  // inside than the minute that holds it.
+  const first = { start: 0, end: 60, words: [w("including", 57), w("three,", 58.4), w("uh,", 59.5)] };
+  const second = { start: 58, end: 118, words: [w("including", 58.4), w("uh,", 59.5), w("its", 75), w("ability", 76)] };
+  const reread = { start: 70, end: 80, words: [w("its", 75.1), w("ability", 76.1)] };
+  const { words, covered } = wordsFromPages([first, second, reread]);
+  expect(words.map(x => [x.text, x.start])).toEqual([["including", 57], ["three,", 58.4], ["uh,", 59.5], ["its", 75], ["ability", 76]]);
+  expect(covered).toEqual([{ start: 0, end: 118 }]);
+  expect(wordsFromPages([{ start: 0, end: 10, words: [] }, { start: 20, end: 30, words: [] }]).covered).toEqual([{ start: 0, end: 10 }, { start: 20, end: 30 }]);
+  // Two pages that time the words of their overlap a little differently: by depth alone, "are" sat less far inside
+  // each page than in the other, by that page's own times, and was left out of both.
+  const t = (text: string, start: number) => ({ text, start, end: start + .3 });
+  const one = { start: 116, end: 176, words: [t("Opus", 173.6), t("and", 174.1), t("fable", 174.4), t("are", 174.92), t("far", 175.4)] };
+  const two = { start: 174, end: 234, words: [t("and", 174.05), t("fable", 174.3), t("are", 174.68), t("far", 175.35), t("superior", 175.7)] };
+  expect(wordsFromPages([one, two]).words.map(x => x.text)).toEqual(["Opus", "and", "fable", "are", "far", "superior"]);
 });

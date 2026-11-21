@@ -22,3 +22,18 @@ it("doesn't throw into the transcriber's output when a transcription's progress 
   expect(() => { progress.queued(); progress.transcribing(.5); progress.aligning(.5); }).not.toThrow();
   expect(log).toHaveBeenCalledTimes(3);
 });
+
+it("keeps the last third of local Whisper's bar for reading an English recording again, so it doesn't sit at 100%", async () => {
+  const tasks = await import("./tasks.js");
+  const saved: number[] = [];
+  const spy = vi.spyOn(tasks, "saveTask").mockImplementation((_ctx, t) => { saved.push(t.progress!.fraction); return t; });
+  const ctx = { log: vi.fn(), db: { transaction: (fn: () => void) => fn }, repos: { tasks: { get: () => ({ id: "task", state: "running" }) } } } as unknown as Ctx;
+  const progress = transcriptionProgress(ctx, { id: "task" } as Task, "whispercpp", true);
+  progress.transcribing(1); progress.aligning(1); progress.rereading(.5); progress.rereading(1);
+  expect(saved.map(f => Math.round(f * 100))).toEqual([33, 67, 83, 100]);
+  saved.length = 0;
+  const once = transcriptionProgress(ctx, { id: "task" } as Task, "whispercpp", false);
+  once.aligning(1);
+  expect(saved).toEqual([1]);
+  spy.mockRestore();
+});

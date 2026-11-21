@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { usePlayerStore } from "../../stores/player";
-import type { TimeRange } from "@scarlet/timeline";
 
 interface TimeWindow { from: number; span: number }
 
@@ -11,7 +10,12 @@ interface ZoomFrame {
   blend?: number;
 }
 
+/** How far off the middle the playhead stays after each doubling of a zoom in on it. */
+const TOWARD_MIDDLE = .6;
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+export const timelinePosition = (time: number, start: number, end: number) => Number.isFinite(time) ? clamp(time, start, end) : start;
 
 /** Keep the same scale and turn the page when playback or an external seek leaves the window. */
 function follow(view: TimeWindow, time: number, start: number, end: number): TimeWindow {
@@ -25,8 +29,9 @@ function follow(view: TimeWindow, time: number, start: number, end: number): Tim
  * own length, and stays there until the playhead moves.
  */
 export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: number, total: number,
-  position: number, dragging: RefObject<unknown>, previewRequest?: number, passage?: TimeRange, carried?: TimeWindow) {
+  playhead: number | undefined, dragging: RefObject<unknown>, carried?: TimeWindow) {
   const end = start + total;
+  const position = () => timelinePosition(playhead ?? usePlayerStore.getState().time, start, end);
   const minSpan = Math.min(1, total);
   const [frame, setFrame] = useState<ZoomFrame>(() => {
     if (carried) {
@@ -34,7 +39,7 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
       const view = { from: clamp(carried.from, start, end - span), span };
       return { view, samples: view };
     }
-    const view = follow({ from: start, span: total }, position, start, end);
+    const view = follow({ from: start, span: total }, position(), start, end);
     return { view, samples: view };
   });
   const live = useRef(frame);
@@ -113,10 +118,14 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
   function zoomBy(factor: number, fraction?: number, continuous = false) {
     if (!total || dragging.current || !(factor > 0)) return;
     const current = (!continuous && live.current.target) || live.current.view;
-    const playheadFraction = (position - current.from) / current.span;
-    const anchor = fraction ?? (playheadFraction >= 0 && playheadFraction <= 1 ? playheadFraction : .5);
+    const playheadFraction = (position() - current.from) / current.span;
+    const onPlayhead = fraction === undefined && playheadFraction >= 0 && playheadFraction <= 1;
+    const anchor = fraction ?? (onPlayhead ? playheadFraction : .5);
     const span = clamp(current.span / factor, minSpan, total);
-    const next = { span, from: clamp(current.from + (current.span - span) * anchor, start, end - span) };
+    let from = current.from + (current.span - span) * anchor;
+    // Zooming in on the playhead brings it part of the way to the middle each time, so it never ends up on an edge.
+    if (onPlayhead && span < current.span) from = position() - span * (.5 + (anchor - .5) * TOWARD_MIDDLE ** Math.log2(current.span / span));
+    const next = { span, from: clamp(from, start, end - span) };
     lookAt(next);
     move(next, continuous ? "gesture" : "animate");
   }
@@ -131,26 +140,27 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
 
   useLayoutEffect(() => {
     inspecting.current = false;
-    if (!previewRequest || !passage) return;
-    if (passage.end - passage.start > live.current.view.span) {
-      const padding = Math.max(0.5, (passage.end - passage.start) * 0.15);
-      fitRange(Math.max(start, passage.start - padding), Math.min(end, passage.end + padding), false);
-    } else stopZoom();
-  }, [previewRequest, passage?.start, passage?.end, start, end, fitRange, stopZoom]);
+  }, [start, end, fitRange, stopZoom]);
   // Opening a review can fit or carry a view before the transport leaves the previous video's time.
   // Re-running the effect at that same time must not page away from the newly centered band.
-  const lastPosition = useRef(position);
+  const lastPosition = useRef(position());
   useLayoutEffect(() => {
-    if (lastPosition.current === position) return;
-    lastPosition.current = position;
-    const { view, target } = live.current;
-    if (dragging.current || target) return;
-    if (inspecting.current && usePlayerStore.getState().playing &&
-        (position < view.from || position > view.from + view.span)) return;
-    inspecting.current = false;
-    const next = follow(view, position, start, end);
-    if (next !== view) move(next);
-  }, [position, start, end, dragging, move]);
+    const followPosition = (position: number) => {
+      if (lastPosition.current === position) return;
+      lastPosition.current = position;
+      const { view, target } = live.current;
+      if (dragging.current || target) return;
+      if (inspecting.current && usePlayerStore.getState().playing &&
+          (position < view.from || position > view.from + view.span)) return;
+      inspecting.current = false;
+      const next = follow(view, position, start, end);
+      if (next !== view) move(next);
+    };
+    followPosition(position());
+    if (playhead === undefined) return usePlayerStore.subscribe((state, previous) => {
+      if (state.time !== previous.time) followPosition(timelinePosition(state.time, start, end));
+    });
+  }, [playhead, start, end, dragging, move]);
 
   useLayoutEffect(() => {
     const el = track.current!;
@@ -179,11 +189,13 @@ export function useTimelineZoom(track: RefObject<HTMLDivElement | null>, start: 
     // WKWebView reports trackpad magnification as cumulative gesture scales.
     // WebView2 reports it as Control + wheel, handled above.
     function gesture(event: Event) {
+      // A pinch that ends during a drag has still ended: the wheel answers again after it.
+      if (event.type === "gestureend") previousScale = 0;
       if (!total || dragging.current) return;
       event.preventDefault();
       const { scale, clientX } = event as Event & { scale: number; clientX: number };
-      if (event.type === "gestureend") previousScale = 0;
-      else if (event.type === "gesturestart") previousScale = scale || 1;
+      if (event.type === "gestureend") return;
+      if (event.type === "gesturestart") previousScale = scale || 1;
       else if (previousScale && Number.isFinite(scale) && scale > 0) {
         zoomBy(scale / previousScale, fraction(clientX), true);
         previousScale = scale;
