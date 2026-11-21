@@ -290,9 +290,9 @@ describe("tools/list", () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     // Claude's harness does not deliver audio, so nothing offers WAV, and a request has no file tools, so nothing imports
-    // from the artifact directory or captures a page. Only the check that reads a request offers a rule, only the first
-    // short of a batch plans them, and only a request's own run asks for B-roll.
-    expect(names).toEqual([...SCARLET_TOOL_NAMES].filter(n => !["source_audio", "learning_suggest", "asset_add", "shorts_plan", "web_capture", "broll_make"].includes(n)).sort());
+    // from the artifact directory or captures a page. Only the check that reads a request offers a rule, and only a
+    // request's own run asks for B-roll.
+    expect(names).toEqual([...SCARLET_TOOL_NAMES].filter(n => !["source_audio", "learning_suggest", "asset_add", "web_capture", "broll_make"].includes(n)).sort());
     for (const t of tools) expect(Object.keys(t.inputSchema.properties ?? {})).not.toContain("includeAudio");
     expect(JSON.stringify(tools)).not.toMatch(/\bWAV\b|can (hear|play)|accepts audio|consume audio/);
     for (const t of tools) expect(t.description?.length ?? 0).toBeGreaterThan(20);

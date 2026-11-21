@@ -823,15 +823,4 @@ button.queue-head:hover { color: var(--color-fg); }
 .transcript-words .reading-passage [data-match="current"] { background: var(--color-raised); color: var(--color-fg); text-decoration-color: var(--color-fg); }
 .transcript-words .reading-passage [data-current] { background: var(--color-fg) !important; color: var(--color-bg) !important; }
 
-/* A short's header: its name, and under it the video it was made from, which opens that video. */
-.simple-header h1.has-source { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
-.simple-header h1.has-source > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.simple-header-source { font-size: 11.5px; font-weight: 400; color: var(--color-dim); }
-.simple-header-source a, .simple-source-note a { text-decoration: underline; text-underline-offset: 2px; }
-.simple-header-source a:hover, .simple-source-note a:hover { color: var(--color-fg); }
-/* The first thing in a short's chat says it is a new project, until the editor dismisses it. */
-.simple-source-note .simple-msg { display: flex; align-items: flex-start; gap: 8px; }
-.simple-source-note .simple-msg p { flex: 1; min-width: 0; }
-.simple-source-dismiss { flex: none; margin: 1px -6px 0 0; color: var(--color-dim); }
-.simple-source-dismiss:hover { color: var(--color-fg); }
 .simple-pass-list.is-moment > li > .subunit { margin-left: 8px; }

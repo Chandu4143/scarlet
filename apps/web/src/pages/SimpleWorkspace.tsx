@@ -6,7 +6,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ChatRail } from "../components/shell/ChatRail";
 import { ConnectionStatus } from "../components/shell/StatusIndicators";
 import { Dropdown, MenuItem } from "../components/shell/WorkspaceNavigation";
-import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type Project, type TimeRange, type Timeline } from "@scarlet/timeline";
+import { appliedReviewChange, isPublishedCall, mapStagedCut, makeTimeMap, timelineDuration, type Change, type CutAssessment, type TimeRange, type Timeline } from "@scarlet/timeline";
 import { closingCheckFailed, isAsideTask, fullRenderContext, isProjectEditTask, matchesEdit, queueOrder, queueWaits, requestTargetKey, requestText, REVISED_CHECK, threadEditList, type EditRef, type Learning, type Task, type ThreadEdit } from "@scarlet/shared";
 import { EditBadge, editGroups, EditVersion, RejectEdit, RejectedMark, ThreadAction, ThreadEdits, useRejecting, useReviewed, useRevising, useThreadEdits } from "../components/review/ThreadEdits";
 import { useKeptEdits } from "../lib/keptEdits";
@@ -38,7 +38,6 @@ import { ignorePageShortcut, isEditableTarget, useHotkeys } from "../lib/hotkeys
 import { RequestMetrics, RunBundle, runEnded, Said } from "../components/review/RunBundle";
 import { OtherTakes } from "../components/review/OtherTakes";
 import { ExportSheet } from "../components/review/ExportVideo";
-import { MakeShortsSheet } from "../components/review/MakeShorts";
 import { ExportButton } from "../components/review/ExportMenuItem";
 import { useThreadTimeline } from "../components/review/useThreadTimeline";
 import { Icon, Loading } from "../components/ui/primitives";
@@ -119,7 +118,7 @@ function afterPlayerMount(start: () => () => void) {
   };
 }
 
-type Panel = "media" | "export" | "learnings" | "shorts" | null;
+type Panel = "media" | "export" | "learnings" | null;
 
 /** Each project keeps its own: rewording a request in one project leaves the words kept for another as they are. */
 const LEGACY_REWORDING_KEY = "scarlet.rewording.v1";
@@ -349,37 +348,6 @@ function CallStanding({ run, answer }: { run?: Task; answer?(): void }) {
 
 /** What Keep chooses on a call: the cut, or for a revision that left the footage in, keeping it. */
 const approves = (call: Pick<CutAssessment, "proposes"> | undefined): CutChoice => call?.proposes ?? "cut";
-
-type ProjectSource = NonNullable<Project["source"]>;
-
-/** The video a short was made from, by name: a link to it, unless it is in the trash or gone. */
-function SourceName({ source }: { source: ProjectSource }) {
-  return source.gone ? <span>{source.name}</span> : <Link to={`/p/${source.projectId}`}>{source.name}</Link>;
-}
-
-function SourceLine({ source }: { source: ProjectSource }) {
-  return <span className="simple-header-source" title={`From ${source.name}`}>From <SourceName source={source} /></span>;
-}
-
-/**
- * The first thing in a short's chat: that it is a new project, and the video it was made from. It stays until the
- * editor dismisses it with its ×.
- */
-function SourceNote({ projectId, source }: { projectId: string; source: ProjectSource }) {
-  const [gone, setGone] = useState(false);
-  const updateProject = useProjectStore(s => s.updateProject);
-  if (gone) return null;
-  return <section className="simple-turn simple-source-note" aria-label="New project">
-    <div className="simple-msg from-scarlet">
-      <span className="simple-who">Scarlet</span>
-      <p className="said">New project, made from <SourceName source={source} />. That video isn’t changed.</p>
-      <button type="button" className="btn-icon simple-source-dismiss" aria-label="Dismiss" title="Dismiss"
-        // Through the store, so the project it holds says the note is dismissed and it doesn't come back with the chat.
-        onClick={() => { setGone(true); void updateProject({ sourceNotice: false }, projectId).catch(() => setGone(false)); }}>
-        <Icon name="x" size={12} /></button>
-    </div>
-  </section>;
-}
 
 /**
  * A call's decisions and their keys, the same as an applied edit's card: Keep (K) makes the change Scarlet proposed,
@@ -3922,10 +3890,7 @@ export function SimpleWorkspace() {
           <header className="simple-header">
             <Link to="/" className="simple-back" onClick={() => player.pause()} title="All projects" aria-label="All projects">
               <span className="rotate-180 inline-flex"><Icon name="arrow" size={13} /></span></Link>
-            {/* A short says which video it was made from, under its name, for as long as it is open. */}
-            <h1 title={current.project.name} className={current.project.source ? "has-source" : undefined}>
-              {current.project.source ? <><span className="simple-header-name">{current.project.name}</span><SourceLine source={current.project.source} /></> : current.project.name}
-            </h1>
+            <h1 title={current.project.name}>{current.project.name}</h1>
             <ConnectionStatus />
             {/* The menu's button is marked when something inside needs the editor, and the row that does carries the
                 same mark. Media, Export and Model mark their own header buttons. */}
@@ -3941,8 +3906,6 @@ export function SimpleWorkspace() {
                     <Icon name="bulb" />Learnings{toLearn > 0 && <span className="menu-dot" role="img" aria-label={`${plural(toLearn, "rule")} to review`} />}</MenuItem>
                   <CachingMenuItem close={close} />
                   <MenuItem onClick={() => { close(); setTranscript(v => !v); }}><Icon name="diff" />{transcript ? "Hide transcript" : "Transcript"}</MenuItem>
-                  {/* A short is made from the long video, not from another short. */}
-                  {!current.project.source && <MenuItem onClick={() => { close(); setPanel("shorts"); }}><Icon name="portrait" />Make shorts</MenuItem>}
                   <div role="separator" className="my-1 border-t border-line" />
                   <MenuItem onClick={() => { close(); useUiStore.getState().setProjectSettingsOpen(true); }}><Icon name="monitor" />Project settings</MenuItem>
                   <MenuItem to="/settings" onClick={close}><Icon name="settings" />App settings</MenuItem>
@@ -3961,7 +3924,6 @@ export function SimpleWorkspace() {
               const pane = e.currentTarget;
               follow.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 48;
             }}>
-              {current.project.source?.notice && <SourceNote projectId={current.id} source={current.project.source} />}
               {current.reviewStatus === "loading" ? <Loading label="Loading edits…" />
                 : current.reviewStatus === "error" ? <p className="simple-error" role="alert">{current.reviewError}{" "}
                   <button type="button" className="simple-link" onClick={() => void useProjectStore.getState().load(current.id)}>Retry</button></p>
@@ -4032,7 +3994,6 @@ export function SimpleWorkspace() {
     {panel === "media" && <MediaDrawer uploads={uploads} notice={local ? undefined : notice}
       onPlay={id => previewSource(id, true)} onClose={() => setPanel(null)} />}
     {panel === "export" && <ExportSheet hasCut={hasCut} onClose={() => setPanel(null)} />}
-    {panel === "shorts" && <MakeShortsSheet onClose={() => setPanel(null)} />}
   </EditHoverContext.Provider>;
 }
 

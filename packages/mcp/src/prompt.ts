@@ -379,15 +379,6 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     if (c.changeId && c.cutIndex !== undefined) ctxLines.push(`- Staged cut being revised: index ${c.cutIndex} of ${c.changeId}. \`dialogue_revise_cut\` saves its new range.`);
     if (c.changeId && c.cutIndex !== undefined && ctx.replacedPass) ctxLines.push(`- The request names this cut in ${ctx.replacedPass}, the pass as the editor saw it. A revision or a later part of the pass replaced that pass since with ${c.changeId}, where the cut is index ${c.cutIndex} and may have moved.`);
     if (c.reviewAllCuts) ctxLines.push("- The editor requested individual review of every cut.");
-    // Make shorts: which short this is, what it was made from and what the editor chose in the form.
-    const short = c.short;
-    if (short) {
-      const settings = typeof ctx.project === "string" ? undefined : ctx.project.project.settings;
-      ctxLines.push(`- This project is short ${short.index} of ${short.count} the editor made from “${short.sourceName}” (project ${short.sourceProjectId}) with Make shorts. It started as a copy of that video’s finished edit (its version ${short.sourceVersion}), with the same footage, transcripts and timeline times${settings ? `, on a ${settings.width}×${settings.height} (${short.aspect}) canvas` : ""}. That video isn’t changed.`);
-      ctxLines.push(`- The editor asked for shorts under ${short.maxSeconds} s each, ${short.captions ? "with captions" : "without captions"}.`);
-      if (short.moment) ctxLines.push(`- This short’s moment, chosen by the first short’s run: ${short.moment.start.toFixed(2)}–${short.moment.end.toFixed(2)} s on the copied timeline (${formatTimecode(short.moment.start, fps)}–${formatTimecode(short.moment.end, fps)}), “${short.moment.title}”.`);
-      else if (short.index === 1) ctxLines.push(`- You choose the moment${short.count === 1 ? "" : "s for all " + short.count + " shorts"} from the whole edit, and save ${short.count === 1 ? "it" : "them"} with \`shorts_plan\` before you cut. This project takes the first.`);
-    }
     for (const file of ctx.attachments ?? []) {
       ctxLines.push(`- File the editor attached: "${file.name}" (${fileKind(file.mime, file.name)}, ${fileSize(file.size)}), attachment ${file.id}, at ${file.path}`);
     }

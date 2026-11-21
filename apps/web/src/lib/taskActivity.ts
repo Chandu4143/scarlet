@@ -59,7 +59,6 @@ const toolActivity: Record<string, string> = {
   skill_save_edit: "Saving skill",
   skills_list: "Reading skills",
   learning_suggest: "Noting a rule",
-  shorts_plan: "Starting the other shorts",
 };
 
 // New progress messages start with a short action. Older hosts also send

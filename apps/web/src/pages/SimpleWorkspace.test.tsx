@@ -6190,7 +6190,7 @@ it("opens Media, Export and the model selector from the header and keeps project
   expect(moreButton().querySelector(".needs-you")).toBeNull();
   expect(moreButton().getAttribute("aria-description")).toBeNull();
   await openMenu();
-  expect(menuItems()).toEqual(["Learnings", "Transcript", "Make shorts", "Project settings", "App settings"]);
+  expect(menuItems()).toEqual(["Learnings", "Transcript", "Project settings", "App settings"]);
   expect(container.querySelector('[role="menu"] .menu-dot')).toBeNull();
   await click(menuItem("Project settings"));
   expect(useUiStore.getState().projectSettingsOpen).toBe(true);
@@ -12191,65 +12191,4 @@ it("shows draft timestamps on the player timeline, with seeking reserved for the
   expect(usePlayerStore.getState().time).toBe(8);
   await act(() => useUiStore.getState().setAgentDraft(""));
   expect(marks()).toEqual([]);
-});
-
-// --- Make shorts ---------------------------------------------------------------------------------------------------
-
-/** A short made from the long video, as Make shorts leaves it: vertical, and said to come from that video. */
-const asShort = (notice = true) => event(d => ({ ...d, project: { ...d.project, name: "Agents fail without tools",
-  settings: { ...d.project.settings, width: 1080, height: 1920, aspect: "9:16" as const },
-  source: { projectId: "prj_long", name: "Weekly interview", ...(notice && { notice: true }) } } }));
-
-it("offers Make shorts in the ⋯ menu after Transcript, and makes them from a form that opens the first short", async () => {
-  const made = vi.spyOn(api, "makeShorts").mockResolvedValue({ projects: [{ id: "prj_short1" }, { id: "prj_short2" }] as never, task: {} as never });
-  await act(async () => root.render(<MemoryRouter initialEntries={[`/p/${PRJ}`]}><SimpleWorkspace /><Address /></MemoryRouter>));
-  await openMenu();
-  const items = [...container.querySelectorAll('[role="menu"] [role="menuitem"]')].map(item => item.textContent?.trim());
-  expect(items).not.toContain("Export");
-  expect(items.indexOf("Make shorts")).toBe(items.indexOf("Transcript") + 1);
-  await click([...container.querySelectorAll('[role="menuitem"]')].find(item => item.textContent?.trim() === "Make shorts")!);
-  const dialog = container.ownerDocument.querySelector('dialog[open]')!;
-  expect(dialog.querySelector("h2")?.textContent).toBe("Make shorts");
-  expect([...dialog.querySelectorAll("label")].map(l => l.textContent)).toEqual(["How many", "Shape", "Length", "Captions"]);
-  expect([...dialog.querySelectorAll('[role="combobox"]')].map(b => b.textContent)).toEqual(["Up to 3", "Vertical · 9:16", "Under 60 s each", "On"]);
-  expect(dialog.textContent).toContain("Makes a new project for each short, starting from this video’s finished edit. This video isn’t changed.");
-  await click(buttonIn(dialog, "Make shorts")!);
-  expect(made).toHaveBeenCalledWith(PRJ, { count: 3, aspect: "9:16", maxSeconds: 60, captions: true, agent: "claude", model: "opus" });
-  expect(container.querySelector("#address")?.textContent).toBe("/p/prj_short1");
-});
-
-it("names the video a short was made from under its title, and links to it", async () => {
-  await showFolded();
-  await asShort(false);
-  const title = container.querySelector(".simple-header h1")!;
-  expect(title.querySelector(".simple-header-name")?.textContent).toBe("Agents fail without tools");
-  expect(title.querySelector(".simple-header-source")?.textContent).toBe("From Weekly interview");
-  expect(title.querySelector(".simple-header-source a")?.getAttribute("href")).toBe("/p/prj_long");
-  // A short isn't made into shorts again.
-  await openMenu();
-  expect([...container.querySelectorAll('[role="menuitem"]')].map(item => item.textContent?.trim())).not.toContain("Make shorts");
-  // Once that video is gone, its name stays, without a link.
-  await event(d => ({ ...d, project: { ...d.project, source: { ...d.project.source!, gone: true } } }));
-  expect(container.querySelector(".simple-header-source a")).toBeNull();
-});
-
-it("opens a short's chat with a line that says it is a new project, which stays until its × is pressed", async () => {
-  const saved = vi.spyOn(api, "updateProject").mockImplementation(async () => {
-    const { project } = useProjectStore.getState().current!;
-    return { project: { ...project, source: { ...project.source!, notice: undefined } } };
-  });
-  await showFolded();
-  await asShort();
-  const note = container.querySelector<HTMLElement>(".simple-chat > .simple-source-note")!;
-  expect(container.querySelector(".simple-chat")!.firstElementChild).toBe(note);
-  expect(note.querySelector("p")?.textContent).toBe("New project, made from Weekly interview. That video isn’t changed.");
-  expect(note.querySelector("a")?.getAttribute("href")).toBe("/p/prj_long");
-  await click(note.querySelector('[aria-label="Dismiss"]')!);
-  expect(container.querySelector(".simple-source-note")).toBeNull();
-  expect(saved).toHaveBeenCalledWith(PRJ, { sourceNotice: false });
-  // Dismissed, it stays so when the chat is drawn again.
-  await act(async () => root.unmount());
-  root = createRoot(container);
-  await showFolded();
-  expect(container.querySelector(".simple-source-note")).toBeNull();
 });

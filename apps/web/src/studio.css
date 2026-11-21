@@ -697,8 +697,6 @@
 .preference-options [data-active="true"] { background: var(--color-raised); }
 
 .import-transcription-notice .simple-link { font-size: inherit; color: var(--color-fg); }
-/* A short sits under the video it was made from, set in from it. */
-.list .project-card.is-short { margin-left: 44px; }
 
 /* The files a new project will import, one row each, each with its own ×. */
 /* Names start on the label's and button's edge, and each × ends on the name field's: the hover fill reaches past both. */

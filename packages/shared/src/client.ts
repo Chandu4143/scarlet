@@ -15,7 +15,6 @@ import type {
   KeepEditsRequest,
   UnkeepEditsRequest,
   KeptEdit,
-  MakeShortsRequest,
   AgentHost,
   ApproveResponse,
   TrashedProject,
@@ -333,10 +332,6 @@ export class ScarletClient {
   }
   resumeEditing(id: string) {
     return this.post<{ project: Project; tasks: Task[] }>(`/projects/${apiPathId(id)}/resume-editing`);
-  }
-  /** Make shorts: a project for each short, made from this one's finished edit. The first short's run starts at once. */
-  makeShorts(id: string, body: MakeShortsRequest) {
-    return this.post<{ projects: Project[]; task: Task }>(`/projects/${id}/shorts`, body);
   }
   deleteProject(id: string) {
     return this.delete<Record<string, never>>(`/projects/${id}`);

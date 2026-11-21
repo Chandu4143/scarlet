@@ -417,11 +417,6 @@ export const Project = z.object({
   /** Version id of the current (head) timeline. */
   head: Id.nullable().default(null),
   styleGuide: StyleGuide.optional(),
-  /**
-   * The project this one was made from, as a short of it: its id and name. `notice` is true until the editor dismisses
-   * the line in the chat that says so. `gone` when that project is in the trash or was deleted.
-   */
-  source: z.object({ projectId: Id, name: z.string(), notice: z.boolean().optional(), gone: z.boolean().optional() }).optional(),
   createdAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional(),
 });
