@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- When Scarlet reworks the whole video in one go, every cut it made is listed, so you can open, revise or undo each one.
 - The cuts waiting for you now say what each one changes, such as “Cut the repeated start before ‘just explain’”, instead of what Scarlet did to check it.
 - Media no longer has Add from a link: add footage with Add files or by dropping it in.
 - Settings › About now keeps the What’s new list short up front with a toggle for the rest, and collapses earlier days by date.
