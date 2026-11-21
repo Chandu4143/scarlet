@@ -136,6 +136,9 @@ describe("framingReport", () => {
     expect(report([{ start: 100, end: 120, eyesDown: 0.1 }, { start: 120, end: 130, eyesDown: 0.7 }]).shownAfter).toMatchObject({ from: 15, to: 30, eyesDown: 0.5 });
     // Before it, 0-5 s plays 100-105 s.
     expect(report([{ start: 100, end: 120, eyesDown: 0.1 }, { start: 120, end: 130, eyesDown: 0.7 }]).shownBefore).toMatchObject({ from: 0, to: 5, eyesDown: 0.1 });
+    // Where to see the face midway, 22.75 s of the video at the camera's 122.75 s: two and a half faces wide round it.
+    const face = [0.4, 0.2, 0.5, 0.4];
+    expect(report([{ start: 100, end: 130, eyesDown: 0.7, box: face }]).shownAfter?.look).toEqual({ mediaId: "camera", at: 122.75, area: [32.5, 17.5, 57.5, 42.5] });
     // No eyes read, or read over less than half of it: nothing said.
     expect(report().shownAfter?.eyesDown).toBeUndefined();
     expect(report([{ start: 125, end: 130, eyesDown: 0.7 }]).shownAfter?.eyesDown).toBeUndefined();

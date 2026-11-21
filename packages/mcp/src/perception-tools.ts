@@ -150,7 +150,7 @@ export function registerPerception(deps: PerceptionDeps) {
       // Where the speaker looks, in the picture of the recording heard beside each stretch: its face seen longest there.
       Promise.all(clocks.filter(c => videos.has(c.id)).map(async ({ id, from, to }) => {
         const read = await client.get<{ from: number; to: number; readSeconds: number; done: boolean; error?: string;
-          tracks: Array<{ track: number; seconds: number }>; spans: Array<{ track: number; start: number; end: number; eyesDown?: number }> }>(
+          tracks: Array<{ track: number; seconds: number }>; spans: Array<{ track: number; start: number; end: number; eyesDown?: number; box: number[] }> }>(
           `/projects/${encodeURIComponent(deps.projectId)}/media/${encodeURIComponent(id)}/faces?from=${from}&to=${to}&wait=${wait}`);
         const main = [...read.tracks].sort((a, b) => b.seconds - a.seconds)[0]?.track;
         return { id, spans: read.spans.filter(s => s.track === main),
