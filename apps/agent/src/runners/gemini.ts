@@ -13,6 +13,7 @@ import {
   isQuestionTool,
   planEvent,
   prettyToolName,
+  questionText,
   type McpSpec,
   type RunAgentOptions,
   type RunAgentResult,
@@ -20,7 +21,7 @@ import {
 } from "./types.js";
 import { earlyResult, jsonLine, resolveCli, spawnLines, tailSummary } from "./spawn.js";
 import { addUsage, geminiTranscriptStepUsage, geminiUsage, usageWithModel } from "./usage.js";
-import type { AgentUsage, PlanStep } from "@scarlet/shared";
+import { SCARLET_TOOL_NAMES, type AgentUsage, type PlanStep } from "@scarlet/shared";
 
 interface AcpConfigOption {
   id?: string;
@@ -195,7 +196,23 @@ function flushStreams(st: GeminiParseState, events: RunnerEvent[]) {
   flushPartial(st, events);
 }
 
-/** Whether an ACP `session/request_permission` request targets a Scarlet MCP tool. */
+/** Every tool Scarlet's MCP server can offer, the session-specific ones included. */
+const SCARLET_TOOLS = new Set<string>([...SCARLET_TOOL_NAMES, "tool_help", "skill_save_edit", "skill_save_from_change"]);
+/** How a harness names a Scarlet tool: agy offers them to the model as `mcp_scarlet_<tool>` (its `mcp_%s_%s`). */
+const SCARLET_PREFIX = /^(?:mcp__scarlet__|mcp_scarlet_|scarlet__|scarlet\.|scarlet\/|scarlet:)([a-z0-9_]+)(.?)/;
+
+/** Whether one name is a Scarlet tool's, whole: `scarlet/notes.md` or `scarlet.json` are a file's, not a tool's. */
+function namesScarletTool(candidate: unknown): boolean {
+  if (typeof candidate !== "string") return false;
+  const m = SCARLET_PREFIX.exec(candidate.trim().toLowerCase());
+  return !!m && SCARLET_TOOLS.has(m[1]!) && !/[a-z0-9_.\-/\\]/.test(m[2]!);
+}
+
+/**
+ * Whether an ACP `session/request_permission` request targets a Scarlet MCP tool: agy names the scarlet server, or
+ * the tool's name is a Scarlet tool's. A title is display text (agy shows the model's own `toolSummary` there), so it
+ * counts only when the request gives no name at all.
+ */
 export function isScarletMcpPermission(params: unknown): boolean {
   const p = asRecord(params);
   const tc = asRecord(p?.toolCall);
@@ -204,12 +221,8 @@ export function isScarletMcpPermission(params: unknown): boolean {
   for (const server of [meta?.mcpServer, meta?.server, meta?.serverName, tc.mcpServer, tc.server, tc.serverName]) {
     if (typeof server === "string" && server.toLowerCase() === "scarlet") return true;
   }
-  for (const candidate of [tc.name, tc.toolName, tc.title]) {
-    if (typeof candidate !== "string") continue;
-    const trimmed = candidate.trim().toLowerCase();
-    if (/^(mcp__scarlet__|mcp_scarlet_|scarlet__|scarlet\.|scarlet\/|scarlet:)/.test(trimmed)) return true;
-  }
-  return false;
+  const names = [tc.name, tc.toolName].filter((name) => typeof name === "string" && name.trim());
+  return (names.length ? names : [tc.title]).some(namesScarletTool);
 }
 
 /** Pick the best ACP permission outcome for allow vs reject. */
@@ -226,6 +239,28 @@ export function permissionOutcome(params: unknown, allow: boolean): Record<strin
 
 function extractToolName(update: Record<string, unknown>): string {
   return asString(update.name) ?? asString(update.toolName) ?? asString(update.title) ?? "tool";
+}
+
+/**
+ * A task_question call's words, as they arrive with the call or an update to it. Held from then on, should agy stop
+ * before the call's result, and said once the engine has the question. One Scarlet refused, or one with no words, was
+ * never asked: the model hears why and carries on, so the run does too.
+ */
+function questionUpdate(st: GeminiParseState, update: Record<string, unknown>, id: string | undefined, name: string, input: unknown, events: RunnerEvent[]) {
+  if (id) st.pendingQuestionId = id;
+  const text = questionText(input);
+  if (text) st.question = text;
+  const status = asString(update.status);
+  if (status !== "completed" && status !== "failed" && status !== "error") return;
+  st.pendingQuestionId = undefined;
+  if (status !== "completed" || isFailedOutput(update.rawOutput, update.content)) {
+    st.question = undefined;
+    events.push({ type: "error", text: `${name} failed: ${briefInput(update.rawOutput ?? update.content ?? update.error, 400)}`.trim(), data: id ? { toolId: id } : undefined });
+  } else if (st.question) {
+    st.questionPosted = true;
+    st.shouldStop = true;
+    events.push({ type: "question", text: st.question, data: { tool: name, ...(id ? { toolId: id } : {}) } });
+  }
 }
 
 function isFailedOutput(rawOutput: unknown, content: unknown): boolean {
@@ -262,23 +297,10 @@ export function parseGeminiAcpUpdate(rawUpdate: unknown, st: GeminiParseState): 
       const id = asString(update.toolCallId) ?? asString(update.id);
       if (id) st.toolNames.set(id, rawName);
       const input = update.rawInput ?? update.parameters ?? update.input ?? update.arguments;
-      const status = asString(update.status);
       if (isQuestionTool(rawName)) {
-        const inputRec = asRecord(input);
-        const qText = asString(inputRec?.text);
-        if (!st.question && (qText || input !== undefined)) {
-          const text = qText ?? briefInput(input);
-          st.question = text;
-          st.pendingQuestionId = id;
-          events.push({ type: "question", text, data: { tool: name, ...(id ? { toolId: id } : {}) } });
-        } else if (!st.pendingQuestionId && id) {
-          st.pendingQuestionId = id;
-        }
-        if (status === "completed" || status === "failed" || status === "error") {
-          const failed = status !== "completed" || isFailedOutput(update.rawOutput, update.content);
-          st.questionPosted = !failed;
-          st.shouldStop = true;
-        }
+        // A question with no words is an ordinary call, which Scarlet refuses.
+        if (input !== undefined && !questionText(input)) events.push({ type: "tool", text: `${name} ${briefInput(input)}`.trim(), data: { tool: name, input, ...(id ? { toolId: id } : {}) } });
+        questionUpdate(st, update, id, name, input, events);
       } else {
         events.push({
           type: "tool",
@@ -296,22 +318,7 @@ export function parseGeminiAcpUpdate(rawUpdate: unknown, st: GeminiParseState): 
       const input = update.rawInput ?? update.parameters ?? update.input ?? update.arguments;
       const isQuestion = (id !== undefined && st.pendingQuestionId === id) || isQuestionTool(rawName);
       if (isQuestion) {
-        if (!st.question && input !== undefined) {
-          const inputRec = asRecord(input);
-          const text = asString(inputRec?.text) ?? briefInput(input);
-          st.question = text;
-          st.pendingQuestionId = id ?? st.pendingQuestionId;
-          events.push({ type: "question", text, data: { tool: name, ...(id ? { toolId: id } : {}) } });
-        }
-        if (status === "completed" || status === "failed" || status === "error") {
-          if (!st.question) {
-            st.question = briefInput(input) || "Question posted";
-            events.push({ type: "question", text: st.question, data: { tool: name, ...(id ? { toolId: id } : {}) } });
-          }
-          const failed = status !== "completed" || isFailedOutput(update.rawOutput, update.content);
-          st.questionPosted = !failed;
-          st.shouldStop = true;
-        }
+        questionUpdate(st, update, id, name, input, events);
       } else if (status === "failed" || status === "error") {
         const detail = update.rawOutput ?? update.content ?? update.error;
         events.push({
@@ -394,6 +401,24 @@ export function buildGeminiCommand(bin: string): GeminiCommand {
 export function systemPromptMeta(systemPrompt: string) {
   return { antigravity: { systemPrompt: { append: systemPrompt } } };
 }
+
+/**
+ * Whether agy says, in its `initialize` result, that it takes `systemPromptMeta`. agy 1.5 does
+ * (`agentCapabilities._meta.antigravity.systemPrompt.append`); one that doesn't would run Gemini without Scarlet's prompt.
+ */
+export function takesSystemPrompt(result: unknown): boolean {
+  const meta = asRecord(asRecord(asRecord(result)?.agentCapabilities)?._meta);
+  return asRecord(asRecord(meta?.antigravity)?.systemPrompt)?.append === true;
+}
+
+/** What Gemini is told after Scarlet refused it a tool, when the engine gave no words of its own (`refusedTool`). */
+export function refusalText(names: string, words?: string): string {
+  return words?.trim() ? words.replaceAll("{tool}", names)
+    : `Scarlet refused ${names}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools.`;
+}
+
+/** How long agy has to exit on its own once Scarlet has closed its input. It can stay up, and the run would stall. */
+const STOP_GRACE_MS = 2000;
 
 /** How many times a run carries on after agy ended Gemini's turn on a tool Scarlet refused. */
 export const MAX_CARRY_ONS = 4;
@@ -481,9 +506,12 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
     return cancelSent;
   };
 
+  let stopTimer: NodeJS.Timeout | undefined;
   const stopSession = () => {
     step = "done";
     handle.child.stdin?.end();
+    // agy can stay up after its input closes, and a finished edit would then wait out the stall check.
+    stopTimer ??= setTimeout(() => handle.kill(), STOP_GRACE_MS).unref();
   };
 
   const failSession = (message: string) => {
@@ -524,7 +552,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
     }
     carryOns += 1;
     opts.onEvent({ type: "log", text: `Scarlet refused ${names}: only Scarlet's tools run here. Gemini carries on.`, data: { kind: "tool_refused", harnessTool: names } });
-    sendTurn(`Scarlet refused ${names}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools.`);
+    sendTurn(refusalText(names, opts.refusedTool));
     return true;
   };
 
@@ -612,6 +640,11 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
       const result = asRecord(msg.result) ?? {};
       switch (step) {
         case "initialize": {
+          if (!takesSystemPrompt(result)) {
+            const version = asString(asRecord(result.agentInfo)?.version);
+            failSession(`This agy${version ? ` ${version}` : ""} doesn't take Scarlet's instructions (its initialize result lists no systemPrompt.append), so Gemini would edit without them. Update agy.`);
+            return;
+          }
           sendOpenSession();
           break;
         }
@@ -709,6 +742,7 @@ export async function runGemini(opts: RunAgentOptions): Promise<RunAgentResult> 
   });
 
   const outcome = await handle.done;
+  clearTimeout(stopTimer);
 
   const remaining: RunnerEvent[] = [];
   flushStreams(st, remaining);

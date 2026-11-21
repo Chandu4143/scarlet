@@ -6,6 +6,10 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Pause then Resume now picks an edit up where it left off, instead of starting it over.
+- A request you take back with ⌘Z no longer offers a rule in Learnings, and Scarlet doesn't read your words for rules while editing is paused.
+- Claude Code edits no longer fail on computers where its sandbox can't start.
+- Gemini edits now stop with a message to update agy when it's too old to take Scarlet's instructions, instead of editing without them.
 - Scarlet now knows what your camera inset covers on a screen demo, text or not, such as a chart's numbers or a usage meter, and keeps your camera off what you're talking about.
 - A rule Scarlet learned can be declined right from its line in the chat.
 - When you stumble on a word (“who who thinks of this”), Scarlet leans toward taking out the first saying of it, so the line runs on as you said it instead of jumping from the broken word into the next.

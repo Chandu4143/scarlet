@@ -66,6 +66,15 @@ describe("token usage", () => {
     expect(geminiUsage({ input_tokens: 1200, output_tokens: 300, cached: 1000, input: 200 })).toMatchObject({ inputTokens: 200, cacheReadTokens: 1000 });
   });
 
+  it("counts Gemini's thoughts as output where they are reported apart from it", () => {
+    // agy's own counts add up to the total without the thoughts: its output holds them already.
+    expect(geminiUsage({ inputTokens: 2151, outputTokens: 18, cachedReadTokens: 7634, thoughtTokens: 15, totalTokens: 9803 })).toMatchObject({ outputTokens: 18, reasoningTokens: 15 });
+    // A total that counts them on top of the output, or an output smaller than they are, reports them apart.
+    expect(geminiUsage({ inputTokens: 100, outputTokens: 20, thoughtTokens: 50, totalTokens: 170 })).toMatchObject({ inputTokens: 100, outputTokens: 70, reasoningTokens: 50 });
+    expect(geminiUsage({ inputTokens: 100, outputTokens: 10, thoughtTokens: 50 })).toMatchObject({ outputTokens: 60, reasoningTokens: 50 });
+    expect(geminiUsage({ inputTokens: 100, outputTokens: 60, thoughtTokens: 50 })).toMatchObject({ outputTokens: 60, reasoningTokens: 50 });
+  });
+
   it("ignores negative, fractional and non-numeric counts", () => {
     expect([tokenCount(-5), tokenCount(2.7), tokenCount("9"), tokenCount(Number.NaN)]).toEqual([0, 2, 0, 0]);
     expect(addUsage({ ...zero, inputTokens: 1 }, { ...zero, inputTokens: 2 })).toEqual({ ...zero, inputTokens: 3 });

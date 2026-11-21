@@ -1,5 +1,6 @@
-/** One inventory for Settings and MCP registration. Every tool is always
- * offered; only the harness's capabilities limit what a session sees. */
+/** One inventory for Settings and MCP registration. A session is offered the tools its harness can use (its
+ * capabilities) and its request calls for: a skill edit, a learning check or an area check gets only its own few
+ * (`tool` in packages/mcp/src/server.ts). */
 export const EDITING_TOOL_GROUPS = [
   { title: "Timeline editing", description: "Read the timeline, trim dialogue, frame the picture and propose changes.",
     tools: ["project_get", "timeline_get", "timeline_at", "timeline_diff", "timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync"] },

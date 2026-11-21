@@ -30,6 +30,8 @@ export interface RunAgentOptions {
   resumeSession?: string;
   /** Launch the CLI with its own to-do tool on. The engine decides (`plan` in the task's prompt). */
   plan?: boolean;
+  /** The engine's words for the turn after Scarlet refused a tool, `{tool}` standing for its name (`refusedTool`). */
+  refusedTool?: string;
   /** Per-task workspace. The agent may write temp files here. */
   cwd: string;
   mcp: McpSpec;
@@ -84,6 +86,16 @@ export const DEFAULT_STALL_MS = 10 * 60 * 1000;
 /** Matches the Scarlet question tool however the CLI namespaces it (mcp__scarlet__task_question, scarlet__task_question, scarlet:task_question, task_question). */
 export function isQuestionTool(name: string | undefined): boolean {
   return name === "mcp_scarlet_task_question" || (!!name && /(^|__|\.|\/|:)task_question$/.test(name));
+}
+
+/**
+ * The words of a task_question call, when it has any. Only such a call is a question: one with no words is refused by
+ * Scarlet's MCP server, and the model hears why and tries again. Taken for a question, it put the call's raw input
+ * before the editor. The desktop host reads it the same way.
+ */
+export function questionText(input: unknown): string | undefined {
+  const text = input && typeof input === "object" ? (input as { text?: unknown }).text : undefined;
+  return typeof text === "string" && text.trim() ? text : undefined;
 }
 
 /** Strip the MCP namespace prefix for display: mcp__scarlet__timeline_get -> scarlet.timeline_get */

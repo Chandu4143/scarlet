@@ -74,7 +74,7 @@
  *   GET    /projects/:id/tasks?state=                    → { tasks: Task[] }
  *   GET    /tasks/:taskId                                → { task: Task, events: TaskEvent[] }
  *   GET    /tasks/:taskId/prompt?workDir=&fresh=         → TaskPrompt (what the agent is told; hosts call this before each run)
- *   POST   /tasks/:taskId/cancel?queuedOnly=1            → { task: Task } (queuedOnly is optional)
+ *   POST   /tasks/:taskId/cancel?queuedOnly=1&withdrawn=1 → { task: Task } (both optional; withdrawn: the editor took the words back, so no rule is learned from them)
  *   POST   /tasks/:taskId/retry  RunChoice?              → { task: Task } (resume an interrupted request or retry a failure, on the model given)
  *   POST   /tasks/:taskId/answer    { text }             → { task: Task }     (human answers an agent question)
  *   GET    /projects/:id/usage?by=thread|task|agent|model|day → UsageResponse  (agent token usage, newest group first)
@@ -88,7 +88,7 @@
  *   POST   /tasks/:taskId/events    TaskEvent            → {}
  *   POST   /tasks/:taskId/question  { startedAt?, text, sessionId? } → { waiting: boolean } (once per claim; hosts add the CLI session that asked)
  *   POST   /tasks/:taskId/complete  CompleteTaskRequest  → { task: Task }
- *   POST   /tasks/:taskId/usage     RecordTaskUsageRequest → {}           (tokens one run reported; once per run)
+ *   POST   /tasks/:taskId/usage     RecordTaskUsageRequest → {}           (tokens one claim reported so far; startedAt names the claim)
  *   GET    /hosts                                       → { hosts: AgentHost[] }
  *
  *  Skills
@@ -851,6 +851,13 @@ export const Task = z.object({
     /** Every audible passage in scope was checked and there were no repeats or joins to review. */
     noFindings: z.boolean().optional(),
     unavailable: z.array(z.string()).optional(), returns: z.number().int().nonnegative().default(0),
+    /**
+     * How many times the pass has gone back for its closing check, in all. `returns` starts again whenever a check gets
+     * somewhere; this doesn't, so a check that fixes one finding and makes another stops instead of running for ever.
+     */
+    totalReturns: z.number().int().nonnegative().optional(),
+    /** When the pass last went back for its closing check: an answer given before then was the pass's, not the check's. */
+    queuedAt: z.string().datetime().optional(),
     /** The pass had finished and the check it went back for couldn't run: why. The pass stands; Retry runs the check. */
     failed: z.string().optional(),
   }).optional(),
@@ -901,6 +908,11 @@ export const Task = z.object({
   startsBeforeCalls: z.boolean().optional(),
   /** The CLI session that asked the pending question; the host resumes it with the answer. */
   session: z.object({ agent: AgentId, id: z.string().min(1) }).optional(),
+  /**
+   * This attempt's CLI session carries on in the attempt that resumes it (`retryTaskId`), as after a quit or a pause of
+   * the project's editing. The host keeps the session's files when the run ends; a run the editor stopped has none.
+   */
+  sessionCarriesOn: z.boolean().optional(),
   /** Pending question from the agent, if waiting_for_user. */
   question: z.string().nullable().default(null),
   /** Where the editor can hear the updated passage while answering a question about a staged cut. */
@@ -1216,6 +1228,11 @@ export const TaskPrompt = z.object({
   resumeSession: z.string().optional(),
   /** Launch the CLI with its own to-do tool on, so the plan it keeps reaches Scarlet (`plan` in capabilities.ts). */
   plan: z.boolean().optional(),
+  /**
+   * What the host tells the model after refusing it a tool that isn't Scarlet's, with `{tool}` standing for the tool's
+   * name. A host given none says it in its own words.
+   */
+  refusedTool: z.string().optional(),
 });
 export type TaskPrompt = z.infer<typeof TaskPrompt>;
 
@@ -1240,7 +1257,10 @@ export const AgentUsage = z.object({
 });
 export type AgentUsage = z.infer<typeof AgentUsage>;
 
-/** One run of a task. `startedAt` is the claim's start, so a repeated report replaces the first. */
+/**
+ * One run of a task, as a cumulative total. `startedAt` is the claim's start, which the engine requires: a report for
+ * the same claim replaces a smaller one, so a late snapshot can't undo the final total.
+ */
 export const RecordTaskUsageRequest = AgentUsage.extend({ startedAt: z.string().datetime().optional() });
 export type RecordTaskUsageRequest = z.input<typeof RecordTaskUsageRequest>;
 

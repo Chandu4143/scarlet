@@ -466,6 +466,10 @@ describe("timeline_propose", () => {
     const missingNamed = await propose({ timelineEdits: [named] });
     expect(missingNamed.isError).toBe(true);
     expect(textOf(missingNamed)).toContain("timelineEdits[0].reason");
+    // Every edit without a reason is named in one refusal, not one per call.
+    const reasoned = { ...named, label: "Mark the close", reason: "The guest's last line." };
+    const missingSome = await propose({ timelineEdits: [named, reasoned, named, named] });
+    expect(textOf(missingSome)).toContain("Give timelineEdits[0].reason, timelineEdits[2].reason and timelineEdits[3].reason so the editor can see why you made each edit.");
     expect(mock.requests.some(r => r.method === "POST" && r.path.endsWith("/changes"))).toBe(false);
     const reason = "This is where the guest explains the result viewers came for.";
     const saved = await propose({ timelineEdits: [{ ...named, reason }] });
@@ -944,7 +948,7 @@ describe("timeline_propose", () => {
         const { fromVersion, description } = req.body as { fromVersion?: string; description: string };
         bases.push(fromVersion);
         result = { change: { id: `chg_base_${bases.length}`, state: "proposed", description, fromVersion, toVersion: "next", ranges: [] }, duration: 5.5, diffDescription: [] };
-      } else if (/\/versions\/(old|head)\/diff\/cur$/.test(req.path)) result = { diff: { durationBefore: 6, durationAfter: 5.5, ranges: [] }, description: [] };
+      } else if (/\/versions\/(old|head|cur)\/diff\/(cur|old)$/.test(req.path)) result = { diff: { durationBefore: 6, durationAfter: 5.5, ranges: [] }, description: [] };
       else if (req.path === "/projects/prj_test/changes/pass") result = { change: { id: "pass", projectId: "prj_test", intent: "suggestion", state: "ready",
         fromVersion: "cur", toVersion: "sug", description: "Review 1 optional dialogue cut", cutReasons: [{ start: 1.9, end: 3.5, reason: "A filler." }],
         ops: [{ op: "rippleDelete", start: 1.9, end: 3.5 }] } };
@@ -984,9 +988,40 @@ describe("timeline_propose", () => {
       const inspected = await call("dialogue_review_inspect", { changeId: "pass", index: 0 });
       expect(textOf(inspected)).toContain('"joinAudit":[');
       expect(await base()).toBe("cur");
+      // Reading what an older version plays, measuring its joins, comparing back to it or checking a removal on it are
+      // measurements too: none of them is the version the agent's next edit goes on.
+      expect(textOf(await call("timeline_transcript", { version: "old" }))).toContain("Version old");
+      expect(textOf(await call("timeline_join_audit", { version: "old" }))).toContain("old");
+      expect(textOf(await call("timeline_diff", { from: "cur", to: "old" }))).toContain("cur → old");
+      await call("dialogue_check_join", { version: "old", start: 2.5, end: 3.5 });
+      expect(await base()).toBe("cur");
       // Reading another version is the agent's own look, and its next edit is on that one.
       await call("timeline_get", { version: "old" });
       expect(await base()).toBe("old");
+    } finally {
+      await close();
+    }
+  });
+
+  it("proposes against the version the agent asked for last when reads answer out of order", async () => {
+    const { bases, call, close } = await threeVersions();
+    const prior = mock.state.extra!;
+    // The engine answers for the earlier version late.
+    mock.state.extra = async (req, res) => {
+      if (req.method === "GET" && req.path === "/projects/prj_test/timeline" && req.query.get("version") === "old") await new Promise(r => setTimeout(r, 60));
+      return prior(req, res);
+    };
+    const propose = async () => {
+      await call("timeline_propose", { description: "Mark the spot", reason: "Save the place where the question starts.", ops: [{ op: "addMarker", marker: { id: "spot", time: 1, text: "here" } }] });
+      return bases.at(-1);
+    };
+    try {
+      // The agent looks at the earlier version, then at the current one, without waiting: the current one is its base.
+      await Promise.all([call("timeline_get", { version: "old" }), call("timeline_get", {})]);
+      expect(await propose()).toBe("cur");
+      // A measurement of the earlier version sent with the agent's read, answering after it, leaves the base alone.
+      await Promise.all([call("timeline_at", { time: 1 }), call("timeline_transcript", { version: "old" }), call("timeline_join_audit", { version: "old" })]);
+      expect(await propose()).toBe("cur");
     } finally {
       await close();
     }
@@ -1582,6 +1617,8 @@ describe("task events", () => {
     expect(textOf(q)).toContain("Stop now");
     expect(mock.state.events.map((e) => [e.type, e.text])).toEqual([
       ["log", "reading transcript"],
+      // Refused for its arguments, the label is in the task's history as any refusal is.
+      ["log", textOf(long)],
       ["question", "Keep the intro?"],
     ]);
   });
@@ -2170,6 +2207,72 @@ describe("first-cut dialogue save checkpoints", () => {
     expect(JSON.parse(textOf(saved))).toMatchObject({ changes: [{ state: "approved" }] });
     expect(next.isError, textOf(next)).toBeFalsy();
     expect(JSON.parse(textOf(next))).toMatchObject({ from: 116, to: 176 });
+  });
+
+  it("reads a page in what is left of its call once a save sent with it has taken the rest", async () => {
+    await scan(0);
+    await scan(58);
+    const release: Array<() => void> = [];
+    const prior = mock.state.extra!;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    mock.state.extra = async (req, res) => {
+      // The save takes 250 s, past the 240 s a call on Claude Code has; the next page's analysis is still running.
+      if (req.path.endsWith("/dialogue-cuts")) vi.setSystemTime(Date.now() + 250_000);
+      if (req.path.endsWith("/dialogue-detections") && (req.body as { from?: number })?.from === 116) {
+        await new Promise<void>(resolve => release.push(resolve));
+        return false;
+      }
+      return prior(req, res);
+    };
+    try {
+      const [saved, next] = await Promise.all([save(24), scan(116)]);
+      expect(JSON.parse(textOf(saved))).toMatchObject({ changes: [{ state: "approved" }] });
+      // The page doesn't wait a call's whole time again: it answers now and is collected on the next read.
+      expect(next.isError, textOf(next)).toBeFalsy();
+      expect(textOf(next)).toContain("Dialogue analysis is still running");
+    } finally {
+      vi.useRealTimers();
+      mock.state.extra = prior;
+      for (const go of release) go();
+    }
+  });
+
+  it("answers a read whose save is still being made at the end of its call, and reads once the save has answered", async () => {
+    // A harness that waits 20 s for a tool: the read has no time left to wait for the save.
+    const task = Task.parse({ id: "short-wait", projectId: mock.state.timeline!.projectId, kind: "edit", agent: "claude", state: "running",
+      instruction: "/first-cut-dialogue", context: { dialogueOperation: "first-cut" }, createdBy: { type: "human", name: "Editor" } });
+    const server = createScarletMcpServer(new ScarletClient({ baseUrl: mock.url, token: "tok" }), { projectId: "prj_test", taskId: task.id,
+      taskStartedAt: "2026-04-01T12:00:00.000Z", task, agent: "claude", capabilities: { ...agentCapabilities("claude"), toolWaitSeconds: 20 },
+      author: { type: "agent", id: "claude", name: "claude" } });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const short = new Client({ name: "test", version: "0" });
+    await short.connect(b);
+    const prior = mock.state.extra!;
+    let finishSave!: () => void;
+    const saving = new Promise<void>(resolve => { finishSave = resolve; });
+    mock.state.extra = async (req, res) => {
+      if (req.path.endsWith("/dialogue-cuts")) await saving;
+      return prior(req, res);
+    };
+    try {
+      const read = (from: number) => short.callTool({ name: "dialogue_scan", arguments: { mediaId: "m1", from } }) as Promise<CallToolResult>;
+      await read(0);
+      await read(58);
+      const save = short.callTool({ name: "dialogue_apply_cuts", arguments: { version: mock.state.project.head, description: "Remove the pause.",
+        cuts: [{ start: 24, end: 25, kind: "pause", decision: "cut", reason: "Dead air." }] } });
+      await new Promise(r => setTimeout(r, 30));
+      const early = await read(116);
+      expect(early.isError, textOf(early)).toBeFalsy();
+      expect(textOf(early)).toBe("A save you sent is still being made, and this page is read after it. Call dialogue_scan again with from 116 once it has answered.");
+      finishSave();
+      expect(JSON.parse(textOf(await save as CallToolResult))).toMatchObject({ changes: [{ state: "approved" }] });
+      expect(JSON.parse(textOf(await read(116)))).toMatchObject({ from: 116, to: 176 });
+    } finally {
+      finishSave();
+      mock.state.extra = prior;
+      await short.close();
+    }
   });
 
   it("bounds replay of cached analysis and permits another section when no cut is ready", async () => {

@@ -25,6 +25,7 @@ fi
 printf '%s\\n' "$@" > "$FAKE_DIR/args"
 cat > "$FAKE_DIR/stdin"
 printf '%s' "$SCARLET_SERVER" > "$FAKE_DIR/server"
+printf '%s' "$MCP_TOOL_TIMEOUT" > "$FAKE_DIR/tool-timeout"
 prev=""
 for a in "$@"; do
   if [ "$prev" = "--output-last-message" ] && [ -n "$FAKE_LAST" ]; then printf '%s' "$FAKE_LAST" > "$a"; fi
@@ -95,7 +96,8 @@ rl.on("line", line => {
     pendingReply = null;
     return resume();
   }
-  if (method === "initialize") return send({ id, result: { protocolVersion: 1 } });
+  // agy 1.5 says it takes the session's own system prompt (systemPrompt.append).
+  if (method === "initialize") return send({ id, result: { protocolVersion: 1, agentCapabilities: process.env.FAKE_ACP_NO_PROMPT_META ? {} : { _meta: { antigravity: { systemPrompt: { append: true } } } } } });
   if (method === "authenticate") return send({ id, result: {} });
   if (method === "session/new") return send({ id, result: { sessionId: "g1", configOptions } });
   if (method === "session/resume") {
@@ -135,7 +137,8 @@ rl.on("line", line => {
     if (promptId !== null) send({ id: promptId, result: { stopReason: "cancelled" } });
   }
 });
-rl.on("close", () => process.exit(Number(process.env.FAKE_CODE ?? 0)));
+// An agy that stays up once its input is closed, as agy can.
+rl.on("close", () => process.env.FAKE_ACP_LINGER ? setInterval(() => {}, 1000) : process.exit(Number(process.env.FAKE_CODE ?? 0)));
 `;
 
 const mcp = { command: "node", args: ["/scarlet/mcp/cli.js"], env: { SCARLET_SERVER: "http://localhost:4000", SCARLET_TOKEN: "agent-token" } };
@@ -154,6 +157,7 @@ const input = [];
 for await (const chunk of process.stdin) input.push(chunk);
 writeFileSync(dir + "/stdin", Buffer.concat(input));
 writeFileSync(dir + "/server", process.env.SCARLET_SERVER ?? "");
+writeFileSync(dir + "/tool-timeout", process.env.MCP_TOOL_TIMEOUT ?? "");
 args.forEach((a, i) => { if (args[i - 1] === "--output-last-message" && process.env.FAKE_LAST) writeFileSync(a, process.env.FAKE_LAST); });
 process.stdout.write(readFileSync(dir + "/out"));
 if (process.env.FAKE_ERR) process.stderr.write(process.env.FAKE_ERR + NL);
@@ -353,6 +357,39 @@ describe("runClaude", { timeout: 20_000 }, () => {
     expect(events.map((e) => e.type)).toEqual(["log", "question"]);
   });
 
+  it("carries on after a question Scarlet refused, and asks the editor nothing", async () => {
+    const ask = (id: string, input: object) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "mcp__scarlet__task_question", input }] } });
+    const refuse = (id: string, why: string) => JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: why }] } });
+    // Refused for its shape: the editor never sees the call's arguments, and the model finishes the edit.
+    const shape = await run(runClaude, { lines: [claudeInit, ask("q1", { text: "Keep the cold open?", options: "yes" }), refuse("q1", "options: Expected array"),
+      '{"type":"result","subtype":"success","is_error":false,"result":"Kept the cold open."}'] });
+    expect(shape.result).toMatchObject({ ok: true, summary: "Kept the cold open.", exitCode: 0 });
+    expect(shape.result.question).toBeUndefined();
+    // A call with no words isn't a question at all: the CLI isn't stopped for it, and carries on to its own end.
+    const empty = await run(runClaude, { lines: [claudeInit, ask("q2", { text: "" }), refuse("q2", "text: Required")], sleep: 1 });
+    expect(empty.result).toMatchObject({ ok: true, exitCode: 0 });
+    expect(empty.result.question).toBeUndefined();
+  });
+
+  it("reports the run's tokens as they grow, and the result's totals at the end", async () => {
+    const snapshots: AgentUsage[] = [];
+    const { result } = await run(runClaude, {
+      lines: [claudeInit, claudeText("m1", "Reading."), claudeText("m1", "Reading."), claudeText("m2", "Cutting."),
+        '{"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{"input_tokens":9,"output_tokens":20,"cache_read_input_tokens":300}}'],
+    }, { onUsage: (usage) => snapshots.push(usage) });
+    // One API message seen twice counts once; nothing is sent again until the count changes.
+    expect(snapshots.map((u) => [u.inputTokens, u.outputTokens, u.cacheReadTokens])).toEqual([[3, 7, 0], [6, 14, 0], [9, 20, 300]]);
+    expect(snapshots.at(-1)).toEqual(result.usage);
+  });
+
+  it("gives Claude Code the tool deadline Scarlet's waits assume, or the user's own when it is longer", async () => {
+    const result = '{"type":"result","subtype":"success","is_error":false,"result":"Done."}';
+    for (const [theirs, given] of [[undefined, "300000"], ["60000", "300000"], ["soon", "300000"], ["900000", "900000"]] as const) {
+      const { read } = await run(runClaude, { lines: [claudeInit, result] }, { env: theirs ? { MCP_TOOL_TIMEOUT: theirs } : {} });
+      expect(await read("tool-timeout")).toBe(given);
+    }
+  });
+
   it("fails a run whose Scarlet MCP server failed to start, and stops the CLI instead of letting it write without tools", async () => {
     const mcpFailed = "Scarlet's MCP server failed to start, so Claude Code had no editing tools.";
     // Recorded from claude 2.1.325: the server failed, and Claude answered without tools and called it a success.
@@ -484,6 +521,21 @@ describe.skipIf(process.platform === "win32")("runCodex App Server", { timeout: 
     expect(fallback).toHaveBeenCalledWith("thread_resume_failed");
   });
 
+  it("counts only this run's tokens on a resumed thread, whether or not Codex carries the thread's total over", async () => {
+    const usage = (total: [number, number], last: [number, number]) => notification("thread/tokenUsage/updated", {
+      tokenUsage: { total: { inputTokens: total[0], outputTokens: total[1] }, last: { inputTokens: last[0], outputTokens: last[1] } } });
+    const finish = notification("turn/completed", { turn: { id: "turn1", status: "completed" } });
+    const counts = async (lines: string[]) => {
+      const seen: number[][] = [];
+      const { result } = await run(runCodex, { appServer: true, lines: [...lines, finish] }, { resumeSession: "t1", onUsage: (u) => seen.push([u.inputTokens, u.outputTokens]) });
+      return { seen, total: [result.usage?.inputTokens, result.usage?.outputTokens] };
+    };
+    // The thread had counted 1,000 and 100 before: the engine already has those from the attempt that made them.
+    expect(await counts([usage([1010, 105], [10, 5]), usage([1030, 112], [20, 7])])).toEqual({ seen: [[10, 5], [30, 12]], total: [30, 12] });
+    // A Codex that starts a resumed thread's count afresh needs nothing taken off.
+    expect(await counts([usage([10, 5], [10, 5]), usage([30, 12], [20, 7])])).toEqual({ seen: [[10, 5], [30, 12]], total: [30, 12] });
+  });
+
   it("drains the usage reported when an edit stops for a question", async () => {
     const question = { type: "mcpToolCall", id: "q1", server: "scarlet", tool: "task_question", arguments: { text: "Keep it?" } };
     const { result, stdin } = await run(runCodex, {
@@ -493,6 +545,19 @@ describe.skipIf(process.platform === "win32")("runCodex App Server", { timeout: 
     });
     expect(result).toMatchObject({ ok: true, question: "Keep it?", questionPosted: true, usage: { inputTokens: 4, model: "default-model" } });
     expect(await stdin()).toContain('"method":"turn/interrupt"');
+  });
+
+  it("carries on after a question Scarlet refused, without interrupting the turn", async () => {
+    const question = { type: "mcpToolCall", id: "q1", server: "scarlet", tool: "task_question", arguments: { text: "Keep it?", options: "yes" } };
+    const { result, stdin } = await run(runCodex, {
+      appServer: true,
+      lines: [notification("item/started", { item: question }), notification("item/completed", { item: { ...question, status: "failed", error: { message: "options: Expected array" } } }),
+        notification("item/completed", { item: { type: "agentMessage", id: "msg1", phase: "final_answer", text: "Kept it." } }),
+        notification("turn/completed", { turn: { id: "turn1", status: "completed" } })],
+    });
+    expect(result).toMatchObject({ ok: true, summary: "Kept it." });
+    expect(result.question).toBeUndefined();
+    expect(await stdin()).not.toContain('"method":"turn/interrupt"');
   });
 
   it("drains the last App Server usage after the host cancels the edit", async () => {
@@ -536,6 +601,9 @@ describe("runCodex", { timeout: 20_000 }, () => {
     // Only the names of the MCP variables are on the command line.
     expect((await args()).join("\n")).not.toContain("agent-token");
     expect(await args()).toEqual(expect.arrayContaining(['mcp_servers.scarlet.env_vars=["SCARLET_SERVER","SCARLET_TOKEN"]', "--model", "gpt-5"]));
+    // No AGENTS.md from a repository around the task folder loads beside Scarlet's, as App Server is told too.
+    const given = await args();
+    expect(given[given.indexOf("project_root_markers=[]") - 1]).toBe("-c");
   });
 
   it("falls back to the last agent message, and counts a completed turn as success whatever the exit code", async () => {
@@ -567,13 +635,22 @@ describe("runCodex", { timeout: 20_000 }, () => {
     expect(stream.result).toMatchObject({ ok: false, error: '{"type":"error","message":""}', exitCode: 0 });
   });
 
-  it("stops after the question's tool call completes, and says whether the engine took it", async () => {
-    const call = (type: string, extra: object = {}) => JSON.stringify({ type, item: { id: "q", type: "mcp_tool_call", server: "scarlet", tool: "task_question", arguments: { text: "Vertical or wide?" }, ...extra } });
+  it("stops once the engine has the question, and carries on after one Scarlet refused or one with no words", async () => {
+    const call = (type: string, extra: object = {}, args: object = { text: "Vertical or wide?" }) =>
+      JSON.stringify({ type, item: { id: "q", type: "mcp_tool_call", server: "scarlet", tool: "task_question", arguments: args, ...extra } });
     const posted = await run(runCodex, { lines: [call("item.started"), call("item.completed", { status: "completed" })], sleep: 30 });
     expect(posted.result).toMatchObject({ ok: true, question: "Vertical or wide?", questionPosted: true });
     expect(posted.events.map((e) => e.type)).toEqual(["question"]);
-    const refused = await run(runCodex, { lines: [call("item.completed", { status: "failed", error: { message: "no engine" } })], sleep: 30 });
-    expect(refused.result).toMatchObject({ ok: true, question: "Vertical or wide?", questionPosted: false });
+    // Refused (the engine was unreachable, or the call's shape was wrong): the editor isn't asked, and the run goes on to its end.
+    const refused = await run(runCodex, { lines: [call("item.started"), call("item.completed", { status: "failed", error: { message: "no engine" } }), message("Kept both takes."), completed], sleep: 1 });
+    expect(refused.result).toMatchObject({ ok: true, summary: "Kept both takes." });
+    expect(refused.result.question).toBeUndefined();
+    expect(refused.events.map((e) => [e.type, e.text])).toEqual([["error", 'scarlet.task_question failed: {"message":"no engine"}'], ["log", "Kept both takes."], ["result", "Kept both takes."]]);
+    // No words is no question: an ordinary call, which Scarlet refuses.
+    const empty = await run(runCodex, { lines: [call("item.started", {}, { text: " " }), call("item.completed", { status: "failed", error: { message: "text: Required" } }, { text: " " }), completed], sleep: 1 });
+    expect(empty.result).toMatchObject({ ok: true });
+    expect(empty.result.question).toBeUndefined();
+    expect(empty.events.map((e) => e.type)).toEqual(["tool", "error", "result"]);
   });
 
   it("reports a silent run as stalled and a cancelled one as cancelled", async () => {
@@ -653,6 +730,31 @@ describe("runGemini", { timeout: 20_000 }, () => {
     expect(sent.find((m) => m.id === 100)).toMatchObject({ result: { outcome: { outcome: "selected", optionId: "deny2" } } });
   });
 
+  it("tells Gemini what was refused in the engine's words when it gives them", async () => {
+    const bash = JSON.stringify({ jsonrpc: "2.0", id: 100, method: "session/request_permission",
+      params: { toolCall: { name: "run_command" }, options: [{ optionId: "deny", kind: "reject_once" }] } });
+    const { result, stdin } = await run(runGemini, { acp: true, lines: [bash] },
+      { agent: "gemini", refusedTool: "{tool} isn't one of Scarlet's tools ({tool} refused). Carry on." });
+    expect(result).toMatchObject({ ok: true });
+    const prompts = (await stdin()).trim().split("\n").map((l) => JSON.parse(l)).filter((m) => m.method === "session/prompt");
+    expect(prompts.at(-1).params.prompt).toEqual([{ type: "text", text: "run_command isn't one of Scarlet's tools (run_command refused). Carry on." }]);
+  });
+
+  it("ends a finished run promptly when agy stays up after its input closes", async () => {
+    const started = Date.now();
+    const { result } = await run(runGemini, { acp: true, lines: [upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } })] },
+      { agent: "gemini", stallMs: 8000, env: { FAKE_ACP_LINGER: "1" } });
+    expect(result).toMatchObject({ ok: true, summary: "Done." });
+    expect(result.stalled).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(6000);
+  });
+
+  it("refuses to run Gemini without Scarlet's instructions when agy doesn't say it takes them", async () => {
+    const { result, stdin } = await run(runGemini, { acp: true }, { agent: "gemini", env: { FAKE_ACP_NO_PROMPT_META: "1" } });
+    expect(result).toMatchObject({ ok: false, error: "This agy doesn't take Scarlet's instructions (its initialize result lists no systemPrompt.append), so Gemini would edit without them. Update agy." });
+    expect(await stdin()).not.toContain("session/new");
+  });
+
   it("resumes an existing ACP session and reports sessionNotFound when gone", async () => {
     const resumed = await run(runGemini, {
       acp: true,
@@ -687,23 +789,42 @@ describe("runGemini", { timeout: 20_000 }, () => {
     expect(quiet.result.error).toBe("agy exited with code 1");
   });
 
-  it("stops after the question's completion and reports a failed tool", async () => {
+  it("stops once the engine has the question, and carries on after one Scarlet refused or one with no words", async () => {
+    const ask = (id: string, input: object, status: string, rawOutput: unknown) => [
+      upd({ sessionUpdate: "tool_call", toolCallId: id, name: "mcp_scarlet_task_question", rawInput: input }),
+      upd({ sessionUpdate: "tool_call_update", toolCallId: id, status, rawOutput }),
+    ];
     const asked = await run(runGemini, {
       acp: true,
       lines: [
         upd({ sessionUpdate: "tool_call", toolCallId: "c1", name: "mcp__scarlet__transcript_get", rawInput: { mediaId: "m1" } }),
         upd({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "failed", rawOutput: { error: "no such media" } }),
-        upd({ sessionUpdate: "tool_call", toolCallId: "c2", name: "mcp__scarlet__task_question", rawInput: { text: "9:16 or 16:9?" } }),
-        upd({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "failed", rawOutput: { error: "engine unreachable" } }),
+        ...ask("c2", { text: "9:16 or 16:9?" }, "completed", "Question posted"),
       ],
       sleep: 30,
     }, { agent: "gemini" });
-    expect(asked.result).toMatchObject({ ok: true, question: "9:16 or 16:9?", questionPosted: false });
+    expect(asked.result).toMatchObject({ ok: true, question: "9:16 or 16:9?", questionPosted: true });
     expect(asked.events.map((e) => [e.type, e.text])).toEqual([
       ["log", "Gemini session started (gemini-2.5-pro)"],
       ["tool", 'scarlet.transcript_get {"mediaId":"m1"}'],
       ["error", 'scarlet.transcript_get failed: {"error":"no such media"}'],
       ["question", "9:16 or 16:9?"],
+    ]);
+    // Refused, or with no words: the editor isn't asked, and the turn runs to its end.
+    const refused = await run(runGemini, {
+      acp: true,
+      lines: [...ask("c3", { text: "9:16 or 16:9?" }, "failed", { error: "engine unreachable" }), ...ask("c4", { text: "" }, "failed", { error: "text: Required" }),
+        upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Went with 16:9." } })],
+    }, { agent: "gemini" });
+    expect(refused.result).toMatchObject({ ok: true, summary: "Went with 16:9." });
+    expect(refused.result.question).toBeUndefined();
+    expect(refused.events.map((e) => [e.type, e.text])).toEqual([
+      ["log", "Gemini session started (gemini-2.5-pro)"],
+      ["error", 'scarlet.task_question failed: {"error":"engine unreachable"}'],
+      ["tool", 'scarlet.task_question {"text":""}'],
+      ["error", 'scarlet.task_question failed: {"error":"text: Required"}'],
+      ["log", "Went with 16:9."],
+      ["result", "Went with 16:9."],
     ]);
   });
 

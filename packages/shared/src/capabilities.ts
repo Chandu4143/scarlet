@@ -44,8 +44,9 @@ export interface AgentCapabilities {
 export const DEFAULT_TOOL_WAIT_SECONDS = 45;
 
 /**
- * Seconds one tool call may wait for evidence still being measured: `margin` under the harness's tool deadline, to
- * leave time for the answer itself. 220 s for a harness Scarlet launched and 25 s for a client it didn't, at a margin of 20.
+ * Seconds one tool call may wait for evidence still being measured: `margin` under the harness's `toolWaitSeconds`, to
+ * leave time for the answer itself. At a margin of 20: 220 s on Claude Code and Codex, 100 s on Gemini and 25 s for a
+ * client Scarlet didn't launch.
  */
 export function toolWait(caps: Pick<AgentCapabilities, "toolWaitSeconds">, margin: number): number {
   return Math.max(5, Math.min(240, (caps.toolWaitSeconds ?? DEFAULT_TOOL_WAIT_SECONDS) - margin));
@@ -88,8 +89,9 @@ export function agentCapabilities(agent: string | undefined, override?: Partial<
     try {
       const parsed = JSON.parse(override) as Record<string, unknown>;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-      for (const key of ["images", "audio", "files", "plan"] as const) if (typeof parsed[key] === "boolean") extra[key] = parsed[key] as boolean;
+      for (const key of ["images", "audio", "files", "plan", "briefTools"] as const) if (typeof parsed[key] === "boolean") extra[key] = parsed[key] as boolean;
       if (typeof parsed.resultChars === "number") extra.resultChars = parsed.resultChars;
+      if (typeof parsed.toolWaitSeconds === "number" && Number.isFinite(parsed.toolWaitSeconds) && parsed.toolWaitSeconds > 0) extra.toolWaitSeconds = parsed.toolWaitSeconds;
     } catch {
       extra = {};
       // The value is the user's own text, so it stays out of the log.

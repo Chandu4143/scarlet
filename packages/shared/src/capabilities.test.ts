@@ -19,6 +19,12 @@ describe("agentCapabilities", () => {
     expect(agentCapabilities("codex", '{"audio":true,"files":false}')).toEqual({ images: true, audio: true, files: false, plan: false, resultChars: 40_000, toolWaitSeconds: 240 });
     expect(agentCapabilities("claude", ' {"images": false, "audio": "yes", "files": 1, "shell": true} ')).toEqual({ images: false, audio: false, files: false, plan: false, resultChars: 40_000, toolPrefix: "mcp__scarlet__", toolWaitSeconds: 240 });
     expect(agentCapabilities("codex", '{"resultChars":8000}').resultChars).toBe(8_000);
+    // A tool wait and brief listing are set the same way, for a harness whose deadline or tool budget differs.
+    expect(agentCapabilities("codex", '{"toolWaitSeconds":90,"briefTools":true}')).toMatchObject({ toolWaitSeconds: 90, briefTools: true });
+    expect(agentCapabilities("gemini", '{"briefTools":false}').briefTools).toBe(false);
+    for (const bad of ['{"toolWaitSeconds":0}', '{"toolWaitSeconds":-5}', '{"toolWaitSeconds":"90"}', '{"briefTools":"yes"}'])
+      expect(agentCapabilities("claude", bad), bad).toMatchObject({ toolWaitSeconds: 240 });
+    expect(agentCapabilities("claude", '{"briefTools":"yes"}').briefTools).toBeUndefined();
     expect(agentCapabilities("codex", { resultChars: 200 }).resultChars).toBe(40_000);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     for (const unset of [undefined, "", "   "]) expect(agentCapabilities("codex", unset)).toEqual({ images: true, audio: false, files: true, plan: false, resultChars: 40_000, toolWaitSeconds: 240 });

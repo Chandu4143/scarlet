@@ -707,8 +707,13 @@ export class ScarletClient {
   waitForTranscription(taskId: string) {
     return this.withResource("tasks", taskId, path => this.get<{ task: Task; waited?: boolean }>(path + "?wait=transcript"));
   }
-  cancelTask(taskId: string, queuedOnly = false) {
-    return this.post<{ task: Task }>(`/tasks/${apiPathId(taskId)}/cancel${queuedOnly ? "?queuedOnly=1" : ""}`);
+  /**
+   * Stop a request, or take it out of the queue with `queuedOnly`. `withdrawn`: the editor took the words back (⌘Z), so
+   * the check reading them for a rule stops too, even once the request is under way. Stop this edit keeps it.
+   */
+  cancelTask(taskId: string, queuedOnly = false, withdrawn = false) {
+    const qs = query({ queuedOnly: queuedOnly ? "1" : undefined, withdrawn: withdrawn ? "1" : undefined });
+    return this.post<{ task: Task }>(`/tasks/${apiPathId(taskId)}/cancel${qs ? "?" + qs : ""}`);
   }
   /** Retry or resume a run, on the model the editor has picked now when one is given. */
   retryTask(taskId: string, body: RunChoice = {}) {

@@ -32,6 +32,18 @@ impl AgentUsage {
         }
     }
 
+    /// What is left of this count once `earlier` is taken off, each kind of token on its own and never under zero.
+    pub fn less(self, earlier: &AgentUsage) -> AgentUsage {
+        AgentUsage {
+            model: self.model,
+            input_tokens: self.input_tokens.saturating_sub(earlier.input_tokens),
+            output_tokens: self.output_tokens.saturating_sub(earlier.output_tokens),
+            cache_read_tokens: self.cache_read_tokens.saturating_sub(earlier.cache_read_tokens),
+            cache_write_tokens: self.cache_write_tokens.saturating_sub(earlier.cache_write_tokens),
+            reasoning_tokens: self.reasoning_tokens.saturating_sub(earlier.reasoning_tokens),
+        }
+    }
+
     /// Fill in the requested model when the CLI did not name one.
     pub fn or_model(mut self, model: Option<&str>) -> AgentUsage {
         if self.model.is_none() {
@@ -82,7 +94,8 @@ pub fn codex_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsag
     normalize_codex_usage(raw, model, ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens"])
 }
 
-/// Codex App Server reports the cumulative usage of the ephemeral thread.
+/// Codex App Server reports the thread's usage: `total` from its first turn, which a resumed thread carries over from
+/// the runs before, and `last` for the latest model call.
 pub fn codex_app_server_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsage> {
     normalize_codex_usage(raw, model, ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteInputTokens", "reasoningOutputTokens"])
 }
@@ -117,13 +130,21 @@ pub fn gemini_usage(raw: Option<&Value>, model: Option<&str>) -> Option<AgentUsa
             && raw_input >= cache
             && raw_input.saturating_add(output).abs_diff(total)
                 < raw_input.saturating_add(cache).saturating_add(output).abs_diff(total);
+        let input = if input_includes_cache { raw_input.saturating_sub(cache) } else { raw_input };
+        // `reasoning_tokens` is part of `output_tokens`. agy's output already holds its thoughts (`totalTokens` adds up
+        // without them, and a step that only thought counts output tokens); where they are reported apart (the total
+        // counts them on top, or output is smaller than they are), they are output too.
+        let thought = token_count(s.get("thoughtTokens"));
+        let counted = input.saturating_add(cache).saturating_add(output);
+        let thought_apart = thought > 0
+            && (output < thought || (total > 0 && counted.saturating_add(thought).abs_diff(total) < counted.abs_diff(total)));
         return Some(AgentUsage {
             model: model_name(model),
-            input_tokens: if input_includes_cache { raw_input.saturating_sub(cache) } else { raw_input },
-            output_tokens: output,
+            input_tokens: input,
+            output_tokens: if thought_apart { output.saturating_add(thought) } else { output },
             cache_read_tokens: cached,
             cache_write_tokens: written,
-            reasoning_tokens: token_count(s.get("thoughtTokens")),
+            reasoning_tokens: thought,
         });
     }
     let s = counts(raw, &["input_tokens", "output_tokens", "input", "cached"])?;
@@ -220,6 +241,13 @@ mod tests {
                 reasoning_tokens: 80,
             })
         );
+
+        // Thoughts reported apart from output are output too: the total counts them on top, or output is smaller.
+        let apart = |raw: Value| gemini_usage(Some(&raw), None).map(|u| (u.input_tokens, u.output_tokens, u.reasoning_tokens));
+        assert_eq!(apart(json!({"inputTokens": 100, "outputTokens": 60, "thoughtTokens": 50, "cachedReadTokens": 40, "totalTokens": 250})), Some((100, 110, 50)));
+        assert_eq!(apart(json!({"inputTokens": 100, "outputTokens": 20, "thoughtTokens": 50})), Some((100, 70, 50)));
+        // agy's own, where the output holds them, stays as it is (above too).
+        assert_eq!(apart(json!({"inputTokens": 100, "outputTokens": 60, "thoughtTokens": 50, "cachedReadTokens": 40, "totalTokens": 200})), Some((100, 60, 50)));
 
         let step = gemini_transcript_step_usage(
             Some(&json!({"step_index": 3, "type": "PLANNER_RESPONSE", "status": "DONE", "input_tokens": 2151, "cache_read_tokens": 7634, "output_tokens": 18})),
