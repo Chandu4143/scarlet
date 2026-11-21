@@ -8,6 +8,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 - While you watch paused, the picture stays the video as it plays, with a screen and your camera inset, when Scarlet saves another edit, instead of switching to the camera alone.
 - A demo Scarlet framed on screen now reads as an overlay, not a cut, and no longer adds cuts of its own to the list.
+- Your camera inset leaves clear room above your head, even when you sit up.
 - A cut waiting for your approval no longer draws a dotted line across the whole timeline: it shows as its dot, like any cut, and once opened its red band has a dashed edge until you approve it.
 - When Scarlet reworks the whole video in one go, every cut it made is listed, so you can open, revise or undo each one.
 - The cuts waiting for you now say what each one changes, such as “Cut the repeated start before ‘just explain’”, instead of what Scarlet did to check it.
