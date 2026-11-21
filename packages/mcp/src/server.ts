@@ -3,7 +3,7 @@ import { PictureBatches, type PictureRequest, type PreparedPictures } from "./pi
 import { BRIEF_PICTURES_NEXT, edgesOntoRecordingCuts, flashesOntoCuts, MET_CUT_NEXT, MET_RECORDING_CUT_NEXT, newBriefPictures, type MetCut, type MetRecordingCut } from "./brief-pictures.js";
 import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
 import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
-import { CORNERS, MOVE_EASES, boxInCorner, framingOps, type Box, type Corner } from "./framing.js";
+import { CORNERS, MOVE_EASES, boxInCorner, cornerOf, coverOnText, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
 import { syncSummary, timelineSync, type PairSync } from "./timeline-sync.js";
@@ -1050,7 +1050,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
   async function framedOn(before: Timeline | null, made: Timeline) {
     const { project } = await getProject();
     const framed = framingReport(before, made, project.media, project.settings);
-    if (!framed.length) return { framed, unread: [] as string[] };
+    if (!framed.length) return { framed, covered: [], unread: [] as string[] };
     const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
     const besideReach = besideSources(made, framed);
     const [found, moving, beside] = await Promise.all([
@@ -1060,7 +1060,10 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         .catch(error => { noteUnmeasured("what the screen shows beside the framed stretches", error); return undefined; }) : undefined,
     ]);
     const evidence = !!found?.readings.length || !!moving?.spans.length || !!beside;
-    return { framed: evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed,
+    const report = evidence ? framingReport(before, made, project.media, project.settings, found?.readings, moving?.spans, beside?.evidence) : framed;
+    // The holds where a picture over the recording, such as a camera inset, hides its text or anything else on it, in timeline seconds.
+    const covered = report.flatMap(f => f.holds.filter(h => h.underCover || h.coverHides).map(h => [h.from, h.to]));
+    return { framed: report, covered,
       unread: [...new Set([...found?.unread ?? [], ...moving?.unread ?? [], ...beside?.unread ?? []])] };
   }
   /** Recordings whose cuts weren't read through when this run last saved: brief pictures at their cuts weren't reported then. */
@@ -1198,6 +1201,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       ...(briefNow?.unread.length && { recordingCutsUnread: briefNow.unread }),
       ...(metCut.length && { metCut: metCut.slice(0, 20), metCutNext: MET_CUT_NEXT }),
       ...(metRecordingCut.length && { metRecordingCut: metRecordingCut.slice(0, 20), metRecordingCutNext: MET_RECORDING_CUT_NEXT }),
+      // Named once ahead of the list, as timeline_framing does: among a hundred framings, the few with text under a cover were read past.
+      ...(framedNow?.covered.length && { hiddenUnderCover: framedNow.covered.slice(0, 20) }),
       ...(framedNow?.framed.length && { framed: framedNow.framed.slice(0, 40), framedNext: FRAMING_REPORT_NEXT, ...(framedNow.unread.length && { framedTextUnread: framedNow.unread }) }),
       ...(insetNow?.content.length && { insetLook: insetNow.insets.map(i => ({ mediaId: i.mediaId, trackId: i.trackId, clips: i.clips,
         crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
@@ -3415,15 +3420,6 @@ ${OPS_DOC}`,
           return read.done ? read.spans : undefined;
         } catch { return undefined; }
       }));
-      const overlap = (a: readonly number[], b: readonly number[]) => Math.max(0, Math.min(a[2]!, b[2]!) - Math.max(a[0]!, b[0]!)) * Math.max(0, Math.min(a[3]!, b[3]!) - Math.max(a[1]!, b[1]!));
-      /** Whether a cover sits on a real part of any line of the frame's text. A sentence whose end runs under the inset counts. */
-      const onText = (frame: Box, covers: readonly Box[], spans: ReadonlyArray<{ box: readonly number[] }>) => spans.some(s => {
-        const [fl, ft, fr, fb] = frame, fw = fr - fl, fh = fb - ft;
-        const onVideo = [(s.box[0]! - fl) / fw, (s.box[1]! - ft) / fh, (s.box[2]! - fl) / fw, (s.box[3]! - ft) / fh];
-        const seen = overlap(onVideo, [0, 0, 1, 1]);
-        return seen > 0 && covers.some(c => overlap(onVideo, c) >= 0.05 * seen);
-      });
-      const cornerOf = (box: Box): Corner => `${(box[1] + box[3]) / 2 >= 0.5 ? "bottom" : "top"}-${(box[0] + box[2]) / 2 >= 0.5 ? "right" : "left"}`;
       // `clear`: the inset's own corner when no text of the frame is under it there, else the corner it is in, else
       // another with none. Moving it moves the frame that keeps `show` clear of it, so each choice is checked again
       // on the frames it makes.
@@ -3436,7 +3432,7 @@ ${OPS_DOC}`,
           const frame = plan.frames[i]!, spans = lines[i];
           if (f.inset !== "clear" || !spans || frame.notOnPicture || !frame.covers.length) return;
           const here = cornerOf(frame.covers[0]!);
-          const chosen = [...new Set([home[i] ?? here, here, ...CORNERS])].find(corner => !onText(frame.frame, frame.covers.map(c => boxInCorner(c, corner)), spans));
+          const chosen = [...new Set([home[i] ?? here, here, ...CORNERS])].find(corner => !coverOnText(frame.frame, frame.covers.map(c => boxInCorner(c, corner)), spans));
           if (!chosen) noneClear.add(i);
           else if (chosen !== here) { corners[i] = chosen; moved = true; }
         });
@@ -3450,9 +3446,9 @@ ${OPS_DOC}`,
         const spans = lines[i]?.map(s => ({ ...s, x: (s.box[0] + s.box[2]) / 2, y: (s.box[1] + s.box[3]) / 2 }));
         const shown = spans?.filter(s => inside(show, s.x, s.y));
         const heights = shown?.map(s => Math.round((s.box[3] - s.box[1]) / fh * project.settings.height)).sort((a, b) => a - b);
-        const under = spans?.filter(s => onText(f.frame, f.covers, [s]));
+        const under = spans?.filter(s => coverOnText(f.frame, f.covers, [s]));
         // The corners the covers could sit in with no line of the frame's text under them.
-        const clear = !under?.length ? undefined : CORNERS.filter(corner => !onText(f.frame, f.covers.map(c => boxInCorner(c, corner)), spans!));
+        const clear = !under?.length ? undefined : CORNERS.filter(corner => !coverOnText(f.frame, f.covers.map(c => boxInCorner(c, corner)), spans!));
         return {
           at: f.at, arrives: f.arrives, settles: f.settles, holds: f.holds, frame: percent(f.frame), zoom: Math.round(f.zoom * 100) / 100, sourcePixels: Math.round(f.sourcePixels * 100) / 100,
           ...(f.hidden >= 0.005 && { hidden: Math.round(f.hidden * 100) }),
