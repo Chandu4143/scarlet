@@ -23,6 +23,7 @@ import type { MediaEvidence } from "./metrics.ts";
 import { scoreMoments } from "./moments.ts";
 import { checkedPath, dataDir, readJson, REPO_ROOT } from "./paths.ts";
 import { replayParts, type PartsResult, type ReplayResult } from "./replay.ts";
+import { FAMILIES, sweepLibrary, type Family, type SweepTotals } from "./leftovers.ts";
 
 const USAGE = `Usage:
   tsx evals/src/ledger.ts check [--id a,b] [--record] [--label text]   run every free check (no model tokens)
@@ -30,7 +31,9 @@ const USAGE = `Usage:
   tsx evals/src/ledger.ts board [--last 10]                            the scoreboard, oldest first
 
 --ledger dialogue|picture picks the ledger (default dialogue).
-check exits 1 when an entry marked fixed fails or can't be checked. --record appends the run to the scoreboard.`;
+check exits 1 when an entry marked fixed fails or can't be checked. --record appends the run to the scoreboard.
+On the dialogue ledger, check also sweeps the editor's library (leftovers.ts) and prints each kind of mistake his
+edits play now, per 10 minutes, beside the last recorded run and each entry's count from when it was reported.`;
 
 /** The ledgers there are: mistakes in a dialogue cut, and in what the video shows. */
 export const LEDGERS = ["dialogue", "picture"] as const;
@@ -85,7 +88,23 @@ export interface Entry {
   check: Check;
   /** What the check can't show, or anything the next thread must know before trusting its verdict. */
   note?: string;
+  /**
+   * The kind of mistake this spot is one of, and how often his edits played it when it was reported (leftovers.ts),
+   * so a fix is judged on the class and not only on the spot. `family: "none"` says why no sweep counts it.
+   */
+  class?: EntryClass;
 }
+
+export type EntryClass =
+  | { family: Family; before: { count: number; perTenMin: number; at: string } }
+  | { family: "none"; noSweep: string };
+
+/**
+ * Dialogue entries reported from this day on name their class (evals/DIALOGUE.md step 2). Before it, fixes were checked
+ * on the one spot reported: restarts left in were reported fourteen times, fixed fourteen ways, and 9 of 10 passes
+ * still kept 7 to 30 listed repeats each, unseen (2026-11-20).
+ */
+export const CLASS_REQUIRED_FROM = "2026-11-21";
 
 export interface LedgerFile { schema: 1; entries: Entry[] }
 
@@ -105,6 +124,8 @@ export interface BoardRow {
   label?: string;
   results: Record<string, { verdict: Verdict; detail: string }>;
   passes: Record<string, PassTotals>;
+  /** The kinds of mistake his edits played when this run was recorded (dialogue ledger, a machine with his library). */
+  classes?: SweepTotals;
 }
 
 /** A vitest run with a test name filter whose output shows no test passed, only skipped. */
@@ -130,8 +151,20 @@ export function loadLedger(path = ledgerPath()): LedgerFile {
     if (ids.has(e.id)) throw new Error(`Two entries are named ${e.id}.`);
     ids.add(e.id);
     if (e.check.kind === "replay" && (!e.check.case || !e.check.expect?.length)) throw new Error(`Entry ${e.id}: a replay check needs a case and what to expect.`);
+    const problem = classProblem(e);
+    if (problem) throw new Error(`Entry ${e.id}: ${problem} See evals/DIALOGUE.md step 2.`);
   }
   return file;
+}
+
+/** What a dialogue entry's class is missing, if anything. */
+export function classProblem(e: Entry, ledger: LedgerName = ledgerName): string | undefined {
+  const c = e.class;
+  if (!c) return ledger === "dialogue" && e.reported >= CLASS_REQUIRED_FROM
+    ? `name the kind of mistake it is with \`class\` (one of ${Object.keys(FAMILIES).join(", ")}, or "none" with why no sweep counts it), and its count in his edits now (tsx evals/src/leftovers.ts).` : undefined;
+  if (c.family === "none") return c.noSweep?.trim() ? undefined : `a class of "none" says why no sweep counts it (noSweep).`;
+  if (!(c.family in FAMILIES)) return `class ${c.family} is not a family leftovers.ts counts: ${Object.keys(FAMILIES).join(", ")}, or "none".`;
+  return c.before && Number.isFinite(c.before.perTenMin) && c.before.at ? undefined : `class ${c.family} needs its count when reported (before: count, perTenMin, at).`;
 }
 
 export function loadBoard(path = boardPath()): BoardRow[] {
@@ -297,6 +330,26 @@ export function againstBase(entries: readonly Entry[], results: readonly EntryRe
   return lines;
 }
 
+/** Each kind of mistake his edits play now, beside the last recorded run, and each entry's class beside its report. */
+export function classLines(entries: readonly Entry[], now: SweepTotals, base: BoardRow | undefined): string[] {
+  const then = base?.classes ?? [...loadBoardSafe()].reverse().find(r => r.classes)?.classes;
+  const lines = [`Kinds of mistake his edits play now: ${now.edits} edits, ${now.minutes} min (flags per 10 min, each one to listen to)${then ? `, against ${then.edits} edits then` : ""}:`];
+  for (const f of Object.keys(FAMILIES) as Family[]) {
+    const n = now.families[f], was = then?.families[f];
+    lines.push(`- ${f}: ${n.perTenMin.toFixed(1)}${was ? ` (was ${was.perTenMin.toFixed(1)})` : ""}, ${n.count} in all`);
+  }
+  for (const e of entries) {
+    const c = e.class;
+    if (!c || c.family === "none") continue;
+    lines.push(`- ${e.id} (${c.family}): ${c.before.perTenMin.toFixed(1)} when reported ${c.before.at}, ${now.families[c.family].perTenMin.toFixed(1)} now`);
+  }
+  const unswept = entries.filter(e => e.class?.family === "none" && e.status === "open").length;
+  if (unswept) lines.push(`- ${unswept} open entries are of a kind no sweep counts yet: see their class.noSweep.`);
+  return lines;
+}
+
+function loadBoardSafe(): BoardRow[] { try { return loadBoard(); } catch { return []; } }
+
 function table(entries: readonly Entry[], results: readonly EntryResult[]): string {
   const rows = results.map(r => {
     const e = entries.find(x => x.id === r.id)!;
@@ -319,6 +372,7 @@ async function ledgerCli(argv = process.argv.slice(2)) {
       const passes = Object.entries(r.passes).map(([id, t]) => `${id} ${t.applied}/${t.removals} applied, ${t.appliedOnSpeech} on speech`).join("; ");
       console.log(`${r.at.slice(0, 16)} ${r.commit?.slice(0, 8) ?? "?"} ${r.branch ?? ""}${r.dirty.length ? " +dirty" : ""}${r.label ? ` (${r.label})` : ""}: ` +
         `${n("pass")} pass, ${n("fail")} fail, ${n("error")} error · ${passes}`);
+      if (r.classes) console.log(`    his edits per 10 min: ${Object.entries(r.classes.families).map(([f, v]) => `${f} ${v.perTenMin.toFixed(1)}`).join(", ")}`);
     }
     if (!rows.length) console.log("No recorded runs yet.");
     return;
@@ -338,11 +392,14 @@ async function ledgerCli(argv = process.argv.slice(2)) {
   const { results, passes } = await runChecks(entries, line => console.error(line));
   console.log(table(entries, results));
   const git = gitState();
-  console.log("\n" + againstBase(entries, results, passes, baseRow(loadBoard())).join("\n"));
+  const base = baseRow(loadBoard());
+  console.log("\n" + againstBase(entries, results, passes, base).join("\n"));
+  const classes = ledgerName === "dialogue" ? sweepLibrary() : undefined;
+  if (classes) console.log("\n" + classLines(entries, classes, base).join("\n"));
   if (values.record) {
     if (only.length) throw new Error("Record a run of every entry, not a selection.");
     const row: BoardRow = { schema: 1, at: new Date().toISOString(), ...git, ...(values.label && { label: values.label }),
-      results: Object.fromEntries(results.map(r => [r.id, { verdict: r.verdict, detail: r.detail }])), passes };
+      results: Object.fromEntries(results.map(r => [r.id, { verdict: r.verdict, detail: r.detail }])), passes, ...(classes && { classes }) };
     appendFileSync(boardPath(), JSON.stringify(row) + "\n");
     console.log(`\nRecorded in ${boardPath()}${git.dirty.length ? " (with uncommitted changes: never a base for later runs)" : ""}.`);
   }
