@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 20, 2026
 
+- Your camera inset leaves clear room above your head, even when you sit up.
 - A cut waiting for your approval no longer draws a dotted line across the whole timeline: it shows as its dot, like any cut, and once opened its red band has a dashed edge until you approve it.
 - When Scarlet reworks the whole video in one go, every cut it made is listed, so you can open, revise or undo each one.
 - The cuts waiting for you now say what each one changes, such as “Cut the repeated start before ‘just explain’”, instead of what Scarlet did to check it.
