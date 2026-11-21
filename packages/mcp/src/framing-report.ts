@@ -68,6 +68,10 @@ export interface ShownBeside {
   said?: string;
   /** Passages of the recording's text read aloud over it, word for word, while it is off picture. */
   reads?: Array<{ from: number; to: number; said: string }>;
+  /** How far the speaker's eyes look down over it, in the picture of the recording whose sound plays there: 0 level or up, 1 fully down. */
+  eyesDown?: number;
+  /** Where to see the speaker's face midway through it: that recording, its source second and the area round the face, in percent of its picture. */
+  look?: { mediaId: string; at: number; area: number[] };
 }
 
 /** What recordings show while off picture, and what is said, for the time beside each stretch. */
@@ -82,6 +86,8 @@ export interface BesideEvidence {
   cuts?: ReadonlyMap<string, readonly RecordingCut[]>;
   /** The words heard on the timeline. */
   words: ReadonlyArray<{ text: string; start: number; end: number }>;
+  /** Where the speaker's eyes look in each recording whose sound plays beside a stretch, in source seconds (`faces`' spans of its main face). */
+  eyes?: ReadonlyMap<string, ReadonlyArray<{ start: number; end: number; eyesDown?: number; box?: readonly number[] }>>;
 }
 
 /** Frames are compared this often along a stretch. */
@@ -358,8 +364,27 @@ export function framingReport(before: Timeline | null, after: Timeline, media: r
       const near = steps.find(s => Math.abs(s.t - t) <= BESIDE_STEP / 2 + 1e-6);
       return near ? [{ mediaId, source: (x: number) => near.source + (x - near.t), end: b }] : [];
     }).map(r => ({ from: r2(r.from), to: r2(r.to), said: r.said.length > 120 ? `${r.said.slice(0, 117)}…` : r.said }));
+    // Where the speaker looks meanwhile: eyes dropped to a laptop below the camera are on the screen the video doesn't
+    // show (2026-11-21: the presenter's lids fell while he read the hidden screen, and he spoke to the lens otherwise).
+    const eyes = evidence.eyes?.get(walk.clock.mediaId) ?? [];
+    const downs = steps.filter(s => s.t >= a && s.t <= b).flatMap(s => {
+      const found = eyes.find(e => e.start <= s.clockSource && s.clockSource < e.end)?.eyesDown;
+      return found === undefined ? [] : [found];
+    });
+    const looked = steps.filter(s => s.t >= a && s.t <= b).length;
+    const eyesDown = looked && downs.length >= looked / 2 ? r2(downs.reduce((n, d) => n + d, 0) / downs.length) : undefined;
+    // The face midway through, to look at: the area round it, as wide as two and a half faces, in the picture's shape.
+    const middle = steps.filter(s => s.t >= a && s.t <= b)[Math.floor(looked / 2)];
+    const face = middle && eyes.find(e => e.start <= middle.clockSource && middle.clockSource < e.end)?.box;
+    let look: ShownBeside["look"];
+    if (middle && face) {
+      const width = Math.min(1, (face[2]! - face[0]!) * 2.5), height = Math.min(1, width);
+      const left = Math.min(1 - width, Math.max(0, (face[0]! + face[2]!) / 2 - width / 2)), top = Math.min(1 - height, Math.max(0, (face[1]! + face[3]!) / 2 - height / 2));
+      look = { mediaId: walk.clock.mediaId, at: r2(middle.clockSource), area: pct([left, top, left + width, top + height]) };
+    }
     return { from: r2(a), to: r2(b), ...(showing.length && { showing }), ...(last.unchanged && { unchanged: true as const }),
-      ...(said && { said: said.length > 200 ? `${said.slice(0, 197)}…` : said }), ...(reads.length && { reads: reads.slice(0, 5) }) };
+      ...(said && { said: said.length > 200 ? `${said.slice(0, 197)}…` : said }), ...(reads.length && { reads: reads.slice(0, 5) }),
+      ...(eyesDown !== undefined && { eyesDown }), ...(look && { look }) };
   }
 
   return out.sort((a, b) => a.from - b.from);
@@ -393,14 +418,37 @@ export function besideWalk(tl: Timeline, run: readonly MediaClip[], side: "after
   const offset = edge - sourceAt(clock.clip, inside);
   const own = (pictures ?? tl.tracks.filter(t => t.kind === "video" && !t.hidden).flatMap(t => t.clips.filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false)))
     .filter(c => c.mediaId === mediaId);
-  const steps: Array<{ t: number; source: number }> = [];
+  // Each step's source second of the recording, and of the clock.
+  const steps: Array<{ t: number; source: number; clockSource: number }> = [];
   for (let t = at + step / 2; Math.abs(t - at) < BESIDE_MAX && t >= 0; t += step) {
     if (own.some(c => c.timelineIn <= t && t < clipEnd(c))) break;
     const c = playing(clock.clip.mediaId, clock.trackId, t);
     if (!c) break;
-    steps.push({ t, source: sourceAt(c, t) + offset });
+    steps.push({ t, source: sourceAt(c, t) + offset, clockSource: sourceAt(c, t) });
   }
-  return { at, edge, steps };
+  return { at, edge, steps, clock: { mediaId: clock.clip.mediaId } };
+}
+
+/**
+ * The source seconds of each recording that the framed stretches and the video beside them reach, to read what it shows
+ * there, and of each recording whose sound plays beside them, to read where the speaker looks (`clocks`).
+ */
+export function besideReach(tl: Timeline, framed: readonly FramedStretch[]) {
+  const clocks = new Map<string, { from: number; to: number }>();
+  for (const f of framed) {
+    const run = (tl.tracks.find(t => t.id === f.trackId)?.clips ?? [])
+      .filter((c): c is MediaClip => c.kind === "media" && c.mediaId === f.mediaId && c.enabled !== false && c.timelineIn >= f.from - 0.01 && clipEnd(c) <= f.to + 0.01)
+      .sort((a, b) => a.timelineIn - b.timelineIn);
+    if (!run.length) continue;
+    for (const side of ["after", "before"] as const) {
+      const walk = besideWalk(tl, run, side);
+      if (!walk?.steps.length) continue;
+      const seconds = walk.steps.map(s => s.clockSource), was = clocks.get(walk.clock.mediaId);
+      clocks.set(walk.clock.mediaId, { from: Math.min(was?.from ?? Infinity, ...seconds), to: Math.max(was?.to ?? -Infinity, ...seconds) });
+    }
+  }
+  return { sources: besideSources(tl, framed),
+    clocks: [...clocks].map(([id, r]) => ({ id, from: Math.max(0, Math.floor(r.from) - 1), to: Math.ceil(r.to) + 1 })) };
 }
 
 /** The source seconds of each recording that the framed stretches and the video beside them reach, to read what it shows there. */
@@ -425,4 +473,4 @@ export function besideSources(tl: Timeline, framed: readonly FramedStretch[]): A
   return [...reach].map(([id, r]) => ({ id, from: Math.max(0, Math.floor(r.from) - 1), to: Math.ceil(r.to) + 1 }));
 }
 
-export const FRAMING_REPORT_NEXT = "hiddenUnderCover names the holds, in timeline seconds, where a picture over the recording hides something on it, and readOffPicture the passages, in timeline seconds, where the speaker reads aloud text the recording shows while it is off picture (each stretch's shownAfter and shownBefore reads). framed lists each stretch this edit framed, put on picture over another, moved the edges of or moved a picture over (a camera inset): where the frame holds and where it moves, as the area of the source picture that fills the video ([left, top, right, bottom] in percent, empty where the picture doesn't fill it), with each hold's underCover, the lines of the recording's text (screen_text) in the frame that a picture over it sits on, and cornersClearOfText, the corners where that picture would sit on none, coverHides, the things in the recording the frame shows (text, lines, pictures: anything that isn't flat background) that the picture over it hides, with each one's box and the percent of it hidden, and detailInCorners, how much of that picture would sit on such things in each corner, in percent (timeline_framing places a frame clear of it, or moves it); readsHidden, the passages the speaker reads aloud there (screen_reading) whose lines the frame leaves out (outsideFrame) or a picture over it covers (underCover), in percent of those lines; actionHidden, the areas where the picture keeps changing (screen_motion) that it leaves out or covers, in percent of each area; and shownAfter and shownBefore, the video just after the stretch ends or just before it starts, with the recording off picture, while the recording still shows what the frame showed at that edge, up to a cut in the recording: lines of its text still there (showing, longest first), or nothing in the frame changed (unchanged), with the words heard over it (said) and the passages of its text read aloud word for word (reads). A move marked onCut starts on a cut in the picture. frame_contact_sheet on the new version shows any of it as it plays.";
+export const FRAMING_REPORT_NEXT = "hiddenUnderCover names the holds, in timeline seconds, where a picture over the recording hides something on it, and readOffPicture the passages, in timeline seconds, where the speaker reads aloud text the recording shows while it is off picture (each stretch's shownAfter and shownBefore reads). framed lists each stretch this edit framed, put on picture over another, moved the edges of or moved a picture over (a camera inset): where the frame holds and where it moves, as the area of the source picture that fills the video ([left, top, right, bottom] in percent, empty where the picture doesn't fill it), with each hold's underCover, the lines of the recording's text (screen_text) in the frame that a picture over it sits on, and cornersClearOfText, the corners where that picture would sit on none, coverHides, the things in the recording the frame shows (text, lines, pictures: anything that isn't flat background) that the picture over it hides, with each one's box and the percent of it hidden, and detailInCorners, how much of that picture would sit on such things in each corner, in percent (timeline_framing places a frame clear of it, or moves it); readsHidden, the passages the speaker reads aloud there (screen_reading) whose lines the frame leaves out (outsideFrame) or a picture over it covers (underCover), in percent of those lines; actionHidden, the areas where the picture keeps changing (screen_motion) that it leaves out or covers, in percent of each area; and shownAfter and shownBefore, the video just after the stretch ends or just before it starts, with the recording off picture, while the recording still shows what the frame showed at that edge, up to a cut in the recording: lines of its text still there (showing, longest first), or nothing in the frame changed (unchanged), with the words heard over it (said), the passages of its text read aloud word for word (reads) and how far the speaker's eyes look down meanwhile (eyesDown: 0 level or up, 1 fully down; at a laptop below the camera they read about 0.5 or more, at the lens about 0.1), with where to see their face midway (look: the recording, its source second and the area in percent, for media_frame). A move marked onCut starts on a cut in the picture. frame_contact_sheet on the new version shows any of it as it plays.";

@@ -121,6 +121,29 @@ describe("framingReport", () => {
     expect(report([{ ...note, start: 40 }]).shownAfter?.reads).toBeUndefined();
   });
 
+  it("says how far the speaker's eyes look down beside a stretch, in the picture of the recording heard there", () => {
+    const before = applyOps(emptyTimeline("p"), [
+      { op: "addTrack", track: { id: "cam", kind: "video", name: "Camera", clips: [] } },
+      { op: "addTrack", track: { id: "scr", kind: "video", name: "Screen", clips: [] } },
+      { op: "addClip", trackId: "cam", clip: { id: "c1", kind: "media", mediaId: "camera", sourceIn: 100, sourceOut: 130, timelineIn: 0 } },
+      { op: "addClip", trackId: "scr", clip: { id: "s1", kind: "media", mediaId: "screen", sourceIn: 15, sourceOut: 25, timelineIn: 5 } },
+    ]);
+    const after = applyOps(before, [{ op: "updateClip", clipId: "s1", patch: { transform: { scale: 2, x: 0.5, y: 0.5 } } }]);
+    const page: ScreenLine = { start: 0, end: 60, text: "Noted, I'll include a live mock for UI changes going forward.", box: [0.1, 0.1, 0.4, 0.15] };
+    const report = (eyes?: Array<{ start: number; end: number; eyesDown?: number }>) => framingReport(before, after, media, canvas, [], [],
+      { lines: new Map([["screen", [page]]]), seconds: new Map([["screen", []]]), words: [], ...(eyes && { eyes: new Map([["camera", eyes]]) }) })[0]!;
+    // After the screen, 15-30 s of the video plays the camera's 115-130 s: down at the laptop from 120 s, at the lens before.
+    expect(report([{ start: 100, end: 120, eyesDown: 0.1 }, { start: 120, end: 130, eyesDown: 0.7 }]).shownAfter).toMatchObject({ from: 15, to: 30, eyesDown: 0.5 });
+    // Before it, 0-5 s plays 100-105 s.
+    expect(report([{ start: 100, end: 120, eyesDown: 0.1 }, { start: 120, end: 130, eyesDown: 0.7 }]).shownBefore).toMatchObject({ from: 0, to: 5, eyesDown: 0.1 });
+    // Where to see the face midway, 22.75 s of the video at the camera's 122.75 s: two and a half faces wide round it.
+    const face = [0.4, 0.2, 0.5, 0.4];
+    expect(report([{ start: 100, end: 130, eyesDown: 0.7, box: face }]).shownAfter?.look).toEqual({ mediaId: "camera", at: 122.75, area: [32.5, 17.5, 57.5, 42.5] });
+    // No eyes read, or read over less than half of it: nothing said.
+    expect(report().shownAfter?.eyesDown).toBeUndefined();
+    expect(report([{ start: 125, end: 130, eyesDown: 0.7 }]).shownAfter?.eyesDown).toBeUndefined();
+  });
+
   // A camera heard on its own sound track, its picture beneath a silent screen recording 10 s ahead of it, laid in two
   // clips that are off picture until an edit turns them on.
   function cameraAndScreen(screen: { s1?: boolean; s2?: boolean } = {}) {

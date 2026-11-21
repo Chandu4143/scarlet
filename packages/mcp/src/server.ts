@@ -3,7 +3,7 @@ import { PictureBatches, type PictureRequest, type PreparedPictures } from "./pi
 import { BRIEF_PICTURE_SECONDS, BRIEF_PICTURES_NEXT, briefPictures, edgesOntoRecordingCuts, flashesOntoCuts, MET_CUT_NEXT, MET_RECORDING_CUT_NEXT, newBriefPictures, type MetCut, type MetRecordingCut } from "./brief-pictures.js";
 import { pictureFindings } from "./picture-check.js";
 import { BACKGROUND_NEXT, INSET_LOOK_NEXT, INSET_LOOK_WIDTH, UNFRAMED_NEXT, backgroundShows, insetsToLook, unframedBeside, type InsetToLook } from "./clip-framing.js";
-import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideSources, framingReport } from "./framing-report.js";
+import { BESIDE_MAX, FRAMING_REPORT_NEXT, besideReach as besideReachOf, framingReport, type FramedStretch } from "./framing-report.js";
 import { CORNERS, MOVE_EASES, boxInCorner, cornerOf, coverOnText, framingOps, type Box, type Corner } from "./framing.js";
 import { showAreaFindings, showAreaRefusal, type RecordingAreas } from "./show-area.js";
 import { fitSync, matchAudio, syncPoints, syncRate } from "./audio-sync.js";
@@ -104,6 +104,9 @@ import { PAUSE_FLOOR_SECONDS, partLeftovers } from "./dialogue-leftovers.js";
 import { GAP_SECONDS, QUIET_PHRASE_CONTEXT, describeGapSound, gapSound, quietPhrases, speakingLevel, type GapLevels, type GapSound, type QuietPhrase } from "./gap-sound.js";
 import { keptSilences, pictureReading, pictureWindows, silences, type Silence } from "./silences.js";
 import { levelProfile } from "./media-profile.js";
+
+/** Pictures of the speaker beside framed stretches a save shows at most, and how wide: a face to read the eyes of, about 100 tokens each. */
+const EYE_LOOKS = 12, EYE_LOOK_WIDTH = 320;
 
 const SKILL_FROM_CHANGE_TOOLS: ReadonlySet<string> = new Set(["task_log", "task_question", "change_get", "timeline_get", "skill_save_from_change"]);
 /** Cuts dialogue_review_inspect returns in one result: each brings its words, levels and pictures. */
@@ -1107,11 +1110,11 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const framed = framingReport(before, made, project.media, project.settings);
     if (!framed.length) return { framed, covered: [], readOff: [] as Array<readonly [number, number]>, unread: [] as string[], words: [] };
     const range = { start: Math.min(...framed.map(f => f.from)), end: Math.max(...framed.map(f => f.to)) };
-    const besideReach = besideSources(made, framed);
+    const besideReach = besideReachOf(made, framed);
     const [found, moving, beside] = await Promise.all([
       perception.readingsOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("the passages read aloud from the screen", error); return undefined; }),
       perception.motionOn(made, project, range, { wait: 0 }).catch(error => { noteUnmeasured("where the picture changes", error); return undefined; }),
-      besideReach.length ? perception.besideOn(made, project, besideReach, { start: range.start - BESIDE_MAX, end: range.end + BESIDE_MAX }, 0)
+      besideReach.sources.length ? perception.besideOn(made, project, besideReach.sources, { start: range.start - BESIDE_MAX, end: range.end + BESIDE_MAX }, 0, besideReach.clocks)
         .catch(error => { noteUnmeasured("what the screen shows beside the framed stretches", error); return undefined; }) : undefined,
     ]);
     const evidence = !!found?.readings.length || !!moving?.spans.length || !!beside;
@@ -1161,6 +1164,24 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
       return response;
     });
     return { data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: res.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
+  }
+  /**
+   * The speaker's face midway through the video beside each framed stretch while its recording is off picture, labelled:
+   * where they look says whether they are on the screen the video doesn't show (2026-11-21). Small, and EYE_LOOKS at most.
+   */
+  async function eyeLooks(framed: readonly FramedStretch[]): Promise<ToolResult["content"]> {
+    const seen = new Set<string>();
+    const wanted = framed.flatMap(f => (["shownBefore", "shownAfter"] as const).flatMap(side => {
+      const beside = f[side];
+      if (!beside?.look || seen.has(`${beside.from}-${beside.to}`)) return [];
+      seen.add(`${beside.from}-${beside.to}`);
+      return [{ beside, look: beside.look }];
+    })).sort((a, b) => a.beside.from - b.beside.from).slice(0, EYE_LOOKS);
+    const looks = await Promise.all(wanted.map(w => sourceFrame(w.look.mediaId, w.look.at, EYE_LOOK_WIDTH, w.look.area)
+      .catch(error => { noteUnmeasured("pictures of the speaker beside the framed stretches", error); return undefined; })));
+    return wanted.flatMap((w, i) => looks[i] ? [
+      { type: "text" as const, text: `The speaker at ${w.beside.from.toFixed(2)}-${w.beside.to.toFixed(2)} s of the video, its screen off picture${w.beside.eyesDown !== undefined ? ` (eyesDown ${w.beside.eyesDown})` : ""}: ${w.look.mediaId} at ${w.look.at} s.` },
+      { type: "image" as const, data: looks[i]!.data, mimeType: looks[i]!.mimeType }] : []);
   }
   /** Close pictures of what each inset an edit set shows of its recording, labelled. */
   async function insetLooks(before: Timeline | null, made: Timeline): Promise<{ insets: InsetToLook[]; content: ToolResult["content"] }> {
@@ -1237,6 +1258,7 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
     const brief = briefNow?.brief ?? [];
     const framedNow = made && !notApplied ? await framedOn(before, made).catch(error => { noteUnmeasured("the framing this edit made", error); return undefined; }) : undefined;
     const insetNow = caps.images && made && !notApplied ? await insetLooks(before, made).catch(error => { noteUnmeasured("pictures of the inset", error); return undefined; }) : undefined;
+    const eyesNow = caps.images && framedNow ? await eyeLooks(framedNow.framed) : [];
     await postEvent({
       type: "change",
       text: `${action} change ${change.id}: ${change.description}`,
@@ -1268,7 +1290,8 @@ export function createScarletMcpServer(workspace: ScarletClient, ctx: ScarletMcp
         crop: i.crop.map(n => Math.round(n * 1000) / 10), at: i.at })), insetLookNext: INSET_LOOK_NEXT }),
     };
     const saved = json(result);
-    return insetNow?.content.length ? { ...saved, content: [...saved.content, ...insetNow.content] } : saved;
+    const pictures = [...insetNow?.content ?? [], ...eyesNow];
+    return pictures.length ? { ...saved, content: [...saved.content, ...pictures] } : saved;
   }
 
   // The editor's Keeps of edits this request flagged, which the run hears of on its next tool call, a few seconds apart at most.
