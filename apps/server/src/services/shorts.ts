@@ -175,6 +175,13 @@ export async function makeShorts(ctx: Ctx, user: User, sourceId: string, req: Ma
         parent: null, author: { type: "scarlet", name: "Scarlet" }, description: `Made from ${quote(source.name)}`,
       });
       ctx.repos.projects.update(project.id, { head: first.version });
+      logActivity(ctx, {
+        projectId: project.id,
+        actor: { type: "scarlet", name: "Scarlet" },
+        type: "version.created",
+        summary: `Made from ${quote(source.name)}`,
+        data: { version: first.version, duration: timelineDuration(first), sourceProjectId: source.id, sourceVersion: source.head },
+      });
     }
   } catch (error) {
     // The editor never saw these projects: they go with their copied footage, not to the Trash.

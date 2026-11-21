@@ -12,7 +12,7 @@
 .simple-header { position: relative; display: flex; align-items: center; gap: 8px; min-height: 54px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--color-line); }
 .simple-header h1 { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .simple-tools { display: flex; align-self: stretch; align-items: center; gap: 2px; }
-.simple-tools .btn-quiet { font-size: 12px; }
+.simple-tools .btn-quiet { font-size: 12px; padding-inline: 8px; }
 
 .simple-thread { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; container-type: inline-size; }
 .simple-chat { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 12px; display: flex; flex-direction: column; gap: 16px; }
@@ -246,8 +246,8 @@
 @keyframes timeline-land-ring { from { transform: scale(1); opacity: .8; } to { transform: scale(2.4); opacity: 0; } }
 @keyframes timeline-close { from { transform: scaleX(1); opacity: 1; } to { transform: scaleX(0); opacity: .5; } }
 
-/* The simple view's menu holds everything that isn't the edit: learnings, media, history, the model. Its button is
-   marked when something inside needs the editor, and the row that does carries the same mark. */
+/* The simple view's menu holds learnings, transcript, make shorts and settings. Its button is marked when
+   something inside needs the editor, and the row that does carries the same mark. */
 .simple-more { position: relative; }
 .simple-more.needs-you { color: var(--color-fg); }
 .simple-more.needs-you::after { content: ""; position: absolute; top: 4px; right: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--color-warn);
@@ -263,7 +263,7 @@
 .media-hover-card .simple-link { align-self: flex-start; }
 .media-hover-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; }
 .media-hover-row progress { grid-column: 1 / -1; width: 100%; }
-.progress-line { position: absolute; left: 12px; right: 12px; bottom: 1px; height: 2px; border-radius: 1px; overflow: hidden;
+.progress-line { position: absolute; left: 8px; right: 8px; bottom: 1px; height: 2px; border-radius: 1px; overflow: hidden;
   background: var(--color-line); pointer-events: none; }
 .progress-line > span { display: block; height: 100%; border-radius: 1px; background: var(--color-muted); transition: width 1s linear; }
 .progress-line.is-unknown > span { width: 35%; }
@@ -400,14 +400,25 @@
 .edit-card-unchecked { color: var(--color-muted); }
 .edit-card-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--color-dim); }
 .edit-card-side { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; color: var(--color-muted); }
-/* Revise is plain text beside the decision, on a card and on a suggestion's strip. */
-.edit-card .review-actions .btn-ghost[data-key="R"] { border-color: transparent; background: none; color: var(--color-muted); }
-.edit-card .review-actions .btn-ghost[data-key="R"]:enabled:hover { color: var(--color-fg); }
+/* The card's controls are a row of their own under the note: Before/After and the transcript at the left, the
+   decisions at the right. */
+.edit-card-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-top: 8px; border-top: 1px solid #2e2c29;
+  font-size: 12px; color: var(--color-dim); }
+.edit-card-controls > .review-actions, .edit-card-controls > .edit-card-status { margin-left: auto; }
+/* The decisions are soft grey pills, as Before/After is, Keep (or Done, or Apply) a shade lighter. Each shows its key. */
+.edit-card .review-actions button[data-key] { min-height: 0; gap: 6px; padding: 4px 6px 4px 10px; border: 0; border-radius: 999px; background: #2a2826;
+  box-shadow: none; color: var(--color-muted); font-size: 12px; font-weight: 500; }
+.edit-card .review-actions button[data-key]:enabled:hover { background: #34322f; color: var(--color-fg); }
+.edit-card .review-actions .btn-primary[data-key] { background: #3a3835; color: var(--color-fg); }
+.edit-card .review-actions .btn-primary[data-key]:enabled:hover { background: #45423e; }
+.edit-card .review-actions button[data-key]:disabled { opacity: .45; }
+.edit-card .review-actions button[data-key]::after { content: attr(data-key); content: attr(data-key) / ""; opacity: 1;
+  font: 600 10px/1 var(--font-mono, ui-monospace, monospace); padding: 2px 4px; border: 1px solid #55524c; border-radius: 4px; color: var(--color-dim); }
 .edit-card-bar .review-actions { margin-left: auto; }
 /* An applied edit's decisions are at the row's end, after any small icon. */
 .edit-card-acts { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
 .edit-card-acts .review-actions { margin-left: 0; }
-/* Reject edit sits after Keep as Skip sits after a call's Approve, the same 6px apart. */
+/* Reject edit sits after Keep, on an applied edit's card as on a call's, the same 6px apart. */
 .edit-card-acts > .edit-card-reject { margin-left: 2px; }
 /* The cut's words open under the card's row and scroll inside it, so a long passage never pushes the timeline away. */
 .edit-card > .thread-passage { max-height: 30vh; overflow-y: auto; }
@@ -420,6 +431,15 @@
 .edit-card-switched-side { padding: 0 7px; border-radius: 999px; background: var(--color-hi); color: var(--color-bg); font-size: 11px; font-weight: 600; line-height: 18px; }
 .edit-card-switched-text { flex: 1 1 14rem; min-width: 0; }
 .edit-card-side:has(> .edit-card-icon) { gap: 4px; }
+.edit-card-controls .edit-card-side { gap: 8px; }
+/* Before/After is one soft pill: the side playing is lit, and its key closes it. */
+.edit-card-before { display: inline-flex; align-items: center; flex: none; padding: 2px; border: 0; border-radius: 999px; background: #2a2826; font: inherit; }
+.edit-card-before:disabled { opacity: .4; cursor: default; }
+.edit-card-side-word { padding: 3px 10px; border-radius: 999px; font-size: 11.5px; line-height: 15px; color: var(--color-dim); }
+.edit-card-side-word.is-on { background: #45423e; color: var(--color-fg); font-weight: 600; }
+.edit-card-before:enabled:hover .edit-card-side-word:not(.is-on) { color: var(--color-muted); }
+.edit-card-before kbd { margin: 0 5px 0 6px; font: 600 10px/1 var(--font-mono, ui-monospace, monospace); padding: 2px 4px; border: 1px solid #55524c;
+  border-radius: 4px; color: var(--color-dim); }
 /* The passage leads: the words as they'll play, at reading size. */
 .edit-passage .review-spoken { margin: 0; font-size: 15px; line-height: 1.6; color: var(--color-fg); overflow-wrap: anywhere; }
 .edit-passage .review-kept { color: var(--color-fg); }
@@ -453,7 +473,7 @@ button.edit-passage-cut:hover, button.edit-passage-cut[aria-expanded="true"] { b
 /* Where the decisions were, on a call that's with Scarlet. */
 .edit-card-status { margin-left: auto; padding: 0 4px; font-size: 12.5px; color: var(--color-muted); white-space: nowrap; }
 .edit-card-status.is-ask { color: var(--color-warn); }
-.edit-card .review-actions [aria-pressed="true"].btn-ghost { border-color: var(--color-fg); color: var(--color-fg); }
+.edit-card .review-actions button[data-key][aria-pressed="true"] { box-shadow: inset 0 0 0 1px var(--color-fg); color: var(--color-fg); }
 
 /* The player's clock says where the playhead is. The exact time on the timeline shows while the pointer is on it or it has focus. */
 .simple-stage .timeline-playhead-time { opacity: 0; transition: opacity .12s; }
@@ -768,9 +788,10 @@ button.queue-head:hover { color: var(--color-fg); }
 .composer-send.is-save svg { transform: none; }
 /* A pass's list sits under its line without a rule, its rows in line with the text above. */
 .req .simple-pass-list { margin: 0 -8px 4px; border-top: 0; }
-/* A file that needs the editor marks the header's Media button, as a row's mark does in the menu. */
-.simple-media.needs-you { display: inline-flex; align-items: center; gap: 6px; color: var(--color-fg); }
-.simple-media .menu-dot { margin-left: 0; }
+/* Header tools that need the editor carry the amber mark directly, as a row's mark does in the menu. */
+:is(.simple-media, .simple-export, .simple-model).needs-you { display: inline-flex; align-items: center; gap: 6px; color: var(--color-fg); }
+:is(.simple-media, .simple-export, .simple-model) .menu-dot { margin-left: 0; }
+.simple-model { max-width: 140px; min-width: 0; }
 @media (max-width: 767px) {
   .simple-transcript-rail { order: 2; width: 100%; max-height: 45%; border-left: 0; border-top: 1px solid var(--color-line); }
 }
