@@ -250,11 +250,11 @@ function namedPaths(params: unknown): string[] {
  */
 export function workspacePermission(params: unknown, roots: string[]): boolean {
   if (isScarletMcpPermission(params)) return true;
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
-  const within = roots.map(norm);
+  const norm = (p: string) => resolvePath(p).replace(/\\/g, "/").replace(/\/+$/, "");
+  const within = roots.filter((r) => r.trim()).map(norm);
   return namedPaths(params).every((path) => {
     if (path.startsWith("~")) return false;
-    const p = norm(resolvePath(path));
+    const p = norm(path);
     return within.some((root) => p === root || p.startsWith(`${root}/`));
   });
 }

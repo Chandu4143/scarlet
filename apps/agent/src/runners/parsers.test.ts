@@ -438,6 +438,14 @@ describe("gemini ACP parser", () => {
       ],
     });
   });
+
+  it("normalizes unnormalized workspace roots and ignores empty roots", () => {
+    expect(workspacePermission({ toolCall: { name: "write_file", locations: [{ path: "/w/artifacts/page.html" }] } }, ["/w/sub/.."])).toBe(true);
+    expect(workspacePermission({ toolCall: { name: "read_file", locations: [{ path: "/w/../etc/passwd" }] } }, ["/w/sub/.."])).toBe(false);
+    expect(workspacePermission({ toolCall: { name: "list_dir", rawInput: { paths: ["/w/artifacts", "/w2"] } } }, ["/w/sub/.."])).toBe(false);
+    expect(workspacePermission({ toolCall: { name: "read_file", locations: [{ path: process.cwd() }] } }, [""])).toBe(false);
+    expect(workspacePermission({ toolCall: { name: "read_file", locations: [{ path: "/etc/passwd" }] } }, ["", "   "])).toBe(false);
+  });
 });
 
 describe("helpers", () => {
