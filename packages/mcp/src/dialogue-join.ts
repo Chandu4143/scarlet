@@ -1533,11 +1533,22 @@ export function pauseCutRange(before: Word, after: Word, pageAt: (t: number) => 
   const air = splitLeave(leave, pace, voiceIn);
   const problems: string[] = [];
   const long = (q: TimeRange) => q.end - q.start >= 2 * quietMargin;
-  const between = (page: JoinPage["edges"] | undefined) => (page ? gaps(page) : []).filter(q => long(q) && q.end > before.end - keptSlack && q.start < after.start + keptSlack);
-  // A long pause can run across two scan pages. Each edge reads the page that covers it.
-  const first = besideWord(between(pageAt(Math.min(before.end + .1, (before.end + after.start) / 2))), "start");
-  const last = besideWord(between(pageAt(Math.max(after.start - .1, (before.end + after.start) / 2))), "end");
   const inside = (run: TimeRange, t: number) => Math.min(Math.max(t, run.start + quietMargin), run.end - quietMargin);
+  // The edge a run gives must fall between the two words' loudest points, as a word range's must (betweenWords): a word
+  // timed a little late let the quiet after it pass for the pause before it, and the trim took the whole word out.
+  const loudest = (page: NonNullable<JoinPage["edges"]>, word: Word, fallback: number) => {
+    const peak = extremeLevel(page, word.start, word.end, "highest");
+    return peak && peak.db > dbfs(QUIET_RMS) ? peak.at : fallback;
+  };
+  const between = (page: JoinPage["edges"] | undefined, side: "start" | "end") => (page ? gaps(page) : []).filter(q => {
+    if (!long(q) || q.end <= before.end - keptSlack || q.start >= after.start + keptSlack) return false;
+    const at = side === "start" ? inside(q, before.end + air.after)
+      : air.before < quietMargin ? Math.max(q.start + quietMargin, q.end - air.before) : inside(q, after.start - air.before);
+    return loudest(page!, before, before.start) < at && at < loudest(page!, after, after.end);
+  });
+  // A long pause can run across two scan pages. Each edge reads the page that covers it.
+  const first = besideWord(between(pageAt(Math.min(before.end + .1, (before.end + after.start) / 2)), "start"), "start");
+  const last = besideWord(between(pageAt(Math.max(after.start - .1, (before.end + after.start) / 2)), "end"), "end");
   let start = before.end + air.after, end = after.start - air.before;
   // Asked to play its whole length or more, the pause has nothing to trim. With a breath or a click in the middle the
   // quiet runs either side would each pull an edge in, and the pause lost the sound between them.
