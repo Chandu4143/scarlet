@@ -323,6 +323,7 @@ it("finds what the start-up repairs and the export list look for without reading
     expect(queries.map(sql => (ctx.db.prepare("EXPLAIN QUERY PLAN " + sql).all() as { detail: string }[])[0]!.detail)).toEqual([
       "SEARCH changes USING INDEX changes_project_state (project_id=? AND state=?)",
       "SEARCH changes USING INDEX changes_state (state=?)",
+      "SCAN changes USING INDEX changes_left_out_reread",
       "SCAN changes USING INDEX changes_left_out_unread",
       "SCAN tasks USING INDEX tasks_dialogue_unset",
       "SCAN renders USING INDEX renders_export",
