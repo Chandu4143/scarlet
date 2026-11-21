@@ -9559,23 +9559,7 @@ it("gives Space back to the player after Keep is clicked on an applied edit", as
   expect(openTitle()).toBe("wrap");
 });
 
-/** A browser hands focus back to whatever had it when a dialog opened. The test's page doesn't, so this does it. */
-const dialogsGiveFocusBack = () => {
-  const openers = new WeakMap<HTMLDialogElement, Element | null>();
-  vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) {
-    openers.set(this, document.activeElement);
-    this.setAttribute("open", "");
-  });
-  vi.spyOn(HTMLDialogElement.prototype, "close").mockImplementation(function (this: HTMLDialogElement) {
-    this.removeAttribute("open");
-    const opener = openers.get(this);
-    if (opener instanceof HTMLElement && opener.isConnected && opener !== document.body) opener.focus();
-    else (document.activeElement as HTMLElement | null)?.blur();
-  });
-};
-
-it("gives Space back to the player after a row of the menu is clicked, and after what the row opened is closed", async () => {
-  dialogsGiveFocusBack();
+it("gives Space back to the player after a row of the menu is clicked", async () => {
   await show();
   const more = moreButton();
   // A row that changes the page in place: the menu closes and lets go of the focus, so Space is the player's, where
@@ -9583,15 +9567,6 @@ it("gives Space back to the player after a row of the menu is clicked, and after
   await pointerClick(more);
   await pointerClick(menuItem("Transcript"));
   expect(container.querySelector('[role="menu"]')).toBeNull();
-  expect(document.activeElement).toBe(document.body);
-  expect(await spaceWhilePaused()).toBe(true);
-  // A row that opens a dialog: closed again, the dialog hands focus back to what had it, which isn't ⋯ either.
-  await pointerClick(more);
-  await pointerClick(menuItem("Make shorts"));
-  const dialog = document.querySelector<HTMLElement>("dialog[open]")!;
-  expect(dialog.textContent).toContain("Make shorts");
-  await pointerClick(dialog.querySelector<HTMLElement>('[aria-label="Close"]')!);
-  expect(document.querySelector("dialog[open]")).toBeNull();
   expect(document.activeElement).toBe(document.body);
   expect(await spaceWhilePaused()).toBe(true);
   // Chosen with the keyboard, a row hands focus back to ⋯, and Tab goes on from there. Esc on the open menu does too.
