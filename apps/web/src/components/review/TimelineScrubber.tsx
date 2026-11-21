@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { createStore, useStore } from "zustand";
 import { filmstripBatches, type TimeRange } from "@scarlet/timeline";
 import { api } from "../../lib/client";
@@ -296,11 +296,6 @@ export interface TimelineDot {
   need?: string;
   /** The edit or call that's open. Its marker is lit, at the start of its band while that is on the timeline. */
   current?: boolean;
-  /**
-   * A call waiting on the editor: its cut would take out the footage from `time` to here. The timeline draws that
-   * dashed, since the footage still plays until the call is approved. The open call has its own band instead.
-   */
-  end?: number;
   /** The applied edit the dot stands for ("changeId/spot"), so it isn't drawn a second time under the dot. */
   edit?: string;
   /** Opens the edit. A press on its marker does this instead of starting a scrub. */
@@ -338,8 +333,6 @@ const MARK_SNAP = 24;
 /** A pill's run reaches at most this many pixels along the track, so a dense pass reads as several runs ("1–14",
  *  "15–27") that each zoom to a stretch worth seeing, not as one pill for all of it. */
 const RUN_REACH = 104;
-/** A waiting call's tag starts this far into its dashed passage, clear of the call's dot at the passage's start. */
-const PROPOSED_TAG_INSET = 11;
 /** How long an edit's arrival plays, in ms: a cut's red closing (.26 s) and then the marker's ring (.7 s). */
 const LANDING_PLAYS = 1000;
 
@@ -683,26 +676,6 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
       }), node] : node;
     })}</>;
   }, [markLayout, hotMark, litMark]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A call still waiting on the editor shows the footage its cut would take out, dashed: it still plays. Its tag opens
-  // the call; a press anywhere else in it scrubs, as anywhere on the timeline.
-  const proposed = useMemo(() => marks?.filter(dot => dot.end !== undefined && dot.end > dot.time && dot.state === "check" && !dot.current) ?? [],
-    [marks]);
-  const proposedNodes = useMemo(() => <>{proposed.map(dot => {
-    const left = Math.max(0, percent(dot.time)), right = Math.min(100, percent(dot.end!));
-    if (right <= 0 || left >= 100) return null;
-    // The tag sits just past the call's dot, over the strip that picks markers, so a press on it reaches it.
-    const room = (right - left) * width / 100 - PROPOSED_TAG_INSET;
-    const label = dot.need && width > 0 && room > 0 ? bandLabel(dot.need, room) : "";
-    return <Fragment key={`${dot.group ?? ""}/${dot.time}/${dot.end}`}>
-      <span aria-hidden="true" className="simple-timeline-proposed" style={{ left: `${left}%`, width: `${right - left}%` }} />
-      {label && <span aria-hidden="true" className="simple-timeline-proposed-tag" style={{ left: `calc(${left}% + ${PROPOSED_TAG_INSET}px)` }}
-        onPointerDown={dot.open ? e => {
-          if (e.button !== 0 || !e.isPrimary || drag.current) return;
-          e.stopPropagation();
-          dot.open!();
-        } : undefined}>{label}</span>}
-    </Fragment>;
-  })}</>, [proposed, from, span, width]); // eslint-disable-line react-hooks/exhaustive-deps
   // Hovering a marker shows the frame and its time, as anywhere on the timeline. One holding what waits on the editor
   // says which, and the frame is that one's.
   const hotDots = hotMark === undefined ? undefined : markLayout.find(mark => mark.key === hotMark)?.dots;
@@ -906,7 +879,6 @@ function Scrubber({ duration, start = 0, playhead, waveform, activeShortcuts, su
           <span aria-hidden="true" className={`simple-timeline-cut${highlight.tone ? ` is-${highlight.tone}` : ""}${highlight.leaving ? " is-leaving" : ""}`} style={{ left: `${percent(highlight.band.start)}%` }}>
             {highlight.bandLabel && <span>{highlight.bandLabel}</span>}</span>)}
       {gapNodes}
-      {proposedNodes}
       {markLayout.length > 0 && <div aria-hidden="true" className={aimed ? "simple-timeline-hover is-aimed" : "simple-timeline-hover"}
         onPointerMove={hoverMark} onPointerLeave={() => { setHotMark(undefined); setAimed(false); }} onPointerDown={pressMark} />}
       {markNodes}
