@@ -12,7 +12,7 @@ import { flattenWords } from "@scarlet/shared";
 import { retakeGroups } from "@scarlet/mcp/media-profile";
 import type { AppEnv } from "../auth.js";
 import type { Ctx } from "../context.js";
-import { requestAttempt, requireLocalPauseTarget, requireProjectEditAttempt, requireProjectMediaAttempt } from "../services/taskAttempt.js";
+import { requestAttempt, requireLocalPauseTarget, requireProjectEditAttempt } from "../services/taskAttempt.js";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { logId, throttledLog } from "../logText.js";
 import { serveFile, serveOriginal } from "../files.js";
@@ -104,7 +104,7 @@ export function mediaRoutes(ctx: Ctx) {
   r.post("/projects/:id/media", async (c) => {
     const project = requireProjectHeader(ctx, c.req.param("id"));
     const attempt = requestAttempt(c.req.raw);
-    requireLocalPauseTarget(requireProjectMediaAttempt(ctx, attempt, project.id));
+    requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, project.id));
     const transcription = await importTranscriptionPolicy(ctx);
     ctx.paths.ensureProject(project.id);
     const signal = AbortSignal.any([ctx.projectSignal(project.id), c.req.raw.signal]);
@@ -166,7 +166,7 @@ export function mediaRoutes(ctx: Ctx) {
       if (!name || !hash) throw badRequest("missing_file", "multipart field `file` is required");
       if (capture && !source) throw badRequest("bad_capture", "A captured page comes with the address it was captured from.");
       const media = await ingestMedia(ctx, project, { type: "upload", path: staged, hash }, {
-        checkAttempt: () => requireLocalPauseTarget(requireProjectMediaAttempt(ctx, attempt, project.id)),
+        checkAttempt: () => requireLocalPauseTarget(requireProjectEditAttempt(ctx, attempt, project.id)),
         name, transcription, deferFormat: c.req.query("deferFormat") === "true",
         kind: kind ? MediaKind.parse(kind) : undefined,
         // Which run added it is the engine's to say, from the run's own attempt.

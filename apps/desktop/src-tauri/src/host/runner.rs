@@ -32,8 +32,8 @@ pub struct RunOptions {
     pub refused_tool: Option<String>,
     /// Per-task workspace. The agent may write temp files here.
     pub cwd: PathBuf,
-    /// The harness's own shell, file and web tools, beside Scarlet's, for a B-roll run. None for every other run, which
-    /// has Scarlet's tools only.
+    /// The harness's own shell, file and web tools, beside Scarlet's, for a request. None for a side check or a skill's
+    /// edit, whose runs have Scarlet's tools only.
     pub workspace: Option<super::types::Workspace>,
     pub mcp: McpSpec,
     pub on_event: EventSink,

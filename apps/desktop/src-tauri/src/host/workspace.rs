@@ -1,4 +1,4 @@
-//! The programs a B-roll run's shell is given (workspaceTools.ts in apps/agent): ffmpeg and ffprobe,
+//! The programs a request's shell is given (workspaceTools.ts in apps/agent): ffmpeg and ffprobe,
 //! as launchers in the task folder put first on its PATH.
 
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::types::Workspace;
 
-/// Where a B-roll run's shell finds its programs, in the task folder.
+/// Where a request's shell finds its programs, in the task folder.
 pub const TOOLS_DIR: &str = ".tools";
 
 fn exe(name: &str) -> String {
@@ -46,7 +46,7 @@ fn bundled_tool(resources: Option<&Path>, name: &str) -> Option<PathBuf> {
     resources.map(|r| r.join("bin").join(exe(name))).into_iter().chain(beside).find(|p| runnable(p))
 }
 
-/// The programs a B-roll run's shell is given, as launchers in the task folder: the app's own ffmpeg and ffprobe (else
+/// The programs a request's shell is given, as launchers in the task folder: the app's own ffmpeg and ffprobe (else
 /// FFMPEG_PATH and FFPROBE_PATH, else the PATH's). Pages are drawn and captured in Scarlet's own Chrome (`graphic_render`,
 /// `web_capture`): in every harness's sandbox Chrome either crashed at start or couldn't reach the web (2026-11-21).
 /// What the host lacks is left out; the shell keeps its PATH as it was.

@@ -739,7 +739,7 @@ describe("tool annotations", () => {
   // run the others in parallel without asking, so a new tool is placed here or among the reads on purpose.
   const writes = ["timeline_propose", "timeline_first_cut", "timeline_crossfade_audio", "timeline_transition", "timeline_framing", "timeline_picture_sync", "captions_generate", "dialogue_apply_cuts", "dialogue_check_repeats", "dialogue_review_save",
     "dialogue_revise_cut", "edit_flag", "note_reply", "note_resolve", "render_request", "screen_area", "task_log", "task_question", "learning_suggest", "skill_save_from_change", "skill_save_edit", "asset_add", "export_otio",
-    "graphic_render", "style_guide_save", "shorts_plan", "broll_make"];
+    "graphic_render", "style_guide_save", "shorts_plan"];
   const every = EDITING_TOOL_GROUPS.flatMap(g => [...g.tools] as string[]);
 
   it("gives every tool an input schema a harness can convert: no array that lists an item per position", async () => {
@@ -801,15 +801,13 @@ describe("tool annotations", () => {
     const check = Task.parse({ ...task, id: "check-task", kind: "learning_check", context: { checksTaskId: "asked-task" } });
     const shorts = Task.parse({ ...task, id: "shorts-task", kind: "edit", instruction: "Make up to 3 vertical shorts, each under 60 s.", context: { short: {
       index: 1, count: 3, sourceProjectId: "prj_long", sourceName: "Long", sourceVersion: "v1", aspect: "9:16", maxSeconds: 60, captions: true, projectIds: ["prj_test", "prj_b", "prj_c"] } } });
-    const broll = Task.parse({ ...task, id: "broll-task", kind: "broll_make", context: { checksTaskId: "shorts-task", broll: { at: 12, want: "The article's headline" } } });
     const sessions = [await hearing(), await connect({ agent: "codex", taskId: task.id, task }), await connect({ agent: "codex", taskId: check.id, task: check }),
-      await connect({ agent: "codex", taskId: shorts.id, task: shorts }), await connect({ agent: "claude", taskId: broll.id, task: broll })];
+      await connect({ agent: "codex", taskId: shorts.id, task: shorts })];
     try {
       const tools = (await Promise.all(sessions.map(c => c.listTools()))).flatMap(l => l.tools);
       // The hearing session lists every editing tool; the skill request adds the tool that saves its revision, the
-      // check that reads a request the one that offers a rule, the first short of Make shorts the one that saves
-      // every short's moment and, as any request's run, the one that asks for B-roll, and the B-roll run the one that
-      // captures a page.
+      // check that reads a request the one that offers a rule, and the first short of Make shorts the one that saves
+      // every short's moment and, as any request's run, the one that captures a page.
       expect([...new Set(tools.map(t => t.name))].sort()).toEqual(every.filter(name => name !== "skill_save_from_change").sort());
       for (const t of tools) expect(t.annotations, t.name).toEqual(toolAnnotations(t.name));
     } finally { await Promise.all(sessions.map(c => c.close())); }

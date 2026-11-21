@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createProject, timelineFromKeepRanges, type Change, type Project } from "@scarlet/timeline";
-import { ATTEMPT_HEADER, TASK_HEADER, type BrollRunResponse, type Task, type TaskPrompt } from "@scarlet/shared";
+import { ATTEMPT_HEADER, TASK_HEADER, type Task, type TaskPrompt } from "@scarlet/shared";
 import { createApp, type ScarletApp } from "../app.js";
 import { accessToken } from "../auth.js";
 import { createTask, followUpInstruction, MOST_CLOSING_CHECKS, queueRepeatCheck, saveTask } from "./tasks.js";
@@ -331,57 +331,21 @@ it("tells a look at a frame nothing of the video's timeline or skills, and a req
   expect(lines.filter(line => line.includes("without its diff"))).toEqual([]);
 });
 
-it("launches a request with Scarlet's tools only, and the B-roll run it asks for with its harness's own", async () => {
-  const REFUSED = "Scarlet refused {tool}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools.";
+it("launches every request with its harness's own tools, a dialogue pass included, and a side check without", async () => {
+  const OUTSIDE = "Scarlet refused {tool}: it reaches outside your task folder. Keep your files in the task folder, and read the project's footage and the video through Scarlet's tools. Carry on.";
   for (const agent of ["gemini", "claude", "codex"] as const) {
-    const asker = await request("Show the article where I mention it", agent);
-    const asked = await prompt(asker.id);
-    expect([asked.workspace, asked.refusedTool], agent).toEqual([undefined, REFUSED]);
-    expect(asked.systemPrompt).not.toContain("sandboxed");
-    // The request's run asks for a shot. Nothing waits here, so the answer says it is at work.
-    const started = (await api<BrollRunResponse>("POST", `/projects/${project.id}/broll-runs`,
-      { at: 62.5, duration: 4, want: "The Ledger's headline on agents", says: "everyone is building an agent" }, attemptOf(asker))).body;
-    expect(started).toMatchObject({ state: "working", media: [] });
-    const run = get(started.runId);
-    expect([run.kind, run.agent, run.model, run.context.checksTaskId, run.context.broll]).toEqual(["broll_make", agent, asker.model, asker.id,
-      { at: 62.5, duration: 4, want: "The Ledger's headline on agents", says: "everyone is building an agent" }]);
-    // It runs beside the request, outside the queue, with the shell, files and web, on a brief of its one moment.
-    const claimed = (await claim(run.id))!;
-    const launched = await prompt(run.id);
-    expect([launched.workspace, launched.refusedTool], agent).toEqual([true, "Scarlet refused {tool}: it reaches outside your task folder. " +
-      "Keep your files in the task folder, and read the project's footage and the video through Scarlet's tools. Carry on."]);
-    expect(launched.systemPrompt.startsWith("# You are making one piece of B-roll")).toBe(true);
-    expect(launched.systemPrompt).toContain("What should be on screen: The Ledger's headline on agents");
-    // It may add to the media and nothing else: the request places what it made.
-    expect((await app.app.request(`/api/projects/${project.id}/media`, { method: "POST", body: new FormData(),
-      headers: { Authorization: `Bearer ${accessToken(app.ctx)}`, ...attemptOf(claimed) } })).status).toBe(400);
-    expect((await api("PUT", `/projects/${project.id}/style-guide`, { name: "x", text: "y" }, attemptOf(claimed))).status).toBe(403);
-    expect((await api("POST", `/projects/${project.id}/broll-runs`, { at: 1, want: "Another" }, attemptOf(claimed))).status).toBe(403);
-    // What it added, by the run the engine recorded on the file, and its own closing words go back to the request.
-    app.ctx.repos.projects.putMedia(project.id, { id: `med_art_${agent}`, kind: "image", name: "ledger.png", path: `ledger-${agent}.png`, width: 1920, height: 1080,
-      provenance: { by: "agent", taskId: run.id }, source: { url: "https://theledger.example/agents" } }, "ready");
-    app.ctx.repos.projects.putMedia(project.id, { id: `med_other_${agent}`, kind: "image", name: "other.png", path: `other-${agent}.png`, provenance: { by: "agent", taskId: asker.id } }, "ready");
-    await api("POST", `/tasks/${run.id}/complete`, { state: "done", summary: "med_art is The Ledger's headline, the whole frame.", ifStartedAt: claimed.startedAt });
-    const done = (await api<BrollRunResponse>("POST", `/projects/${project.id}/broll-runs`, { runId: run.id, waitMs: 1000 }, attemptOf(asker))).body;
-    expect(done).toEqual({ runId: run.id, state: "done", summary: "med_art is The Ledger's headline, the whole frame.",
-      media: [{ id: `med_art_${agent}`, kind: "image", name: "ledger.png", width: 1920, height: 1080, source: { url: "https://theledger.example/agents" } }] });
-    // Another request can't wait on it.
-    await api("POST", `/tasks/${asker.id}/complete`, { state: "done", ifStartedAt: asker.startedAt });
-    const other = await request("Something else", agent);
-    expect((await api("POST", `/projects/${project.id}/broll-runs`, { runId: run.id }, attemptOf(other))).status).toBe(404);
-    await api("POST", `/tasks/${other.id}/complete`, { state: "done", ifStartedAt: other.startedAt });
+    for (const context of [{}, { dialogueOperation: "first-cut" as const }]) {
+      const task = createTask(app.ctx, { projectId: project.id, kind: "edit", agent, instruction: "Show the article where I mention it", context, createdBy: scarlet });
+      const launched = await api<TaskPrompt>("GET", `/tasks/${task.id}/prompt?workDir=${encodeURIComponent("/work/t/artifacts")}`).then(r => r.body);
+      expect([launched.workspace, launched.refusedTool], agent).toEqual([true, OUTSIDE]);
+      // The prompt says what the run has, and that B-roll and graphics are the editor's to ask for.
+      expect(launched.systemPrompt).toContain("a shell, sandboxed to this task's folder");
+      expect(launched.systemPrompt).toContain("B-roll and graphics are made when the editor asked for them, in their words or in a skill of theirs, never on your own initiative.");
+    }
   }
-});
-
-it("keeps a request to three B-roll runs at once, and stops them when the request stops", async () => {
-  const asker = await request("Cover the intro");
-  const ask = (n: number) => api<BrollRunResponse & { error?: { code: string } }>("POST", `/projects/${project.id}/broll-runs`, { at: n, want: `Shot ${n}` }, attemptOf(asker));
-  const runs = [(await ask(1)).body.runId, (await ask(2)).body.runId, (await ask(3)).body.runId];
-  const fourth = await ask(4);
-  expect([fourth.status, fourth.body.error?.code]).toEqual([409, "broll_busy"]);
-  // A run not started yet waits for the request to be at work, as a look at a frame does; one of an ended request never starts.
-  await api("POST", `/tasks/${asker.id}/cancel`);
-  expect(runs.map(id => get(id).state)).toEqual(["cancelled", "cancelled", "cancelled"]);
-  // A side check asks for none, and neither does anyone without a run.
-  expect((await api("POST", `/projects/${project.id}/broll-runs`, { at: 1, want: "Shot" })).status).toBe(400);
+  const asker = createTask(app.ctx, { projectId: project.id, kind: "edit", agent: "gemini", instruction: "Frame the demo", createdBy: scarlet });
+  const aside = await prompt(look(asker, 4).id);
+  expect([aside.workspace, aside.refusedTool]).toEqual([undefined,
+    "Scarlet refused {tool}: only Scarlet's own tools (the scarlet MCP server) run here, with no shell or file tools. Carry on with the request using Scarlet's tools."]);
+  expect(aside.systemPrompt).not.toContain("sandboxed");
 });

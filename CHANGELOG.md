@@ -6,6 +6,7 @@ Add one line under today's date for each change an editor would notice. Leave ou
 
 ## November 21, 2026
 
+- Scarlet now has a shell, files and the web in every edit, whichever model you pick, so it can look things up and build what an edit needs as it works.
 - During a screen demo, your camera now stays in its corner, and Scarlet frames the screen around it instead of moving the camera around.
 - After a cut on your camera, your voice now comes straight in, a new topic or demo included, instead of a beat of quiet on your face after the cut.
 - Scarlet can now find or make B-roll for a moment with any model you pick: it searches the web, captures an article or a post as a picture, and builds the shot its own way before laying it in.

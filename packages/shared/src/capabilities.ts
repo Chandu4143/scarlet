@@ -17,10 +17,10 @@ export interface AgentCapabilities {
   files: boolean;
   /**
    * The agent has a shell in its task folder, sandboxed by its harness: it writes only there, and has ffmpeg and ffprobe
-   * on its PATH where the host has them. What it builds with them is its own choice. Only a B-roll run has one.
+   * on its PATH where the host has them. What it builds with them is its own choice. Every request has one.
    */
   shell?: boolean;
-  /** The agent can search the web through its harness's own tools. Only a B-roll run can. */
+  /** The agent can search the web through its harness's own tools. Every request can. */
   web?: boolean;
   /** Character target for paging long MCP text responses. Configurable per harness. */
   resultChars?: number;
@@ -68,15 +68,15 @@ export const DEFAULT_RESULT_CHARS = 40_000;
 // 2026-11-10 the chat shows only what Scarlet is doing this moment, not a plan, so no run pays for one.
 // SCARLET_AGENT_CAPS='{"plan":true}' still turns Claude Code's on. Codex's has not been measured.
 const KNOWN: Record<string, AgentCapabilities> = {
-  // A request runs with Scarlet's tools only. The harness's own shell, file and web tools belong to a B-roll run
-  // (`workspaceCapabilities`), which a request starts when it needs a shot found or made.
-  // claude -p runs a request with --tools "" (no file tools); Claude models take images but not audio.
+  // What each harness delivers launched with Scarlet's tools only, as a side check is. A request is launched with its
+  // harness's own shell, file and web tools as well (`workspaceCapabilities`).
+  // claude -p then runs with --tools "" (no file tools); Claude models take images but not audio.
   // Plan: Claude Code 2.1.316 has TaskCreate and TaskUpdate (TodoWrite before it) only when --tools names them.
   claude: { images: true, audio: false, files: false, plan: false, toolPrefix: "mcp__scarlet__", toolWaitSeconds: 240 },
   // codex exec has a writable workspace; MCP audio blocks are not forwarded to the model.
   // Plan: Codex 0.166 has update_plan only with tools.update_plan.enabled, and reports it as `todo_list` items.
   codex: { images: true, audio: false, files: true, plan: false, toolWaitSeconds: 240 },
-  // agy acp runs a request with Scarlet's permission handler allowing only Scarlet MCP tools (no file tools); audio forwarding from MCP is unverified. Its runner reads no plan.
+  // agy acp then runs with Scarlet's permission handler allowing only Scarlet MCP tools (no file tools); audio forwarding from MCP is unverified. Its runner reads no plan.
   // Brief tools: agy 1.x keeps about 60 KB of MCP tool definitions a session and drops the largest past it, listing
   // nothing in their place. On 2026-11-19 it dropped seven of Scarlet's 50 (117 KB), timeline_propose and
   // dialogue_apply_cuts among them, so a Gemini pass couldn't save an edit; listed briefly (43 KB) all 51 stayed.

@@ -18,9 +18,9 @@ export type CodexFallbackReason = "api_key" | "project_config" | "home_unavailab
   "initialize_failed" | "thread_start_failed" | "thread_resume_failed" | "thread_policy_mismatch" | "app_server_unavailable";
 
 /**
- * What a B-roll run's agent works with beyond Scarlet's tools: its harness's shell (sandboxed to the task folder,
- * writing only there and reaching the web), file tools and web search. The editor chose this for every model, for the
- * runs that need it (2026-11-21).
+ * What a request's agent works with beyond Scarlet's tools: its harness's shell (sandboxed to the task folder,
+ * writing only there and reaching the web), file tools and web search. The editor chose this for every model and every
+ * request (2026-11-21).
  */
 export interface Workspace {
   /** Links to ffmpeg, ffprobe and a headless Chrome, put first on the shell's PATH. Absent when the host has none. */
@@ -61,8 +61,8 @@ export interface RunAgentOptions {
   /** Per-task workspace. The agent may write temp files here. */
   cwd: string;
   /**
-   * The harness's own shell, file and web tools, beside Scarlet's, for a B-roll run. Absent for every other run, which
-   * has Scarlet's tools only.
+   * The harness's own shell, file and web tools, beside Scarlet's, for a request. Absent for a side check or a skill's
+   * edit, whose runs have Scarlet's tools only.
    */
   workspace?: Workspace;
   mcp: McpSpec;
