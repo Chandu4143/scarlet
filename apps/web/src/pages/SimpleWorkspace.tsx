@@ -2463,6 +2463,7 @@ export function SimpleWorkspace() {
   // Only the calls still waiting on the editor are marked, each with its number, amber as in the chat. A decided call's dot goes.
   // A call's dot never shares a pill with an edit's: the two count apart.
   // A dot sits where the cut's footage is on the working cut. A cut that can't be placed there has no dot.
+  // The footage it would take out is drawn dashed from the dot, since it still plays until the call is approved.
   // While a suggestion plays the timeline is the suggestion's, as it is a call's or an edit's while that is open: After
   // is on the version it proposes, where the pass's cuts sit elsewhere. The calls' dots are back when it closes.
   // The calls are on the timeline while the timeline is the pass's, while one of them is open, and while the editor
@@ -2475,7 +2476,7 @@ export function SimpleWorkspace() {
       const at = sentBack(a.index) || passChoices[a.index] !== undefined ? undefined
         : override ? override.version === (pinnedCallVersion ?? head) ? override.range : undefined
         : pinnedCallVersion ? undefined : placeCut(a);
-      return at ? [{ time: at.start, n: callNo.get(a.index), group: "call", title: `Cut ${callNo.get(a.index)}${ofCalls(callNo.get(a.index))} · ${clockLabel(at.start)}`, summary: a.reason,
+      return at ? [{ time: at.start, end: at.end, n: callNo.get(a.index), group: "call", title: `Cut ${callNo.get(a.index)}${ofCalls(callNo.get(a.index))} · ${clockLabel(at.start)}`, summary: a.reason,
         detail: `Removes ${lengthLabel(a.end - a.start)}`, context: pass.description, state: "check" as const, need: `Cut ${callNo.get(a.index)}`,
         current: listening?.changeId === pass.id && listening.index === a.index, open: () => actions.listen(pass, a) }] : [];
     })
@@ -2832,7 +2833,8 @@ export function SimpleWorkspace() {
   // A call shown on the version that still has the footage around it: each dot sits where its footage is there.
   const shownMarks = callView ? workingMarks.flatMap(dot => {
     const time = callView.toBase(dot.time);
-    return time === null ? [] : [{ ...dot, time }];
+    const end = dot.end === undefined ? undefined : callView.toBase(dot.end) ?? undefined;
+    return time === null ? [] : [{ ...dot, time, end }];
   }) : workingMarks;
   // Once the edit or the list closes, the timeline stays with that request only while it still has an edit to check.
   // Otherwise it goes back: to a pass whose full list is still open in the chat, else to the latest request. The latest
