@@ -2062,7 +2062,7 @@ it("rejects one applied edit with the × after Keep, asking Scarlet to put back 
   await event(d => ({ ...d, tasks: [...d.tasks, { ...d.tasks.find(t => t.id === "task_done")!, id: "task_reject", state: "queued" as const }] }));
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true })); });
   await act(async () => {});
-  expect(cancel.mock.calls).toEqual([["task_reject"]]);
+  expect(cancel.mock.calls).toEqual([["task_reject", false, true]]);
   expect(openTitle()).toBe("captions");
   expect(container.querySelector(".timeline-foot .timeline-undo-button")).toBeNull();
 });
