@@ -7,9 +7,17 @@
  * the scramble, and when a later save took the move down out, the move back up stayed, starting on a jump cut while
  * the cube was still large. This reports, for each stretch an edit framed, where the frame holds and where it moves,
  * and what of the text the speaker reads aloud there the frame leaves out or a picture over it covers.
+ *
+ * A save that only turns a screen recording on over the camera, unframed, decides where the screen comes and goes as
+ * much as a framing does. A pass showed a post's video only up to the jump cut before the speaker's reaction to it, “I
+ * think this looks incredible … I am surprised it's not real”, with the video still playing on the recording and the
+ * speaker looking at it (2026-11-20). That save switched clips on and framed none, so it heard nothing of the time
+ * beside its stretches. A silent recording shown over the main picture is reported too, where the edit turns it on or
+ * moves its edges.
  */
 import { clipEnd, Transform as TransformSchema, type MediaAsset, type MediaClip, type Timeline } from "@scarlet/timeline";
 import { frameShown, pictureBox, type Box } from "./framing.js";
+import { CUT_SHOWN, cutShareOf, sourceOnScreen, type RecordingCut } from "./brief-pictures.js";
 import type { ScreenLine, ScreenReading } from "./screen-reading.js";
 import { SMALL, type MotionSecond, type MotionSpan } from "./screen-motion.js";
 
@@ -17,10 +25,10 @@ interface Size { width: number; height: number }
 
 export interface FramedStretch {
   mediaId: string; trackId: string;
-  /** Timeline seconds the stretch covers, over the clips in a row the edit framed. */
+  /** Timeline seconds the stretch covers, over the clips in a row the edit framed or put on picture over another. */
   from: number; to: number;
   clips: number;
-  /** Where the frame stands still: the area of the source picture that fills the video, in percent; empty where the picture doesn't fill the video. */
+  /** Where the frame stands still: the area of the source picture that fills the video, in percent; empty where the picture doesn't fill the video, as a recording of another shape shown whole doesn't. */
   holds: Array<{ from: number; to: number; frame: number[] }>;
   /** Where it moves from one frame to the next. `onCut` when the move starts on a cut in the picture. */
   moves: Array<{ from: number; to: number; fromFrame: number[]; toFrame: number[]; onCut?: true }>;
@@ -38,7 +46,7 @@ export interface FramedStretch {
 export interface ShownBeside {
   /** Timeline seconds. */
   from: number; to: number;
-  /** Lines of the recording's text in the frame at the edge that are still there, up to three. */
+  /** Lines of the recording's text in the frame at the edge that stay for at least half of it, longest first, up to three. */
   showing?: string[];
   /** Nothing in the frame's area of the recording changes over it. */
   unchanged?: true;
@@ -52,6 +60,8 @@ export interface BesideEvidence {
   lines: ReadonlyMap<string, readonly ScreenLine[]>;
   /** Each recording's seconds whose picture changed, in source seconds (screen_motion). */
   seconds: ReadonlyMap<string, readonly MotionSecond[]>;
+  /** Each recording's cuts, in source seconds (`/picture-cuts`): what it shows ends at one that changes enough of the frame. */
+  cuts?: ReadonlyMap<string, readonly RecordingCut[]>;
   /** The words heard on the timeline. */
   words: ReadonlyArray<{ text: string; start: number; end: number }>;
 }
@@ -72,6 +82,8 @@ const pct = (b: readonly number[]) => b.map(n => Math.round(n * 1000) / 10);
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const framing = (clip: MediaClip) => JSON.stringify([TransformSchema.parse(clip.transform ?? {}), (clip.keyframes ?? []).map(k => [k.time, k.transform, k.ease ?? "linear"])]);
 const area = (b: Box) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+/** A silent picture above the main one that covers at least this share of the video is shown in its place, as a screen recording over the camera is; a camera inset isn't. */
+const STANDS_IN = 0.5;
 const meet = (a: Box, b: Box): Box => [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
 
 /**
@@ -86,27 +98,42 @@ export function framingReport(before: Timeline | null, after: Timeline, media: r
   const visible = after.tracks.map((track, index) => ({ track, index })).filter(({ track }) => track.kind === "video" && !track.hidden);
   const opaque = (c: MediaClip) => c.enabled !== false && c.opacity > 0 && assets.get(c.mediaId)?.kind !== "graphic";
   const layers = visible.flatMap(({ track, index }) => track.clips.filter((c): c is MediaClip => c.kind === "media" && opaque(c)).map(clip => ({ clip, index })));
+  // A clip the edit added, turned on or framed otherwise.
   const changed = (c: MediaClip) => {
     const old = was.get(c.id);
-    return (!!c.transform || !!c.keyframes?.length) && !(old?.kind === "media" && framing(old) === framing(c));
+    return old?.kind !== "media" || old.enabled === false || framing(old) !== framing(c);
   };
+  // A stretch whose edges the edit moved: trimmed at either end, or the recording turned off right beside it.
+  const edgesMoved = (run: readonly MediaClip[], track: Timeline["tracks"][number]) => {
+    const first = run[0]!, last = run.at(-1)!, from = first.timelineIn, to = clipEnd(last);
+    const a = was.get(first.id), b = was.get(last.id);
+    if ((a?.kind === "media" && a.sourceIn !== first.sourceIn) || (b?.kind === "media" && b.sourceOut !== last.sourceOut)) return true;
+    return track.clips.some(c => c.kind === "media" && c.mediaId === first.mediaId && c.enabled === false &&
+      (Math.abs(c.timelineIn - to) <= 0.05 || Math.abs(clipEnd(c) - from) <= 0.05) && (o => o?.kind === "media" && o.enabled !== false)(was.get(c.id)));
+  };
+  // The main picture is the lowest video track's. A recording whose sound doesn't play, laid above it and covering most
+  // of the video, is shown in its place. The main picture can be silent too, beside a separate recorder's sound.
+  const heard = new Set(after.tracks.filter(t => !t.muted).flatMap(t => t.clips.filter(c => c.kind === "media" && c.enabled !== false && c.volume > 0).map(c => (c as MediaClip).mediaId)));
+  const main = visible.find(({ track }) => track.clips.some(c => c.kind === "media"))?.index ?? Infinity;
+  const standsIn = (c: MediaClip, trackIndex: number) => trackIndex > main && !heard.has(c.mediaId) &&
+    area(meet(pictureBox(c, 0, size(c.mediaId), canvas), [0, 0, 1, 1])) >= STANDS_IN;
 
   const out: FramedStretch[] = [];
   for (const { track, index } of visible) {
     const clips = track.clips.filter((c): c is MediaClip => c.kind === "media" && opaque(c)).sort((a, b) => a.timelineIn - b.timelineIn);
-    // Stretches: framed clips of one recording in a row, holding at least one the edit changed.
+    // Stretches: clips of one recording in a row, framed or shown in place of the main picture, that the edit changed or moved the edges of.
     let run: MediaClip[] = [];
     const flush = () => {
-      // A picture that doesn't fill the video, such as a camera inset, has no frame to report.
-      const made = run.some(changed) ? stretch(run, track.id, index) : undefined;
-      if (made && [...made.holds.map(h => h.frame), ...made.moves.map(m => m.toFrame)].some(f => f.length)) out.push(made);
+      const made = run.length && (run.some(changed) || edgesMoved(run, track)) ? stretch(run, track.id, index) : undefined;
+      // A picture that doesn't fill the video, such as a camera inset, has no frame to report, unless it is shown in place of the main picture.
+      if (made && ([...made.holds.map(h => h.frame), ...made.moves.map(m => m.toFrame)].some(f => f.length) || run.some(c => standsIn(c, index)))) out.push(made);
       run = [];
     };
     for (const clip of clips) {
       const prev = run.at(-1);
-      const framed = !!clip.transform || !!clip.keyframes?.length;
-      if (prev && (!framed || prev.mediaId !== clip.mediaId || clip.timelineIn - clipEnd(prev) > 0.05)) flush();
-      if (framed) run.push(clip);
+      const shown = !!clip.transform || !!clip.keyframes?.length || standsIn(clip, index);
+      if (prev && (!shown || prev.mediaId !== clip.mediaId || clip.timelineIn - clipEnd(prev) > 0.05)) flush();
+      if (shown) run.push(clip);
     }
     flush();
   }
@@ -200,36 +227,47 @@ export function framingReport(before: Timeline | null, after: Timeline, media: r
         if (item.underCover) last.underCover = Math.max(last.underCover ?? 0, item.underCover);
       } else action.push(item);
     }
-    const shownAfter = beside && besideShown(run, "after", samples.at(-1)?.frame ?? null, beside);
-    const shownBefore = beside && besideShown(run, "before", samples[0]?.frame ?? null, beside);
+    // Beside the stretch, what the recording shows is what the frame held at that edge, or all the picture shows of it.
+    const onScreen = (clip: MediaClip, at: number) => sourceOnScreen(clip, Math.max(0, at - clip.timelineIn), source, canvas);
+    const shownAfter = beside && besideShown(run, "after", samples.at(-1)?.frame ?? onScreen(run.at(-1)!, to - 1e-3), beside);
+    const shownBefore = beside && besideShown(run, "before", samples[0]?.frame ?? onScreen(run[0]!, from), beside);
     return { mediaId: run[0]!.mediaId, trackId, from: r2(from), to: r2(to), clips: run.length, holds, moves, ...(hidden.length && { readsHidden: hidden }), ...(action.length && { actionHidden: action.slice(0, 10) }),
       ...(shownAfter && { shownAfter }), ...(shownBefore && { shownBefore }) };
   }
 
   /**
    * The video beside a stretch, with its recording off picture, while the recording shows what the frame did at that
-   * edge: a line of its text in the frame is still there, or nothing in the frame has changed since.
+   * edge: a line of its text in the frame is still there, or nothing in the frame has changed since, up to a cut in the
+   * recording that changes a good part of the frame. A browser's bookmarks bar and tabs stay through every page it
+   * shows, so their text alone read as the same picture across a switch to another page (2026-11-20).
    */
   function besideShown(run: MediaClip[], side: "after" | "before", frame: Box | null, evidence: BesideEvidence): ShownBeside | undefined {
     const walk = besideWalk(after, run, side, layers.map(l => l.clip));
     if (!walk || !frame) return undefined;
     const mediaId = run[0]!.mediaId, edge = walk.edge;
     const inFrame = (b: readonly number[]) => area(meet(b as Box, frame)) >= area(b as Box) / 2;
-    const lines = (evidence.lines.get(mediaId) ?? []).filter(l => l.start <= edge && l.end >= edge && inFrame(l.box));
+    // The longest lines first: a page's sentences ahead of the labels of the window around them (a bookmarks bar, tabs).
+    const lines = (evidence.lines.get(mediaId) ?? []).filter(l => l.start <= edge && l.end >= edge && inFrame(l.box))
+      .sort((a, b) => b.text.length - a.text.length || a.box[1] - b.box[1] || a.box[0] - b.box[0]);
     const changes = (evidence.seconds.get(mediaId) ?? []).filter(s => s.areas.some(a => a[4] >= SMALL && area(meet(a.slice(0, 4) as Box, frame)) > 0));
-    let last: { t: number; showing: string[]; unchanged: boolean } | undefined;
+    const cuts = (evidence.cuts?.get(mediaId) ?? []).filter(c => cutShareOf(c, frame) >= CUT_SHOWN);
+    let last: { t: number; source: number; unchanged: boolean } | undefined;
     for (const { t, source } of walk.steps) {
       const [lo, hi] = side === "after" ? [edge, source] : [source, edge];
+      if (cuts.some(c => c.at > lo && c.at <= hi)) break;
       const unchanged = !changes.some(s => s.at + 1 > lo && s.at < hi);
-      const showing = lines.filter(l => side === "after" ? l.end >= source : l.start <= source).map(l => l.text);
-      if (!unchanged && !showing.length) break;
-      last = { t, showing, unchanged };
+      const still = lines.some(l => side === "after" ? l.end >= source : l.start <= source);
+      if (!unchanged && !still) break;
+      last = { t, source, unchanged };
     }
     if (!last) return undefined;
     const [a, b] = side === "after" ? [walk.at, last.t + BESIDE_STEP / 2] : [last.t - BESIDE_STEP / 2, walk.at];
     if (b - a < 1) return undefined;
+    // The lines there for at least half of it: a post's text can go a moment before the page does, its window's labels not.
+    const reach = last.source, half = Math.abs(reach - edge) / 2;
+    const showing = [...new Set(lines.filter(l => (side === "after" ? Math.min(l.end, reach) - edge : edge - Math.max(l.start, reach)) >= half).map(l => l.text))].slice(0, 3);
     const said = evidence.words.filter(w => w.start >= a - 0.05 && w.end <= b + 0.05).map(w => w.text.trim()).filter(Boolean).join(" ");
-    return { from: r2(a), to: r2(b), ...(last.showing.length && { showing: [...new Set(last.showing)].slice(0, 3) }), ...(last.unchanged && { unchanged: true as const }),
+    return { from: r2(a), to: r2(b), ...(showing.length && { showing }), ...(last.unchanged && { unchanged: true as const }),
       ...(said && { said: said.length > 200 ? `${said.slice(0, 197)}…` : said }) };
   }
 
@@ -239,8 +277,10 @@ export function framingReport(before: Timeline | null, after: Timeline, media: r
 /**
  * The steps along the video beside a run of a recording's clips, after its end or before its start, while the recording
  * is off picture, with its source second at each. Its clock there is the clock of another recording that plays at the
- * edge and on beside it, heard ones first, as a camera's sound is, at the offset the two have at the edge. Undefined
- * when nothing else plays there.
+ * edge and on beside it, heard ones first, as a camera's sound is, at the offset the two have at the edge, read along
+ * the clock's own track. Of two clips of it that overlap at the edge, as a crossfade at a dialogue cut makes them, the
+ * one that plays on into the stretch keeps the time: the other is footage from the far side of the cut, and taken as
+ * the clock it put a screen a minute off what it showed (2026-11-20). Undefined when nothing else plays there.
  */
 export function besideWalk(tl: Timeline, run: readonly MediaClip[], side: "after" | "before", pictures?: readonly MediaClip[]) {
   const mediaId = run[0]!.mediaId;
@@ -249,20 +289,23 @@ export function besideWalk(tl: Timeline, run: readonly MediaClip[], side: "after
   const inside = side === "after" ? at - 1e-3 : at + 1e-3;
   const sourceAt = (c: MediaClip, t: number) => c.sourceIn + (t - c.timelineIn) * (c.speed ?? 1);
   const edge = sourceAt(edgeClip, inside);
-  const media = tl.tracks.flatMap(t => t.clips.filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false));
-  const others = media.filter(c => c.mediaId !== mediaId && (c.speed ?? 1) === 1);
-  const playing = (id: string, t: number) => others.find(c => c.mediaId === id && c.timelineIn <= t + 1e-6 && t < clipEnd(c) - 1e-6);
+  const media = tl.tracks.flatMap(t => t.clips.filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false).map(clip => ({ clip, trackId: t.id })));
+  const others = media.filter(({ clip: c }) => c.mediaId !== mediaId && (c.speed ?? 1) === 1);
+  const playing = (id: string, trackId: string, t: number) =>
+    others.find(({ clip: c, trackId: k }) => k === trackId && c.mediaId === id && c.timelineIn <= t + 1e-6 && t < clipEnd(c) - 1e-6)?.clip;
   const step = side === "after" ? BESIDE_STEP : -BESIDE_STEP;
-  const clock = others.filter(c => c.timelineIn <= inside && inside < clipEnd(c) && playing(c.mediaId, at + step / 2))
-    .sort((a, b) => Number(b.volume > 0) - Number(a.volume > 0))[0];
+  // How far a clip at the edge plays on into the stretch.
+  const into = (c: MediaClip) => side === "after" ? at - c.timelineIn : clipEnd(c) - at;
+  const clock = others.filter(({ clip: c, trackId }) => c.timelineIn <= inside && inside < clipEnd(c) && playing(c.mediaId, trackId, at + step / 2))
+    .sort((a, b) => Number(b.clip.volume > 0) - Number(a.clip.volume > 0) || into(b.clip) - into(a.clip))[0];
   if (!clock) return undefined;
-  const offset = edge - sourceAt(clock, inside);
+  const offset = edge - sourceAt(clock.clip, inside);
   const own = (pictures ?? tl.tracks.filter(t => t.kind === "video" && !t.hidden).flatMap(t => t.clips.filter((c): c is MediaClip => c.kind === "media" && c.enabled !== false)))
     .filter(c => c.mediaId === mediaId);
   const steps: Array<{ t: number; source: number }> = [];
   for (let t = at + step / 2; Math.abs(t - at) < BESIDE_MAX && t >= 0; t += step) {
     if (own.some(c => c.timelineIn <= t && t < clipEnd(c))) break;
-    const c = playing(clock.mediaId, t);
+    const c = playing(clock.clip.mediaId, clock.trackId, t);
     if (!c) break;
     steps.push({ t, source: sourceAt(c, t) + offset });
   }
@@ -288,4 +331,4 @@ export function besideSources(tl: Timeline, framed: readonly FramedStretch[]): A
   return [...reach].map(([id, r]) => ({ id, from: Math.max(0, Math.floor(r.from) - 1), to: Math.ceil(r.to) + 1 }));
 }
 
-export const FRAMING_REPORT_NEXT = "framed lists each stretch this edit framed: where the frame holds and where it moves, as the area of the source picture that fills the video ([left, top, right, bottom] in percent); readsHidden, the passages the speaker reads aloud there (screen_reading) whose lines the frame leaves out (outsideFrame) or a picture over it covers (underCover), in percent of those lines; actionHidden, the areas where the picture keeps changing (screen_motion) that it leaves out or covers, in percent of each area; and shownAfter and shownBefore, the video just after the stretch ends or just before it starts, with the recording off picture, while the recording still shows what the frame showed at that edge: lines of its text still there (showing), or nothing in the frame changed (unchanged), with the words heard over it (said). A move marked onCut starts on a cut in the picture. frame_contact_sheet on the new version shows any of it as it plays.";
+export const FRAMING_REPORT_NEXT = "framed lists each stretch this edit framed, put on picture over another or moved the edges of: where the frame holds and where it moves, as the area of the source picture that fills the video ([left, top, right, bottom] in percent, empty where the picture doesn't fill it); readsHidden, the passages the speaker reads aloud there (screen_reading) whose lines the frame leaves out (outsideFrame) or a picture over it covers (underCover), in percent of those lines; actionHidden, the areas where the picture keeps changing (screen_motion) that it leaves out or covers, in percent of each area; and shownAfter and shownBefore, the video just after the stretch ends or just before it starts, with the recording off picture, while the recording still shows what the frame showed at that edge, up to a cut in the recording: lines of its text still there (showing, longest first), or nothing in the frame changed (unchanged), with the words heard over it (said). A move marked onCut starts on a cut in the picture. frame_contact_sheet on the new version shows any of it as it plays.";
